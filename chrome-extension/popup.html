@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gen Z Digital Store</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #000820;
+      color: #fff;
+      font-size: 13px;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(0,175,193,0.15);
+      background: linear-gradient(180deg,#001030,#000820);
+    }
+    .header img { width: 40px; height: 40px; border-radius: 8px; object-fit: contain; background: #fff; }
+    .header-text { flex: 1; }
+    .header-title { font-weight: 700; font-size: 14px; color: #fff; }
+    .header-sub { font-size: 11px; color: #8A98A8; margin-top: 1px; }
+    .badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 999px;
+      letter-spacing: .3px;
+    }
+    .badge-connected { background: rgba(0,175,193,0.15); color: #00AFC1; }
+    .badge-disconnected { background: rgba(239,68,68,0.15); color: #f87171; }
+
+    /* ── Body ── */
+    .body { padding: 14px 16px; }
+
+    /* ── Status card ── */
+    .status-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,175,193,0.15);
+      background: rgba(0,175,193,0.05);
+      margin-bottom: 12px;
+    }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    }
+    .dot-connected { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.5); }
+    .dot-disconnected { background: #f87171; }
+    .dot-checking { background: #facc15; animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .status-info { flex: 1; min-width: 0; }
+    .status-label { font-weight: 600; font-size: 13px; }
+    .status-detail { font-size: 11px; color: #8A98A8; margin-top: 2px; }
+
+    /* ── Info rows ── */
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      font-size: 12px;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #8A98A8; }
+    .info-value { color: #fff; font-weight: 500; }
+    .info-value.teal { color: #00AFC1; }
+
+    /* ── Notice ── */
+    .notice {
+      display: flex;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      background: rgba(0,175,193,0.08);
+      border: 1px solid rgba(0,175,193,0.2);
+      margin-bottom: 12px;
+      font-size: 11.5px;
+      color: #c0d4d9;
+      line-height: 1.5;
+    }
+    .notice-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 9px 14px;
+      border-radius: 8px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .15s, transform .15s;
+      margin-bottom: 8px;
+    }
+    .btn:last-child { margin-bottom: 0; }
+    .btn:hover { opacity: .88; transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn-primary { background: linear-gradient(135deg,#00AFC1,#008EA3); color: #000820; }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid rgba(0,175,193,0.3);
+      color: #00AFC1;
+    }
+    .btn-danger { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,.3); color: #f87171; }
+    .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+    /* ── Section headings ── */
+    .section-title {
+      font-size: 10.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: #8A98A8;
+      margin-bottom: 8px;
+    }
+
+    /* ── Toast ── */
+    #toast {
+      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+      padding: 7px 14px; border-radius: 20px; font-size: 11.5px;
+      font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
+    #toast.success { background: #22c55e; color: #000; }
+    #toast.error   { background: #ef4444; color: #fff; }
+    #toast.info    { background: #00AFC1; color: #000820; }
+
+    /* ── Sections toggle ── */
+    .section { margin-bottom: 14px; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ── -->
+  <div class="header">
+    <img src="icons/icon48.png" alt="Gen Z Digital Store">
+    <div class="header-text">
+      <div class="header-title">Gen Z Digital Store</div>
+      <div class="header-sub">Extension v<span id="ext-version">—</span></div>
+    </div>
+    <span id="header-badge" class="badge badge-disconnected">●  Checking…</span>
+  </div>
+
+  <!-- ── Body ── -->
+  <div class="body">
+
+    <!-- Status Card -->
+    <div class="status-card">
+      <div id="status-dot" class="status-dot dot-checking"></div>
+      <div class="status-info">
+        <div id="status-label" class="status-label">Checking connection…</div>
+        <div id="status-detail" class="status-detail">Please wait</div>
+      </div>
+    </div>
+
+    <!-- Notice: open tools from dashboard -->
+    <div class="notice">
+      <span class="notice-icon">💡</span>
+      <span>Open tools from your <strong>member dashboard</strong> — not from here.
+      This popup shows connection status only.</span>
+    </div>
+
+    <!-- Connection info (shown when connected) -->
+    <div id="connected-section" class="section hidden">
+      <div class="section-title">Session Info</div>
+      <div class="info-row">
+        <span class="info-label">Signed in as</span>
+        <span id="user-email" class="info-value teal">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Tools available</span>
+        <span id="tool-count" class="info-value">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Last sync</span>
+        <span id="last-sync" class="info-value">—</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Token expires</span>
+        <span id="token-expires" class="info-value">—</span>
+      </div>
+    </div>
+
+    <!-- Actions (shown when connected) -->
+    <div id="connected-actions" class="section hidden">
+      <button class="btn btn-primary" id="open-dashboard-btn">
+        🚀 Open Member Dashboard
+      </button>
+      <button class="btn btn-ghost" id="sync-btn">
+        🔄 Sync Tools Now
+      </button>
+      <button class="btn btn-danger" id="logout-btn">
+        Sign Out of Extension
+      </button>
+    </div>
+
+    <!-- Reconnect (shown when disconnected) -->
+    <div id="disconnected-section" class="section hidden">
+      <div class="section-title">Reconnect</div>
+      <button class="btn btn-primary" id="reconnect-btn">
+        🔗 Connect via Dashboard
+      </button>
+      <p style="font-size:11px;color:#8A98A8;text-align:center;margin-top:6px;line-height:1.5;">
+        Go to your member dashboard and use<br>
+        <strong style="color:#00AFC1">Settings → Connect Extension</strong>
+      </p>
+    </div>
+
+
+    <!-- Security Scanner -->
+    <div id="scanner-section" class="section">
+      <div class="section-title">Security Scanner</div>
+      <div id="scanner-active-ui">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 0;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#22c55e;flex-shrink:0;box-shadow:0 0 8px rgba(34,197,94,.45);"></div>
+          <span style="font-size:11.5px;color:#22c55e;font-weight:600;">Scanner active</span>
+        </div>
+        <p style="font-size:11px;color:#8A98A8;line-height:1.5;margin-top:2px;">
+          Session risk monitoring is active. Risky browser-extension signals may be reported to admin for account protection. No cookies, passwords, or browsing history are collected.
+        </p>
+      </div>
+    </div>
+
+    <!-- Compact help -->
+    <div class="notice" style="margin-top:4px;margin-bottom:0;">
+      <span class="notice-icon">ⓘ</span>
+      <span>Use the member dashboard Access button to open tools. MFA/CAPTCHA, if shown by a tool, must be completed manually.</span>
+    </div>
+
+  </div><!-- /body -->
+</div><!-- /app -->
+
+<div id="toast"></div>
+<script src="js/popup.js" type="module"></script>
+</body>
+</html>
