@@ -264,7 +264,7 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-const PORT = process.env.CRM_PORT || 8002;
+const PORT = process.env.PORT || process.env.CRM_PORT || 8002;
 
 // FIX23: Global safety handlers
 process.on('unhandledRejection', (reason, promise) => {
