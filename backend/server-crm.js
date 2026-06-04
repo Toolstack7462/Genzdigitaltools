@@ -51,6 +51,10 @@ console.log('✅ All required environment variables validated.');
 
 const app = express();
 
+// Hostinger runs Node.js apps behind a reverse proxy.
+// This is required so express-rate-limit can correctly read X-Forwarded-For.
+app.set('trust proxy', 1);
+
 // ============================================================================
 // CORS CONFIGURATION — explicit allowlist via environment variable
 // ============================================================================
