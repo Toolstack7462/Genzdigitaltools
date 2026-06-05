@@ -136,6 +136,48 @@ async function notifyDashboardTabs(payload) {
   }
 }
 
+
+
+// ============================================================================
+// DASHBOARD BRIDGE AUTO-INJECTION
+// ============================================================================
+const GENZ_DASHBOARD_MATCHES = [
+  'https://app.genzdigitalstore.com/*',
+  'https://genzdigitalstore.com/*',
+  'http://localhost:3000/*',
+];
+
+async function injectBridgeIntoDashboardTabs(reason = 'manual') {
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const tab of tabs) {
+      if (!tab?.id || !tab.url) continue;
+      let ok = false;
+      try {
+        const url = new URL(tab.url);
+        ok = (
+          url.origin === 'https://app.genzdigitalstore.com' ||
+          url.origin === 'https://genzdigitalstore.com' ||
+          url.origin === 'http://localhost:3000'
+        );
+      } catch (_) {}
+      if (!ok) continue;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['js/bridge.js'],
+        });
+        logger.debug('Injected dashboard bridge', { tabId: tab.id, reason });
+      } catch (err) {
+        // Ignore protected pages, inactive frames, or already-closed tabs.
+        logger.debug('Bridge injection skipped', { tabId: tab.id, reason, error: err.message });
+      }
+    }
+  } catch (err) {
+    logger.warn('injectBridgeIntoDashboardTabs error', { error: err.message });
+  }
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -147,13 +189,18 @@ async function initialize() {
     return;
   }
   isInitialized = true;
-  logger.info('Initializing Gen Z Digital Store Extension v2.1');
+  logger.info('Initializing Gen Z Digital Store Extension v3.4');
   
   // Initialize orchestrator
   orchestrator = getOrchestrator();
   
   // Keep session-risk scanner active by default
   await setStorage({ scannerEnabled: true });
+
+  // If the user loaded/reloaded the unpacked extension while dashboard tabs
+  // are already open, content_scripts are not injected until refresh. Inject
+  // bridge.js proactively so auto-connect can start immediately.
+  injectBridgeIntoDashboardTabs('initialize').catch(() => {});
 
   // Load cached data
   await loadCachedData();
@@ -1166,12 +1213,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 chrome.runtime.onInstalled.addListener((details) => {
   logger.info('Extension installed/updated', { reason: details.reason });
   initialize();
+  setTimeout(() => injectBridgeIntoDashboardTabs(`onInstalled:${details.reason}`), 500);
 });
 
 // Startup listener
 chrome.runtime.onStartup.addListener(() => {
   logger.info('Browser started');
   initialize();
+  setTimeout(() => injectBridgeIntoDashboardTabs('onStartup'), 1000);
 });
 
 // Message listener
@@ -1351,10 +1400,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: false, error: d.error || 'Authentication failed' });
             return;
           }
-          await setStorage({ extensionToken: d.token, apiUrl: base, tokenExpiresAt: d.expiresAt });
+          await setStorage({
+            extensionToken: d.token,
+            apiUrl: base,
+            tokenExpiresAt: d.expiresAt,
+            userEmail: d.user?.email || null,
+            userName: d.user?.name || null
+          });
           chrome.action.setBadgeText({ text: '' });
           await checkForUpdates();
-          sendResponse({ success: true, user: d.user, version: chrome.runtime.getManifest().version });
+          notifyDashboardTabs({
+            type: 'GENZ_EXTENSION_CONNECTED',
+            connected: true,
+            userEmail: d.user?.email || null,
+            tokenExpiresAt: d.expiresAt,
+            version: chrome.runtime.getManifest().version
+          });
+          sendResponse({ success: true, user: d.user, version: chrome.runtime.getManifest().version, connected: true });
         } catch (err) {
           sendResponse({ success: false, error: err.message });
         }
