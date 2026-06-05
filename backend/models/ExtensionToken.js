@@ -10,7 +10,7 @@ const ExtensionToken = createModel('ExtensionToken', {
     hashToken(token) {
       return crypto.createHash('sha256').update(String(token || '')).digest('hex');
     },
-    async createForClient(clientId, expiresInDays = 30, deviceInfo = {}) {
+    async createForClient(clientId, expiresInDays = Number(process.env.EXTENSION_TOKEN_DAYS || 365), deviceInfo = {}) {
       const token = this.generateToken();
       const tokenHash = this.hashToken(token);
       const extensionToken = await this.create({

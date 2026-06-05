@@ -91,20 +91,24 @@ async function apiRequest(endpoint, options = {}) {
   const response = await fetch(url, { ...options, headers });
   const result = await response.json();
 
-  if (response.status === 401 || response.status === 403) {
-    // Token revoked or expired — clear local state and notify any open dashboard tabs
+  if (response.status === 401) {
+    // Only 401 means the extension token itself is invalid. Do not clear the
+    // extension session for 403 business errors such as consumed intent, tool
+    // not assigned, missing permission, or assignment expiry.
     logger.warn('Extension token rejected by server, clearing session', { status: response.status });
     await removeStorage(['extensionToken', 'tools', 'toolVersions', 'sessionBundleVersions']);
     toolCredentialsCache.clear();
     chrome.action.setBadgeText({ text: '!' });
     chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
-    // Notify dashboard tabs so they can show reconnect UI
-    notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason: response.status === 401 ? 'token_expired' : 'token_revoked' });
-    throw new Error(result.error || 'Session expired');
+    notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'token_expired' });
+    throw new Error(result.error || 'Extension authorization expired');
   }
 
   if (!response.ok) {
-    throw new Error(result.error || 'Request failed');
+    const err = new Error(result.error || 'Request failed');
+    err.status = response.status;
+    err.payload = result;
+    throw err;
   }
 
   return result;

@@ -27,7 +27,7 @@ const COOKIE_OPTS = (maxAgeMs) => ({
   path: '/'
 });
 const ACCESS_MAX   = 15 * 60 * 1000;
-const REFRESH_MAX  = 7 * 24 * 60 * 60 * 1000;
+const REFRESH_MAX  = Number(process.env.DASHBOARD_SESSION_DAYS || 30) * 24 * 60 * 60 * 1000;
 
 // ─── POST /api/crm/auth/admin/login ─────────────────────────────────────────
 // FIX1: Tokens no longer in JSON body  FIX2: Status check before bcrypt
@@ -182,7 +182,7 @@ router.post('/logout', requireAuth, async (req, res) => {
     await ActivityLog.log(req.userRole, req.userId, 'LOGOUT', { ip });
 
     // FIX3: clearCookie must match set options
-    const clearOpts = { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/' };
+    const clearOpts = { httpOnly: true, sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', secure: process.env.NODE_ENV === 'production', path: '/' };
     res.clearCookie('accessToken', clearOpts);
     res.clearCookie('refreshToken', clearOpts);
 

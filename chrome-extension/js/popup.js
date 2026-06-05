@@ -3,7 +3,7 @@
  *
  * The popup shows:
  *  - Connection status (connected / disconnected)
- *  - Session info (email, tool count, last sync, token expiry)
+ *  - Session info (email, tool count, last sync, access policy)
  *  - Open Dashboard button
  *  - Sync Now button
  *  - Sign Out button
@@ -54,11 +54,7 @@ function showConnected(data) {
   userEmail.textContent = data.userEmail || '—';
   toolCount.textContent = data.tools ? `${data.tools.length} tools` : '—';
   lastSyncEl.textContent = data.lastSync ? relativeTime(data.lastSync) : 'Never';
-  if (data.tokenExpiresAt) {
-    const d = new Date(data.tokenExpiresAt);
-    const days = Math.max(0, Math.ceil((d - Date.now()) / 86400000));
-    tokenExpiresEl.textContent = days > 0 ? `${days} days` : 'Today';
-  }
+  tokenExpiresEl.textContent = 'Managed by admin';
 
   // Show sections
   connectedSection.classList.remove('hidden');
@@ -144,14 +140,14 @@ async function init() {
 
   const data = await Storage.get([
     'extensionToken', 'apiUrl', 'tools', 'lastSync',
-    'tokenExpiresAt', 'userEmail',
+    'userEmail',
   ]);
 
   if (data.extensionToken) {
     showConnected(data);
     chrome.runtime.sendMessage({ type: 'GENZ_GET_EXTENSION_STATUS' }, resp => {
       if (!resp?.connected) {
-        showDisconnected('Session expired. Please reconnect.');
+        showDisconnected('Open the client dashboard to auto-connect.');
       }
     });
   } else {

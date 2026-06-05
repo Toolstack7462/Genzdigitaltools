@@ -270,12 +270,30 @@ export function useExtension() {
         result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
       }
 
+      // If the extension token was refreshed/repaired during this click, retry
+      // once with a fresh open intent instead of showing “session expired”.
+      if (result?.error && /token|authorization|expired|401/i.test(String(result.error))) {
+        await connectExtension();
+        const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
+        const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
+        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
+      }
+
       return result;
     } catch (err) {
       const msg = err.message || 'Unknown error';
-      if (msg.includes('token') || msg.includes('401') || msg.includes('403')) {
-        setStatus(prev => ({ ...(prev || {}), connected: false }));
-        return { success: false, error: 'session_expired', message: 'Extension session expired. Refresh dashboard to auto-connect again.' };
+      if (/Tool access expired|not assigned|revoked/i.test(msg)) {
+        return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
+      }
+      if (/token|authorization|401/i.test(msg)) {
+        try {
+          await connectExtension();
+          const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
+          const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
+          return await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
+        } catch (retryErr) {
+          return { success: false, error: 'extension_reconnect_failed', message: retryErr.message || 'Extension could not reconnect automatically.' };
+        }
       }
       return { success: false, error: msg, message: msg };
     } finally {

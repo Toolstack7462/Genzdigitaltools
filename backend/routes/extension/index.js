@@ -16,6 +16,11 @@ const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, ch
 const bcrypt = require('bcryptjs');
 const { authLimiter } = require('../../middleware/rateLimiter');
 
+function getExtensionTokenDays() {
+  const days = Number(process.env.EXTENSION_TOKEN_DAYS || 365);
+  return Number.isFinite(days) && days > 0 ? days : 365;
+}
+
 // Middleware to verify extension token
 const verifyExtensionToken = async (req, res, next) => {
   try {
@@ -98,7 +103,7 @@ router.post('/auth', authLimiter, async (req, res) => {
     // device hash, bind the token to that device; dashboard activation is the
     // preferred pairing flow because it uses the already-bound website device.
     const deviceIdHash = req.headers['x-device-id-hash'] || null;
-    const tokenData = await ExtensionToken.createForClient(user._id, 30, {
+    const tokenData = await ExtensionToken.createForClient(user._id, getExtensionTokenDays(), {
       userAgent: req.headers['user-agent'],
       ip: req.ip,
       deviceIdHash
@@ -173,7 +178,7 @@ router.post('/auth/activate', authLimiter, async (req, res) => {
     }
 
     const tokenDeviceIdHash = extensionDeviceIdHash || dashboardDeviceIdHash || null;
-    const tokenData = await ExtensionToken.createForClient(user._id, 30, {
+    const tokenData = await ExtensionToken.createForClient(user._id, getExtensionTokenDays(), {
       userAgent: req.headers['user-agent'],
       ip: req.ip,
       deviceIdHash: tokenDeviceIdHash

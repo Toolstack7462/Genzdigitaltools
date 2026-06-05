@@ -142,13 +142,18 @@ router.post('/:toolId/open-intent', async (req, res) => {
     if (assignment.startDate && assignment.startDate > now) return res.status(403).json({ error: 'Tool access not started yet' });
     if (assignment.endDate && assignment.endDate < now) return res.status(403).json({ error: 'Tool access expired' });
 
+    // OpenIntent is created by the authenticated dashboard session and consumed
+    // by the extension. The dashboard and extension maintain different device
+    // identifiers, so do NOT bind this short-lived intent to the website device
+    // hash. Device binding is already validated above for the dashboard session,
+    // while the extension token validates the extension device separately.
     const issued = await OpenIntent.issue({
       clientId: req.userId,
       toolId,
-      deviceIdHash: deviceId ? DeviceBinding.hashDeviceId(deviceId) : null,
+      deviceIdHash: null,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      ttlMs: 60 * 1000,
+      ttlMs: 2 * 60 * 1000,
     });
 
     await ActivityLog.log('CLIENT', req.userId, 'TOOL_OPEN_INTENT', {
