@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "Gen Z Digital Store Access",
   "short_name": "GZDS",
-  "version": "3.6.0",
-  "description": "Auto-connect helper for Gen Z Digital Store. Opens assigned tools from the member dashboard.",
+  "version": "3.8.0",
+  "description": "Background helper for Gen Z Digital Store. Opens assigned tools with fresh authorized sessions from the member dashboard.",
   "permissions": [
     "storage",
     "alarms",

@@ -896,11 +896,17 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
       return res.status(400).json({ error: 'intentToken and toolId required' });
     }
 
+    // Dashboard-created open intents are intentionally NOT bound to the
+    // extension device id. The dashboard session already validates the client
+    // device when creating the intent; the extension token separately validates
+    // the extension device before this route is reached. Passing the extension
+    // device hash here can falsely reject valid intents when website and
+    // extension have different device ids.
     const intent = await OpenIntent.consume({
       clientId: req.clientId,
       toolId,
       token: intentToken,
-      deviceIdHash: req.extensionDeviceIdHash || null,
+      deviceIdHash: null,
     });
 
     if (!intent) {

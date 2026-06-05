@@ -5,6 +5,7 @@ import {
   Menu, X, ChevronRight, Shield, Settings, TrendingUp, ShieldAlert
 } from 'lucide-react';
 import GenZDigitalStoreLogo from './GenZDigitalStoreLogo';
+import api from '../services/api';
 
 const AdminLayoutEnhanced = ({ children }) => {
   const navigate  = useNavigate();
@@ -23,13 +24,9 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   const handleLogout = async () => {
     try {
-      // Call backend logout — this clears httpOnly cookies server-side.
-      // document.cookie cannot clear httpOnly cookies from the browser.
-      await fetch('/api/crm/auth/logout', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-      });
+      // Call backend logout through the configured API client.
+      // This clears httpOnly cookies server-side even when frontend/API are on different subdomains.
+      await api.post('/auth/logout', {});
     } catch {
       // Even if the network call fails, clear local state and redirect
     } finally {

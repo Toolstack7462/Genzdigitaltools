@@ -1,5 +1,5 @@
 /**
- * bridge.js — Gen Z Digital Store dashboard bridge v3.4
+ * bridge.js — Gen Z Digital Store dashboard bridge v3.7
  *
  * Goals:
  * - Detect installed extension without requiring a fixed extension ID.
@@ -33,6 +33,7 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
     'GENZ_GET_EXTENSION_STATUS',
     'GENZ_CONNECT_EXTENSION',
     'GENZ_OPEN_TOOL',
+    'GENZ_RESET_EXTENSION_SESSION',
     'GENZ_REQUEST_PERMISSION',
     'GENZ_SCAN_CONSENT',
     'GENZ_REVOKE_SCAN_CONSENT',
@@ -54,9 +55,9 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
 
   function safeVersion() {
     try {
-      if (chrome?.runtime?.getManifest) return chrome.runtime.getManifest().version || '3.4.0';
+      if (chrome?.runtime?.getManifest) return chrome.runtime.getManifest().version || '3.7.0';
     } catch (_) {}
-    return '3.4.0';
+    return '3.7.0';
   }
 
   function contextAlive() {

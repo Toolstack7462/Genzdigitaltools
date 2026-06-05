@@ -1,5 +1,5 @@
 /**
- * useExtension.js — robust dashboard ↔ extension communication v3.4
+ * useExtension.js — robust dashboard ↔ extension communication v3.7
  *
  * The extension is detected through bridge.js heartbeats, not by a fixed Chrome
  * extension ID. If the user loads the unpacked extension while the dashboard is
@@ -102,7 +102,7 @@ export function useExtension() {
     }
   }, []);
 
-  const connectExtension = useCallback(async (credentials = {}) => {
+  const connectExtension = useCallback(async (credentials = {}, options = {}) => {
     if (!bridgeReady && !getBridgeMarker()) throw new Error('Extension not detected');
 
     // Prevent duplicate activation-token consumption during multiple heartbeats.
@@ -110,13 +110,15 @@ export function useExtension() {
 
     connectPromiseRef.current = (async () => {
       const apiUrl = getBackendOrigin();
-      let payload = { apiUrl };
+      const forceReauth = !!(options?.forceReauth || credentials?.forceReauth);
+      let payload = { apiUrl, forceReauth };
 
       if (credentials?.email && credentials?.password) {
         payload = { ...payload, email: credentials.email, password: credentials.password };
       } else {
         const activation = await api.post('/client/extension/activation-token', {
           deviceId: getWebsiteDeviceId(),
+          forceReauth,
         });
         payload = { ...payload, activationToken: activation.data.activationToken };
       }
@@ -242,14 +244,16 @@ export function useExtension() {
       return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
     }
 
-    let current = await refreshStatus();
-    if (!current?.connected) {
-      try {
-        await connectExtension();
-        current = await refreshStatus();
-      } catch (err) {
-        return { success: false, error: 'extension_not_connected', message: err.message || 'Extension could not auto-connect.' };
-      }
+    // Always start Access with a fresh extension authorization context.
+    // This mirrors the reliable dashboard-driven pattern: clear stale extension
+    // token/cache first, activate from the current client dashboard session,
+    // then create a fresh open intent and apply the latest admin-managed bundle.
+    try {
+      await sendToBridge('GENZ_RESET_EXTENSION_SESSION', { reason: 'access_click_force_fresh' }, 5000).catch(() => null);
+      await connectExtension({}, { forceReauth: true });
+      await refreshStatus();
+    } catch (err) {
+      return { success: false, error: 'extension_not_connected', message: err.message || 'Extension could not auto-connect.' };
     }
 
     if (openingRef.current.get(toolId)) return { success: false, error: 'already_opening' };
@@ -260,23 +264,23 @@ export function useExtension() {
       const intentToken = intentResp.data.intentToken || intentResp.data.openIntentToken;
       if (!intentToken) return { success: false, error: 'missing_intent_token' };
 
-      let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: intentToken }, 20000);
+      let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: intentToken, forceFreshSession: true }, 20000);
 
       if (result?.error === 'permission_required' && result.originPattern) {
         const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
         if (!permission?.success && !permission?.granted) return result;
         const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
         const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
+        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
       }
 
       // If the extension token was refreshed/repaired during this click, retry
       // once with a fresh open intent instead of showing “session expired”.
-      if (result?.error && /token|authorization|expired|401/i.test(String(result.error))) {
-        await connectExtension();
+      if (result?.error && /token|authorization|expired|401|invalid|reauth/i.test(String(result.error))) {
+        await connectExtension({}, { forceReauth: true });
         const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
         const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
+        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
       }
 
       return result;
@@ -285,12 +289,12 @@ export function useExtension() {
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
       }
-      if (/token|authorization|401/i.test(msg)) {
+      if (/token|authorization|expired|401|invalid|reauth/i.test(msg)) {
         try {
-          await connectExtension();
+          await connectExtension({}, { forceReauth: true });
           const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
           const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-          return await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken }, 20000);
+          return await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
         } catch (retryErr) {
           return { success: false, error: 'extension_reconnect_failed', message: retryErr.message || 'Extension could not reconnect automatically.' };
         }

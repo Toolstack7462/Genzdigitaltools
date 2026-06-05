@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
 import { 
   Package, 
@@ -14,8 +14,8 @@ import {
   AlertCircle,
   ArrowRight,
   Calendar,
-  Sparkles
-, ShieldAlert
+  Sparkles,
+  ShieldAlert
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';

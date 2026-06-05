@@ -44,6 +44,27 @@ async function removeStorage(keys) {
   return new Promise(resolve => chrome.storage.local.remove(keys, resolve));
 }
 
+const EXTENSION_SESSION_KEYS = [
+  'extensionToken',
+  'tokenExpiresAt',
+  'tools',
+  'toolVersions',
+  'sessionBundleVersions',
+  'lastSync',
+  'userEmail',
+  'userName'
+];
+
+async function clearExtensionAuthSession(reason = 'force_reauth') {
+  await removeStorage(EXTENSION_SESSION_KEYS);
+  toolCredentialsCache.clear();
+  domainToolMap.clear();
+  try {
+    chrome.action.setBadgeText({ text: '' });
+  } catch (_) {}
+  logger.info('Cleared extension auth/session cache', { reason });
+}
+
 // ============================================================================
 // API UTILITIES
 // ============================================================================
@@ -89,15 +110,19 @@ async function apiRequest(endpoint, options = {}) {
   logger.debug('API Request', { endpoint, method: options.method || 'GET' });
   
   const response = await fetch(url, { ...options, headers });
-  const result = await response.json();
+  let result = {};
+  try {
+    result = await response.json();
+  } catch (_) {
+    result = { error: response.statusText || 'Non-JSON API response' };
+  }
 
   if (response.status === 401) {
     // Only 401 means the extension token itself is invalid. Do not clear the
     // extension session for 403 business errors such as consumed intent, tool
     // not assigned, missing permission, or assignment expiry.
     logger.warn('Extension token rejected by server, clearing session', { status: response.status });
-    await removeStorage(['extensionToken', 'tools', 'toolVersions', 'sessionBundleVersions']);
-    toolCredentialsCache.clear();
+    await clearExtensionAuthSession('token_rejected_401');
     chrome.action.setBadgeText({ text: '!' });
     chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
     notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'token_expired' });
@@ -193,7 +218,7 @@ async function initialize() {
     return;
   }
   isInitialized = true;
-  logger.info('Initializing Gen Z Digital Store Extension v3.4');
+  logger.info('Initializing Gen Z Digital Store Extension v3.7');
   
   // Initialize orchestrator
   orchestrator = getOrchestrator();
@@ -697,6 +722,25 @@ async function injectStorage(tabId, storageType, data) {
   }).then(results => results[0]?.result || { success: false });
 }
 
+async function clearPageStorageForTab(tabId) {
+  try {
+    const result = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const counts = { localStorage: 0, sessionStorage: 0 };
+        try { counts.localStorage = localStorage.length; localStorage.clear(); } catch (_) {}
+        try { counts.sessionStorage = sessionStorage.length; sessionStorage.clear(); } catch (_) {}
+        return { success: true, cleared: counts };
+      }
+    });
+    logger.debug('Cleared page storage before session apply', { tabId, result: result?.[0]?.result });
+    return result?.[0]?.result || { success: true };
+  } catch (err) {
+    logger.warn('clearPageStorageForTab failed', { tabId, error: err.message });
+    return { success: false, error: err.message };
+  }
+}
+
 // ============================================================================
 // TOKEN CONFIGURATION
 // ============================================================================
@@ -857,7 +901,7 @@ function waitForTabLoad(tabId, timeout = 30000) {
  *  8. Log success to backend.
  */
 async function handleOpenTool(payload) {
-  const { toolId, openIntentToken } = payload || {};
+  const { toolId, openIntentToken, forceFreshSession = true } = payload || {};
 
   if (!toolId || typeof toolId !== 'string') {
     return { success: false, error: 'toolId required' };
@@ -976,7 +1020,10 @@ async function handleOpenTool(payload) {
     logger.info('Strategy: sessionBundle_only', { toolId });
     try {
       await waitForTabLoad(targetTabId, 15000);
-      if (tool.extensionSettings?.clearExistingCookies) {
+      if (forceFreshSession) {
+        await clearCookiesForDomain(targetUrl);
+        await clearPageStorageForTab(targetTabId);
+      } else if (tool.extensionSettings?.clearExistingCookies) {
         await clearCookiesForDomain(targetUrl);
       }
       if (bundle.cookies) {
@@ -1002,6 +1049,10 @@ async function handleOpenTool(payload) {
   // Full strategy execution via orchestrator
   try {
     await waitForTabLoad(targetTabId, 20000);
+    if (forceFreshSession && (hasBundle || ['cookies', 'token', 'headers', 'localStorage', 'sessionStorage'].includes(credType))) {
+      await clearCookiesForDomain(targetUrl);
+      await clearPageStorageForTab(targetTabId);
+    }
     const result = await orchestrator.executeLogin(tool, creds, {
       tabId: targetTabId,
       sessionBundle: bundle,
@@ -1365,12 +1416,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_EXTENSION_STATUS':
-      getStorage(['extensionToken', 'lastSync', 'tools']).then(d => {
+      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail']).then(async d => {
+        const expired = d.tokenExpiresAt && Date.parse(d.tokenExpiresAt) <= Date.now();
+        if (expired) {
+          await clearExtensionAuthSession('stored_token_expired');
+          sendResponse({
+            success: true,
+            connected: false,
+            reason: 'stored_token_expired',
+            toolCount: 0,
+            lastSync: null,
+            version: chrome.runtime.getManifest().version,
+          });
+          return;
+        }
         sendResponse({
           success: true,
           connected: !!d.extensionToken,
+          reason: d.extensionToken ? null : 'not_connected',
           toolCount: (d.tools || []).length,
           lastSync: d.lastSync || null,
+          userEmail: d.userEmail || null,
           version: chrome.runtime.getManifest().version,
         });
       });
@@ -1378,12 +1444,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'GENZ_CONNECT_EXTENSION':
       (async () => {
-        const { apiUrl, email, password, activationToken } = message.payload || {};
+        const { apiUrl, email, password, activationToken, forceReauth } = message.payload || {};
         if (!apiUrl || (!activationToken && (!email || !password))) {
           sendResponse({ success: false, error: 'apiUrl and activationToken required' });
           return;
         }
         try {
+          if (forceReauth) {
+            await clearExtensionAuthSession('dashboard_forced_reauth');
+          }
           const base = apiUrl.replace(/\/$/, '');
           const url = activationToken
             ? `${base}/api/crm/extension/auth/activate`
@@ -1421,6 +1490,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             version: chrome.runtime.getManifest().version
           });
           sendResponse({ success: true, user: d.user, version: chrome.runtime.getManifest().version, connected: true });
+        } catch (err) {
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
+      return true;
+
+
+    case 'GENZ_RESET_EXTENSION_SESSION':
+      (async () => {
+        try {
+          const reason = message.payload?.reason || 'dashboard_reset';
+          await clearExtensionAuthSession(reason);
+          notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason });
+          sendResponse({ success: true, reset: true, reason });
         } catch (err) {
           sendResponse({ success: false, error: err.message });
         }
