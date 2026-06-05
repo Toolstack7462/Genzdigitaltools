@@ -17,6 +17,7 @@ import Login from './pages/Login';
 import Join from './pages/Join';
 import NotFound from './pages/NotFound';
 import ExtensionSetup from './pages/ExtensionSetup';
+import ChromeExtensionPage from './pages/ChromeExtensionPage';
 
 // Admin Pages
 import AdminRoute from './components/AdminRoute';

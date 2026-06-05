@@ -34,7 +34,6 @@ const tokenExpiresEl   = $('token-expires');
 const openDashBtn      = $('open-dashboard-btn');
 const syncBtn          = $('sync-btn');
 const logoutBtn        = $('logout-btn');
-const reconnectBtn     = $('reconnect-btn');
 // Security scanner is active by default. Popup shows status only.
 
 // ── Init ────────────────────────────────────────────────────────────────────
@@ -108,16 +107,11 @@ logoutBtn.addEventListener('click', async () => {
     await api.logout();
   } catch {}
   await Storage.clear();
-  showDisconnected('Signed out. Reconnect via the dashboard.');
+  showDisconnected('Signed out. Open the client dashboard to auto-connect again.');
   showToast('Signed out', 'info');
   logoutBtn.disabled = false;
 });
 
-reconnectBtn.addEventListener('click', () => {
-  const SETTINGS_URL = 'https://app.genzdigitalstore.com/client/dashboard';
-  chrome.tabs.create({ url: SETTINGS_URL });
-  window.close();
-});
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 function showToast(msg, type = 'info') {
@@ -161,7 +155,7 @@ async function init() {
       }
     });
   } else {
-    showDisconnected('Not connected to Gen Z Digital Store.');
+    showDisconnected('Open the client dashboard to auto-connect.');
   }
 
   // Keep security scanner active by default

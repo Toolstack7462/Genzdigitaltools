@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Lock, Mail, Eye, EyeOff, Shield } from 'lucide-react';
 import { useToast } from '../../components/Toast';
 import GenZDigitalStoreLogo from '../../components/GenZDigitalStoreLogo';
+import api from '../../services/api';
 
 const AdminLogin = () => {
   const navigate = useNavigate();
@@ -14,20 +15,23 @@ const AdminLogin = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+
     try {
-      const response = await fetch('/api/crm/auth/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify(formData),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Login failed');
+      const response = await api.post('/auth/admin/login', formData);
+      const data = response.data;
+
       localStorage.setItem('adminUser', JSON.stringify(data.user));
       showSuccess('Welcome to Admin Panel!');
-      navigate('/admin/dashboard');
+
+      window.location.href = '/admin/dashboard';
     } catch (error) {
-      showError(error.message || 'Login failed');
+      console.error('Admin login error:', error);
+      showError(
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        error.message ||
+        'Login failed. Please check your email and password.'
+      );
     } finally {
       setLoading(false);
     }

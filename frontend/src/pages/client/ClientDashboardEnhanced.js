@@ -13,37 +13,8 @@ import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 
 
-/* ─── Extension detection (non-blocking) ─────────────────────────────────── */
-const useExtensionStatus = () => {
-  const [extStatus, setExtStatus] = useState(null); // null = checking
-
-  useEffect(() => {
-    let cancelled = false;
-    const EXTENSION_ID = process.env.REACT_APP_EXTENSION_ID || '';
-    if (!EXTENSION_ID || typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) {
-      if (!cancelled) setExtStatus({ installed: false });
-      return;
-    }
-    try {
-      chrome.runtime.sendMessage(EXTENSION_ID, { type: 'GENZ_EXT_PING' }, (resp) => {
-        if (cancelled) return;
-        if (chrome.runtime.lastError || !resp?.installed) {
-          setExtStatus({ installed: false });
-        } else {
-          setExtStatus({ installed: true, version: resp.version });
-        }
-      });
-    } catch {
-      if (!cancelled) setExtStatus({ installed: false });
-    }
-    // Timeout fallback
-    const t = setTimeout(() => { if (!cancelled) setExtStatus({ installed: false }); }, 2000);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, []);
-
-  return extStatus;
-};
-
+/* ─── Extension detection is handled by useExtension() bridge heartbeat.
+   No Chrome extension ID is needed in the React build. */
 /* ─── Tool Card Component ────────────────────────────────────────── */
 const ToolCard = ({ tool, onOpen, openState }) => {
   const theme = getCategoryTheme(tool.category);
@@ -157,8 +128,8 @@ const ClientDashboardEnhanced = () => {
   const [activeFilter, setActiveFilter] = useState('All');
 
   const user = authService.getCurrentUser();
-  const extStatus = useExtensionStatus();
-  const { status: extConnStatus, bridgeReady, openTool, grantScanConsent, getScanStatus } = useExtension();
+  const extStatus = extConnStatus; // bridge-based status, no extension ID required
+  const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -224,15 +195,18 @@ const ClientDashboardEnhanced = () => {
 
     // Extension is the required background access helper. Do not open targetUrl directly
     // from the website because credentials/session data must stay inside the extension.
-    if (!bridgeReady || !extConnStatus?.connected) {
+    if (!bridgeReady) {
       setToolOpenStates(prev => ({
         ...prev,
-        [toolId]: { error: 'Install and connect the Gen Z Digital Store extension, then click Access again.' }
+        [toolId]: { error: 'Extension not detected yet. Reload the extension, refresh this dashboard, then click Access again.' }
       }));
       return;
     }
 
     setToolOpenStates(prev => ({ ...prev, [toolId]: { loading: true } }));
+    if (!extConnStatus?.connected) {
+      try { await connectExtension(); } catch (_) {}
+    }
     const result = await openTool(toolId);
     if (result.success) {
       setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
@@ -353,25 +327,41 @@ const ClientDashboardEnhanced = () => {
               <div className="flex-1">
                 <h3 className="font-bold text-white mb-1">
                 {bridgeReady
-                  ? `Extension Installed${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
-                  : extStatus?.installed
-                    ? `Extension Installed (v${extStatus.version})`
+                  ? extConnStatus?.connected
+                    ? `Extension Connected${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
+                    : 'Extension Installed — Auto Connecting'
+                  : extStatus === null
+                    ? 'Checking Extension…'
                     : 'Install the Gen Z Digital Store Chrome Extension'
                 }
               </h3>
                 <p className="text-sm text-genz-muted mb-3">
-                  Get seamless one-click access to all your tools with automatic login — no more copy-pasting credentials.
+                  Tools open only from this dashboard. The extension connects automatically using your logged-in client session and then applies admin-provided session cookies securely in the browser tab.
                 </p>
                 <div className="flex flex-wrap gap-3">
-                  <Link to="/extension"
-                     className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
-                     style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
-                    <Download size={15} />
-                    Install Extension
-                  </Link>
-                  <button className="text-sm text-genz-teal hover:underline">
-                    Learn More
-                  </button>
+                  {!bridgeReady && extStatus !== null && (
+                    <Link to="/chrome-extension"
+                       className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
+                       style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                      <Download size={15} />
+                      Install Extension
+                    </Link>
+                  )}
+                  {!bridgeReady && extStatus === null && (
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-teal/30 text-genz-teal">
+                      <Loader2 size={15} className="animate-spin" /> Detecting extension…
+                    </span>
+                  )}
+                  {bridgeReady && !extConnStatus?.connected && (
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-teal/30 text-genz-teal">
+                      <Loader2 size={15} className="animate-spin" /> Auto connecting…
+                    </span>
+                  )}
+                  {bridgeReady && extConnStatus?.connected && (
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-500/30 text-green-300">
+                      <CheckCircle2 size={15} /> Ready
+                    </span>
+                  )}
                 </div>
               </div>
             </div>
@@ -491,7 +481,7 @@ const ClientDashboardEnhanced = () => {
         {/* ── Quick Help ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[
-            { icon: Chrome,  title: 'Extension Setup',  desc: 'Install our Chrome extension for one-click access', to: '#',              cta: 'Install'  },
+            { icon: Chrome,  title: 'Extension Setup',  desc: 'Install our Chrome extension for one-click access', to: '/chrome-extension', cta: 'Install'  },
             { icon: Shield,  title: 'Account Security', desc: 'Manage your device binding and security settings',  to: '/client/profile', cta: 'Manage'   },
             { icon: Zap,     title: 'Need More Tools?', desc: 'Upgrade your membership to access all 90+ tools',   to: '/pricing',        cta: 'Upgrade'  },
           ].map(({ icon: Icon, title, desc, to, cta }) => (

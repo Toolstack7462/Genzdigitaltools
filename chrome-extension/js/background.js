@@ -1298,14 +1298,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       
     // ── Bridge messages (forwarded from bridge.js content script) ──────────
     case 'GENZ_EXT_PING':
-      sendResponse({
-        success: true,
-        installed: true,
-        connected: true,
-        version: chrome.runtime.getManifest().version,
-        name: chrome.runtime.getManifest().name,
+      getStorage(['extensionToken', 'tools', 'lastSync']).then(d => {
+        sendResponse({
+          success: true,
+          installed: true,
+          connected: !!d.extensionToken,
+          toolCount: (d.tools || []).length,
+          lastSync: d.lastSync || null,
+          version: chrome.runtime.getManifest().version,
+          name: chrome.runtime.getManifest().name,
+        });
       });
-      break;
+      return true;
 
     case 'GENZ_GET_EXTENSION_STATUS':
       getStorage(['extensionToken', 'lastSync', 'tools']).then(d => {
@@ -2082,12 +2086,17 @@ chrome.runtime.onMessageExternal?.addListener((message, sender, sendResponse) =>
   }
 
   if (message.type === 'GENZ_EXT_PING') {
-    sendResponse({
-      installed: true,
-      version: chrome.runtime.getManifest().version,
-      name: chrome.runtime.getManifest().name
+    getStorage(['extensionToken', 'tools', 'lastSync']).then(d => {
+      sendResponse({
+        installed: true,
+        connected: !!d.extensionToken,
+        toolCount: (d.tools || []).length,
+        lastSync: d.lastSync || null,
+        version: chrome.runtime.getManifest().version,
+        name: chrome.runtime.getManifest().name
+      });
     });
-    return false;
+    return true;
   }
 
   sendResponse({ error: 'Unknown message type' });

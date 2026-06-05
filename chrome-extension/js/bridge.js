@@ -123,7 +123,32 @@ function sendToBackground(type, payload) {
 }
 
 // ── Signal to the page that the bridge is ready ───────────────────────────────
-window.postMessage({ type: 'GENZ_BRIDGE_READY', version: '3.0.0' }, window.location.origin);
+// Older builds posted this once only. If React mounted after document_idle,
+// the dashboard could miss the event and keep showing "install/connect".
+// Send a short heartbeat so the page can detect the installed extension reliably.
+function postBridgeReady() {
+  const payload = {
+    type: 'GENZ_BRIDGE_READY',
+    version: chrome.runtime.getManifest?.().version || '3.3.0',
+    installed: true,
+    ts: Date.now(),
+  };
+
+  try {
+    document.documentElement.setAttribute('data-genz-extension-ready', 'true');
+    document.documentElement.setAttribute('data-genz-extension-version', payload.version);
+    document.dispatchEvent(new CustomEvent('GENZ_BRIDGE_READY', { detail: payload }));
+  } catch (_) {}
+
+  window.postMessage(payload, window.location.origin);
+}
+postBridgeReady();
+let __genzReadyTicks = 0;
+const __genzReadyTimer = setInterval(() => {
+  __genzReadyTicks += 1;
+  postBridgeReady();
+  if (__genzReadyTicks >= 45) clearInterval(__genzReadyTimer);
+}, 500);
 
 // ── Listen for messages pushed FROM background (e.g. disconnection events) ──
 // Background calls notifyDashboardTabs() which uses chrome.tabs.sendMessage → here.

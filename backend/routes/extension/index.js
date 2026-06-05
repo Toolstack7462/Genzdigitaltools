@@ -155,24 +155,34 @@ router.post('/auth/activate', authLimiter, async (req, res) => {
     if (!user || user.role !== 'CLIENT') return res.status(403).json({ error: 'Invalid activation client' });
     if (user.status === 'disabled') return res.status(403).json({ error: 'Account is disabled' });
 
-    const deviceIdHash = activation.deviceIdHash || req.headers['x-device-id-hash'] || null;
-    if (user.devicePolicy?.enabled && deviceIdHash) {
-      const binding = await DeviceBinding.findOne({ clientId: user._id, deviceIdHash });
+    const dashboardDeviceIdHash = activation.deviceIdHash || null;
+    const extensionDeviceIdHash = req.headers['x-device-id-hash'] || null;
+
+    // If device binding is enabled, the activation token must have been created
+    // from the already-bound client dashboard device. The extension has its own
+    // chrome.storage device id, so we validate the dashboard device first and
+    // then attach the extension device hash to that same binding for future
+    // extension-token verification.
+    if (user.devicePolicy?.enabled) {
+      if (!dashboardDeviceIdHash) return res.status(403).json({ error: 'Device binding required', code: 'DEVICE_MISMATCH' });
+      const binding = await DeviceBinding.findOne({ clientId: user._id, deviceIdHash: dashboardDeviceIdHash });
       if (!binding) return res.status(403).json({ error: 'Device binding mismatch', code: 'DEVICE_MISMATCH' });
+      if (extensionDeviceIdHash) binding.extensionDeviceIdHash = extensionDeviceIdHash;
       binding.lastSeenAt = new Date();
       await binding.save();
     }
 
+    const tokenDeviceIdHash = extensionDeviceIdHash || dashboardDeviceIdHash || null;
     const tokenData = await ExtensionToken.createForClient(user._id, 30, {
       userAgent: req.headers['user-agent'],
       ip: req.ip,
-      deviceIdHash
+      deviceIdHash: tokenDeviceIdHash
     });
 
     await ActivityLog.log('CLIENT', user._id, 'EXTENSION_ACTIVATED', {
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      deviceBound: !!deviceIdHash
+      deviceBound: !!tokenDeviceIdHash
     });
 
     return res.json({

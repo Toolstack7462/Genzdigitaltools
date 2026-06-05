@@ -38,7 +38,10 @@ const ExtensionToken = createModel('ExtensionToken', {
           return null;
         }
         const DeviceBinding = require('./DeviceBinding');
-        const binding = await DeviceBinding.findOne({ clientId: extensionToken.clientId._id, deviceIdHash: extensionToken.deviceIdHash });
+        let binding = await DeviceBinding.findOne({ clientId: extensionToken.clientId._id, deviceIdHash: extensionToken.deviceIdHash });
+        if (!binding) {
+          binding = await DeviceBinding.findOne({ clientId: extensionToken.clientId._id, extensionDeviceIdHash: extensionToken.deviceIdHash });
+        }
         if (!binding) {
           extensionToken.isRevoked = true;
           await extensionToken.save();

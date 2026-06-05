@@ -17,7 +17,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 
-const EXTENSION_ID = process.env.REACT_APP_EXTENSION_ID || '';
+// Extension detection is bridge-based, so REACT_APP_EXTENSION_ID is optional.
 const BRIDGE_TIMEOUT_MS = 15000; // 15 seconds max wait for extension response
 
 function getBackendOrigin() {
@@ -29,7 +29,14 @@ function getBackendOrigin() {
 }
 
 function getWebsiteDeviceId() {
-  return localStorage.getItem('device_id') || null;
+  let id = localStorage.getItem('device_id');
+  if (!id) {
+    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `web_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem('device_id', id);
+  }
+  return id;
 }
 
 // ── Detect extension via postMessage bridge ──────────────────────────────────
@@ -69,31 +76,88 @@ export function useExtension() {
   const [bridgeReady, setBridgeReady] = useState(false);
   const openingRef = useRef(new Map()); // toolId → true
 
-  // Listen for bridge ready signal and background push events
+  // Listen for bridge-ready signals and background push events. Detection is
+  // independent of Chrome extension ID, so a new Load unpacked ID will not break
+  // the dashboard. The bridge also writes DOM markers that we poll as fallback.
   useEffect(() => {
-    const handler = (event) => {
+    let cancelled = false;
+    let pollingTimer = null;
+
+    const markBridgeReady = () => {
+      if (cancelled) return;
+      setBridgeReady(true);
+    };
+
+    const refreshStatus = async () => {
+      try {
+        const resp = await sendToBridge('GENZ_GET_EXTENSION_STATUS');
+        if (cancelled) return;
+        setBridgeReady(true);
+        setStatus({
+          installed: true,
+          connected: !!resp.connected,
+          version: resp.version,
+          toolCount: resp.toolCount || 0,
+          lastSync: resp.lastSync || null,
+          reason: resp.connected ? null : (resp.reason || 'not_connected')
+        });
+      } catch (_) {
+        if (!cancelled) {
+          const marker = document.documentElement.getAttribute('data-genz-extension-ready');
+          const version = document.documentElement.getAttribute('data-genz-extension-version');
+          if (marker === 'true') {
+            setBridgeReady(true);
+            setStatus(prev => ({ ...(prev || {}), installed: true, connected: false, version, reason: 'bridge_ready_waiting_for_status' }));
+          } else {
+            setStatus({ installed: false, connected: false, reason: 'extension_not_detected' });
+          }
+        }
+      }
+    };
+
+    const messageHandler = (event) => {
       if (event.source !== window) return;
       const { type } = event.data || {};
 
       if (type === 'GENZ_BRIDGE_READY') {
-        setBridgeReady(true);
-        // Ask for current status
-        sendToBridge('GENZ_GET_EXTENSION_STATUS')
-          .then(resp => setStatus({ connected: resp.connected, version: resp.version, toolCount: resp.toolCount, lastSync: resp.lastSync }))
-          .catch(() => setStatus({ connected: false }));
+        markBridgeReady();
+        refreshStatus();
       }
 
       if (type === 'GENZ_EXTENSION_DISCONNECTED') {
-        setStatus(prev => ({ ...prev, connected: false, reason: event.data.reason }));
+        setStatus(prev => ({ ...(prev || {}), installed: true, connected: false, reason: event.data.reason }));
       }
 
       if (type === 'GENZ_SYNC_COMPLETE') {
-        setStatus(prev => ({ ...prev, toolCount: event.data.toolCount, lastSync: event.data.lastSync }));
+        setStatus(prev => ({ ...(prev || {}), toolCount: event.data.toolCount, lastSync: event.data.lastSync }));
       }
     };
 
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
+    const eventHandler = () => {
+      markBridgeReady();
+      refreshStatus();
+    };
+
+    window.addEventListener('message', messageHandler);
+    document.addEventListener('GENZ_BRIDGE_READY', eventHandler);
+
+    // Immediate + repeated probes catch already-injected bridge.js.
+    refreshStatus();
+    let attempts = 0;
+    pollingTimer = setInterval(() => {
+      attempts += 1;
+      const marker = document.documentElement.getAttribute('data-genz-extension-ready');
+      if (marker === 'true') markBridgeReady();
+      refreshStatus();
+      if (attempts >= 20 || cancelled) clearInterval(pollingTimer);
+    }, 500);
+
+    return () => {
+      cancelled = true;
+      if (pollingTimer) clearInterval(pollingTimer);
+      window.removeEventListener('message', messageHandler);
+      document.removeEventListener('GENZ_BRIDGE_READY', eventHandler);
+    };
   }, []);
 
   /**
@@ -115,8 +179,9 @@ export function useExtension() {
       payload = { ...payload, activationToken: activation.data.activationToken };
     }
 
+    setStatus(prev => ({ ...prev, connecting: true, reason: null }));
     const resp = await sendToBridge('GENZ_CONNECT_EXTENSION', payload);
-    setStatus(prev => ({ ...prev, connected: true, version: resp.version || prev?.version }));
+    setStatus(prev => ({ ...prev, connected: true, connecting: false, version: resp.version || prev?.version }));
     return resp;
   }, [bridgeReady]);
 
@@ -156,10 +221,18 @@ export function useExtension() {
    */
   const openTool = useCallback(async (toolId) => {
     if (!bridgeReady) {
-      return { success: false, error: 'extension_not_detected', message: 'Install the Gen Z Digital Store Chrome extension to use one-click access.' };
+      return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension, refresh this dashboard, then click Access again.' };
     }
     if (!status?.connected) {
-      return { success: false, error: 'extension_not_connected', message: 'Connect the Gen Z Digital Store extension from this dashboard first.' };
+      try {
+        await connectExtension();
+      } catch (err) {
+        return {
+          success: false,
+          error: 'extension_not_connected',
+          message: err.message || 'Extension is installed but could not auto-connect. Refresh dashboard or reload the extension.'
+        };
+      }
     }
 
     // Duplicate-open guard on the frontend side too
@@ -206,7 +279,7 @@ export function useExtension() {
     } finally {
       openingRef.current.delete(toolId);
     }
-  }, [bridgeReady, status, sendToBridge]);
+  }, [bridgeReady, status, connectExtension]);
 
   /**
    * Grant scanner consent — triggers one scan immediately.

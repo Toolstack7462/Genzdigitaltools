@@ -22,7 +22,7 @@ const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
 const COOKIE_OPTS = (maxAgeMs) => ({
   httpOnly: true,
   maxAge: maxAgeMs,
-  sameSite: 'lax',
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
   secure: process.env.NODE_ENV === 'production',
   path: '/'
 });
