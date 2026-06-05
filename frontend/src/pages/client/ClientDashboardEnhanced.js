@@ -128,8 +128,8 @@ const ClientDashboardEnhanced = () => {
   const [activeFilter, setActiveFilter] = useState('All');
 
   const user = authService.getCurrentUser();
-  const extStatus = extConnStatus; // bridge-based status, no extension ID required
   const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
+  const extStatus = extConnStatus; // bridge-based status, no extension ID required
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 

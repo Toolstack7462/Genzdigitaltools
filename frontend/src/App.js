@@ -62,6 +62,7 @@ function App() {
             <Route path="/login" element={<><Navbar /><Login /><Footer /><WhatsAppButton /></>} />
             <Route path="/join" element={<><Navbar /><Join /><Footer /><WhatsAppButton /></>} />
             <Route path="/extension" element={<><Navbar /><ExtensionSetup /><Footer /><WhatsAppButton /></>} />
+            <Route path="/chrome-extension" element={<><Navbar /><ChromeExtensionPage /><Footer /><WhatsAppButton /></>} />
 
             {/* Admin Routes */}
             <Route path="/admin/login" element={<AdminLogin />} />
