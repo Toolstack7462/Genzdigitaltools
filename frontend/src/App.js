@@ -70,7 +70,7 @@ function App() {
   return (
     <ToastProvider>
       <div className="App min-h-screen" style={{ background: '#000820' }}>
-        <BrowserRouter basename="/app">
+        <BrowserRouter>
           <Routes>
 
             {/* ── Public Routes ───────────────────────────────── */}
