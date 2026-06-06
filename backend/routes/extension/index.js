@@ -864,7 +864,7 @@ router.post('/open-intent', verifyExtensionToken, async (req, res) => {
       deviceIdHash: req.extensionDeviceIdHash || null,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      ttlMs: 60 * 1000,
+      ttlMs: 2 * 60 * 1000,
     });
 
     await ActivityLog.log('CLIENT', req.clientId, 'TOOL_OPEN_INTENT', {

@@ -60,7 +60,7 @@ const AdminDashboardEnhanced = () => {
       const clients = clientsRes.data.clients || [];
       
       // Calculate total assignments
-      const totalAssignments = clients.reduce((sum, c) => sum + (c.assignmentCount || 0), 0);
+      const totalAssignments = clients.reduce((sum, c) => sum + (c?.assignmentCount || 0), 0);
       
       setStats({
         totalTools: toolStats.totalTools || 0,
