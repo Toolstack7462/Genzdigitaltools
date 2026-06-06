@@ -4,10 +4,11 @@ import api from '../services/api';
 
 /**
  * AdminRoute — server-verified route guard for admin panel.
- * Calls GET /api/crm/auth/me and verifies role is ADMIN or SUPER_ADMIN.
- * localStorage is used only as a display cache — never as the security boundary.
+ * Calls GET /api/crm/auth/admin/me which reads only the adminAccessToken cookie.
+ * A client session in the same browser cannot interfere because it uses a
+ * different cookie (clientAccessToken) and a different endpoint.
  */
-const ADMIN_ROLES = new Set(['ADMIN', 'SUPER_ADMIN']);
+const ADMIN_ROLES = new Set(['ADMIN', 'SUPER_ADMIN', 'SUPPORT']);
 
 const AdminRoute = ({ children }) => {
   const [authState, setAuthState] = useState('checking');
@@ -16,24 +17,22 @@ const AdminRoute = ({ children }) => {
     let cancelled = false;
     const check = async () => {
       try {
-        const response = await api.get('/auth/me');
+        const response = await api.get('/auth/admin/me');
         if (cancelled) return;
         if (
           response.data?.success &&
           response.data?.user &&
           ADMIN_ROLES.has(response.data.user.role)
         ) {
-          // Keep localStorage cache in sync for display purposes
-          localStorage.setItem('adminUser', JSON.stringify(response.data.user));
+          localStorage.setItem('genz_admin_user', JSON.stringify(response.data.user));
           setAuthState('authorized');
         } else {
-          // Authenticated but not admin — clear stale cache
-          localStorage.removeItem('adminUser');
+          localStorage.removeItem('genz_admin_user');
           setAuthState('forbidden');
         }
       } catch {
         if (!cancelled) {
-          localStorage.removeItem('adminUser');
+          localStorage.removeItem('genz_admin_user');
           setAuthState('unauthenticated');
         }
       }

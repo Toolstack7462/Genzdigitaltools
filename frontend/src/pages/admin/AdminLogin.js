@@ -20,7 +20,7 @@ const AdminLogin = () => {
       const response = await api.post('/auth/admin/login', formData);
       const data = response.data;
 
-      localStorage.setItem('adminUser', JSON.stringify(data.user));
+      localStorage.setItem('genz_admin_user', JSON.stringify(data.user));
       showSuccess('Welcome to Admin Panel!');
 
       window.location.href = '/admin/dashboard';

@@ -15,8 +15,8 @@ const ClientRoute = ({ children }) => {
     let cancelled = false;
     const check = async () => {
       try {
-        // verifySession() calls GET /auth/me — validates httpOnly cookie server-side
-        const user = await authService.verifySession();
+        // verifyClientSession() calls GET /auth/client/me — validates clientAccessToken cookie only
+        const user = await authService.verifyClientSession();
         if (cancelled) return;
         if (user) {
           setAuthState('authenticated');

@@ -62,7 +62,7 @@ const ClientLayoutEnhanced = ({ children }) => {
 
   const handleLogout = async () => {
     try {
-      await authService.logout();
+      await authService.clientLogout();
       showSuccess('Logged out successfully');
       navigate('/client/login');
     } catch {

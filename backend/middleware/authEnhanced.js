@@ -136,53 +136,132 @@ function verifyRefreshToken(token) {
 
 /**
  * Middleware: Require authentication
+ * Path-aware: admin routes read adminAccessToken, client routes read clientAccessToken.
+ * Falls back to Authorization header (extension service workers) then legacy accessToken.
  */
 async function requireAuth(req, res, next) {
   try {
-    // Get token from Authorization header or cookie
     let token = null;
-    
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
-      token = req.headers.authorization.split(' ')[1];
-    } else if (req.cookies && req.cookies.accessToken) {
-      token = req.cookies.accessToken;
+    const originalUrl = req.originalUrl || '';
+
+    // Select role-specific cookie based on the request path to prevent cross-session contamination
+    if (originalUrl.includes('/api/crm/admin/')) {
+      token = req.cookies && req.cookies.adminAccessToken;
+    } else if (originalUrl.includes('/api/crm/client/')) {
+      token = req.cookies && req.cookies.clientAccessToken;
     }
-    
+
+    // Authorization header — used by extension service workers (Bearer extensionToken)
+    if (!token && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    // General fallback: try all role-specific cookies then legacy name
+    if (!token && req.cookies) {
+      token = req.cookies.adminAccessToken ||
+              req.cookies.clientAccessToken ||
+              req.cookies.accessToken || null;
+    }
+
     if (!token) {
       return res.status(401).json({ error: 'Authentication required' });
     }
-    
+
     const decoded = verifyAccessToken(token);
     if (!decoded) {
       return res.status(401).json({ error: 'Invalid or expired token' });
     }
-    
-    // Get user from database
+
     const user = await User.findById(decoded.userId).select('-passwordHash');
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
-    
+
     if (user.status === 'disabled') {
       return res.status(403).json({ error: 'Account is disabled' });
     }
-    
-    // Check token version (for force logout)
+
     if (decoded.tokenVersion !== user.tokenVersion) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Session has been invalidated. Please login again.',
         code: 'TOKEN_VERSION_MISMATCH'
       });
     }
-    
-    // Attach user to request
+
     req.user = user;
     req.userId = user._id;
     req.userRole = user.role;
-    
+
     next();
   } catch (error) {
     console.error('Auth middleware error:', error);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
+/**
+ * Middleware: Require admin authentication.
+ * Reads adminAccessToken cookie only — never confused with client session.
+ */
+async function requireAdminAuth(req, res, next) {
+  try {
+    let token = req.cookies && req.cookies.adminAccessToken;
+    if (!token && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+    if (!token) return res.status(401).json({ error: 'Admin authentication required' });
+
+    const decoded = verifyAccessToken(token);
+    if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
+
+    const user = await User.findById(decoded.userId).select('-passwordHash');
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (user.status === 'disabled') return res.status(403).json({ error: 'Account is disabled' });
+    if (decoded.tokenVersion !== user.tokenVersion) {
+      return res.status(401).json({ error: 'Session has been invalidated. Please login again.', code: 'TOKEN_VERSION_MISMATCH' });
+    }
+    if (!['ADMIN', 'SUPER_ADMIN', 'SUPPORT'].includes(user.role)) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    req.user = user;
+    req.userId = user._id;
+    req.userRole = user.role;
+    next();
+  } catch (error) {
+    console.error('Admin auth middleware error:', error);
+    res.status(500).json({ error: 'Authentication error' });
+  }
+}
+
+/**
+ * Middleware: Require client authentication.
+ * Reads clientAccessToken cookie only — never confused with admin session.
+ */
+async function requireClientAuth(req, res, next) {
+  try {
+    const token = req.cookies && req.cookies.clientAccessToken;
+    if (!token) return res.status(401).json({ error: 'Client authentication required' });
+
+    const decoded = verifyAccessToken(token);
+    if (!decoded) return res.status(401).json({ error: 'Invalid or expired token' });
+
+    const user = await User.findById(decoded.userId).select('-passwordHash');
+    if (!user) return res.status(401).json({ error: 'User not found' });
+    if (user.status === 'disabled') return res.status(403).json({ error: 'Account is disabled' });
+    if (decoded.tokenVersion !== user.tokenVersion) {
+      return res.status(401).json({ error: 'Session has been invalidated. Please login again.', code: 'TOKEN_VERSION_MISMATCH' });
+    }
+    if (user.role !== 'CLIENT') {
+      return res.status(403).json({ error: 'Client access required' });
+    }
+
+    req.user = user;
+    req.userId = user._id;
+    req.userRole = user.role;
+    next();
+  } catch (error) {
+    console.error('Client auth middleware error:', error);
     res.status(500).json({ error: 'Authentication error' });
   }
 }
@@ -237,6 +316,8 @@ module.exports = {
   verifyAccessToken,
   verifyRefreshToken,
   requireAuth,
+  requireAdminAuth,
+  requireClientAuth,
   requireRole,
   requireAdmin,
   getClientIp,

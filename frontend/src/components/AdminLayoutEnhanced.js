@@ -14,7 +14,7 @@ const AdminLayoutEnhanced = ({ children }) => {
   const [adminUser, setAdminUser] = useState(null);
 
   useEffect(() => {
-    const stored = localStorage.getItem('adminUser');
+    const stored = localStorage.getItem('genz_admin_user');
     if (stored) {
       try { setAdminUser(JSON.parse(stored)); } catch {}
     } else {
@@ -24,13 +24,11 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   const handleLogout = async () => {
     try {
-      // Call backend logout through the configured API client.
-      // This clears httpOnly cookies server-side even when frontend/API are on different subdomains.
-      await api.post('/auth/logout', {});
+      await api.post('/auth/admin/logout', {});
     } catch {
       // Even if the network call fails, clear local state and redirect
     } finally {
-      localStorage.removeItem('adminUser');
+      localStorage.removeItem('genz_admin_user');
       navigate('/admin/login');
     }
   };

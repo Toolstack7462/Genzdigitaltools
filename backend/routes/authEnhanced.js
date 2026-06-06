@@ -1,7 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
 
-/** Hash refresh token before DB lookup */
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
 const router = express.Router();
 const User = require('../models/User');
@@ -10,15 +9,16 @@ const DeviceBinding = require('../models/DeviceBinding');
 const ActivityLog = require('../models/ActivityLog');
 const {
   generateTokenPair,
-  verifyRefreshToken,
   requireAuth,
+  requireAdminAuth,
+  requireClientAuth,
   getClientIp
 } = require('../middleware/authEnhanced');
 const { validate, schemas } = require('../middleware/validation');
 const { normalizeAuthInputs } = require('../middleware/normalize');
 const { authLimiter, registerLimiter } = require('../middleware/rateLimiter');
 
-// ─── Cookie helper — keeps set/clear options in sync ────────────────────────
+// ─── Cookie helpers ──────────────────────────────────────────────────────────
 const COOKIE_OPTS = (maxAgeMs) => ({
   httpOnly: true,
   maxAge: maxAgeMs,
@@ -26,24 +26,27 @@ const COOKIE_OPTS = (maxAgeMs) => ({
   secure: process.env.NODE_ENV === 'production',
   path: '/'
 });
-const ACCESS_MAX   = 15 * 60 * 1000;
-const REFRESH_MAX  = Number(process.env.DASHBOARD_SESSION_DAYS || 30) * 24 * 60 * 60 * 1000;
+const CLEAR_OPTS = {
+  httpOnly: true,
+  sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+  secure: process.env.NODE_ENV === 'production',
+  path: '/'
+};
+const ACCESS_MAX  = 15 * 60 * 1000;
+const REFRESH_MAX = Number(process.env.DASHBOARD_SESSION_DAYS || 30) * 24 * 60 * 60 * 1000;
 
 // ─── POST /api/crm/auth/admin/login ─────────────────────────────────────────
-// FIX1: Tokens no longer in JSON body  FIX2: Status check before bcrypt
 router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.adminLogin), async (req, res) => {
   try {
     const { email, password } = req.body;
     const ip = getClientIp(req);
 
     const admin = await User.findOne({ email, role: { $in: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] } });
-
     if (!admin) {
       await ActivityLog.log('SYSTEM', null, 'ADMIN_LOGIN_FAILED', { email, reason: 'User not found', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // FIX2: Check disabled BEFORE bcrypt to avoid timing leak
     if (admin.status === 'disabled') {
       await ActivityLog.log('ADMIN', admin._id, 'ADMIN_LOGIN_BLOCKED', { reason: 'Account disabled', ip });
       return res.status(403).json({ error: 'Your account has been disabled' });
@@ -62,9 +65,9 @@ router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.a
     const { accessToken, refreshToken } = await generateTokenPair(admin, ip);
     await ActivityLog.log('ADMIN', admin._id, 'ADMIN_LOGIN', { ip });
 
-    // FIX1: httpOnly cookies only — no tokens in body
-    res.cookie('accessToken', accessToken, COOKIE_OPTS(ACCESS_MAX));
-    res.cookie('refreshToken', refreshToken, COOKIE_OPTS(REFRESH_MAX));
+    // Role-specific cookie names — isolated from client session cookies
+    res.cookie('adminAccessToken', accessToken, COOKIE_OPTS(ACCESS_MAX));
+    res.cookie('adminRefreshToken', refreshToken, COOKIE_OPTS(REFRESH_MAX));
 
     return res.json({ success: true, user: admin.toJSON() });
   } catch (err) {
@@ -80,13 +83,11 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
     const ip = getClientIp(req);
 
     const client = await User.findOne({ email, role: 'CLIENT' });
-
     if (!client) {
       await ActivityLog.log('SYSTEM', null, 'CLIENT_LOGIN_FAILED', { email, reason: 'User not found', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // FIX2: Status check before bcrypt
     if (client.status === 'disabled') {
       await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN_BLOCKED', { reason: 'Account disabled', ip });
       return res.status(403).json({ error: 'Your account has been disabled. Please contact support.' });
@@ -98,8 +99,7 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    // Device binding
-    if (client.devicePolicy.enabled) {
+    if (client.devicePolicy && client.devicePolicy.enabled) {
       const deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
       const existing = await DeviceBinding.findOne({ clientId: client._id });
 
@@ -122,9 +122,9 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
     const { accessToken, refreshToken } = await generateTokenPair(client, ip);
     await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN', { ip });
 
-    // FIX1: httpOnly cookies only
-    res.cookie('accessToken', accessToken, COOKIE_OPTS(ACCESS_MAX));
-    res.cookie('refreshToken', refreshToken, COOKIE_OPTS(REFRESH_MAX));
+    // Role-specific cookie names — isolated from admin session cookies
+    res.cookie('clientAccessToken', accessToken, COOKIE_OPTS(ACCESS_MAX));
+    res.cookie('clientRefreshToken', refreshToken, COOKIE_OPTS(REFRESH_MAX));
 
     return res.json({ success: true, user: client.toJSON() });
   } catch (err) {
@@ -133,17 +133,14 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
   }
 });
 
-// ─── POST /api/crm/auth/refresh ──────────────────────────────────────────────
-// FIX: Opaque refresh tokens are stored in DB — no JWT.verify() needed.
-// DB lookup + isActive check (expiry + revoked) is the correct approach.
-router.post('/refresh', async (req, res) => {
+// ─── Shared refresh handler ───────────────────────────────────────────────────
+async function handleRefresh(req, res, refreshCookieName, accessCookieName, newRefreshCookieName) {
   try {
-    const token = req.cookies.refreshToken || req.body.refreshToken;
+    const token = req.cookies[refreshCookieName] || req.body.refreshToken;
     const ip = getClientIp(req);
 
     if (!token) return res.status(401).json({ error: 'Refresh token required' });
 
-    // Hash the incoming opaque token before DB lookup (DB stores only the hash)
     const tokenHash = hashToken(token);
     const stored = await RefreshToken.findOne({ token: tokenHash });
     if (!stored || !stored.isActive) return res.status(401).json({ error: 'Refresh token expired or revoked' });
@@ -155,50 +152,107 @@ router.post('/refresh', async (req, res) => {
 
     stored.revokedAt = new Date();
     stored.revokedByIp = ip;
-    stored.replacedByToken = hashToken(newTokens.refreshToken); // store hash, not raw
+    stored.replacedByToken = hashToken(newTokens.refreshToken);
     await stored.save();
 
     await ActivityLog.log(user.role, user._id, 'TOKEN_REFRESHED', { ip });
 
-    res.cookie('accessToken', newTokens.accessToken, COOKIE_OPTS(ACCESS_MAX));
-    res.cookie('refreshToken', newTokens.refreshToken, COOKIE_OPTS(REFRESH_MAX));
+    res.cookie(accessCookieName, newTokens.accessToken, COOKIE_OPTS(ACCESS_MAX));
+    res.cookie(newRefreshCookieName, newTokens.refreshToken, COOKIE_OPTS(REFRESH_MAX));
 
-    // FIX1: No tokens in body
     return res.json({ success: true });
   } catch (err) {
     console.error('Token refresh error:', err);
     return res.status(500).json({ error: 'Failed to refresh token' });
   }
+}
+
+// ─── POST /api/crm/auth/admin/refresh ────────────────────────────────────────
+router.post('/admin/refresh', (req, res) =>
+  handleRefresh(req, res, 'adminRefreshToken', 'adminAccessToken', 'adminRefreshToken')
+);
+
+// ─── POST /api/crm/auth/client/refresh ───────────────────────────────────────
+router.post('/client/refresh', (req, res) =>
+  handleRefresh(req, res, 'clientRefreshToken', 'clientAccessToken', 'clientRefreshToken')
+);
+
+// ─── POST /api/crm/auth/refresh (backward compat) ────────────────────────────
+router.post('/refresh', (req, res) => {
+  if (req.cookies.adminRefreshToken) {
+    return handleRefresh(req, res, 'adminRefreshToken', 'adminAccessToken', 'adminRefreshToken');
+  }
+  if (req.cookies.clientRefreshToken) {
+    return handleRefresh(req, res, 'clientRefreshToken', 'clientAccessToken', 'clientRefreshToken');
+  }
+  // Legacy cookie name fallback
+  return handleRefresh(req, res, 'refreshToken', 'accessToken', 'refreshToken');
 });
 
-// ─── POST /api/crm/auth/logout ───────────────────────────────────────────────
-router.post('/logout', requireAuth, async (req, res) => {
+// ─── Shared logout handler ───────────────────────────────────────────────────
+async function handleLogout(req, res, refreshCookieName, accessCookieName) {
   try {
-    const token = req.cookies.refreshToken || req.body.refreshToken;
+    const token = req.cookies[refreshCookieName] || req.body.refreshToken;
     const ip = getClientIp(req);
 
     if (token) await RefreshToken.revokeToken(hashToken(token), ip);
 
     await ActivityLog.log(req.userRole, req.userId, 'LOGOUT', { ip });
 
-    // FIX3: clearCookie must match set options
-    const clearOpts = { httpOnly: true, sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', secure: process.env.NODE_ENV === 'production', path: '/' };
-    res.clearCookie('accessToken', clearOpts);
-    res.clearCookie('refreshToken', clearOpts);
+    res.clearCookie(accessCookieName, CLEAR_OPTS);
+    res.clearCookie(refreshCookieName, CLEAR_OPTS);
 
     return res.json({ success: true });
   } catch (err) {
     console.error('Logout error:', err);
     return res.status(500).json({ error: 'Logout failed' });
   }
+}
+
+// ─── POST /api/crm/auth/admin/logout ─────────────────────────────────────────
+router.post('/admin/logout', requireAdminAuth, (req, res) =>
+  handleLogout(req, res, 'adminRefreshToken', 'adminAccessToken')
+);
+
+// ─── POST /api/crm/auth/client/logout ────────────────────────────────────────
+router.post('/client/logout', requireClientAuth, (req, res) =>
+  handleLogout(req, res, 'clientRefreshToken', 'clientAccessToken')
+);
+
+// ─── POST /api/crm/auth/logout (backward compat) ─────────────────────────────
+router.post('/logout', requireAuth, async (req, res) => {
+  if (req.cookies.adminRefreshToken) {
+    return handleLogout(req, res, 'adminRefreshToken', 'adminAccessToken');
+  }
+  if (req.cookies.clientRefreshToken) {
+    return handleLogout(req, res, 'clientRefreshToken', 'clientAccessToken');
+  }
+  return handleLogout(req, res, 'refreshToken', 'accessToken');
 });
 
-// ─── GET /api/crm/auth/me ────────────────────────────────────────────────────
+// ─── GET /api/crm/auth/admin/me ───────────────────────────────────────────────
+router.get('/admin/me', requireAdminAuth, async (req, res) => {
+  try {
+    return res.json({ success: true, user: req.user.toJSON() });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get user' });
+  }
+});
+
+// ─── GET /api/crm/auth/client/me ─────────────────────────────────────────────
+router.get('/client/me', requireClientAuth, async (req, res) => {
+  try {
+    return res.json({ success: true, user: req.user.toJSON() });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to get user' });
+  }
+});
+
+// ─── GET /api/crm/auth/me (backward compat) ──────────────────────────────────
 router.get('/me', requireAuth, async (req, res) => {
   try {
     return res.json({ success: true, user: req.user.toJSON() });
   } catch (err) {
-    console.error('Get user error:', err);
     return res.status(500).json({ error: 'Failed to get user' });
   }
 });
