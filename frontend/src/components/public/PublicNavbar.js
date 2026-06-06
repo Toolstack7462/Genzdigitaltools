@@ -21,7 +21,7 @@ const NAV_LINKS = [
   { to: '/contact',  label: 'Contact'   },
 ];
 
-const WHATSAPP_URL = 'https://wa.me/2348000000000';
+const WHATSAPP_URL = 'https://wa.me/923027467462';
 
 const PublicNavbar = () => {
   const location = useLocation();

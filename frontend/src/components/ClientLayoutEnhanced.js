@@ -125,7 +125,7 @@ const ClientLayoutEnhanced = ({ children }) => {
 
       {/* Bottom actions */}
       <div className="p-4 border-t space-y-1" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
-        <a href="https://wa.me/" target="_blank" rel="noopener noreferrer"
+        <a href="https://wa.me/923027467462" target="_blank" rel="noopener noreferrer"
            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-genz-muted hover:text-white hover:bg-white/5 transition-all">
           <HelpCircle size={17} />
           Get Support
