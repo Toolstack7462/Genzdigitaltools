@@ -1,381 +1,409 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
-import { 
-  Package, 
-  Users, 
-  TrendingUp, 
-  Activity as ActivityIcon,
-  UserPlus,
-  PackagePlus,
-  Wand2,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
-  ArrowRight,
-  Calendar,
-  Sparkles,
-  ShieldAlert
+import {
+  Package, Users, TrendingUp, Activity as ActivityIcon,
+  UserPlus, PackagePlus, Clock, CheckCircle2, AlertCircle,
+  ArrowRight, Calendar, Sparkles, ShieldAlert, RefreshCw,
+  Layers, Shield
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 
+/* ─────────────────────────────────────────────────────────────────
+   Helpers
+───────────────────────────────────────────────────────────────── */
+function formatDate(date) {
+  if (!date) return '—';
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return '—';
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 60)    return 'Just now';
+  if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return d.toLocaleDateString();
+}
+
+function getActionIcon(action) {
+  const a = String(action || '').toUpperCase();
+  if (a.includes('LOGIN'))   return <CheckCircle2 size={14} className="text-green-400 flex-shrink-0" />;
+  if (a.includes('CREAT'))   return <UserPlus      size={14} className="text-blue-400 flex-shrink-0" />;
+  if (a.includes('DELET'))   return <AlertCircle   size={14} className="text-red-400 flex-shrink-0" />;
+  if (a.includes('UPDAT') || a.includes('EDIT')) return <Clock size={14} className="text-yellow-400 flex-shrink-0" />;
+  if (a.includes('ACCESS') || a.includes('OPEN')) return <Layers size={14} className="text-purple-400 flex-shrink-0" />;
+  if (a.includes('DEVICE') || a.includes('BIND')) return <Shield size={14} className="text-cyan-400 flex-shrink-0" />;
+  return <ActivityIcon size={14} className="text-white/40 flex-shrink-0" />;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Skeleton loader
+───────────────────────────────────────────────────────────────── */
+function SkeletonCard() {
+  return (
+    <div className="rounded-2xl p-6 border border-white/10 bg-white/[0.03] animate-pulse">
+      <div className="flex items-center justify-between mb-5">
+        <div className="w-12 h-12 rounded-xl bg-white/10" />
+      </div>
+      <div className="h-8 w-16 bg-white/10 rounded mb-2" />
+      <div className="h-4 w-24 bg-white/10 rounded mb-1" />
+      <div className="h-3 w-20 bg-white/10 rounded" />
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Main component
+───────────────────────────────────────────────────────────────── */
 const AdminDashboardEnhanced = () => {
   const navigate = useNavigate();
   const { showError } = useToast();
+
   const [stats, setStats] = useState({
-    totalTools: 0,
-    activeTools: 0,
-    totalClients: 0,
-    activeClients: 0,
-    disabledClients: 0,
-    totalAssignments: 0,
-    deviceBindings: 0
+    totalTools: 0, activeTools: 0,
+    totalClients: 0, activeClients: 0, disabledClients: 0,
+    totalAssignments: 0, deviceBindings: 0,
   });
   const [recentActivity, setRecentActivity] = useState([]);
   const [recentClients, setRecentClients] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dashboardError, setDashboardError] = useState(null);
   const [securityAlertCount, setSecurityAlertCount] = useState(0);
-  
+
   useEffect(() => {
     loadDashboard();
     api.get('/admin/security-alerts?status=open&limit=1')
-      .then(r => { if (r.data?.stats?.highCount > 0) setSecurityAlertCount(r.data.stats.highCount); })
+      .then(r => {
+        const count = r.data?.stats?.highCount || r.data?.stats?.openCount || 0;
+        if (count > 0) setSecurityAlertCount(count);
+      })
       .catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  
+
   const loadDashboard = async () => {
+    setLoading(true);
+    setDashboardError(null);
     try {
-      setLoading(true);
-      
       const [toolsRes, clientsRes, clientStatsRes, activityRes] = await Promise.all([
-        api.get('/admin/tools/stats'),
-        api.get('/admin/clients?limit=5'),
-        api.get('/admin/clients/stats'),
-        api.get('/admin/activity?limit=10')
+        api.get('/admin/tools/stats').catch(() => ({ data: {} })),
+        api.get('/admin/clients?limit=5').catch(() => ({ data: {} })),
+        api.get('/admin/clients/stats').catch(() => ({ data: {} })),
+        api.get('/admin/activity?limit=10').catch(() => ({ data: {} })),
       ]);
-      
-      const toolStats = toolsRes.data.stats || {};
-      const clientStats = clientStatsRes.data.stats || {};
-      const clients = clientsRes.data.clients || [];
-      
-      // Calculate total assignments
-      const totalAssignments = clients.reduce((sum, c) => sum + (c?.assignmentCount || 0), 0);
-      
+
+      const toolStats    = toolsRes.data?.stats       || {};
+      const clientStats  = clientStatsRes.data?.stats  || {};
+      const clients      = clientsRes.data?.clients    || [];
+      const activities   = activityRes.data?.activities || [];
+
+      const totalAssignments = Array.isArray(clients)
+        ? clients.reduce((s, c) => s + (c?.assignmentCount || 0), 0)
+        : 0;
+
       setStats({
-        totalTools: toolStats.totalTools || 0,
-        activeTools: toolStats.activeTools || 0,
-        totalClients: clientStats.totalClients || 0,
-        activeClients: clientStats.activeClients || 0,
-        disabledClients: clientStats.disabledClients || 0,
+        totalTools:       Number(toolStats.totalTools)      || 0,
+        activeTools:      Number(toolStats.activeTools)     || 0,
+        totalClients:     Number(clientStats.totalClients)  || 0,
+        activeClients:    Number(clientStats.activeClients) || 0,
+        disabledClients:  Number(clientStats.disabledClients) || 0,
         totalAssignments,
-        deviceBindings: clientStats.clientsWithDeviceBinding || 0
+        // backend returns deviceLockedClients or clientsWithDeviceBinding
+        deviceBindings:   Number(clientStats.deviceLockedClients || clientStats.clientsWithDeviceBinding) || 0,
       });
-      
-      setRecentClients(clientStats.recentClients || []);
-      setRecentActivity(activityRes.data.activities || []);
-    } catch (error) {
-      console.error('Load dashboard error:', error);
+
+      setRecentClients(Array.isArray(clientStats.recentClients) ? clientStats.recentClients : []);
+      setRecentActivity(Array.isArray(activities) ? activities : []);
+    } catch (err) {
+      console.error('Dashboard load error:', err);
+      setDashboardError('Could not load dashboard data. Check your connection and try again.');
       showError('Failed to load dashboard');
     } finally {
       setLoading(false);
     }
   };
-  
+
+  /* ── Stat card definitions ── */
   const statCards = [
-    { 
-      icon: Package, 
-      label: 'Total Tools', 
-      value: stats.totalTools,
+    {
+      icon: Package, label: 'Total Tools', value: stats.totalTools,
       sublabel: `${stats.activeTools} active`,
-      variant: 'blue',
-      textColor: 'text-blue-400',
-      bgColor: 'bg-blue-500/20'
+      variant: 'blue', textColor: 'text-blue-400', glow: 'bg-blue-500/20',
     },
-    { 
-      icon: Users, 
-      label: 'Total Clients', 
-      value: stats.totalClients,
+    {
+      icon: Users, label: 'Total Members', value: stats.totalClients,
       sublabel: `${stats.activeClients} active`,
-      variant: 'green',
-      textColor: 'text-green-400',
-      bgColor: 'bg-green-500/20'
+      variant: 'green', textColor: 'text-green-400', glow: 'bg-green-500/20',
     },
-    { 
-      icon: TrendingUp, 
-      label: 'Assignments', 
-      value: stats.totalAssignments,
-      sublabel: 'Active assignments',
-      variant: 'purple',
-      textColor: 'text-purple-400',
-      bgColor: 'bg-purple-500/20'
+    {
+      icon: TrendingUp, label: 'Assignments', value: stats.totalAssignments,
+      sublabel: 'Active',
+      variant: 'purple', textColor: 'text-purple-400', glow: 'bg-purple-500/20',
     },
-    { 
-      icon: ActivityIcon, 
-      label: 'Device Bindings', 
-      value: stats.deviceBindings,
-      sublabel: 'Secured clients',
-      variant: 'orange',
-      textColor: 'text-genz-teal',
-      bgColor: 'bg-genz-teal/10/20'
-    }
+    {
+      icon: Shield, label: 'Device Bindings', value: stats.deviceBindings,
+      sublabel: 'Secured devices',
+      variant: 'teal', textColor: 'text-genz-teal', glow: 'bg-genz-teal/20',
+    },
   ];
-  
+
+  /* ── Quick actions ── */
   const quickActions = [
     {
-      icon: PackagePlus,
-      title: 'Create Tool',
+      icon: PackagePlus, title: 'Create Tool',
       description: 'Add a new tool to the platform',
       action: () => navigate('/admin/tools/wizard'),
-      variant: 'blue',
-      gradient: 'from-blue-500 to-blue-600'
+      gradient: 'from-blue-500 to-cyan-500', variant: 'blue',
     },
     {
-      icon: UserPlus,
-      title: 'Add Client',
+      icon: UserPlus, title: 'Add Member',
       description: 'Create a new client account',
       action: () => navigate('/admin/clients/new'),
-      variant: 'green',
-      gradient: 'from-green-500 to-green-600'
+      gradient: 'from-green-500 to-emerald-500', variant: 'green',
     },
     {
-      icon: TrendingUp,
-      title: 'Bulk Assign',
+      icon: TrendingUp, title: 'Bulk Assign',
       description: 'Assign tools to multiple clients',
       action: () => navigate('/admin/assign'),
-      variant: 'purple',
-      gradient: 'from-purple-500 to-purple-600'
-    }
+      gradient: 'from-purple-500 to-violet-500', variant: 'purple',
+    },
   ];
-  
-  const formatDate = (date) => {
-    const d = new Date(date);
-    const now = new Date();
-    const diff = Math.floor((now - d) / 1000); // seconds
-    
-    if (diff < 60) return 'Just now';
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return d.toLocaleDateString();
-  };
-  
-  const getActionIcon = (action) => {
-    const a = action || '';
-    if (a.includes('LOGIN')) return <CheckCircle2 size={16} className="text-green-400" />;
-    if (a.includes('CREATED')) return <UserPlus size={16} className="text-blue-400" />;
-    if (a.includes('DELETED')) return <AlertCircle size={16} className="text-red-400" />;
-    if (a.includes('UPDATED')) return <Clock size={16} className="text-yellow-400" />;
-    return <ActivityIcon size={16} className="text-gray-400" />;
-  };
-  
+
+  /* ── Security alert banner ── */
+  const SecurityBanner = () => securityAlertCount > 0 ? (
+    <Link to="/admin/security"
+          className="flex items-center gap-3 p-3.5 mb-6 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/15 transition-all">
+      <ShieldAlert size={16} className="text-red-400 flex-shrink-0" />
+      <span className="text-red-400 text-sm font-semibold flex-1">
+        {securityAlertCount} high/critical alert{securityAlertCount !== 1 ? 's' : ''} need attention
+      </span>
+      <span className="text-xs text-red-400/60">Review →</span>
+    </Link>
+  ) : null;
+
+  /* ── Loading state ── */
   if (loading) {
     return (
       <AdminLayoutEnhanced>
-      {/* Security alerts banner — shown when high/critical alerts are open */}
-      {securityAlertCount > 0 && (
-        <Link to="/admin/security"
-              className="flex items-center gap-3 p-3 mb-5 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/15 transition-all">
-          <ShieldAlert size={16} className="text-red-400 flex-shrink-0" />
-          <span className="text-red-400 text-sm font-semibold">
-            {securityAlertCount} high/critical security alert{securityAlertCount !== 1 ? 's' : ''} need attention
-          </span>
-          <span className="ml-auto text-xs text-red-400/60">Review →</span>
-        </Link>
-      )}
-
-        <div className="flex items-center justify-center min-h-[80vh]">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-16 w-16 border-4 border-genz-teal border-t-transparent mx-auto mb-4"></div>
-            <p className="text-white/60">Loading dashboard...</p>
+        <SecurityBanner />
+        <div className="max-w-7xl mx-auto space-y-8">
+          <div className="h-10 w-48 bg-white/10 rounded-xl animate-pulse mb-2" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            {[0,1,2,3].map(i => <SkeletonCard key={i} />)}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 h-56 animate-pulse" />
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 h-56 animate-pulse" />
           </div>
         </div>
       </AdminLayoutEnhanced>
     );
   }
-  
+
+  /* ── Error state ── */
+  if (dashboardError) {
+    return (
+      <AdminLayoutEnhanced>
+        <div className="max-w-xl mx-auto mt-16 text-center">
+          <div className="w-16 h-16 mx-auto mb-5 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
+            <AlertCircle size={28} className="text-red-400" />
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Dashboard unavailable</h2>
+          <p className="text-white/50 text-sm mb-6">{dashboardError}</p>
+          <button
+            onClick={loadDashboard}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-genz-deep-navy"
+            style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}
+          >
+            <RefreshCw size={15} />
+            Try Again
+          </button>
+        </div>
+      </AdminLayoutEnhanced>
+    );
+  }
+
+  /* ── Main render ── */
   return (
     <AdminLayoutEnhanced>
-      <div className="max-w-7xl mx-auto space-y-8" data-testid="admin-dashboard">
+      <div className="max-w-7xl mx-auto space-y-8">
+
+        <SecurityBanner />
+
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 flex items-center gap-3">
-              <Sparkles className="text-genz-teal" size={32} />
+            <h1 className="text-3xl font-black text-white flex items-center gap-3">
+              <Sparkles className="text-genz-teal" size={28} />
               Dashboard
             </h1>
-            <p className="text-white/60 flex items-center gap-2">
-              <Calendar size={16} />
-              Welcome back! Here&apos;s what&apos;s happening today
+            <p className="text-white/50 text-sm mt-1 flex items-center gap-1.5">
+              <Calendar size={13} />
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </p>
           </div>
+          <button
+            onClick={loadDashboard}
+            className="p-2.5 rounded-xl border border-white/10 text-white/40 hover:text-white hover:border-white/20 transition-all"
+            title="Refresh dashboard"
+          >
+            <RefreshCw size={16} />
+          </button>
         </div>
-        
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {statCards.map((stat, index) => {
+
+        {/* Stat Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+          {statCards.map((stat, i) => {
             const Icon = stat.icon;
             return (
-              <div
-                key={index}
-                className={`group relative overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${ADMIN_CARD_VARIANTS[stat.variant]}`}
-                data-testid={`stat-card-${index}`}
-              >
-                {/* Glow effect */}
-                <div className={`absolute top-0 right-0 w-32 h-32 ${stat.bgColor} opacity-0 group-hover:opacity-50 rounded-full blur-3xl transition-opacity duration-500`} />
-                
+              <div key={i}
+                   className={`group relative overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${ADMIN_CARD_VARIANTS[stat.variant] || ADMIN_CARD_VARIANTS.default}`}>
+                {/* Hover glow */}
+                <div className={`absolute top-0 right-0 w-28 h-28 ${stat.glow} opacity-0 group-hover:opacity-40 rounded-full blur-3xl transition-opacity duration-500 pointer-events-none`} />
                 <div className="relative p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className={`w-14 h-14 ${stat.bgColor} rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                      <Icon size={28} className={stat.textColor} />
-                    </div>
+                  <div className={`w-12 h-12 rounded-xl ${stat.glow} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
+                    <Icon size={24} className={stat.textColor} />
                   </div>
-                  <div className="text-4xl font-bold text-white mb-2">{stat.value}</div>
+                  <div className="text-3xl font-black text-white mb-1 tabular-nums">{stat.value}</div>
                   <div className="text-sm text-white/60 font-medium mb-1">{stat.label}</div>
                   <div className={`text-xs ${stat.textColor} flex items-center gap-1`}>
-                    <TrendingUp size={12} />
-                    {stat.sublabel}
+                    <TrendingUp size={11} /> {stat.sublabel}
                   </div>
                 </div>
               </div>
             );
           })}
         </div>
-        
+
         {/* Quick Actions */}
         <div>
-          <h2 className="text-xl font-bold text-white mb-4">Quick Actions</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {quickActions.map((action, index) => {
+          <h2 className="text-lg font-bold text-white mb-4">Quick Actions</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {quickActions.map((action, i) => {
               const Icon = action.icon;
-              
               return (
-                <button
-                  key={index}
-                  onClick={action.action}
-                  className={`group relative overflow-hidden rounded-2xl p-6 text-left transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${ADMIN_CARD_VARIANTS[action.variant]}`}
-                  data-testid={`quick-action-${index}`}
-                >
-                  {/* Glow effect */}
-                  <div className={`absolute top-0 right-0 w-40 h-40 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-20 rounded-full blur-3xl transition-opacity duration-500`} />
-                  
+                <button key={i} onClick={action.action}
+                        className={`group relative overflow-hidden rounded-2xl p-5 text-left transition-all duration-300 hover:-translate-y-1 hover:shadow-xl ${ADMIN_CARD_VARIANTS[action.variant] || ADMIN_CARD_VARIANTS.default}`}>
+                  <div className={`absolute top-0 right-0 w-36 h-36 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-15 rounded-full blur-3xl transition-opacity duration-500 pointer-events-none`} />
                   <div className="relative">
-                    <div className={`w-14 h-14 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform`}>
-                      <Icon size={28} className="text-white" />
+                    <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform`}>
+                      <Icon size={24} className="text-white" />
                     </div>
-                    <h3 className="text-lg font-semibold text-white mb-2 group-hover:text-genz-teal transition-colors">
-                      {action.title}
-                    </h3>
-                    <p className="text-sm text-white/60 mb-4">
-                      {action.description}
-                    </p>
-                    <div className="flex items-center gap-2 text-genz-teal text-sm font-medium">
-                      <span>Get Started</span>
-                      <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
-                    </div>
+                    <h3 className="text-base font-bold text-white mb-1 group-hover:text-genz-teal transition-colors">{action.title}</h3>
+                    <p className="text-xs text-white/50 mb-3">{action.description}</p>
+                    <span className="inline-flex items-center gap-1.5 text-xs text-genz-teal font-semibold">
+                      Get Started <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
+                    </span>
                   </div>
                 </button>
               );
             })}
           </div>
         </div>
-        
+
+        {/* Recent Clients + Recent Activity */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
           {/* Recent Clients */}
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Recent Clients</h2>
-              <button 
-                onClick={() => navigate('/admin/clients')}
-                className="text-genz-teal hover:underline text-sm font-medium"
-              >
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Users size={16} className="text-genz-teal" /> Recent Members
+              </h2>
+              <button onClick={() => navigate('/admin/clients')}
+                      className="text-xs text-genz-teal hover:underline font-medium">
                 View All
               </button>
             </div>
-            
+
             {recentClients.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-green-500/20 to-cyan-500/20 rounded-2xl flex items-center justify-center">
-                  <Users size={32} className="text-white/40" />
+              <div className="py-10 text-center">
+                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-green-500/10 flex items-center justify-center">
+                  <Users size={24} className="text-white/30" />
                 </div>
-                <p className="text-white/60">No clients yet</p>
+                <p className="text-white/40 text-sm">No members yet</p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {recentClients.map((client) => (
-                  <div
-                    key={client._id}
-                    className="flex items-center gap-4 p-4 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 hover:border-genz-teal/30 transition-all cursor-pointer"
-                    onClick={() => navigate(`/admin/clients/${client._id}/edit`)}
-                  >
-                    <div className="w-12 h-12 bg-gradient-to-br from-genz-teal to-genz-dark-teal rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg">
-                      <span className="text-white font-bold text-lg">
-                        {client.fullName?.charAt(0) || '?'}
+              <div className="space-y-2">
+                {recentClients.map((client, idx) => {
+                  const name   = client?.fullName || 'Unknown';
+                  const email  = client?.email    || '';
+                  const status = client?.status   || 'unknown';
+                  const initial = name.charAt(0).toUpperCase() || '?';
+                  const id = client?._id || client?.id || idx;
+                  return (
+                    <div key={String(id)}
+                         className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.07] hover:border-genz-teal/20 transition-all cursor-pointer"
+                         onClick={() => id && id !== idx && navigate(`/admin/clients/${id}/edit`)}>
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm text-genz-deep-navy"
+                           style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                        {initial}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-white truncate">{name}</p>
+                        <p className="text-xs text-white/40 truncate">{email}</p>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${
+                        status === 'active'
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-red-500/20 text-red-400'
+                      }`}>
+                        {status}
                       </span>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-semibold text-white truncate">{client.fullName}</h3>
-                      <p className="text-sm text-white/50 truncate">{client.email}</p>
-                    </div>
-                    <div className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      client.status === 'active' 
-                        ? 'bg-green-500/20 text-green-400' 
-                        : 'bg-red-500/20 text-red-400'
-                    }`}>
-                      {client.status}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
-          
+
           {/* Recent Activity */}
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-bold text-white">Recent Activity</h2>
-              <button 
-                onClick={() => navigate('/admin/activity')}
-                className="text-genz-teal hover:underline text-sm font-medium"
-              >
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <ActivityIcon size={16} className="text-genz-teal" /> Recent Activity
+              </h2>
+              <button onClick={() => navigate('/admin/activity')}
+                      className="text-xs text-genz-teal hover:underline font-medium">
                 View All
               </button>
             </div>
-            
+
             {recentActivity.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
-                  <ActivityIcon size={32} className="text-white/40" />
+              <div className="py-10 text-center">
+                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-purple-500/10 flex items-center justify-center">
+                  <ActivityIcon size={24} className="text-white/30" />
                 </div>
-                <p className="text-white/60">No recent activity</p>
+                <p className="text-white/40 text-sm">No recent activity</p>
               </div>
             ) : (
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {recentActivity.map((activity) => (
-                  <div
-                    key={activity._id}
-                    className="flex items-start gap-3 p-3 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors"
-                  >
-                    <div className="mt-0.5">
-                      {getActionIcon(activity.action)}
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1
+                              [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:transparent
+                              [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/10">
+                {recentActivity.map((activity, idx) => {
+                  const action     = String(activity?.action      || '');
+                  const actorRole  = String(activity?.actorRole   || '');
+                  const createdAt  = activity?.createdAt          || null;
+                  const actId      = activity?._id || activity?.id || idx;
+                  const label      = action.replace(/_/g, ' ').toLowerCase() || 'activity';
+                  return (
+                    <div key={String(actId)}
+                         className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors">
+                      <div className="mt-0.5">{getActionIcon(action)}</div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-white leading-relaxed">
+                          {actorRole && <span className="font-semibold text-white/80 mr-1">{actorRole}</span>}
+                          <span className="text-white/50">{label}</span>
+                        </p>
+                        <p className="text-xs text-white/30 mt-0.5">{formatDate(createdAt)}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white text-sm">
-                        <span className="font-semibold">{activity.actorRole}</span>
-                        {' '}
-                        <span className="text-white/60">
-                          {(activity.action || '').replace(/_/g, ' ').toLowerCase()}
-                        </span>
-                      </p>
-                      <p className="text-xs text-white/50 mt-1">
-                        {formatDate(activity.createdAt)}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
         </div>
+
       </div>
     </AdminLayoutEnhanced>
   );
