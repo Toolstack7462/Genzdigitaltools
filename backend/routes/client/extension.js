@@ -6,7 +6,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const ActivationToken = require('../../models/ActivationToken');
 const { requireAuth, requireRole, getClientIp } = require('../../middleware/authEnhanced');
 
-const TOKEN_TTL_MS = 60 * 1000;
+const TOKEN_TTL_MS = 2 * 60 * 1000;
 
 router.use(requireAuth);
 router.use(requireRole('CLIENT'));

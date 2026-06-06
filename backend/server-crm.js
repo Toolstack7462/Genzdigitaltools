@@ -77,6 +77,14 @@ const corsOptions = {
       return callback(null, true);
     }
 
+    // Allow Chrome extension service-worker requests.
+    // Extension origins are chrome-extension://[extension-id] and cannot be
+    // spoofed by a web page. The extension token in the Authorization header
+    // provides the actual authentication boundary.
+    if (origin.startsWith('chrome-extension://')) {
+      return callback(null, true);
+    }
+
     console.warn(`⚠️  CORS: Blocked origin: ${origin}`);
     return callback(new Error(`CORS policy: origin '${origin}' is not allowed`));
   },

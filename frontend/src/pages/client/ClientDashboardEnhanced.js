@@ -308,8 +308,8 @@ const ClientDashboardEnhanced = () => {
           ))}
         </div>
 
-        {/* ── Chrome Extension Banner ── */}
-        {showExtensionBanner && (
+        {/* ── Chrome Extension Banner ── hide after connected and dismissed */}
+        {showExtensionBanner && !(bridgeReady && extConnStatus?.connected) && (
           <div className="relative p-5 rounded-2xl border border-genz-teal/30 overflow-hidden"
                style={{ background: 'linear-gradient(135deg, rgba(0,175,193,0.12), rgba(0,16,48,0.8))' }}>
             {/* Decorative glow */}
@@ -330,7 +330,7 @@ const ClientDashboardEnhanced = () => {
                   ? extConnStatus?.connected
                     ? `Extension Connected${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
                     : 'Extension Installed — Auto Connecting'
-                  : extStatus === null
+                  : extConnStatus?.checking
                     ? 'Checking Extension…'
                     : 'Install the Gen Z Digital Store Chrome Extension'
                 }
@@ -339,7 +339,7 @@ const ClientDashboardEnhanced = () => {
                   Tools open only from this dashboard. The extension connects automatically using your logged-in client session and then applies admin-provided session cookies securely in the browser tab.
                 </p>
                 <div className="flex flex-wrap gap-3">
-                  {!bridgeReady && extStatus !== null && (
+                  {!bridgeReady && !extConnStatus?.checking && (
                     <Link to="/chrome-extension"
                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
                        style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
@@ -347,7 +347,7 @@ const ClientDashboardEnhanced = () => {
                       Install Extension
                     </Link>
                   )}
-                  {!bridgeReady && extStatus === null && (
+                  {!bridgeReady && extConnStatus?.checking && (
                     <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-teal/30 text-genz-teal">
                       <Loader2 size={15} className="animate-spin" /> Detecting extension…
                     </span>

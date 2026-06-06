@@ -4,9 +4,10 @@ function getApiBaseUrl() {
   const envUrl = process.env.REACT_APP_BACKEND_URL;
   if (envUrl) {
     try {
-      const envOrigin = new URL(envUrl).origin;
-      if (envOrigin !== window.location.origin && !envUrl.includes('localhost')) {
-        return `${envUrl}/api/crm`;
+      const cleanUrl = envUrl.replace(/\/$/, ''); // strip trailing slash
+      const envOrigin = new URL(cleanUrl).origin;
+      if (envOrigin !== window.location.origin && !cleanUrl.includes('localhost')) {
+        return `${cleanUrl}/api/crm`;
       }
     } catch (_) {}
   }

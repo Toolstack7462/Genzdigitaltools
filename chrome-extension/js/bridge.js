@@ -11,10 +11,12 @@
 
 if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
   try {
+    // safeVersion is defined in the else block; use inline fallback here
+    const _ver = (() => { try { return chrome.runtime.getManifest().version || '3.8.0'; } catch (_) { return '3.8.0'; } })();
     window.postMessage({
       type: 'GENZ_BRIDGE_READY',
       installed: true,
-      version: safeVersion(),
+      version: _ver,
       duplicate: true,
       ts: Date.now(),
     }, window.location.origin);
