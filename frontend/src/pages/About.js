@@ -1,107 +1,134 @@
 import { Link } from 'react-router-dom';
-import { Shield, Zap, Users, Star, ArrowRight, CheckCircle2 } from 'lucide-react';
-import GenZDigitalStoreLogo from '../components/GenZDigitalStoreLogo';
+import { Shield, Zap, Star, ArrowRight, CheckCircle, Users, Award, Globe, Cpu, Target } from 'lucide-react';
+import { useReveal } from '../hooks/useReveal';
+import CTASection from '../components/public/CTASection';
 
 const About = () => {
+  const [heroRef, heroVisible] = useReveal(0.05);
+  const [missionRef, missionVisible] = useReveal();
+  const [valuesRef, valuesVisible] = useReveal();
+  const [servicesRef, servicesVisible] = useReveal();
+
   return (
-    <div className="min-h-screen pt-20 pb-20 px-4"
-         style={{ background: 'linear-gradient(180deg, #000820 0%, #001030 100%)' }}>
-      <div className="max-w-5xl mx-auto pt-10">
-
-        {/* Hero */}
-        <div className="text-center mb-16">
-          <GenZDigitalStoreLogo className="h-14 justify-center mb-6" textSize="2xl" />
-          <h1 className="text-5xl font-black text-white mb-4">
-            About <span className="text-genz-teal">Gen Z Digital Store</span>
+    <div style={{ background: '#000820' }} className="overflow-x-hidden">
+      {/* Hero */}
+      <section className="relative pt-32 pb-20 px-4 overflow-hidden">
+        <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
+        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(0,175,193,0.12),transparent 70%)' }} />
+        <div ref={heroRef} className={`max-w-3xl mx-auto text-center reveal ${heroVisible ? 'visible' : ''}`}>
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-6 uppercase tracking-widest"
+            style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
+            <span className="glow-dot" /> About Us
+          </div>
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-white mb-5 leading-tight">
+            Built to power your <span className="text-gradient-teal">digital growth</span>
           </h1>
-          <p className="text-genz-muted text-lg max-w-2xl mx-auto leading-relaxed">
-            We're on a mission to democratize access to premium digital tools — making
-            the same professional-grade software used by Fortune 500 companies accessible
-            to everyone through one affordable membership.
+          <p className="text-white/55 text-base sm:text-lg leading-relaxed">
+            Gen Z Digital Store is a premium digital platform combining secure tool access with
+            professional creative and technical services — built for individuals, creators, and businesses ready to grow.
           </p>
         </div>
+      </section>
 
-        {/* Mission */}
-        <div className="p-8 rounded-2xl border mb-10"
-             style={{ background: 'linear-gradient(135deg, rgba(0,175,193,0.08), rgba(0,16,48,0.8))', borderColor: 'rgba(0,175,193,0.2)' }}>
-          <h2 className="text-2xl font-black text-white mb-4">Our Mission</h2>
-          <p className="text-genz-muted leading-relaxed mb-4">
-            Premium software subscriptions are expensive. ChatGPT Plus, Semrush, Grammarly Business,
-            Midjourney, Ahrefs, GitHub Copilot — each costs $20–$200/month individually. The average
-            professional needs 8–12 of these tools to do their best work.
-          </p>
-          <p className="text-genz-muted leading-relaxed">
-            Gen Z Digital Store solves this by bundling 90+ of the most-used premium tools into a
-            single, secure, affordable membership. Students, freelancers, small business owners, and
-            professionals all deserve access to the best tools — not just large enterprises.
-          </p>
-        </div>
-
-        {/* Values */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-12">
-          {[
-            { icon: Shield,  title: 'Security First',  desc: 'Device-bound accounts, encrypted tokens, and zero data exposure.'  },
-            { icon: Zap,     title: 'Instant Access',  desc: 'Get your tools immediately after payment — no waiting or delays.'   },
-            { icon: Users,   title: 'Member Focus',    desc: '24/7 support via WhatsApp. We\'re here when you need us.'            },
-            { icon: Star,    title: 'Quality Curation',desc: 'Only the best tools make it into our catalog — constantly updated.' },
-          ].map(({ icon: Icon, title, desc }) => (
-            <div key={title} className="p-5 rounded-2xl border text-center"
-                 style={{ background: 'rgba(0,175,193,0.04)', borderColor: 'rgba(0,175,193,0.1)' }}>
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-3"
-                   style={{ background: 'rgba(0,175,193,0.15)' }}>
-                <Icon size={22} className="text-genz-teal" />
+      {/* Mission */}
+      <section className="py-20 px-4">
+        <div ref={missionRef} className={`max-w-5xl mx-auto reveal ${missionVisible ? 'visible' : ''}`}>
+          <div className="grid md:grid-cols-2 gap-8">
+            <div className="rounded-3xl p-8" style={{ background: 'rgba(0,175,193,0.07)', border: '1px solid rgba(0,175,193,0.2)' }}>
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-5" style={{ background: 'rgba(0,175,193,0.2)' }}>
+                <Target size={20} className="text-genz-teal" />
               </div>
-              <h3 className="font-bold text-white mb-2">{title}</h3>
-              <p className="text-xs text-genz-muted leading-relaxed">{desc}</p>
+              <h3 className="text-white font-bold text-xl mb-3">Our Mission</h3>
+              <p className="text-white/55 text-sm leading-relaxed">
+                To make premium digital tools and professional services accessible to every creator,
+                entrepreneur, and business — through a secure, well-designed, and reliable platform.
+              </p>
             </div>
-          ))}
+            <div className="rounded-3xl p-8" style={{ background: 'rgba(139,92,246,0.07)', border: '1px solid rgba(139,92,246,0.2)' }}>
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-5" style={{ background: 'rgba(139,92,246,0.2)' }}>
+                <Star size={20} style={{ color: '#a78bfa' }} />
+              </div>
+              <h3 className="text-white font-bold text-xl mb-3">Our Vision</h3>
+              <p className="text-white/55 text-sm leading-relaxed">
+                To be the go-to digital growth partner for the next generation of online businesses —
+                delivering tools, creativity, and technology under one unified brand.
+              </p>
+            </div>
+          </div>
         </div>
+      </section>
 
-        {/* What's Included */}
-        <div className="mb-12">
-          <h2 className="text-2xl font-black text-white mb-6">What You Get</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {/* What we offer */}
+      <section className="py-16 px-4">
+        <div ref={servicesRef} className={`max-w-5xl mx-auto reveal ${servicesVisible ? 'visible' : ''}`}>
+          <h2 className="text-2xl sm:text-3xl font-bold text-white text-center mb-12">What Gen Z Digital Store offers</h2>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {[
-              '90+ premium software tools in one dashboard',
-              'AI writing: ChatGPT, Claude, Grammarly, Jasper',
-              'SEO tools: Semrush, Ahrefs, Surfer SEO, Mangools',
-              'Design tools: Midjourney, Canva Pro, Adobe Firefly',
-              'Coding tools: GitHub Copilot, Tabnine',
-              'Academic research and citation tools',
-              'Business and CRM software',
-              'Video creation and editing platforms',
-              'Chrome extension for seamless access',
-              'Device-bound account security',
-              'Priority WhatsApp support',
-              'Weekly new tool additions',
-            ].map(item => (
-              <div key={item} className="flex items-center gap-2.5 p-3 rounded-xl border"
-                   style={{ background: 'rgba(0,175,193,0.03)', borderColor: 'rgba(0,175,193,0.08)' }}>
-                <CheckCircle2 size={15} className="text-genz-teal flex-shrink-0" />
-                <span className="text-sm text-white/80">{item}</span>
+              { icon: Cpu,    color: '#00AFC1', title: 'Premium Tools Access',      desc: 'Secure admin-managed access to AI, SEO, design, and productivity tools.' },
+              { icon: Users,  color: '#e1306c', title: 'Social Media Management',   desc: 'Full content management, design, strategy, and growth reporting.' },
+              { icon: Globe,  color: '#60a5fa', title: 'Web Design & Development',  desc: 'Animated websites, landing pages, and complete web applications.' },
+              { icon: Zap,    color: '#4ade80', title: 'App Development',           desc: 'Custom web and mobile apps built for real business needs.' },
+              { icon: Award,  color: '#fb923c', title: 'Branding & Design',         desc: 'Brand identity, social media creatives, and visual design services.' },
+              { icon: Shield, color: '#a78bfa', title: 'Business Automation',       desc: 'CRM systems, workflow automation, and client portal development.' },
+            ].map(({ icon: Icon, color, title, desc }) => (
+              <div key={title} className="flex gap-4 p-5 rounded-2xl"
+                style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                <div className="w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center"
+                  style={{ background: `${color}18`, border: `1px solid ${color}30` }}>
+                  <Icon size={18} style={{ color }} />
+                </div>
+                <div>
+                  <h4 className="text-white font-semibold text-sm mb-1">{title}</h4>
+                  <p className="text-white/55 text-xs leading-relaxed">{desc}</p>
+                </div>
               </div>
             ))}
           </div>
         </div>
+      </section>
 
-        {/* CTA */}
-        <div className="text-center p-10 rounded-2xl border"
-             style={{ background: 'rgba(0,175,193,0.06)', borderColor: 'rgba(0,175,193,0.2)' }}>
-          <h3 className="text-2xl font-black text-white mb-3">Ready to join?</h3>
-          <p className="text-genz-muted mb-6">Start your Gen Z Digital Store membership today.</p>
-          <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link to="/join"
-                  className="inline-flex items-center gap-2 px-8 py-3 rounded-2xl font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
-                  style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
-              <Zap size={18} /> Get Membership
+      {/* Values */}
+      <section className="py-16 px-4">
+        <div ref={valuesRef} className={`max-w-4xl mx-auto reveal ${valuesVisible ? 'visible' : ''}`}>
+          <h2 className="text-2xl font-bold text-white text-center mb-10">Our values</h2>
+          <div className="grid sm:grid-cols-2 gap-4">
+            {[
+              { t: 'Quality over quantity', s: 'Every deliverable — whether a tool, a website, or a piece of content — is held to a high standard.' },
+              { t: 'Security first', s: 'Our tool access system is built with security at the core. No credential exposure, ever.' },
+              { t: 'Transparency', s: 'Clear communication, honest pricing, and no hidden surprises at any stage.' },
+              { t: 'Client success', s: 'We measure our success by the real results our clients achieve with our tools and services.' },
+            ].map(({ t, s }) => (
+              <div key={t} className="flex gap-3 p-5 rounded-2xl"
+                style={{ background: 'rgba(0,175,193,0.05)', border: '1px solid rgba(0,175,193,0.12)' }}>
+                <CheckCircle size={16} className="text-genz-teal flex-shrink-0 mt-0.5" />
+                <div>
+                  <h4 className="text-white font-semibold text-sm mb-1">{t}</h4>
+                  <p className="text-white/55 text-xs leading-relaxed">{s}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="py-12 px-4">
+        <div className="max-w-xl mx-auto text-center">
+          <h2 className="text-2xl font-bold text-white mb-4">Ready to work with us?</h2>
+          <p className="text-white/50 text-sm mb-7">Explore our services or get in touch to discuss your project.</p>
+          <div className="flex flex-wrap justify-center gap-3">
+            <Link to="/services" className="px-6 py-3 rounded-full text-sm font-bold text-genz-deep-navy"
+              style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
+              View Services <ArrowRight size={14} className="inline ml-1" />
             </Link>
-            <Link to="/pricing"
-                  className="inline-flex items-center gap-2 px-8 py-3 rounded-2xl font-medium border border-genz-teal/40 text-genz-teal hover:bg-genz-teal/10 transition-all">
-              View Pricing <ArrowRight size={16} />
+            <Link to="/contact" className="px-6 py-3 rounded-full text-sm font-semibold text-genz-teal border border-genz-teal/40 hover:bg-genz-teal/10 transition-all">
+              Contact Us
             </Link>
           </div>
         </div>
-      </div>
+      </section>
+
+      <CTASection />
     </div>
   );
 };

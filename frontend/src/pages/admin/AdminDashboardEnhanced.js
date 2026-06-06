@@ -32,7 +32,7 @@ function getActionIcon(action) {
   if (a.includes('UPDAT') || a.includes('EDIT')) return <Clock size={14} className="text-yellow-400 flex-shrink-0" />;
   if (a.includes('ACCESS') || a.includes('OPEN')) return <Layers size={14} className="text-purple-400 flex-shrink-0" />;
   if (a.includes('DEVICE') || a.includes('BIND')) return <Shield size={14} className="text-cyan-400 flex-shrink-0" />;
-  return <ActivityIcon size={14} className="text-white/40 flex-shrink-0" />;
+  return <ActivityIcon size={14} className="text-white/55 flex-shrink-0" />;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -232,9 +232,9 @@ const AdminDashboardEnhanced = () => {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-black text-white flex items-center gap-3">
-              <Sparkles className="text-genz-teal" size={28} />
-              Dashboard
+            <h1 className="text-2xl sm:text-3xl font-black text-white flex items-center gap-3">
+              <Sparkles className="text-genz-teal" size={26} />
+              Welcome back
             </h1>
             <p className="text-white/50 text-sm mt-1 flex items-center gap-1.5">
               <Calendar size={13} />
@@ -243,7 +243,7 @@ const AdminDashboardEnhanced = () => {
           </div>
           <button
             onClick={loadDashboard}
-            className="p-2.5 rounded-xl border border-white/10 text-white/40 hover:text-white hover:border-white/20 transition-all"
+            className="p-2.5 rounded-xl border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-all"
             title="Refresh dashboard"
           >
             <RefreshCw size={16} />
@@ -318,9 +318,9 @@ const AdminDashboardEnhanced = () => {
             {recentClients.length === 0 ? (
               <div className="py-10 text-center">
                 <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-green-500/10 flex items-center justify-center">
-                  <Users size={24} className="text-white/30" />
+                  <Users size={24} className="text-white/55" />
                 </div>
-                <p className="text-white/40 text-sm">No members yet</p>
+                <p className="text-white/55 text-sm">No members yet</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -340,7 +340,7 @@ const AdminDashboardEnhanced = () => {
                       </div>
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-white truncate">{name}</p>
-                        <p className="text-xs text-white/40 truncate">{email}</p>
+                        <p className="text-xs text-white/55 truncate">{email}</p>
                       </div>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${
                         status === 'active'
@@ -371,9 +371,9 @@ const AdminDashboardEnhanced = () => {
             {recentActivity.length === 0 ? (
               <div className="py-10 text-center">
                 <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-purple-500/10 flex items-center justify-center">
-                  <ActivityIcon size={24} className="text-white/30" />
+                  <ActivityIcon size={24} className="text-white/55" />
                 </div>
-                <p className="text-white/40 text-sm">No recent activity</p>
+                <p className="text-white/55 text-sm">No recent activity</p>
               </div>
             ) : (
               <div className="space-y-2 max-h-80 overflow-y-auto pr-1
@@ -394,7 +394,7 @@ const AdminDashboardEnhanced = () => {
                           {actorRole && <span className="font-semibold text-white/80 mr-1">{actorRole}</span>}
                           <span className="text-white/50">{label}</span>
                         </p>
-                        <p className="text-xs text-white/30 mt-0.5">{formatDate(createdAt)}</p>
+                        <p className="text-xs text-white/55 mt-0.5">{formatDate(createdAt)}</p>
                       </div>
                     </div>
                   );

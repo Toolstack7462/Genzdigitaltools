@@ -1,6 +1,23 @@
+DirectoryIndex index.html
+
 RewriteEngine On
 RewriteBase /
+
+# Serve existing static files directly
 RewriteRule ^index\.html$ - [L]
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+RewriteRule ^login$ https://app.genzdigitalstore.com/client/login [R=302,L]
+
+RewriteCond %{REQUEST_URI} ^/client/
+RewriteRule ^ https://app.genzdigitalstore.com%{REQUEST_URI} [R=302,L]
+
+RewriteCond %{REQUEST_URI} ^/admin/
+RewriteRule ^ https://app.genzdigitalstore.com%{REQUEST_URI} [R=302,L]
+
+# Route to React SPA — but NOT for /api/ routes (let Passenger handle those)
+RewriteCond %{REQUEST_URI} !^/api/
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
 RewriteRule . /index.html [L]

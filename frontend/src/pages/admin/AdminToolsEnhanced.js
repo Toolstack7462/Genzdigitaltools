@@ -99,10 +99,11 @@ const AdminToolsEnhanced = () => {
             {/* Search */}
             <div className="md:col-span-2">
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/40" size={18} />
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/55" size={18} />
                 <input
                   type="text"
                   placeholder="Search tools by name or description..."
+                  aria-label="Search tools by name or description"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
@@ -116,6 +117,7 @@ const AdminToolsEnhanced = () => {
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
+              aria-label="Filter tools by category"
               className="px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="category-filter"
@@ -130,6 +132,7 @@ const AdminToolsEnhanced = () => {
             <select
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
+              aria-label="Filter tools by status"
               className="px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="status-filter"
@@ -150,16 +153,31 @@ const AdminToolsEnhanced = () => {
         
         {/* Tools Grid */}
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-16 w-16 border-4 border-genz-teal border-t-transparent mx-auto mb-4"></div>
-              <p className="text-white/60">Loading tools...</p>
-            </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" aria-busy="true" aria-label="Loading tools">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-6 animate-pulse`}>
+                <div className="flex items-start gap-3 mb-4">
+                  <div className="w-12 h-12 rounded-xl bg-white/10 flex-shrink-0" />
+                  <div className="flex-1 space-y-2 pt-1">
+                    <div className="h-4 w-3/5 rounded bg-white/10" />
+                    <div className="h-3 w-2/5 rounded bg-white/[0.07]" />
+                  </div>
+                </div>
+                <div className="space-y-2 mb-5">
+                  <div className="h-3 w-full rounded bg-white/[0.07]" />
+                  <div className="h-3 w-4/5 rounded bg-white/[0.07]" />
+                </div>
+                <div className="flex gap-2">
+                  <div className="h-9 flex-1 rounded-xl bg-white/[0.07]" />
+                  <div className="h-9 flex-1 rounded-xl bg-white/[0.07]" />
+                </div>
+              </div>
+            ))}
           </div>
         ) : tools.length === 0 ? (
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
-              <Package size={40} className="text-white/40" />
+              <Package size={40} className="text-white/55" />
             </div>
             <h3 className="text-xl font-semibold text-white mb-2">No tools found</h3>
             <p className="text-white/60 mb-6">Get started by creating your first tool</p>
