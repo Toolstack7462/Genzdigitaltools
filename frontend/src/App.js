@@ -1,5 +1,17 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import "@/App.css";
+
+// Redirect /login, /client/*, /admin/* to app subdomain when on main domain
+(function domainGuard() {
+  const host = window.location.hostname;
+  if (host !== 'genzdigitalstore.com' && host !== 'www.genzdigitalstore.com') return;
+  const path = window.location.pathname;
+  if (path === '/login') {
+    window.location.replace('https://app.genzdigitalstore.com/client/login');
+  } else if (path.startsWith('/client/') || path.startsWith('/admin/')) {
+    window.location.replace('https://app.genzdigitalstore.com' + path + window.location.search);
+  }
+}());
 import PublicNavbar from './components/public/PublicNavbar';
 import PublicFooter from './components/public/PublicFooter';
 import WhatsAppButton from './components/WhatsAppButton';
