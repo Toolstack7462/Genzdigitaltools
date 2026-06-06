@@ -212,6 +212,8 @@ export function useExtension() {
   // extension service workers and content scripts can wake up slightly later.
   useEffect(() => {
     if (!bridgeReady) return;
+    // Reset attempt counter each time the bridge becomes ready (e.g. extension reloaded).
+    autoConnectAttemptsRef.current = 0;
     let cancelled = false;
     let retryTimer = null;
 

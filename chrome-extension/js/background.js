@@ -998,6 +998,17 @@ async function handleOpenTool(payload) {
     logger.warn('Credential fetch failed', { error: err.message });
   }
 
+  // If credential fetch failed and the extension session was cleared (401),
+  // return an auth error so the dashboard can reconnect instead of silently
+  // opening the tab without any session data.
+  if (!credentialData) {
+    const tokenCheck = await getStorage(['extensionToken']);
+    if (!tokenCheck.extensionToken) {
+      openIntentLock.delete(toolId);
+      return { success: false, error: 'Extension authorization expired. Please reconnect from the dashboard.', needsReauth: true };
+    }
+  }
+
   // ── 7. Determine and execute strategy ─────────────────────────────────────
   const creds       = credentialData?.credentials;
   const bundle      = credentialData?.sessionBundle;
@@ -1049,7 +1060,7 @@ async function handleOpenTool(payload) {
   // Full strategy execution via orchestrator
   try {
     await waitForTabLoad(targetTabId, 20000);
-    if (forceFreshSession && (hasBundle || ['cookies', 'token', 'headers', 'localStorage', 'sessionStorage'].includes(credType))) {
+    if (forceFreshSession) {
       await clearCookiesForDomain(targetUrl);
       await clearPageStorageForTab(targetTabId);
     }
@@ -1430,6 +1441,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           return;
         }
+        const expiresAt = d.tokenExpiresAt ? Date.parse(d.tokenExpiresAt) : null;
+        const expiresInDays = expiresAt ? Math.ceil((expiresAt - Date.now()) / (24 * 60 * 60 * 1000)) : null;
         sendResponse({
           success: true,
           connected: !!d.extensionToken,
@@ -1437,6 +1450,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           toolCount: (d.tools || []).length,
           lastSync: d.lastSync || null,
           userEmail: d.userEmail || null,
+          tokenExpiresAt: d.tokenExpiresAt || null,
+          expiresInDays,
           version: chrome.runtime.getManifest().version,
         });
       });

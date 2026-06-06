@@ -7,7 +7,7 @@ const OpenIntent = createModel('OpenIntent', {
     hashToken(token) {
       return crypto.createHash('sha256').update(String(token || '')).digest('hex');
     },
-    async issue({ clientId, toolId, deviceIdHash = null, ip, userAgent, ttlMs = 60 * 1000 }) {
+    async issue({ clientId, toolId, deviceIdHash = null, ip, userAgent, ttlMs = 2 * 60 * 1000 }) {
       const token = crypto.randomBytes(32).toString('hex');
       const tokenHash = this.hashToken(token);
       const expiresAt = new Date(Date.now() + ttlMs);

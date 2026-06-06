@@ -10,8 +10,7 @@
     "cookies",
     "tabs",
     "scripting",
-    "notifications",
-    "management"
+    "notifications"
   ],
   "optional_permissions": [
     "activeTab"
