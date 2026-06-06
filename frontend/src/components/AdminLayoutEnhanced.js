@@ -5,7 +5,7 @@ import {
   LayoutDashboard, Package, Users, Activity, LogOut, FileText, Mail,
   Menu, X, Shield, Settings, TrendingUp, ShieldAlert, ExternalLink
 } from 'lucide-react';
-import GenZDigitalStoreLogo from './GenZDigitalStoreLogo';
+import BrandLogo from './BrandLogo';
 import api from '../services/api';
 
 const NAV_ITEMS = [
@@ -65,7 +65,7 @@ const AdminLayoutEnhanced = ({ children }) => {
          style={{ background: 'linear-gradient(180deg, #000820 0%, #000f28 100%)', borderRight: '1px solid rgba(0,175,193,0.1)' }}>
       <div className="h-16 flex flex-col justify-center px-5 border-b" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
         <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-2" aria-label="Admin dashboard">
-          <GenZDigitalStoreLogo className="h-7" textSize="sm" />
+          <BrandLogo variant="mark" size="sm" />
           <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider text-genz-teal"
                 style={{ background: 'rgba(0,175,193,0.12)', border: '1px solid rgba(0,175,193,0.25)' }}>
             <Shield size={9} /> Admin

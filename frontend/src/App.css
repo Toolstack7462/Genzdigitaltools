@@ -327,3 +327,32 @@ body {
   .reveal,
   .reveal-scale { opacity: 1 !important; transform: none !important; }
 }
+
+/* Brand token override: keep legacy utility names, but map the UI to the logo palette. */
+:root {
+  --genz-navy: var(--brand-navy);
+  --genz-teal: var(--brand-cyan);
+  --genz-dark-teal: var(--brand-teal);
+  --genz-bg: var(--brand-soft);
+  --genz-card: var(--brand-surface);
+  --genz-border: var(--brand-border);
+  --genz-muted: var(--brand-muted);
+
+  --background: 204 56% 98%;
+  --foreground: 210 64% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 210 64% 12%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 210 64% 12%;
+  --primary: 217 91% 60%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 187 96% 43%;
+  --secondary-foreground: 210 64% 12%;
+  --muted: 204 37% 94%;
+  --muted-foreground: 210 15% 42%;
+  --accent: 174 84% 40%;
+  --accent-foreground: 0 0% 100%;
+  --border: 202 43% 90%;
+  --input: 202 43% 90%;
+  --ring: 187 96% 43%;
+}

@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import {
   Zap, ArrowRight, MessageCircle, LayoutDashboard, Shield, Star,
   Globe, Smartphone, Palette, TrendingUp, PenTool, Settings,
-  CheckCircle, ChevronRight,
+  CheckCircle, ChevronRight, FileText,
   Instagram, Code, BarChart2, Layers, Cpu, Headphones, Award,
 } from 'lucide-react';
 import { useReveal } from '../hooks/useReveal';
@@ -19,13 +19,60 @@ const SectionPill = ({ label }) => (
   </div>
 );
 
-const FloatingCard = ({ icon: Icon, label, color = '#00AFC1', delay = '0s' }) => (
-  <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-2xl shadow-xl"
-    style={{ background: 'rgba(0,16,48,0.85)', border: `1px solid ${color}35`, backdropFilter: 'blur(10px)', animation: 'float 3.5s ease-in-out infinite', animationDelay: delay }}>
-    <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: `${color}20` }}>
-      <Icon size={15} style={{ color }} />
+const COMMAND_SERVICES = [
+  { icon: Cpu, label: 'Digital Tools', sub: 'Assigned access', color: '#00AFC1' },
+  { icon: Globe, label: 'Website Design', sub: 'Sites and portals', color: '#7DF9FF' },
+  { icon: BarChart2, label: 'Research Support', sub: 'Reports and analysis', color: '#4ade80' },
+  { icon: Palette, label: 'Graphic Design', sub: 'Brand visuals', color: '#60a5fa' },
+  { icon: Instagram, label: 'Social Media', sub: 'Content systems', color: '#e1306c' },
+  { icon: FileText, label: 'Business Documents', sub: 'Docs and decks', color: '#f59e0b' },
+];
+
+const ServiceCommandCenter = () => (
+  <div
+    className="brand-command-center w-full rounded-lg p-5 sm:p-6"
+    style={{
+      background: 'linear-gradient(180deg, rgba(0,16,48,0.96), rgba(0,8,32,0.98))',
+      border: '1px solid rgba(0,175,193,0.22)',
+      boxShadow: '0 28px 70px rgba(0,0,0,0.42)',
+    }}
+  >
+    <div className="mb-5 flex items-center justify-between gap-4 border-b pb-4" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+      <div>
+        <p className="text-xs font-bold uppercase tracking-widest text-genz-teal">Service Command Center</p>
+        <h2 className="mt-2 text-xl font-bold text-white">One platform for digital delivery</h2>
+      </div>
+      <div className="hidden rounded-full border px-3 py-1 text-xs font-semibold text-white/60 sm:block" style={{ borderColor: 'rgba(0,175,193,0.22)' }}>
+        Live support
+      </div>
     </div>
-    <span className="text-white text-xs font-semibold whitespace-nowrap">{label}</span>
+
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      {COMMAND_SERVICES.map(({ icon: Icon, label, sub, color }) => (
+        <div
+          key={label}
+          className="flex min-h-[82px] items-center gap-3 rounded-lg px-3.5 py-3 transition-colors hover:bg-white/[0.055]"
+          style={{ background: 'rgba(255,255,255,0.035)', border: '1px solid rgba(255,255,255,0.08)' }}
+        >
+          <div
+            className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md"
+            style={{ background: `${color}18`, color, border: `1px solid ${color}35` }}
+          >
+            <Icon size={18} />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-sm font-bold text-white">{label}</p>
+            <p className="mt-1 text-xs text-white/50">{sub}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <div className="mt-5 grid grid-cols-3 gap-3 border-t pt-4" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+      <StatBadge n="6" label="Core Services" />
+      <StatBadge n="1" label="Trusted Platform" />
+      <StatBadge n="24/7" label="Access" />
+    </div>
   </div>
 );
 
@@ -74,31 +121,31 @@ const Home = () => {
   const [faqRef, faqVisible] = useReveal();
 
   return (
-    <div className="overflow-x-hidden" style={{ background: '#000820' }}>
+    <div className="brand-public overflow-x-hidden">
 
       {/* HERO */}
-      <section className="relative min-h-screen flex items-center pt-20 pb-16 overflow-hidden">
-        <div className="absolute inset-0 hero-grid opacity-50 pointer-events-none" />
-        <div className="absolute inset-0 pointer-events-none"
-          style={{ background: 'radial-gradient(ellipse 70% 60% at 50% 40%, rgba(0,175,193,0.12) 0%, transparent 70%)' }} />
+      <section
+        className="brand-hero relative min-h-screen flex items-center pt-24 pb-16 overflow-hidden"
+      >
+        <div className="absolute inset-x-0 top-0 h-px bg-genz-teal/30 pointer-events-none" />
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 w-full">
-          <div className="grid lg:grid-cols-2 gap-16 items-center">
+          <div className="grid lg:grid-cols-[1fr_0.92fr] gap-12 xl:gap-16 items-center">
             <div ref={heroRef} className={`reveal ${heroVisible ? 'visible' : ''}`}>
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-7 uppercase tracking-widest"
                 style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
-                <span className="glow-dot animate-pulse" /> Premium Digital Platform
+                <span className="glow-dot" /> Premium Digital Platform
               </div>
-              <h1 className="text-4xl sm:text-5xl xl:text-6xl font-extrabold text-white leading-tight mb-5">
+              <h1 className="type-display mb-5">
                 Grow Smarter with{' '}
-                <span className="text-gradient-teal">Gen Z Digital Store</span>
+                <span className="brand-gradient-text">Gen Z Digital Store</span>
               </h1>
-              <p className="text-white/55 text-base sm:text-lg leading-relaxed mb-8 max-w-xl">
-                From premium digital tools access to social media management, writing services, animated websites,
-                and app development — Gen Z Digital Store helps individuals, creators, and businesses work smarter online.
+              <p className="type-body-large mb-8 max-w-xl">
+                Premium digital tools, websites, research support, branding, social media designs, documents and presentations
+                {' '}— everything you need from one trusted digital platform.
               </p>
               <div className="flex flex-wrap gap-3 mb-10">
                 <Link to="/services"
-                  className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
+                  className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90"
                   style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
                   <Zap size={15} /> Explore Services
                 </Link>
@@ -112,37 +159,14 @@ const Home = () => {
                 </a>
               </div>
               <div className="flex flex-wrap gap-x-8 gap-y-4 pt-8 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
-                <StatBadge n="8+" label="Digital Services" />
-                <StatBadge n="100%" label="Secure Access" />
-                <StatBadge n="24/7" label="Support" />
+                <StatBadge n="6" label="Core Service Lines" />
+                <StatBadge n="100%" label="Business Focused" />
+                <StatBadge n="1" label="Trusted Platform" />
               </div>
             </div>
 
-            {/* Dashboard visual */}
-            <div className="hidden lg:flex flex-col items-center justify-center relative h-[420px]">
-              <div className="relative w-72 rounded-3xl overflow-hidden shadow-2xl"
-                style={{ background: 'rgba(0,16,48,0.9)', border: '1px solid rgba(0,175,193,0.2)', boxShadow: '0 0 60px rgba(0,175,193,0.12)' }}>
-                <div className="flex items-center gap-2 px-4 py-3 border-b" style={{ borderColor: 'rgba(0,175,193,0.12)' }}>
-                  <div className="flex gap-1.5">
-                    {['#ff5f57','#ffbd2e','#28c840'].map(c=><div key={c} className="w-2.5 h-2.5 rounded-full" style={{background:c}}/>)}
-                  </div>
-                  <div className="flex-1 h-4 rounded-full mx-2" style={{ background: 'rgba(255,255,255,0.05)' }} />
-                </div>
-                <div className="p-4 space-y-3">
-                  {['AI Tools', 'SEO Suite', 'Design Tools', 'Writing Tools'].map((t,i)=>(
-                    <div key={t} className="flex items-center gap-3 px-3 py-2.5 rounded-xl"
-                      style={{ background: i===0?'rgba(0,175,193,0.15)':'rgba(255,255,255,0.04)', border: i===0?'1px solid rgba(0,175,193,0.3)':'1px solid rgba(255,255,255,0.05)' }}>
-                      <div className="w-6 h-6 rounded-lg" style={{ background: `rgba(0,175,193,${0.4-i*0.08})` }} />
-                      <span className="text-white text-xs font-medium">{t}</span>
-                      <div className="ml-auto w-12 h-1.5 rounded-full" style={{ background: i===0?'rgba(0,175,193,0.5)':'rgba(255,255,255,0.1)' }} />
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="absolute top-4 -left-4"><FloatingCard icon={Instagram} label="Social Media" color="#e1306c" delay="0s" /></div>
-              <div className="absolute top-16 -right-8"><FloatingCard icon={Globe} label="Web Design" color="#00AFC1" delay="0.8s" /></div>
-              <div className="absolute bottom-20 -left-8"><FloatingCard icon={PenTool} label="Writing" color="#a78bfa" delay="1.4s" /></div>
-              <div className="absolute bottom-8 -right-4"><FloatingCard icon={Smartphone} label="App Dev" color="#4ade80" delay="0.5s" /></div>
+            <div className={`reveal delay-100 ${heroVisible ? 'visible' : ''}`}>
+              <ServiceCommandCenter />
             </div>
           </div>
         </div>

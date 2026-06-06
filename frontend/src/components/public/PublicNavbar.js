@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X, ChevronDown, Zap, MessageCircle } from 'lucide-react';
-import GenZDigitalStoreLogo from '../GenZDigitalStoreLogo';
+import BrandLogo from '../BrandLogo';
 
 const SERVICES = [
   { to: '/services/digital-tools',         label: 'Digital Tools Access' },
@@ -66,7 +66,7 @@ const PublicNavbar = () => {
 
           {/* Logo */}
           <Link to="/" className="flex items-center flex-shrink-0">
-            <GenZDigitalStoreLogo className="h-9" textSize="lg" />
+            <BrandLogo variant="horizontal" size="md" />
           </Link>
 
           {/* Desktop Nav */}

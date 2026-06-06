@@ -117,7 +117,7 @@ const PublicPage = ({ children }) => (
 function App() {
   return (
     <ToastProvider>
-      <div className="App min-h-screen" style={{ background: '#000820' }}>
+      <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
           <Routes>
 

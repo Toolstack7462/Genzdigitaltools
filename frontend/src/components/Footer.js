@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { Facebook, Twitter, Linkedin, Instagram, Youtube, MessageCircle } from 'lucide-react';
-import GenZDigitalStoreLogo from './GenZDigitalStoreLogo';
+import BrandLogo from './BrandLogo';
 
 const Footer = () => {
   const currentYear = new Date().getFullYear();
@@ -13,7 +13,7 @@ const Footer = () => {
           {/* Logo & Description */}
           <div className="col-span-1 md:col-span-2">
             <Link to="/" className="inline-block mb-4">
-              <GenZDigitalStoreLogo className="h-10" textSize="xl" />
+              <BrandLogo variant="horizontal" size="md" />
             </Link>
             <p className="text-genz-muted text-sm mb-6 leading-relaxed max-w-sm">
               Your all-in-one digital tools hub. Access AI, academic, SEO, design, productivity,

@@ -7,6 +7,11 @@ module.exports = {
   ],
   theme: {
         extend: {
+                fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        heading: ['Sora', 'Space Grotesk', 'Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'SFMono-Regular', 'Consolas', 'monospace']
+                },
                 borderRadius: {
                         lg: 'var(--radius)',
                         md: 'calc(var(--radius) - 2px)',
@@ -14,15 +19,17 @@ module.exports = {
                 },
                 colors: {
                         // ===== Gen Z Digital Store Brand Colors =====
-                        'genz-navy':      '#001030',
+                        'genz-navy':      '#071B33',
                         'genz-deep-navy': '#000820',
-                        'genz-teal':      '#00AFC1',
-                        'genz-dark-teal': '#008EA3',
+                        'genz-blue':      '#2563EB',
+                        'genz-cyan':      '#06B6D4',
+                        'genz-teal':      '#06B6D4',
+                        'genz-dark-teal': '#14B8A6',
                         'genz-white':     '#FFFFFF',
-                        'genz-bg':        '#F8FBFC',
+                        'genz-bg':        '#F6F9FC',
                         'genz-card':      '#FFFFFF',
-                        'genz-border':    '#D9E4EA',
-                        'genz-muted':     '#8A98A8',
+                        'genz-border':    '#D9E7F0',
+                        'genz-muted':     '#5B6B7C',
 
                         // ===== Backward Compatibility Aliases =====
                         // Old Gen Z Digital Store colors mapped to new Gen Z colors
@@ -76,9 +83,9 @@ module.exports = {
                         }
                 },
                 backgroundImage: {
-                        'gradient-teal':    'linear-gradient(135deg, #00AFC1 0%, #008EA3 100%)',
-                        'gradient-navy':    'linear-gradient(135deg, #001030 0%, #000820 100%)',
-                        'gradient-genz':    'linear-gradient(135deg, #001030 0%, #00AFC1 100%)',
+                        'gradient-teal':    'linear-gradient(135deg, #2563EB 0%, #06B6D4 45%, #14B8A6 100%)',
+                        'gradient-navy':    'linear-gradient(135deg, #071B33 0%, #0B2747 100%)',
+                        'gradient-genz':    'linear-gradient(135deg, #2563EB 0%, #06B6D4 45%, #14B8A6 100%)',
                         // Backward compat
                         'gradient-orange':  'linear-gradient(135deg, #00AFC1 0%, #008EA3 100%)'
                 },

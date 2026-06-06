@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X, Zap } from 'lucide-react';
-import GenZDigitalStoreLogo from './GenZDigitalStoreLogo';
+import BrandLogo from './BrandLogo';
 
 const Navbar = () => {
   const location = useLocation();
@@ -25,7 +25,7 @@ const Navbar = () => {
 
           {/* Logo */}
           <Link to="/" className="flex items-center" data-testid="navbar-logo">
-            <GenZDigitalStoreLogo className="h-9" textSize="lg" />
+            <BrandLogo variant="horizontal" size="md" />
           </Link>
 
           {/* Desktop Nav Links */}

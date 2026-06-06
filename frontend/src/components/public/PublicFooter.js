@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight } from 'lucide-react';
-import GenZDigitalStoreLogo from '../GenZDigitalStoreLogo';
+import BrandLogo from '../BrandLogo';
 import { WHATSAPP_URL } from './PublicNavbar';
 
 const SERVICES_LINKS = [
@@ -69,7 +69,7 @@ const PublicFooter = () => {
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
             <Link to="/" className="inline-block mb-4">
-              <GenZDigitalStoreLogo className="h-10" textSize="xl" />
+              <BrandLogo variant="horizontal" size="md" />
             </Link>
             <p className="text-white/55 text-sm leading-relaxed mb-6 max-w-xs">
               Premium digital tools access, creative services, and smart web solutions

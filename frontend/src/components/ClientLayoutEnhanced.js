@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { authService } from '../services/authService';
 import { useToast } from './Toast';
-import GenZDigitalStoreLogo from './GenZDigitalStoreLogo';
+import BrandLogo from './BrandLogo';
 
 // ============================================================================
 // SHARED THEME CONSTANTS
@@ -102,7 +102,7 @@ const ClientLayoutEnhanced = ({ children }) => {
       {/* Logo */}
       <div className="h-16 flex items-center px-5 border-b" style={{ borderColor: 'rgba(0,175,193,0.1)' }}>
         <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} aria-label="Gen Z Digital Store dashboard">
-          <GenZDigitalStoreLogo className="h-8" textSize="base" />
+          <BrandLogo variant="horizontal" size="sm" />
         </Link>
       </div>
 
@@ -222,7 +222,7 @@ const ClientLayoutEnhanced = ({ children }) => {
           <button onClick={() => setSidebarOpen(true)} className="text-white/60 hover:text-white transition-colors" aria-label="Open menu">
             <Menu size={22} />
           </button>
-          <GenZDigitalStoreLogo className="h-7" textSize="sm" />
+          <BrandLogo variant="horizontal" size="sm" />
           <Link to="/client/profile" className="text-white/60 hover:text-genz-teal transition-colors" aria-label="Profile">
             <User size={20} />
           </Link>

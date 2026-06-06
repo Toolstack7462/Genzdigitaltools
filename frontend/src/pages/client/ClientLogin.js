@@ -4,7 +4,7 @@ import { motion, useReducedMotion } from 'framer-motion';
 import { Lock, Mail, Eye, EyeOff, Smartphone, Shield, ArrowRight, Sparkles } from 'lucide-react';
 import { authService } from '../../services/authService';
 import { useToast } from '../../components/Toast';
-import GenZDigitalStoreLogo from '../../components/GenZDigitalStoreLogo';
+import BrandLogo from '../../components/BrandLogo';
 
 const TRUST = [
   { icon: Shield, label: 'Encrypted tokens' },
@@ -66,7 +66,7 @@ const ClientLogin = () => {
         {/* Logo & Title */}
         <div className="text-center mb-8">
           <Link to="/" className="inline-block mb-7" aria-label="Gen Z Digital Store home">
-            <GenZDigitalStoreLogo className="h-11 justify-center" textSize="2xl" />
+            <BrandLogo variant="horizontal" size="lg" />
           </Link>
           <motion.h1
             {...fade(0.08)}

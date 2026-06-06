@@ -1,34 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@500;600;700&family=Sora:wght@600;700;800&display=swap');
+@import "./styles/design-tokens.css";
+@import "./styles/typography.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: 210 40% 4%;
-    --foreground: 0 0% 100%;
-    --card: 210 40% 6%;
-    --card-foreground: 0 0% 100%;
-    --popover: 210 40% 5%;
-    --popover-foreground: 0 0% 100%;
-    --primary: 190 100% 38%;
-    --primary-foreground: 210 40% 4%;
-    --secondary: 190 100% 30%;
-    --secondary-foreground: 0 0% 100%;
-    --muted: 210 20% 25%;
-    --muted-foreground: 210 15% 60%;
-    --accent: 190 100% 38%;
-    --accent-foreground: 210 40% 4%;
+    --background: 204 56% 98%;
+    --foreground: 210 64% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 210 64% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 64% 12%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 187 96% 43%;
+    --secondary-foreground: 210 64% 12%;
+    --muted: 204 37% 94%;
+    --muted-foreground: 210 15% 42%;
+    --accent: 174 84% 40%;
+    --accent-foreground: 0 0% 100%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 190 40% 18%;
-    --input: 190 40% 18%;
-    --ring: 190 100% 38%;
-    --radius: 0.75rem;
-    --chart-1: 190 100% 38%;
-    --chart-2: 190 100% 30%;
-    --chart-3: 210 100% 20%;
-    --chart-4: 190 60% 50%;
-    --chart-5: 200 80% 45%;
+    --border: 202 43% 90%;
+    --input: 202 43% 90%;
+    --ring: 187 96% 43%;
+    --radius: 0.875rem;
+    --chart-1: 217 91% 60%;
+    --chart-2: 187 96% 43%;
+    --chart-3: 174 84% 40%;
+    --chart-4: 210 69% 16%;
+    --chart-5: 199 89% 48%;
   }
 
   * {
@@ -36,7 +40,7 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Inter', 'Space Grotesk', system-ui, -apple-system, sans-serif;
+    font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
   }
 }
