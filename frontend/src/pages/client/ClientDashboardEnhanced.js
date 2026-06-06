@@ -208,6 +208,14 @@ const ClientDashboardEnhanced = () => {
     }
     // Suppress duplicate-open noise.
     if (result?.error === 'already_opening') return null;
+    // Extension reloaded/updated mid-session → context invalidated.
+    if (/context invalidated|Extension context/i.test(raw)) {
+      return 'Extension was reloaded. Refresh this page, then click Access again.';
+    }
+    // Extension did not respond in time (service worker sleeping).
+    if (/did not respond in time|timeout/i.test(raw)) {
+      return 'Extension is waking up. Please wait 5 seconds and try again.';
+    }
     return raw || 'Could not open tool.';
   };
 
@@ -230,7 +238,13 @@ const ClientDashboardEnhanced = () => {
     if (!extConnStatus?.connected) {
       try { await connectExtension(); } catch (_) {}
     }
-    const result = await openTool(toolId);
+    let result;
+    try {
+      result = await openTool(toolId);
+    } catch (err) {
+      // openTool should never throw (it returns {success:false}), but guard anyway.
+      result = { success: false, error: err.message || 'unknown_error' };
+    }
     if (result?.success) {
       setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
     } else {

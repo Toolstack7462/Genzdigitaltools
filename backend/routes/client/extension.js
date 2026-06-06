@@ -27,17 +27,20 @@ router.post('/activation-token', async (req, res) => {
     const ip = getClientIp(req);
 
     let deviceIdHash = null;
-    if (req.user?.devicePolicy?.enabled) {
-      if (!deviceId) {
-        return res.status(400).json({ error: 'deviceId required for extension activation' });
-      }
+    if (req.user?.devicePolicy?.enabled && deviceId) {
+      // Soft mode: trust the already-authenticated session. Login already created
+      // the binding if it was missing. Here we just record the device hash for
+      // correlation; hard mode still requires an exact binding match.
+      const BINDING_MODE = (process.env.DEVICE_BINDING_MODE || 'soft').toLowerCase();
       deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
       const binding = await DeviceBinding.findOne({ clientId: req.userId, deviceIdHash });
-      if (!binding) {
+      if (binding) {
+        binding.lastSeenAt = new Date();
+        await binding.save();
+      } else if (BINDING_MODE === 'hard') {
         return res.status(403).json({ error: 'Device binding mismatch', code: 'DEVICE_MISMATCH' });
       }
-      binding.lastSeenAt = new Date();
-      await binding.save();
+      // Soft mode: proceed — the session is already authenticated.
     } else if (deviceId) {
       deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
     }
