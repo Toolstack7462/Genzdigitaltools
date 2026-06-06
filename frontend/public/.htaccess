@@ -8,6 +8,10 @@ RewriteRule ^index\.html$ - [L]
 RewriteCond %{REQUEST_FILENAME} -f
 RewriteRule ^ - [L]
 
+# Redirect /client/* and /admin/* to app subdomain
+RewriteRule ^client(/.*)?$ https://app.genzdigitalstore.com/client$1 [R=302,L]
+RewriteRule ^admin(/.*)?$ https://app.genzdigitalstore.com/admin$1 [R=302,L]
+
 # Route to React SPA — but NOT for /api/ routes (let Passenger handle those)
 RewriteCond %{REQUEST_URI} !^/api/
 RewriteCond %{REQUEST_FILENAME} !-f
