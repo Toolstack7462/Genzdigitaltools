@@ -91,7 +91,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
               ? <Loader2 size={13} className="animate-spin" />
               : <ExternalLink size={13} />
             }
-            {openState?.loading ? 'Opening…' : 'Access'}
+            {openState?.loading ? 'Preparing…' : 'Access'}
           </button>
         ) : (
           <Link to="/contact"
@@ -188,6 +188,29 @@ const ClientDashboardEnhanced = () => {
     return matchesSearch && matchesFilter;
   });
 
+  /* ─── sanitizeError — maps raw extension/backend errors to user-safe messages ─ */
+  const sanitizeError = (result) => {
+    const raw = result?.actionableError || result?.message || result?.error || '';
+    // Assignment-level errors — show "Contact admin", not internal details.
+    if (result?.error === 'tool_access_expired' || /access expired|assignment.*expired|Tool access expired|revoked/i.test(raw)) {
+      return 'Access expired. Contact admin.';
+    }
+    if (/not assigned|no assignment/i.test(raw)) {
+      return 'Tool not assigned. Contact admin.';
+    }
+    // Never surface popup references to the user.
+    if (/popup|reconnect from/i.test(raw)) {
+      return 'Could not open tool. Please refresh the dashboard and try again.';
+    }
+    // Extension not installed/detected.
+    if (result?.error === 'extension_not_detected') {
+      return 'Extension not detected. Reload the extension, then refresh this page.';
+    }
+    // Suppress duplicate-open noise.
+    if (result?.error === 'already_opening') return null;
+    return raw || 'Could not open tool.';
+  };
+
   /* ─── handleOpenTool ─ */
   const handleOpenTool = async (tool) => {
     const toolId = tool._id || tool.toolId;
@@ -208,17 +231,21 @@ const ClientDashboardEnhanced = () => {
       try { await connectExtension(); } catch (_) {}
     }
     const result = await openTool(toolId);
-    if (result.success) {
+    if (result?.success) {
       setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
     } else {
-      const msg = result.actionableError || result.message || result.error || 'Could not open tool';
-      setToolOpenStates(prev => ({ ...prev, [toolId]: { error: msg } }));
-      // Auto-clear error after 8s
-      setTimeout(() => setToolOpenStates(prev => {
-        const copy = { ...prev };
-        delete copy[toolId];
-        return copy;
-      }), 8000);
+      const msg = sanitizeError(result);
+      if (msg) {
+        setToolOpenStates(prev => ({ ...prev, [toolId]: { error: msg } }));
+        // Auto-clear error after 8s
+        setTimeout(() => setToolOpenStates(prev => {
+          const copy = { ...prev };
+          delete copy[toolId];
+          return copy;
+        }), 8000);
+      } else {
+        setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
+      }
     }
   };
 

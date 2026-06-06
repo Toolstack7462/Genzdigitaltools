@@ -598,7 +598,7 @@ async function injectCookies(targetUrl, cookies) {
     return {
       success: false,
       error: 'Permission not granted for this domain',
-      actionRequired: 'Grant access to this domain in the extension popup before opening this tool.',
+      actionRequired: 'Host permission missing for this domain.',
       set: 0,
       failed: cookies.length,
       failures: [{ name: '(all)', error: 'Host permission not granted' }]
@@ -945,7 +945,7 @@ async function handleOpenTool(payload) {
   }
   if (!tool) {
     openIntentLock.delete(toolId);
-    return { success: false, error: 'tool_not_synced', message: 'Tool not found after sync. Reconnect extension and try again.' };
+    return { success: false, error: 'tool_not_synced', message: 'Tool not found. Please refresh the dashboard and try again.' };
   }
 
   const targetUrl = tool.targetUrl;
@@ -966,7 +966,7 @@ async function handleOpenTool(payload) {
       error: 'permission_required',
       domain: tool.domain || new URL(targetUrl).hostname,
       originPattern,
-      message: 'Grant access to this tool domain in the extension popup, then try again.',
+      message: 'Permission required for this tool domain. Requesting access automatically.',
     };
   }
 
@@ -1005,7 +1005,7 @@ async function handleOpenTool(payload) {
     const tokenCheck = await getStorage(['extensionToken']);
     if (!tokenCheck.extensionToken) {
       openIntentLock.delete(toolId);
-      return { success: false, error: 'Extension authorization expired. Please reconnect from the dashboard.', needsReauth: true };
+      return { success: false, error: 'auth_expired', needsReauth: true, message: 'Refreshing secure access. Please wait...' };
     }
   }
 
@@ -1079,7 +1079,7 @@ async function handleOpenTool(payload) {
       if (result.requiresManualAction) {
         result.actionableError = 'MFA, CAPTCHA, or Cloudflare challenge detected. Complete it manually in the browser tab.';
       } else if (result.error?.toLowerCase().includes('permission')) {
-        result.actionableError = 'Host permission missing. Open the extension popup and grant access.';
+        result.actionableError = 'Domain access required. Please try again or contact admin.';
       }
     }
 

@@ -255,7 +255,7 @@ export function useExtension() {
       await connectExtension({}, { forceReauth: true });
       await refreshStatus();
     } catch (err) {
-      return { success: false, error: 'extension_not_connected', message: err.message || 'Extension could not auto-connect.' };
+      return { success: false, error: 'extension_not_connected', message: 'Could not prepare secure access. Please refresh the dashboard and try again.' };
     }
 
     if (openingRef.current.get(toolId)) return { success: false, error: 'already_opening' };
@@ -268,17 +268,24 @@ export function useExtension() {
 
       let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: intentToken, forceFreshSession: true }, 20000);
 
+      // Auto-request missing host permission, then retry. Never tell user to use popup.
       if (result?.error === 'permission_required' && result.originPattern) {
-        const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
-        if (!permission?.success && !permission?.granted) return result;
-        const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
-        const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+        try {
+          const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
+          if (permission?.success || permission?.granted) {
+            const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
+            const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
+            result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+          } else {
+            return { success: false, error: 'permission_denied', message: 'Domain access could not be granted automatically. Contact admin.' };
+          }
+        } catch (_) {
+          return { success: false, error: 'permission_denied', message: 'Domain access could not be granted automatically. Contact admin.' };
+        }
       }
 
-      // If the extension token was refreshed/repaired during this click, retry
-      // once with a fresh open intent instead of showing “session expired”.
-      if (result?.error && /token|authorization|expired|401|invalid|reauth/i.test(String(result.error))) {
+      // If background signalled auth expiry or needsReauth, silently reconnect once and retry.
+      if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(String(result.error)))) {
         await connectExtension({}, { forceReauth: true });
         const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
         const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
@@ -291,17 +298,17 @@ export function useExtension() {
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
       }
-      if (/token|authorization|expired|401|invalid|reauth/i.test(msg)) {
+      if (/auth_expired|token|authorization|expired|401|invalid|reauth/i.test(msg)) {
         try {
           await connectExtension({}, { forceReauth: true });
           const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
           const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
           return await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
-        } catch (retryErr) {
-          return { success: false, error: 'extension_reconnect_failed', message: retryErr.message || 'Extension could not reconnect automatically.' };
+        } catch (_retryErr) {
+          return { success: false, error: 'extension_reconnect_failed', message: 'Could not prepare secure access. Please refresh the dashboard and try again.' };
         }
       }
-      return { success: false, error: msg, message: msg };
+      return { success: false, error: 'open_failed', message: 'Could not open tool. Please refresh the dashboard and try again.' };
     } finally {
       openingRef.current.delete(toolId);
     }
