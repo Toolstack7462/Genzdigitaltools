@@ -92,15 +92,15 @@ const AdminLayoutEnhanced = ({ children }) => {
         ))}
       </nav>
 
-      <div className="p-3 border-t" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
+      <div className="p-3 border-t space-y-1" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
         <Link to="/" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-genz-muted hover:text-white hover:bg-white/5 transition-all">
           <Settings size={16} />
           View Website
         </Link>
         <button onClick={handleLogout}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-genz-muted hover:text-red-400 hover:bg-red-500/5 transition-all">
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-all">
           <LogOut size={16} />
-          Sign Out
+          Logout
         </button>
       </div>
     </div>
