@@ -160,10 +160,11 @@ const AdminDashboardEnhanced = () => {
   };
   
   const getActionIcon = (action) => {
-    if (action.includes('LOGIN')) return <CheckCircle2 size={16} className="text-green-400" />;
-    if (action.includes('CREATED')) return <UserPlus size={16} className="text-blue-400" />;
-    if (action.includes('DELETED')) return <AlertCircle size={16} className="text-red-400" />;
-    if (action.includes('UPDATED')) return <Clock size={16} className="text-yellow-400" />;
+    const a = action || '';
+    if (a.includes('LOGIN')) return <CheckCircle2 size={16} className="text-green-400" />;
+    if (a.includes('CREATED')) return <UserPlus size={16} className="text-blue-400" />;
+    if (a.includes('DELETED')) return <AlertCircle size={16} className="text-red-400" />;
+    if (a.includes('UPDATED')) return <Clock size={16} className="text-yellow-400" />;
     return <ActivityIcon size={16} className="text-gray-400" />;
   };
   
@@ -362,7 +363,7 @@ const AdminDashboardEnhanced = () => {
                         <span className="font-semibold">{activity.actorRole}</span>
                         {' '}
                         <span className="text-white/60">
-                          {activity.action.replace(/_/g, ' ').toLowerCase()}
+                          {(activity.action || '').replace(/_/g, ' ').toLowerCase()}
                         </span>
                       </p>
                       <p className="text-xs text-white/50 mt-1">
