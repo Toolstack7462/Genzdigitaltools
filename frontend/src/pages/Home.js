@@ -37,7 +37,7 @@ const StepBadge = ({ n, label, sub, color = '#00AFC1' }) => (
     </div>
     <div>
       <p className="text-white font-semibold text-sm">{label}</p>
-      <p className="text-white/45 text-xs mt-0.5">{sub}</p>
+      <p className="text-white/55 text-xs mt-0.5">{sub}</p>
     </div>
   </div>
 );
@@ -111,7 +111,7 @@ const Home = () => {
                   <MessageCircle size={15} /> WhatsApp
                 </a>
               </div>
-              <div className="flex gap-8 pt-8 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
+              <div className="flex flex-wrap gap-x-8 gap-y-4 pt-8 border-t" style={{ borderColor: 'rgba(255,255,255,0.06)' }}>
                 <StatBadge n="8+" label="Digital Services" />
                 <StatBadge n="100%" label="Secure Access" />
                 <StatBadge n="24/7" label="Support" />
@@ -454,8 +454,7 @@ const Home = () => {
               { label: 'Mobile App UI Concept',              category: 'App Dev',    color: '#60a5fa' },
               { label: 'SEO Growth Strategy Deck Concept',   category: 'SEO',        color: '#fb923c' },
             ].map(({label,category,color})=>(
-              <div key={label} className="group rounded-2xl overflow-hidden transition-all duration-300 hover:-translate-y-1"
-                style={{background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)'}}>
+              <div key={label} className="group card-premium card-glow overflow-hidden">
                 <div className="h-44 relative flex items-center justify-center"
                   style={{background:`linear-gradient(135deg,${color}15 0%,rgba(0,8,32,0.8) 100%)`}}>
                   <div className="absolute inset-0" style={{backgroundImage:`linear-gradient(${color}15 1px,transparent 1px),linear-gradient(90deg,${color}15 1px,transparent 1px)`,backgroundSize:'24px 24px'}} />
@@ -466,7 +465,7 @@ const Home = () => {
                 </div>
                 <div className="p-5">
                   <h3 className="text-white font-semibold text-sm group-hover:text-genz-teal transition-colors">{label}</h3>
-                  <p className="text-white/35 text-xs mt-1">Concept — available as a service</p>
+                  <p className="text-white/55 text-xs mt-1">Concept — available as a service</p>
                 </div>
               </div>
             ))}
@@ -496,13 +495,13 @@ const Home = () => {
               { tier:'Business',     price:'Contact', note:'for quote', pop:false, features:['Unlimited tool access','Social media + ad management','Web app or mobile app','Branding package','SEO strategy','Dedicated manager'] },
               { tier:'Custom',       price:"Let's talk", note:'',       pop:false, features:['Fully tailored plan','Mix of any services','API integrations','CRM & automation','Custom SLA','Executive support'] },
             ].map(p=>(
-              <div key={p.tier} className="relative rounded-2xl p-6 flex flex-col transition-all duration-300 hover:-translate-y-1"
-                style={p.pop?{background:'linear-gradient(160deg,rgba(0,175,193,0.18),rgba(0,20,50,0.9))',border:'1.5px solid rgba(0,175,193,0.5)',boxShadow:'0 0 40px rgba(0,175,193,0.15)'}:{background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)'}}>
+              <div key={p.tier} className={`relative p-6 flex flex-col ${p.pop?'border-animated rounded-2xl transition-all duration-300 hover:-translate-y-1':'card-premium'}`}
+                style={p.pop?{background:'linear-gradient(160deg,rgba(0,175,193,0.18),rgba(0,20,50,0.9))',border:'1.5px solid rgba(0,175,193,0.5)',boxShadow:'0 0 40px rgba(0,175,193,0.15)'}:{}}>
                 {p.pop && <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 px-4 py-1 rounded-full text-xs font-bold text-genz-deep-navy" style={{background:'linear-gradient(135deg,#00AFC1,#008EA3)'}}>Popular</div>}
                 <div className="mb-4">
-                  <span className={`text-xs font-bold uppercase tracking-widest ${p.pop?'text-genz-teal':'text-white/40'}`}>{p.tier}</span>
+                  <span className={`text-xs font-bold uppercase tracking-widest ${p.pop?'text-genz-teal':'text-white/55'}`}>{p.tier}</span>
                   <div className="mt-2 text-white font-bold text-2xl">{p.price}</div>
-                  {p.note && <div className="text-white/35 text-xs mt-0.5">{p.note}</div>}
+                  {p.note && <div className="text-white/55 text-xs mt-0.5">{p.note}</div>}
                 </div>
                 <ul className="space-y-2.5 flex-1 mb-6">
                   {p.features.map(f=>(
@@ -519,7 +518,7 @@ const Home = () => {
               </div>
             ))}
           </div>
-          <p className="text-center text-white/30 text-xs mt-8">Prices vary by scope. Contact us to discuss your specific needs.</p>
+          <p className="text-center text-white/55 text-xs mt-8">Prices vary by scope. Contact us to discuss your specific needs.</p>
         </div>
       </section>
 

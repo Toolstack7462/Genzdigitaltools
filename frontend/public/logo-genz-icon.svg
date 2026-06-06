@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Gen Z Digital Store">
+  <title>Gen Z Digital Store</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#04335A"/>
+      <stop offset="1" stop-color="#00091E"/>
+    </linearGradient>
+    <linearGradient id="z" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#7DF9FF"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#00C9DD" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#008EA3" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+  <rect x="1.25" y="1.25" width="45.5" height="45.5" rx="13.5" fill="url(#tile)" stroke="url(#edge)" stroke-width="1.5"/>
+  <rect x="3" y="3" width="42" height="20" rx="11" fill="#FFFFFF" opacity="0.05"/>
+  <path d="M15 16 H33 L16 32 H34" fill="none" stroke="url(#z)" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M35.5 11 L36.6 14.1 L39.7 15.2 L36.6 16.3 L35.5 19.4 L34.4 16.3 L31.3 15.2 L34.4 14.1 Z" fill="#7DF9FF"/>
+</svg>

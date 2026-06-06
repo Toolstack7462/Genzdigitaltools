@@ -17,12 +17,8 @@ const ServiceCard = ({ icon: Icon, title, description, to, color = 'teal', delay
   return (
     <Link
       to={to}
-      className="group block rounded-2xl p-6 transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl"
-      style={{
-        background: 'rgba(255,255,255,0.04)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        transitionDelay: `${delay}ms`,
-      }}
+      className="group card-premium card-glow block p-6"
+      style={{ transitionDelay: `${delay}ms` }}
     >
       {/* Icon */}
       <div

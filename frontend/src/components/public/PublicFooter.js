@@ -71,7 +71,7 @@ const PublicFooter = () => {
             <Link to="/" className="inline-block mb-4">
               <GenZDigitalStoreLogo className="h-10" textSize="xl" />
             </Link>
-            <p className="text-white/45 text-sm leading-relaxed mb-6 max-w-xs">
+            <p className="text-white/55 text-sm leading-relaxed mb-6 max-w-xs">
               Premium digital tools access, creative services, and smart web solutions
               — all from one platform built for creators, businesses, and digital professionals.
             </p>
@@ -89,7 +89,7 @@ const PublicFooter = () => {
                   target={href !== '#' ? '_blank' : undefined}
                   rel="noopener noreferrer"
                   aria-label={label}
-                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white/40 hover:text-genz-teal hover:bg-genz-teal/10 border border-white/8 hover:border-genz-teal/30 transition-all duration-200"
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white/55 hover:text-genz-teal hover:bg-genz-teal/10 border border-white/8 hover:border-genz-teal/30 transition-all duration-200"
                 >
                   <Icon size={15} />
                 </a>
@@ -105,7 +105,7 @@ const PublicFooter = () => {
                 <li key={to}>
                   <Link
                     to={to}
-                    className="text-white/45 hover:text-genz-teal text-sm transition-colors duration-150"
+                    className="text-white/55 hover:text-genz-teal text-sm transition-colors duration-150"
                   >
                     {label}
                   </Link>
@@ -122,7 +122,7 @@ const PublicFooter = () => {
                 <li key={to}>
                   <Link
                     to={to}
-                    className="text-white/45 hover:text-genz-teal text-sm transition-colors duration-150"
+                    className="text-white/55 hover:text-genz-teal text-sm transition-colors duration-150"
                   >
                     {label}
                   </Link>
@@ -141,12 +141,12 @@ const PublicFooter = () => {
                 </Link>
               </li>
               <li>
-                <Link to="/client/dashboard" className="text-white/45 hover:text-genz-teal text-sm transition-colors">
+                <Link to="/client/dashboard" className="text-white/55 hover:text-genz-teal text-sm transition-colors">
                   Client Dashboard
                 </Link>
               </li>
               <li>
-                <Link to="/admin/login" className="text-white/30 hover:text-white/60 text-xs transition-colors">
+                <Link to="/admin/login" className="text-white/55 hover:text-white/60 text-xs transition-colors">
                   Admin Panel
                 </Link>
               </li>
@@ -155,7 +155,7 @@ const PublicFooter = () => {
             <ul className="space-y-2.5">
               {['Terms of Service', 'Privacy Policy', 'Refund Policy'].map((item) => (
                 <li key={item}>
-                  <a href="#" className="text-white/35 hover:text-white/60 text-xs transition-colors">
+                  <a href="#" className="text-white/55 hover:text-white/60 text-xs transition-colors">
                     {item}
                   </a>
                 </li>
@@ -164,16 +164,22 @@ const PublicFooter = () => {
           </div>
         </div>
 
+        {/* Disclaimer */}
+        <p className="text-white/55 text-xs text-center leading-relaxed mb-6 max-w-3xl mx-auto">
+          Services are provided for educational, productivity and professional support purposes.
+          All tools accessed under authorized licensing — membership is for authorized use only.
+        </p>
+
         {/* Bottom bar */}
         <div
           className="pt-8 border-t flex flex-col sm:flex-row items-center justify-between gap-4"
           style={{ borderColor: 'rgba(255,255,255,0.06)' }}
         >
-          <p className="text-white/30 text-xs">
+          <p className="text-white/55 text-xs">
             © {year} Gen Z Digital Store. All rights reserved.
           </p>
           <p className="text-white/25 text-xs text-center">
-            All tools accessed under authorized licensing. Membership for authorized use only.
+            Built for creators, students &amp; businesses.
           </p>
         </div>
       </div>

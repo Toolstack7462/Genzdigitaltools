@@ -95,7 +95,7 @@ const ServiceWriting = () => {
                 <span className="text-2xl font-extrabold flex-shrink-0" style={{ color: 'rgba(167,139,250,0.4)' }}>{n}</span>
                 <div>
                   <h3 className="text-white font-semibold text-sm mb-1">{t}</h3>
-                  <p className="text-white/45 text-sm">{s}</p>
+                  <p className="text-white/55 text-sm">{s}</p>
                 </div>
               </div>
             ))}

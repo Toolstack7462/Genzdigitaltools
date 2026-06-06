@@ -89,8 +89,27 @@ const AdminBlog = () => {
   if (loading) {
     return (
       <AdminLayout>
-        <div className="flex items-center justify-center min-h-[80vh]">
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-genz-teal border-t-transparent"></div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading posts">
+          <div className="flex justify-between items-center gap-4 mb-8 animate-pulse">
+            <div className="space-y-2">
+              <div className="h-7 w-40 rounded bg-white/10" />
+              <div className="h-4 w-52 rounded bg-white/[0.07]" />
+            </div>
+            <div className="h-11 w-32 rounded-full bg-white/10" />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden animate-pulse">
+                <div className="h-40 bg-white/[0.07]" />
+                <div className="p-5 space-y-3">
+                  <div className="h-5 w-20 rounded-full bg-white/10" />
+                  <div className="h-4 w-4/5 rounded bg-white/10" />
+                  <div className="h-3 w-full rounded bg-white/[0.07]" />
+                  <div className="h-3 w-2/3 rounded bg-white/[0.07]" />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </AdminLayout>
     );

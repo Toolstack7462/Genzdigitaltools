@@ -83,7 +83,7 @@ const ClientTools = () => {
           <div className="flex flex-col sm:flex-row gap-4">
             {/* Search */}
             <div className="relative flex-1">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/40" size={20} />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/55" size={20} />
               <input
                 type="text"
                 placeholder="Search tools..."
@@ -119,7 +119,7 @@ const ClientTools = () => {
         {filteredTools.length === 0 ? (
           <div className={`${CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
-              <Package size={40} className="text-white/40" />
+              <Package size={40} className="text-white/55" />
             </div>
             <h3 className="text-xl font-semibold text-white mb-2">
               {searchTerm ? 'No tools found' : 'No tools assigned'}

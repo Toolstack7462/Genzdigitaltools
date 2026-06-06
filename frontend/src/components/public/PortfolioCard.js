@@ -1,13 +1,7 @@
 import { ExternalLink } from 'lucide-react';
 
 const PortfolioCard = ({ title, category, description, tags = [], colorAccent = '#00AFC1', visual }) => (
-  <div
-    className="group rounded-2xl overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl flex flex-col"
-    style={{
-      background: 'rgba(255,255,255,0.04)',
-      border: '1px solid rgba(255,255,255,0.08)',
-    }}
-  >
+  <div className="group card-premium card-glow overflow-hidden flex flex-col">
     {/* Visual area */}
     <div
       className="relative h-44 flex items-center justify-center overflow-hidden"
@@ -63,7 +57,7 @@ const PortfolioCard = ({ title, category, description, tags = [], colorAccent = 
       <h3 className="text-white font-semibold text-base mb-2 group-hover:text-genz-teal transition-colors">
         {title}
       </h3>
-      <p className="text-white/45 text-sm leading-relaxed mb-4 flex-1">{description}</p>
+      <p className="text-white/55 text-sm leading-relaxed mb-4 flex-1">{description}</p>
 
       {tags.length > 0 && (
         <div className="flex flex-wrap gap-1.5">

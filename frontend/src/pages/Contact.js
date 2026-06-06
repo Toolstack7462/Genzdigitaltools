@@ -66,7 +66,7 @@ const Contact = () => {
               </div>
               <div>
                 <h3 className="text-white font-bold text-base">Send us a message</h3>
-                <p className="text-white/40 text-xs">We'll reply within a few hours</p>
+                <p className="text-white/55 text-xs">We'll reply within a few hours</p>
               </div>
             </div>
 

@@ -119,7 +119,7 @@ const Pricing = () => {
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {PLANS.map(p => <PricingCard key={p.tier} {...p} />)}
           </div>
-          <p className="text-center text-white/30 text-xs mt-8">
+          <p className="text-center text-white/55 text-xs mt-8">
             All prices are quoted individually based on your requirements. Contact us to discuss your project.
           </p>
         </div>

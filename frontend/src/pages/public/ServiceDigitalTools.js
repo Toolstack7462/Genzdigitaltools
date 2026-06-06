@@ -83,7 +83,7 @@ const ServiceDigitalTools = () => {
                   <Icon size={20} className="text-genz-teal" />
                 </div>
                 <h3 className="text-white font-semibold text-sm mb-2">{label}</h3>
-                <p className="text-white/45 text-xs leading-relaxed">{sub}</p>
+                <p className="text-white/55 text-xs leading-relaxed">{sub}</p>
               </div>
             ))}
           </div>

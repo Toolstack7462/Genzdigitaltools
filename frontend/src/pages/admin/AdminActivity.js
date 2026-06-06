@@ -256,7 +256,7 @@ const AdminActivity = () => {
             <div>
               <label className="text-sm text-white/50 mb-1.5 block">Search</label>
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none" size={16} />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-white/55 pointer-events-none" size={16} />
                 <input
                   type="text"
                   placeholder="Search metadata..."
@@ -272,16 +272,25 @@ const AdminActivity = () => {
 
         {/* Activity List */}
         {loading ? (
-          <div className="flex items-center justify-center py-20">
-            <div className="text-center">
-              <div className="animate-spin rounded-full h-16 w-16 border-4 border-genz-teal border-t-transparent mx-auto mb-4"></div>
-              <p className="text-white/60">Loading activities...</p>
+          <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl overflow-hidden`} aria-busy="true" aria-label="Loading activities">
+            <div className="hidden sm:grid grid-cols-4 gap-4 px-6 py-4 border-b border-white/10">
+              {['Time', 'Role', 'Action', 'Details'].map((h) => (
+                <div key={h} className="text-sm font-medium text-white/50">{h}</div>
+              ))}
             </div>
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="grid grid-cols-2 sm:grid-cols-4 gap-4 px-6 py-4 border-b border-white/5 animate-pulse">
+                <div className="h-3 w-24 rounded bg-white/[0.07]" />
+                <div className="h-5 w-16 rounded-full bg-white/[0.07]" />
+                <div className="h-5 w-24 rounded-full bg-white/10" />
+                <div className="h-3 w-3/4 rounded bg-white/[0.07]" />
+              </div>
+            ))}
           </div>
         ) : activities.length === 0 ? (
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
-              <Activity size={40} className="text-white/40" />
+              <Activity size={40} className="text-white/55" />
             </div>
             <h3 className="text-lg font-medium text-white mb-2">No activity found</h3>
             <p className="text-white/60">Try adjusting your filters</p>

@@ -55,7 +55,7 @@ const ClientToolDetail = () => {
       <ClientLayoutEnhanced>
         <div className="max-w-3xl mx-auto text-center py-16">
           <div className="w-24 h-24 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
-            <Package size={48} className="text-white/40" />
+            <Package size={48} className="text-white/55" />
           </div>
           <h2 className="text-2xl font-bold text-white mb-4">Tool not found</h2>
           <button

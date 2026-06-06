@@ -75,7 +75,7 @@ const Portfolio = () => {
             ))}
           </div>
           {filtered.length === 0 && (
-            <div className="text-center py-20 text-white/40">No items in this category yet.</div>
+            <div className="text-center py-20 text-white/55">No items in this category yet.</div>
           )}
         </div>
       </section>

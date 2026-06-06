@@ -1,20 +1,54 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import "@/App.css";
 
-// Redirect /login, /client/*, /admin/* to app subdomain when on main domain
+// ── Domain routing guard ─────────────────────────────────────────────────
+// Main domain (genzdigitalstore.com)  → public marketing site only.
+//   App-only paths (/login, /client/*, /admin/*) are bounced to the app subdomain.
+// App subdomain (app.genzdigitalstore.com) → portal/dashboard only.
+//   Public marketing paths are bounced to the client login.
+// Both directions skip API/static assets and guard against redirect loops.
 (function domainGuard() {
+  const MAIN_HOSTS = ['genzdigitalstore.com', 'www.genzdigitalstore.com'];
+  const APP_HOST   = 'app.genzdigitalstore.com';
   const host = window.location.hostname;
-  if (host !== 'genzdigitalstore.com' && host !== 'www.genzdigitalstore.com') return;
   const path = window.location.pathname;
-  if (path === '/login') {
-    window.location.replace('https://app.genzdigitalstore.com/client/login');
-  } else if (path.startsWith('/client/') || path.startsWith('/admin/')) {
-    window.location.replace('https://app.genzdigitalstore.com' + path + window.location.search);
+  const search = window.location.search;
+
+  // Never touch API calls, build assets, or static files (any path with a file extension).
+  const isInfraPath = (p) =>
+    p.startsWith('/api/') ||
+    p.startsWith('/_next/') ||
+    p.startsWith('/static/') ||
+    p.startsWith('/assets/') ||
+    p.startsWith('/images/') ||
+    /\.[a-zA-Z0-9]+$/.test(p); // e.g. .js .css .png .svg .ico .json .map
+  if (isInfraPath(path)) return;
+
+  const isAppPath = (p) =>
+    p === '/login' || p.startsWith('/client') || p.startsWith('/admin');
+
+  // ── On the MAIN domain: send app-only paths to the app subdomain ──
+  if (MAIN_HOSTS.includes(host)) {
+    if (path === '/login') {
+      window.location.replace('https://' + APP_HOST + '/client/login');
+    } else if (path.startsWith('/client') || path.startsWith('/admin')) {
+      window.location.replace('https://' + APP_HOST + path + search);
+    }
+    return;
+  }
+
+  // ── On the APP subdomain: send public marketing paths to client login ──
+  if (host === APP_HOST) {
+    // Already an app path → leave it alone (prevents redirect loops on /client/login).
+    if (isAppPath(path)) return;
+    // Any non-app path (incl. "/") is marketing → bounce to the login.
+    window.location.replace('https://' + APP_HOST + '/client/login');
   }
 }());
 import PublicNavbar from './components/public/PublicNavbar';
 import PublicFooter from './components/public/PublicFooter';
 import WhatsAppButton from './components/WhatsAppButton';
+import ScrollProgress from './components/public/ScrollProgress';
 import { ToastProvider } from './components/Toast';
 
 // Public Pages (existing)
@@ -71,8 +105,10 @@ import ClientProfile from './pages/client/ClientProfile';
 // Public layout wrapper
 const PublicPage = ({ children }) => (
   <>
+    <a href="#main-content" className="skip-link">Skip to content</a>
+    <ScrollProgress />
     <PublicNavbar />
-    {children}
+    <main id="main-content">{children}</main>
     <PublicFooter />
     <WhatsAppButton />
   </>

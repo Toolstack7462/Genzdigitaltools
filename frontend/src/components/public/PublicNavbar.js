@@ -78,6 +78,9 @@ const PublicNavbar = () => {
                     className={`flex items-center gap-1 text-sm font-medium transition-all duration-200 ${
                       isActive(to) ? 'text-genz-teal' : 'text-white/80 hover:text-genz-teal'
                     }`}
+                    aria-haspopup="true"
+                    aria-expanded={servicesOpen}
+                    aria-controls="services-menu"
                     onMouseEnter={() => setServicesOpen(true)}
                     onMouseLeave={() => setServicesOpen(false)}
                     onClick={() => setServicesOpen(!servicesOpen)}
@@ -91,6 +94,8 @@ const PublicNavbar = () => {
 
                   {servicesOpen && (
                     <div
+                      id="services-menu"
+                      role="menu"
                       className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 rounded-2xl overflow-hidden shadow-2xl"
                       style={{
                         background: 'rgba(0,8,32,0.98)',
@@ -173,6 +178,8 @@ const PublicNavbar = () => {
             className="lg:hidden text-white/80 hover:text-genz-teal transition-colors p-1"
             onClick={() => setMobileOpen(!mobileOpen)}
             aria-label="Toggle menu"
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-menu"
           >
             {mobileOpen ? <X size={24} /> : <Menu size={24} />}
           </button>
@@ -181,6 +188,7 @@ const PublicNavbar = () => {
         {/* Mobile Menu */}
         {mobileOpen && (
           <div
+            id="mobile-menu"
             className="lg:hidden pb-5 pt-3 border-t"
             style={{ borderColor: 'rgba(0,175,193,0.1)' }}
           >
@@ -190,6 +198,7 @@ const PublicNavbar = () => {
                   <button
                     className="w-full flex items-center justify-between py-2.5 px-2 text-sm font-medium text-white/80 hover:text-genz-teal rounded-lg mb-1 transition-colors"
                     onClick={() => setMobileServicesOpen(!mobileServicesOpen)}
+                    aria-expanded={mobileServicesOpen}
                   >
                     {label}
                     <ChevronDown

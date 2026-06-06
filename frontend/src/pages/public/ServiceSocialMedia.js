@@ -100,7 +100,7 @@ const ServiceSocialMedia = () => {
                 <span className="text-2xl font-extrabold flex-shrink-0" style={{ color: 'rgba(225,48,108,0.5)' }}>{n}</span>
                 <div>
                   <h3 className="text-white font-semibold text-sm mb-1">{t}</h3>
-                  <p className="text-white/45 text-sm">{s}</p>
+                  <p className="text-white/55 text-sm">{s}</p>
                 </div>
               </div>
             ))}

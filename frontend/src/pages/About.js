@@ -79,7 +79,7 @@ const About = () => {
                 </div>
                 <div>
                   <h4 className="text-white font-semibold text-sm mb-1">{title}</h4>
-                  <p className="text-white/45 text-xs leading-relaxed">{desc}</p>
+                  <p className="text-white/55 text-xs leading-relaxed">{desc}</p>
                 </div>
               </div>
             ))}
@@ -103,7 +103,7 @@ const About = () => {
                 <CheckCircle size={16} className="text-genz-teal flex-shrink-0 mt-0.5" />
                 <div>
                   <h4 className="text-white font-semibold text-sm mb-1">{t}</h4>
-                  <p className="text-white/45 text-xs leading-relaxed">{s}</p>
+                  <p className="text-white/55 text-xs leading-relaxed">{s}</p>
                 </div>
               </div>
             ))}

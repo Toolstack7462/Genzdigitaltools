@@ -113,25 +113,25 @@ const ClientProfile = () => {
           <div className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="space-y-2">
-                <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Full Name</label>
+                <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Full Name</label>
                 <div className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <User size={18} className="text-white/40" />
+                  <User size={18} className="text-white/55" />
                   <span className="text-white font-medium">{userData?.fullName || '-'}</span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Email Address</label>
+                <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Email Address</label>
                 <div className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <Mail size={18} className="text-white/40" />
+                  <Mail size={18} className="text-white/55" />
                   <span className="text-white font-medium">{userData?.email || '-'}</span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Account Status</label>
+                <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Account Status</label>
                 <div className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <Shield size={18} className="text-white/40" />
+                  <Shield size={18} className="text-white/55" />
                   <span className={`px-3 py-1 text-xs font-medium rounded-full ${
                     userData?.status === 'active' 
                       ? 'bg-green-500/20 text-green-400' 
@@ -143,9 +143,9 @@ const ClientProfile = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Member Since</label>
+                <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Member Since</label>
                 <div className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <Calendar size={18} className="text-white/40" />
+                  <Calendar size={18} className="text-white/55" />
                   <span className="text-white font-medium">
                     {userData?.createdAt 
                       ? new Date(userData.createdAt).toLocaleDateString('en-US', { 
@@ -190,7 +190,7 @@ const ClientProfile = () => {
                 {deviceInfo && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Device ID</label>
+                      <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Device ID</label>
                       <div className="p-4 bg-white/5 border border-white/10 rounded-xl">
                         <span className="text-white font-mono text-sm">
                           {deviceInfo.deviceIdHash?.substring(0, 24)}...
@@ -199,9 +199,9 @@ const ClientProfile = () => {
                     </div>
 
                     <div className="space-y-2">
-                      <label className="text-xs text-white/40 uppercase tracking-wider font-medium">Last Activity</label>
+                      <label className="text-xs text-white/55 uppercase tracking-wider font-medium">Last Activity</label>
                       <div className="flex items-center gap-3 p-4 bg-white/5 border border-white/10 rounded-xl">
-                        <Clock size={16} className="text-white/40" />
+                        <Clock size={16} className="text-white/55" />
                         <span className="text-white">
                           {deviceInfo.lastSeenAt 
                             ? new Date(deviceInfo.lastSeenAt).toLocaleString()

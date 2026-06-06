@@ -265,13 +265,38 @@ const ClientDashboardEnhanced = () => {
     }
   };
 
-  /* ─── Loading State ─ */
+  /* ─── Loading State — skeleton screens ─ */
   if (loading) {
     return (
       <ClientLayoutEnhanced>
-        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4">
-          <div className="w-16 h-16 rounded-full border-4 border-genz-teal border-t-transparent animate-spin" />
-          <p className="text-genz-muted text-sm">Loading your dashboard...</p>
+        <div className="space-y-6 animate-pulse">
+          {/* Header skeleton */}
+          <div className="space-y-2">
+            <div className="h-3 w-28 rounded bg-white/10" />
+            <div className="h-8 w-64 rounded-lg bg-white/10" />
+            <div className="h-3 w-40 rounded bg-white/5" />
+          </div>
+          {/* Stats skeleton */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="p-4 rounded-2xl bg-white/[0.04] border border-white/10">
+                <div className="h-9 w-9 rounded-xl bg-white/10 mb-3" />
+                <div className="h-6 w-12 rounded bg-white/10 mb-2" />
+                <div className="h-3 w-16 rounded bg-white/5" />
+              </div>
+            ))}
+          </div>
+          {/* Tool grid skeleton */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className="p-5 rounded-2xl bg-white/[0.04] border border-white/10">
+                <div className="h-11 w-11 rounded-xl bg-white/10 mb-3" />
+                <div className="h-4 w-3/4 rounded bg-white/10 mb-2" />
+                <div className="h-3 w-1/3 rounded bg-white/5 mb-3" />
+                <div className="h-9 w-full rounded-xl bg-white/5" />
+              </div>
+            ))}
+          </div>
         </div>
       </ClientLayoutEnhanced>
     );
@@ -338,15 +363,20 @@ const ClientDashboardEnhanced = () => {
         {/* ── Stats Row ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
-            { icon: Package,  value: tools.length,          label: 'Total Tools',    color: 'text-genz-teal'   },
-            { icon: CheckCircle2, value: activeTools.length, label: 'Active Tools',  color: 'text-green-400'   },
-            { icon: Clock,    value: expiringTools.length,   label: 'Expiring Soon', color: 'text-yellow-400'  },
-            { icon: Lock,     value: expiredTools.length,    label: 'Expired',       color: 'text-red-400'     },
-          ].map(({ icon: Icon, value, label, color }) => (
-            <div key={label} className={`${CARD_VARIANTS.default} p-4 rounded-2xl`}>
-              <Icon size={18} className={`${color} mb-2`} />
-              <div className="text-2xl font-black text-white">{value}</div>
-              <div className="text-xs text-genz-muted">{label}</div>
+            { icon: Package,      value: tools.length,         label: 'Total Tools',   color: '#00AFC1', text: 'text-genz-teal'  },
+            { icon: CheckCircle2, value: activeTools.length,   label: 'Active Tools',  color: '#4ade80', text: 'text-green-400'  },
+            { icon: Clock,        value: expiringTools.length, label: 'Expiring Soon', color: '#fbbf24', text: 'text-yellow-400' },
+            { icon: Lock,         value: expiredTools.length,  label: 'Expired',       color: '#f87171', text: 'text-red-400'    },
+          ].map(({ icon: Icon, value, label, color, text }) => (
+            <div key={label} className="card-premium p-4 sm:p-5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center"
+                     style={{ background: `${color}1f`, border: `1px solid ${color}40` }}>
+                  <Icon size={17} style={{ color }} />
+                </div>
+              </div>
+              <div className={`text-2xl sm:text-3xl font-extrabold ${text}`}>{value}</div>
+              <div className="text-xs text-white/55 mt-0.5">{label}</div>
             </div>
           ))}
         </div>
@@ -447,8 +477,8 @@ const ClientDashboardEnhanced = () => {
                 placeholder="Search tools..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2.5 rounded-xl text-sm text-white placeholder-genz-muted focus:outline-none transition-all"
-                style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(0,175,193,0.15)' }}
+                aria-label="Search tools"
+                className="input-premium w-full pl-9 pr-4 py-2.5 text-sm"
               />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">

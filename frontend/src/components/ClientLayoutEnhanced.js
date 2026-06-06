@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, User, LogOut, Menu, X,
-  Bell, HelpCircle, ChevronRight
+  HelpCircle, ChevronRight, MessageCircle
 } from 'lucide-react';
 import { authService } from '../services/authService';
 import { useToast } from './Toast';
@@ -44,12 +45,25 @@ export const CARD_VARIANTS = {
   indigo:   'bg-indigo-500/10 border border-indigo-500/30',
 };
 
+const WHATSAPP_URL = 'https://wa.me/923027467462';
+
+// Route → human page title for the topbar
+const PAGE_TITLES = [
+  { match: (p) => p === '/client/dashboard',            title: 'Dashboard',     sub: 'Your tools & account overview' },
+  { match: (p) => p.startsWith('/client/tools/'),       title: 'Tool Details',  sub: 'Access and manage this tool' },
+  { match: (p) => p === '/client/tools',                title: 'My Tools',      sub: 'All tools assigned to you' },
+  { match: (p) => p === '/client/profile',              title: 'Profile',       sub: 'Account & security settings' },
+];
+const getPageMeta = (path) =>
+  PAGE_TITLES.find((r) => r.match(path)) || { title: 'Member Portal', sub: '' };
+
 // ============================================================================
 // MAIN LAYOUT COMPONENT
 // ============================================================================
 const ClientLayoutEnhanced = ({ children }) => {
   const navigate  = useNavigate();
   const location  = useLocation();
+  const reduce    = useReducedMotion();
   const { showSuccess, showError } = useToast();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [user, setUser] = useState(null);
@@ -77,14 +91,18 @@ const ClientLayoutEnhanced = ({ children }) => {
   ];
 
   const isActive = (path) => location.pathname === path;
+  const pageMeta = getPageMeta(location.pathname);
+  const initials = user?.fullName
+    ? user.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2)
+    : 'M';
 
   const Sidebar = ({ mobile = false }) => (
-    <div className={`flex flex-col h-full ${mobile ? '' : 'w-64'}`}
-         style={{ background: 'linear-gradient(180deg, #000c20 0%, #001030 100%)', borderRight: '1px solid rgba(0,175,193,0.1)' }}>
+    <div className={`flex flex-col h-full ${mobile ? 'w-full' : 'w-64'}`}
+         style={{ background: 'linear-gradient(180deg, #000a1f 0%, #001030 100%)', borderRight: '1px solid rgba(0,175,193,0.12)' }}>
       {/* Logo */}
-      <div className="p-5 border-b" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
-        <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)}>
-          <GenZDigitalStoreLogo className="h-9" textSize="base" />
+      <div className="h-16 flex items-center px-5 border-b" style={{ borderColor: 'rgba(0,175,193,0.1)' }}>
+        <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} aria-label="Gen Z Digital Store dashboard">
+          <GenZDigitalStoreLogo className="h-8" textSize="base" />
         </Link>
       </div>
 
@@ -92,14 +110,14 @@ const ClientLayoutEnhanced = ({ children }) => {
       {user && (
         <div className="p-4 border-b" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
           <div className="flex items-center gap-3 p-3 rounded-xl"
-               style={{ background: 'rgba(0,175,193,0.08)' }}>
+               style={{ background: 'rgba(0,175,193,0.07)', border: '1px solid rgba(0,175,193,0.12)' }}>
             <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm text-genz-deep-navy flex-shrink-0"
                  style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
-              {user.fullName ? user.fullName.split(' ').map(n => n[0]).join('').slice(0, 2) : 'M'}
+              {initials}
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-white text-sm font-semibold truncate">{user.fullName || 'Member'}</p>
-              <p className="text-genz-muted text-xs truncate">{user.email}</p>
+              <p className="text-white/55 text-xs truncate">{user.email}</p>
             </div>
           </div>
         </div>
@@ -107,31 +125,34 @@ const ClientLayoutEnhanced = ({ children }) => {
 
       {/* Navigation */}
       <nav className="flex-1 p-4 space-y-1">
-        {navItems.map(({ to, icon: Icon, label }) => (
-          <Link key={to} to={to}
-                onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all group ${
-                  isActive(to)
-                    ? 'text-genz-deep-navy'
-                    : 'text-genz-muted hover:text-white hover:bg-white/5'
-                }`}
-                style={isActive(to) ? { background: 'linear-gradient(135deg, #00AFC1, #008EA3)' } : {}}>
-            <Icon size={17} />
-            {label}
-            {isActive(to) && <ChevronRight size={13} className="ml-auto" />}
-          </Link>
-        ))}
+        <p className="px-3 mb-2 text-[10px] font-bold uppercase tracking-widest text-white/55">Menu</p>
+        {navItems.map(({ to, icon: Icon, label }) => {
+          const active = isActive(to);
+          return (
+            <Link key={to} to={to}
+                  onClick={() => setSidebarOpen(false)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                    active ? 'text-genz-deep-navy' : 'text-white/55 hover:text-white hover:bg-white/5'
+                  }`}
+                  style={active ? { background: 'linear-gradient(135deg, #00AFC1, #008EA3)', boxShadow: '0 6px 18px rgba(0,175,193,0.28)' } : {}}>
+              <Icon size={17} />
+              {label}
+              {active && <ChevronRight size={14} className="ml-auto" />}
+            </Link>
+          );
+        })}
       </nav>
 
       {/* Bottom actions */}
       <div className="p-4 border-t space-y-1" style={{ borderColor: 'rgba(0,175,193,0.08)' }}>
-        <a href="https://wa.me/923027467462" target="_blank" rel="noopener noreferrer"
-           className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-genz-muted hover:text-white hover:bg-white/5 transition-all">
+        <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
+           className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-white/55 hover:text-white hover:bg-white/5 transition-all">
           <HelpCircle size={17} />
           Get Support
         </a>
         <button onClick={handleLogout}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-genz-muted hover:text-red-400 hover:bg-red-500/5 transition-all">
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-white/55 hover:text-red-400 hover:bg-red-500/5 transition-all">
           <LogOut size={17} />
           Sign Out
         </button>
@@ -147,36 +168,72 @@ const ClientLayoutEnhanced = ({ children }) => {
       </div>
 
       {/* Mobile Sidebar Overlay */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden">
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />
-          <div className="relative w-72 h-full">
-            <Sidebar mobile />
-            <button className="absolute top-4 right-4 text-genz-muted hover:text-white transition-colors"
-                    onClick={() => setSidebarOpen(false)}>
-              <X size={20} />
-            </button>
+      <AnimatePresence>
+        {sidebarOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <motion.div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setSidebarOpen(false)}
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            />
+            <motion.div
+              className="relative w-72 h-full"
+              initial={reduce ? false : { x: -300 }}
+              animate={{ x: 0 }}
+              exit={reduce ? undefined : { x: -300 }}
+              transition={{ type: 'tween', ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
+            >
+              <Sidebar mobile />
+              <button className="absolute top-4 right-4 text-white/50 hover:text-white transition-colors"
+                      onClick={() => setSidebarOpen(false)} aria-label="Close menu">
+                <X size={20} />
+              </button>
+            </motion.div>
           </div>
-        </div>
-      )}
+        )}
+      </AnimatePresence>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden relative">
+        {/* Desktop Topbar */}
+        <header className="hidden lg:flex items-center justify-between h-16 px-6 sm:px-8 border-b flex-shrink-0 z-20"
+                style={{ background: 'rgba(0,8,32,0.82)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)', borderColor: 'rgba(0,175,193,0.1)' }}>
+          <div>
+            <h1 className="text-white font-bold text-lg leading-tight" style={{ fontFamily: "'Space Grotesk', Inter, sans-serif" }}>{pageMeta.title}</h1>
+            {pageMeta.sub && <p className="text-white/55 text-xs">{pageMeta.sub}</p>}
+          </div>
+          <div className="flex items-center gap-3">
+            <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
+               className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium text-green-400 border border-green-500/30 rounded-full hover:bg-green-500/10 transition-all">
+              <MessageCircle size={13} /> Support
+            </a>
+            <Link to="/client/profile" className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-white/5 transition-all" title="My profile">
+              <span className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs text-genz-deep-navy"
+                    style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>{initials}</span>
+              <span className="text-white/80 text-sm font-medium max-w-[140px] truncate">{user?.fullName || 'Member'}</span>
+            </Link>
+          </div>
+        </header>
+
         {/* Mobile Top Bar */}
-        <div className="lg:hidden flex items-center justify-between p-4 border-b"
-             style={{ background: '#000c20', borderColor: 'rgba(0,175,193,0.08)' }}>
-          <button onClick={() => setSidebarOpen(true)} className="text-genz-muted hover:text-white transition-colors">
+        <div className="lg:hidden flex items-center justify-between h-14 px-4 border-b flex-shrink-0"
+             style={{ background: 'rgba(0,12,32,0.92)', backdropFilter: 'blur(12px)', borderColor: 'rgba(0,175,193,0.08)' }}>
+          <button onClick={() => setSidebarOpen(true)} className="text-white/60 hover:text-white transition-colors" aria-label="Open menu">
             <Menu size={22} />
           </button>
           <GenZDigitalStoreLogo className="h-7" textSize="sm" />
-          <Link to="/client/profile" className="text-genz-muted hover:text-genz-teal transition-colors">
+          <Link to="/client/profile" className="text-white/60 hover:text-genz-teal transition-colors" aria-label="Profile">
             <User size={20} />
           </Link>
         </div>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-6">
-          {children}
+        <main className="flex-1 overflow-y-auto p-5 sm:p-6 lg:p-8 relative">
+          <div className="mesh-bg opacity-60" aria-hidden="true" />
+          <div className="relative z-10 max-w-7xl mx-auto">
+            {children}
+          </div>
         </main>
       </div>
     </div>

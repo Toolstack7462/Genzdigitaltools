@@ -12,7 +12,9 @@ const PricingCard = ({
   highlighted = false,
 }) => (
   <div
-    className="relative rounded-2xl p-7 flex flex-col h-full transition-all duration-300 hover:-translate-y-1"
+    className={`relative p-7 flex flex-col h-full ${
+      highlighted ? 'border-animated rounded-2xl transition-all duration-300 hover:-translate-y-1' : 'card-premium'
+    }`}
     style={
       highlighted
         ? {
@@ -20,10 +22,7 @@ const PricingCard = ({
             border: '1.5px solid rgba(0,175,193,0.5)',
             boxShadow: '0 0 40px rgba(0,175,193,0.15)',
           }
-        : {
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }
+        : {}
     }
   >
     {highlighted && (
@@ -39,7 +38,7 @@ const PricingCard = ({
     <div className="mb-5">
       <span
         className={`text-xs font-bold uppercase tracking-widest ${
-          highlighted ? 'text-genz-teal' : 'text-white/40'
+          highlighted ? 'text-genz-teal' : 'text-white/55'
         }`}
       >
         {tier}
@@ -47,7 +46,7 @@ const PricingCard = ({
       <div className="mt-3 flex items-end gap-1.5">
         <span className="text-white font-bold text-3xl">{price}</span>
         {priceNote && (
-          <span className="text-white/40 text-sm mb-1">{priceNote}</span>
+          <span className="text-white/55 text-sm mb-1">{priceNote}</span>
         )}
       </div>
       <p className="text-white/50 text-sm mt-2">{tagline}</p>
