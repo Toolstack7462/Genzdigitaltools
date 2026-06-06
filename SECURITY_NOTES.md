@@ -44,6 +44,26 @@
 - Does not include anti-detection or fingerprinting evasion logic.
 - Does not expose JWT secrets, refresh tokens, or encryption keys to the frontend or extension.
 
+## Reference Extension Analysis
+
+Two commercial Chrome extensions (OceanHub v1.3.1 and Ghost SEO Tools) were audited for safe architecture patterns.
+
+**Applied (safe patterns):**
+- `__Host-` cookie skip: cookies with this prefix enforce strict origin binding and cannot be set externally; they are now skipped in `injectCookies()` to avoid misleading error counts.
+- sameSite `unspecified` normalization: treated the same as `no_restriction` to avoid cookie rejection on SameSite=None tools.
+- `isToolOpening` flag: prevents overlapping `handleOpenTool` invocations.
+
+**Explicitly avoided (invasive/malicious patterns from reference extensions):**
+- `management` API to disable other extensions
+- `browsingData.remove` with global scope (all-domains cookie wipe)
+- Fingerprint spoofing (`navigator.userAgent`, `screen.width/height` override)
+- DevTools keyboard shortcut blocking
+- `document.cookie` getter/setter override to hide cookies from other extensions
+- `removeSelf()` / self-destruct on other extension detection
+- `reloadAllTabs()` (reloads all browser tabs)
+
+Full analysis: `REFERENCE_EXTENSION_ANALYSIS.md`
+
 ## Secrets Rotation
 
 To rotate `COOKIES_ENCRYPTION_KEY`: update the environment variable and re-save all existing session bundles in the admin tool editor (they will be re-encrypted with the new key on save).

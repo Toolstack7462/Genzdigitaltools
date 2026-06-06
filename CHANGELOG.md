@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.9.0] — Safe Reference-Extension Patterns
+
+### Chrome Extension
+
+- **js/background.js**: Added `isToolOpening` module-level flag (OceanHub pattern) — wraps `handleOpenTool` to prevent overlapping invocations while a tool open is in progress.
+- **js/background.js**: Added `__Host-` cookie name skip in `injectCookies()` (OceanHub pattern) — cookies with this prefix enforce strict origin binding and are silently rejected by Chrome when set externally; skipping them prevents misleading failure counts.
+- **js/background.js**: Fixed sameSite normalization in `injectCookies()` — `unspecified` now maps to `no_restriction` (was falling through to `lax`, which caused rejected cookies for SameSite=None tools).
+
+### Documentation
+
+- **REFERENCE_EXTENSION_ANALYSIS.md**: Full analysis of OceanHub v1.3.1 and Ghost SEO Tools Extension across 15 areas. Documents safe patterns applied, risky patterns explicitly avoided, and the security guarantees preserved.
+- **SECURITY_NOTES.md**: Added reference extension analysis section.
+- **EXTENSION_INSTALL_GUIDE.md**: Added session management note.
+
+---
+
 ## [3.8.0] — Full Stabilization Audit
 
 ### Backend

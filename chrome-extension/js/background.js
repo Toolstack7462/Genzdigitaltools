@@ -27,6 +27,8 @@ let toolCredentialsCache = new Map();
 let domainToolMap = new Map();
 // Duplicate open lock: toolId → timestamp; prevents double-open within 3s
 let openIntentLock = new Map();
+// Prevents overlapping handleOpenTool invocations (OceanHub safe pattern)
+let isToolOpening = false;
 
 // ============================================================================
 // STORAGE UTILITIES
@@ -626,9 +628,13 @@ async function injectCookies(targetUrl, cookies) {
       
       const secure = cookie.secure === true || (cookie.secure !== false && isHttps);
       
-      // Normalize sameSite
+      // Skip __Host- prefixed cookies — they enforce strict origin binding and
+      // cannot be set externally via chrome.cookies.set (OceanHub safe pattern)
+      if (cookie.name && cookie.name.startsWith('__Host-')) continue;
+
+      // Normalize sameSite; treat 'unspecified' as no_restriction (OceanHub pattern)
       let sameSite = (cookie.sameSite || 'lax').toLowerCase();
-      if (sameSite === 'no_restriction' || sameSite === 'none') {
+      if (sameSite === 'no_restriction' || sameSite === 'none' || sameSite === 'unspecified') {
         sameSite = 'no_restriction';
       } else if (sameSite === 'strict') {
         sameSite = 'strict';
@@ -901,6 +907,19 @@ function waitForTabLoad(tabId, timeout = 30000) {
  *  8. Log success to backend.
  */
 async function handleOpenTool(payload) {
+  // Prevent overlapping invocations (OceanHub isToolOpening pattern)
+  if (isToolOpening) {
+    return { success: false, error: 'already_opening' };
+  }
+  isToolOpening = true;
+  try {
+    return await _handleOpenToolInner(payload);
+  } finally {
+    isToolOpening = false;
+  }
+}
+
+async function _handleOpenToolInner(payload) {
   const { toolId, openIntentToken, forceFreshSession = true } = payload || {};
 
   if (!toolId || typeof toolId !== 'string') {

@@ -29,6 +29,8 @@ The extension connects automatically when you visit the client dashboard while l
 
 You do not need to log in to the tool manually. The authorized session is managed by your admin.
 
+**Note on session management:** The extension clears the tool's cookies and storage before applying the authorized session bundle on every Access click. This prevents stale sessions from a previous login interfering. `__Host-` prefixed cookies (strict-origin cookies) are deliberately skipped — they are bound to the tool's own origin and cannot be set externally.
+
 ### Troubleshooting
 
 | Symptom | Fix |

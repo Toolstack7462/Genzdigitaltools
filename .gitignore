@@ -24,6 +24,9 @@ coverage/
 build/
 */build/
 **/build/
+# Exception: frontend build is committed for Hostinger Git deploy (no build step on static hosting)
+!frontend/build/
+!frontend/build/**
 dist/
 */dist/
 **/dist/
