@@ -1,0 +1,58 @@
+/* =====================================================================
+   PREMIUM DASHBOARD PRIMITIVES — admin + client consoles
+   Clean white cards, soft borders/shadows, real tables, status badges.
+   ===================================================================== */
+
+/* ---- Status badges -------------------------------------------------- */
+.ds-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 1.45; white-space: nowrap;
+}
+.ds-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ds-badge-success { background: #dcfce7; color: #15803d; }
+.ds-badge-danger  { background: #fee2e2; color: #b91c1c; }
+.ds-badge-warn    { background: #fef3c7; color: #b45309; }
+.ds-badge-info    { background: #dbeafe; color: #1d4ed8; }
+.ds-badge-teal    { background: #cffafe; color: #0e7490; }
+.ds-badge-neutral { background: #eef2f6; color: #5b6b7c; }
+
+/* ---- Clean data table ---------------------------------------------- */
+.ds-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.ds-table thead th {
+  text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #8a98a8;
+  padding: 11px 18px; border-bottom: 1px solid var(--brand-border); white-space: nowrap;
+}
+.ds-table tbody td {
+  padding: 13px 18px; border-bottom: 1px solid var(--brand-border);
+  font-size: 14px; color: var(--brand-text); vertical-align: middle;
+}
+.ds-table tbody tr:last-child td { border-bottom: 0; }
+.ds-table tbody tr { transition: background 0.15s ease; }
+.ds-table tbody tr:hover { background: var(--brand-surface-soft); }
+
+/* ---- Sidebar nav item (navy sidebar) ------------------------------- */
+.ds-navitem {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 12px;
+  font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.62);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.ds-navitem:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.ds-navitem.active { color: #fff; background: rgba(255,255,255,0.10); }
+.ds-navitem.active::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 20px; border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #2563EB, #06B6D4);
+}
+.ds-navitem.active .ds-navicon { color: #06B6D4; }
+
+/* ---- Stat card hover ----------------------------------------------- */
+.ds-stat { transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s, border-color 0.25s; }
+.ds-stat:hover { transform: translateY(-3px); box-shadow: 0 18px 40px -18px rgba(7,27,51,0.22); border-color: rgba(6,182,212,0.3); }
+
+/* thin scrollbar for feeds */
+.ds-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.ds-scroll::-webkit-scrollbar-thumb { background: var(--brand-border); border-radius: 999px; }
+.ds-scroll::-webkit-scrollbar-track { background: transparent; }

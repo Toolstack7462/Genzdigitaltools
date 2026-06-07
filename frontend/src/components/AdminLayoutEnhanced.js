@@ -99,11 +99,8 @@ const AdminLayoutEnhanced = ({ children }) => {
                   <Link key={to} to={to}
                         onClick={() => setSidebarOpen(false)}
                         aria-current={active ? 'page' : undefined}
-                        className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                          active ? 'text-white' : 'text-white/60 hover:text-white hover:bg-white/5'
-                        }`}
-                        style={active ? { background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 8px 18px rgba(37,99,235,0.3)' } : {}}>
-                    <Icon size={16} />
+                        className={`ds-navitem ${active ? 'active' : ''}`}>
+                    <Icon size={17} className="ds-navicon flex-shrink-0" />
                     {label}
                   </Link>
                 );

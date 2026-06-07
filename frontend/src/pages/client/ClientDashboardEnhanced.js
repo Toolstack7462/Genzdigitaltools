@@ -361,24 +361,30 @@ const ClientDashboardEnhanced = () => {
         </div>
 
         {/* ── Stats Row ── */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          {[
-            { icon: Package,      value: tools.length,         label: 'Total Tools',   color: '#2563EB' },
-            { icon: CheckCircle2, value: activeTools.length,   label: 'Active Tools',  color: '#16A34A' },
-            { icon: Clock,        value: expiringTools.length, label: 'Expiring Soon', color: '#D97706' },
-            { icon: Lock,         value: expiredTools.length,  label: 'Expired',       color: '#EF4444' },
-          ].map(({ icon: Icon, value, label, color }) => (
-            <div key={label} className="gz-card depth p-5">
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 rounded-xl flex items-center justify-center"
-                     style={{ background: `${color}14`, border: `1px solid ${color}2e` }}>
-                  <Icon size={19} style={{ color }} />
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {(() => {
+            const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
+            const cards = [
+              { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    color: '#16A34A' },
+              { icon: Clock,        kind: 'num',    value: expiringTools.length, label: 'Expiring Soon',   color: '#D97706' },
+              { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', color: accountActive ? '#16A34A' : '#EF4444' },
+              { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', color: '#06B6D4' },
+            ];
+            return cards.map(({ icon: Icon, kind, value, label, color, badge }) => (
+              <div key={label} className="ds-stat bg-white rounded-[22px] border border-genz-border p-5 shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+                <div className="flex items-center justify-between mb-4">
+                  <span className="w-11 h-11 rounded-xl flex items-center justify-center"
+                        style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>
+                    <Icon size={19} />
+                  </span>
                 </div>
+                {kind === 'num'
+                  ? <div className="font-heading text-[30px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
+                  : <div className="mt-0.5"><span className={`ds-badge ${badge}`}><span className="dot" /> {value}</span></div>}
+                <div className="text-[13px] text-genz-muted mt-2">{label}</div>
               </div>
-              <div className="font-heading text-[32px] font-extrabold leading-none" style={{ color }}>{value}</div>
-              <div className="text-[13px] text-genz-muted mt-1.5">{label}</div>
-            </div>
-          ))}
+            ));
+          })()}
         </div>
 
         {/* ── Chrome Extension Banner ── hide after connected and dismissed */}

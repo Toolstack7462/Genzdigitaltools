@@ -133,13 +133,10 @@ const ClientLayoutEnhanced = ({ children }) => {
             <Link key={to} to={to}
                   onClick={() => setSidebarOpen(false)}
                   aria-current={active ? 'page' : undefined}
-                  className={`relative flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
-                    active ? 'text-white' : 'text-white/60 hover:text-white hover:bg-white/5'
-                  }`}
-                  style={active ? { background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 8px 20px rgba(37,99,235,0.3)' } : {}}>
-              <Icon size={17} />
+                  className={`ds-navitem ${active ? 'active' : ''}`}>
+              <Icon size={17} className="ds-navicon flex-shrink-0" />
               {label}
-              {active && <ChevronRight size={14} className="ml-auto" />}
+              {active && <ChevronRight size={14} className="ml-auto opacity-70" />}
             </Link>
           );
         })}

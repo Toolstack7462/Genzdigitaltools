@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
+import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Package, Users, TrendingUp, Activity as ActivityIcon,
   UserPlus, PackagePlus, Clock, CheckCircle2, AlertCircle,
@@ -124,26 +124,10 @@ const AdminDashboardEnhanced = () => {
 
   /* ── Stat card definitions ── */
   const statCards = [
-    {
-      icon: Package, label: 'Total Tools', value: stats.totalTools,
-      sublabel: `${stats.activeTools} active`,
-      variant: 'blue', textColor: 'text-blue-500', glow: 'bg-blue-500/20',
-    },
-    {
-      icon: Users, label: 'Total Members', value: stats.totalClients,
-      sublabel: `${stats.activeClients} active`,
-      variant: 'green', textColor: 'text-green-500', glow: 'bg-green-500/20',
-    },
-    {
-      icon: TrendingUp, label: 'Assignments', value: stats.totalAssignments,
-      sublabel: 'Active',
-      variant: 'purple', textColor: 'text-purple-500', glow: 'bg-purple-500/20',
-    },
-    {
-      icon: Shield, label: 'Device Bindings', value: stats.deviceBindings,
-      sublabel: 'Secured devices',
-      variant: 'teal', textColor: 'text-genz-teal', glow: 'bg-genz-teal/20',
-    },
+    { icon: Package,     label: 'Total Tools',     value: stats.totalTools,       sublabel: `${stats.activeTools} active`,    hex: '#2563EB' },
+    { icon: Users,       label: 'Total Members',   value: stats.totalClients,     sublabel: `${stats.activeClients} active`,  hex: '#16A34A' },
+    { icon: TrendingUp,  label: 'Assignments',     value: stats.totalAssignments, sublabel: 'Active',                         hex: '#7C3AED' },
+    { icon: Shield,      label: 'Device Bindings', value: stats.deviceBindings,   sublabel: 'Secured',                        hex: '#06B6D4' },
   ];
 
   /* ── Quick actions ── */
@@ -251,24 +235,20 @@ const AdminDashboardEnhanced = () => {
         </div>
 
         {/* Stat Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
           {statCards.map((stat, i) => {
             const Icon = stat.icon;
             return (
-              <div key={i}
-                   className={`group relative overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${ADMIN_CARD_VARIANTS[stat.variant] || ADMIN_CARD_VARIANTS.default}`}>
-                {/* Hover glow */}
-                <div className={`absolute top-0 right-0 w-28 h-28 ${stat.glow} opacity-0 group-hover:opacity-40 rounded-full blur-3xl transition-opacity duration-500 pointer-events-none`} />
-                <div className="relative p-6">
-                  <div className={`w-12 h-12 rounded-xl ${stat.glow} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
-                    <Icon size={24} className={stat.textColor} />
-                  </div>
-                  <div className="text-3xl font-black text-genz-navy mb-1 tabular-nums">{stat.value}</div>
-                  <div className="text-sm text-genz-muted font-medium mb-1">{stat.label}</div>
-                  <div className={`text-xs ${stat.textColor} flex items-center gap-1`}>
-                    <TrendingUp size={11} /> {stat.sublabel}
-                  </div>
+              <div key={i} className="ds-stat bg-white rounded-[22px] border border-genz-border p-5 shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+                <div className="flex items-start justify-between mb-4">
+                  <span className="w-11 h-11 rounded-xl flex items-center justify-center"
+                        style={{ background: `${stat.hex}14`, color: stat.hex, border: `1px solid ${stat.hex}26` }}>
+                    <Icon size={20} />
+                  </span>
+                  <span className="ds-badge ds-badge-neutral">{stat.sublabel}</span>
                 </div>
+                <div className="font-heading text-[30px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
+                <div className="text-[13px] text-genz-muted mt-1.5">{stat.label}</div>
               </div>
             );
           })}
@@ -276,125 +256,121 @@ const AdminDashboardEnhanced = () => {
 
         {/* Quick Actions */}
         <div>
-          <h2 className="text-lg font-bold text-genz-navy mb-4">Quick Actions</h2>
+          <h2 className="font-heading text-[18px] font-bold text-genz-navy mb-4">Quick Actions</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             {quickActions.map((action, i) => {
               const Icon = action.icon;
               return (
                 <button key={i} onClick={action.action}
-                        className={`group relative overflow-hidden rounded-2xl p-5 text-left transition-all duration-300 hover:-translate-y-1 hover:shadow-xl ${ADMIN_CARD_VARIANTS[action.variant] || ADMIN_CARD_VARIANTS.default}`}>
-                  <div className={`absolute top-0 right-0 w-36 h-36 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-15 rounded-full blur-3xl transition-opacity duration-500 pointer-events-none`} />
-                  <div className="relative">
-                    <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform`}>
-                      <Icon size={24} className="text-genz-navy" />
-                    </div>
-                    <h3 className="text-base font-bold text-genz-navy mb-1 group-hover:text-genz-teal transition-colors">{action.title}</h3>
-                    <p className="text-xs text-genz-muted mb-3">{action.description}</p>
-                    <span className="inline-flex items-center gap-1.5 text-xs text-genz-teal font-semibold">
-                      Get Started <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-                    </span>
+                        className="ds-stat group bg-white rounded-[22px] border border-genz-border p-5 text-left shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+                  <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-md`}>
+                    <Icon size={22} className="text-white" />
                   </div>
+                  <h3 className="text-[16px] font-bold text-genz-navy mb-1 group-hover:text-genz-blue transition-colors">{action.title}</h3>
+                  <p className="text-[13px] text-genz-muted mb-3">{action.description}</p>
+                  <span className="inline-flex items-center gap-1.5 text-[13px] text-genz-blue font-semibold">
+                    Get Started <ArrowRight size={13} className="group-hover:translate-x-1 transition-transform" />
+                  </span>
                 </button>
               );
             })}
           </div>
         </div>
 
-        {/* Recent Clients + Recent Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Members + Recent Activity */}
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
-          {/* Recent Clients */}
-          <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-base font-bold text-genz-navy flex items-center gap-2">
-                <Users size={16} className="text-genz-teal" /> Recent Members
+          {/* Recent Members table */}
+          <div className="lg:col-span-3 bg-white rounded-[22px] border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.05)] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-genz-border">
+              <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
+                <Users size={16} className="text-genz-blue" /> Recent Members
               </h2>
               <button onClick={() => navigate('/admin/clients')}
-                      className="text-xs text-genz-teal hover:underline font-medium">
-                View All
+                      className="text-[13px] text-genz-blue hover:underline font-semibold inline-flex items-center gap-1">
+                View all <ArrowRight size={13} />
               </button>
             </div>
 
             {recentClients.length === 0 ? (
-              <div className="py-10 text-center">
-                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-green-500/10 flex items-center justify-center">
-                  <Users size={24} className="text-genz-muted" />
+              <div className="py-14 text-center">
+                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-genz-bg flex items-center justify-center">
+                  <Users size={22} className="text-genz-muted" />
                 </div>
-                <p className="text-genz-muted text-sm">No members yet</p>
+                <p className="text-genz-navy font-semibold text-sm">No members yet</p>
+                <p className="text-genz-muted text-xs mt-1">Add your first member to get started.</p>
               </div>
             ) : (
-              <div className="space-y-2">
-                {recentClients.map((client, idx) => {
-                  const name   = client?.fullName || 'Unknown';
-                  const email  = client?.email    || '';
-                  const status = client?.status   || 'unknown';
-                  const initial = name.charAt(0).toUpperCase() || '?';
-                  const id = client?._id || client?.id || idx;
-                  return (
-                    <div key={String(id)}
-                         className="flex items-center gap-3 p-3 rounded-xl bg-white border border-white/[0.06] hover:bg-white hover:border-genz-teal/20 transition-all cursor-pointer"
-                         onClick={() => id && id !== idx && navigate(`/admin/clients/${id}/edit`)}>
-                      <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm text-genz-deep-navy"
-                           style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}>
-                        {initial}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-genz-navy truncate">{name}</p>
-                        <p className="text-xs text-genz-muted truncate">{email}</p>
-                      </div>
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${
-                        status === 'active'
-                          ? 'bg-green-500/20 text-green-500'
-                          : 'bg-red-500/20 text-red-500'
-                      }`}>
-                        {status}
-                      </span>
-                    </div>
-                  );
-                })}
+              <div className="overflow-x-auto">
+                <table className="ds-table">
+                  <thead><tr><th>Member</th><th>Email</th><th>Status</th></tr></thead>
+                  <tbody>
+                    {recentClients.map((client, idx) => {
+                      const name = client?.fullName || 'Unknown';
+                      const email = client?.email || '—';
+                      const status = client?.status || 'unknown';
+                      const initial = name.charAt(0).toUpperCase() || '?';
+                      const id = client?._id || client?.id || idx;
+                      return (
+                        <tr key={String(id)}
+                            className="cursor-pointer"
+                            onClick={() => id && id !== idx && navigate(`/admin/clients/${id}/edit`)}>
+                          <td>
+                            <div className="flex items-center gap-3">
+                              <span className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-[13px] text-white"
+                                    style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>{initial}</span>
+                              <span className="font-semibold text-genz-navy">{name}</span>
+                            </div>
+                          </td>
+                          <td className="text-genz-muted">{email}</td>
+                          <td>
+                            <span className={`ds-badge ${status === 'active' ? 'ds-badge-success' : 'ds-badge-danger'}`}>
+                              <span className="dot" /> {status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
 
-          {/* Recent Activity */}
-          <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-base font-bold text-genz-navy flex items-center gap-2">
-                <ActivityIcon size={16} className="text-genz-teal" /> Recent Activity
+          {/* Recent Activity feed */}
+          <div className="lg:col-span-2 bg-white rounded-[22px] border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.05)] overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-genz-border">
+              <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
+                <ActivityIcon size={16} className="text-genz-blue" /> Recent Activity
               </h2>
               <button onClick={() => navigate('/admin/activity')}
-                      className="text-xs text-genz-teal hover:underline font-medium">
-                View All
-              </button>
+                      className="text-[13px] text-genz-blue hover:underline font-semibold">View all</button>
             </div>
 
             {recentActivity.length === 0 ? (
-              <div className="py-10 text-center">
-                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-purple-500/10 flex items-center justify-center">
-                  <ActivityIcon size={24} className="text-genz-muted" />
+              <div className="py-14 text-center">
+                <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-genz-bg flex items-center justify-center">
+                  <ActivityIcon size={22} className="text-genz-muted" />
                 </div>
-                <p className="text-genz-muted text-sm">No recent activity</p>
+                <p className="text-genz-navy font-semibold text-sm">No recent activity</p>
               </div>
             ) : (
-              <div className="space-y-2 max-h-80 overflow-y-auto pr-1
-                              [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:transparent
-                              [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-genz-bg">
+              <div className="ds-scroll max-h-[360px] overflow-y-auto p-3">
                 {recentActivity.map((activity, idx) => {
-                  const action     = String(activity?.action      || '');
-                  const actorRole  = String(activity?.actorRole   || '');
-                  const createdAt  = activity?.createdAt          || null;
-                  const actId      = activity?._id || activity?.id || idx;
-                  const label      = action.replace(/_/g, ' ').toLowerCase() || 'activity';
+                  const action = String(activity?.action || '');
+                  const actorRole = String(activity?.actorRole || '');
+                  const createdAt = activity?.createdAt || null;
+                  const actId = activity?._id || activity?.id || idx;
+                  const label = action.replace(/_/g, ' ').toLowerCase() || 'activity';
                   return (
-                    <div key={String(actId)}
-                         className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-white/[0.06] hover:bg-white transition-colors">
-                      <div className="mt-0.5">{getActionIcon(action)}</div>
+                    <div key={String(actId)} className="flex items-start gap-3 px-2.5 py-2.5 rounded-xl hover:bg-genz-bg transition-colors">
+                      <span className="mt-0.5 w-7 h-7 rounded-lg bg-genz-bg flex items-center justify-center flex-shrink-0">{getActionIcon(action)}</span>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-genz-navy leading-relaxed">
-                          {actorRole && <span className="font-semibold text-genz-muted mr-1">{actorRole}</span>}
+                        <p className="text-[13px] text-genz-navy leading-snug capitalize">
+                          {actorRole && <span className="font-semibold mr-1">{actorRole}</span>}
                           <span className="text-genz-muted">{label}</span>
                         </p>
-                        <p className="text-xs text-genz-muted mt-0.5">{formatDate(createdAt)}</p>
+                        <p className="text-[12px] text-genz-muted mt-0.5">{formatDate(createdAt)}</p>
                       </div>
                     </div>
                   );

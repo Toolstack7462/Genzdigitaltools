@@ -2,6 +2,7 @@
 @import "./styles/design-tokens.css";
 @import "./styles/typography.css";
 @import "./styles/premium.css";
+@import "./styles/dashboard.css";
 
 @tailwind base;
 @tailwind components;
