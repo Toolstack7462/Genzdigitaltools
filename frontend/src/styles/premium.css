@@ -1,0 +1,139 @@
+/* =====================================================================
+   PREMIUM 3D / GLASS DESIGN LAYER  — Gen Z Digital Store
+   Lightweight CSS depth (no WebGL). Brand palette: navy / blue / cyan / teal.
+   ===================================================================== */
+
+/* ---- Aurora / mesh background for hero + login ----------------------- */
+.aurora {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.aurora::before,
+.aurora::after {
+  content: "";
+  position: absolute;
+  width: 48rem;
+  height: 48rem;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform;
+}
+.aurora::before {
+  top: -16rem; left: -10rem;
+  background: radial-gradient(circle, rgba(37,99,235,0.30) 0%, transparent 65%);
+  animation: aurora-a 26s ease-in-out infinite;
+}
+.aurora::after {
+  bottom: -18rem; right: -8rem;
+  background: radial-gradient(circle, rgba(6,182,212,0.30) 0%, transparent 65%);
+  animation: aurora-b 30s ease-in-out infinite;
+}
+@keyframes aurora-a { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(5rem,3rem) scale(1.12)} }
+@keyframes aurora-b { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-4rem,-3rem) scale(1.1)} }
+
+/* fine dotted grid that fades out — adds technical depth */
+.dot-grid {
+  position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image: radial-gradient(rgba(7,27,51,0.06) 1px, transparent 1px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(ellipse 75% 60% at 50% 35%, #000 0%, transparent 75%);
+          mask-image: radial-gradient(ellipse 75% 60% at 50% 35%, #000 0%, transparent 75%);
+}
+
+/* ---- Glass panels --------------------------------------------------- */
+.glass {
+  background: linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(255,255,255,0.72) 100%);
+  border: 1px solid rgba(255,255,255,0.85);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.9) inset,
+    0 30px 60px -24px rgba(7,27,51,0.28),
+    0 8px 20px -10px rgba(7,27,51,0.16);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+.glass-tint {
+  background: linear-gradient(155deg, rgba(236,247,252,0.95) 0%, rgba(255,255,255,0.7) 100%);
+}
+.glass-dark {
+  background: linear-gradient(155deg, rgba(11,39,71,0.92) 0%, rgba(7,27,51,0.86) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.06) inset, 0 40px 80px -28px rgba(2,10,25,0.7);
+  backdrop-filter: blur(12px);
+}
+
+/* multi-layer brand shadow */
+.depth { box-shadow: 0 24px 50px -20px rgba(37,99,235,0.28), 0 10px 24px -12px rgba(7,27,51,0.18); }
+.depth-cyan { box-shadow: 0 24px 50px -18px rgba(6,182,212,0.34), 0 8px 22px -12px rgba(7,27,51,0.16); }
+
+/* sheen highlight sweep on hover */
+.sheen { position: relative; overflow: hidden; }
+.sheen::after {
+  content: ""; position: absolute; top: 0; left: -120%; width: 60%; height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.55), transparent);
+  transform: skewX(-18deg); transition: left 0.7s cubic-bezier(0.16,1,0.3,1);
+  pointer-events: none;
+}
+.sheen:hover::after { left: 130%; }
+
+/* ---- 3D hero stage -------------------------------------------------- */
+.stage-3d { perspective: 1600px; perspective-origin: 60% 30%; }
+.deck-3d {
+  transform-style: preserve-3d;
+  transform: rotateX(8deg) rotateY(-16deg);
+  animation: deck-float 9s ease-in-out infinite;
+  will-change: transform;
+}
+@keyframes deck-float {
+  0%,100% { transform: rotateX(8deg) rotateY(-16deg) translateY(0); }
+  50%     { transform: rotateX(6deg) rotateY(-13deg) translateY(-12px); }
+}
+.layer-back  { transform: translateZ(-70px) translateX(28px) translateY(-10px); }
+.layer-mid   { transform: translateZ(0); }
+.layer-front { transform: translateZ(60px); }
+.pop-1 { transform: translateZ(40px); }
+.pop-2 { transform: translateZ(80px); }
+.pop-3 { transform: translateZ(110px); }
+
+.float-a { animation: floaty 7s ease-in-out infinite; will-change: transform; }
+.float-b { animation: floaty 9s ease-in-out infinite 0.6s; will-change: transform; }
+@keyframes floaty { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-9px)} }
+
+/* glowing brand ribbon (SVG strokes get this filter via class on parent) */
+.ribbon-glow { filter: drop-shadow(0 8px 22px rgba(6,182,212,0.35)); }
+
+/* premium gradient button */
+.btn-grad {
+  background: linear-gradient(135deg, #2563EB 0%, #06B6D4 100%);
+  color: #fff;
+  box-shadow: 0 14px 30px -10px rgba(37,99,235,0.55);
+  transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s, filter 0.18s;
+}
+.btn-grad:hover { transform: translateY(-2px); box-shadow: 0 20px 40px -12px rgba(37,99,235,0.6); filter: saturate(1.08); }
+.btn-grad:active { transform: translateY(0) scale(0.99); }
+
+/* number/eyebrow gradient text already exists as .brand-gradient-text */
+
+/* comparison + timeline helpers */
+.tl-line { background: linear-gradient(180deg, rgba(37,99,235,0.5), rgba(6,182,212,0.5), rgba(20,184,166,0.2)); }
+
+/* entrance: scale+lift used by hero pieces (works with .reveal too) */
+@keyframes rise-in { from { opacity:0; transform: translateY(26px) } to { opacity:1; transform:none } }
+.rise { animation: rise-in 0.7s cubic-bezier(0.16,1,0.3,1) both; }
+.rise-2 { animation: rise-in 0.7s cubic-bezier(0.16,1,0.3,1) 0.12s both; }
+.rise-3 { animation: rise-in 0.7s cubic-bezier(0.16,1,0.3,1) 0.24s both; }
+
+@media (max-width: 1023px) {
+  /* flatten 3D on tablet/mobile so it stays readable and tappable */
+  .deck-3d { transform: none !important; animation: none !important; }
+  .layer-back, .layer-front, .pop-1, .pop-2, .pop-3 { transform: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .deck-3d, .float-a, .float-b, .aurora::before, .aurora::after,
+  .rise, .rise-2, .rise-3 { animation: none !important; }
+  .deck-3d { transform: rotateX(6deg) rotateY(-12deg); }
+}

@@ -1,0 +1,21 @@
+# Deployed to: public_html/app/.htaccess  (app.genzdigitalstore.com docroot)
+# Goal: app subdomain is the portal only. Marketing paths and "/" -> /client/login.
+# Never redirect client/admin/api/static assets. No redirect loops.
+DirectoryIndex index.html
+
+RewriteEngine On
+RewriteBase /
+
+# 1) Serve real files directly (JS, CSS, images, fonts, favicon, downloads)
+RewriteCond %{REQUEST_FILENAME} -f
+RewriteRule ^ - [L]
+
+# 2) Let the backend handle API routes (Passenger) — never touch
+RewriteRule ^api(/|$) - [L]
+
+# 3) App routes (client/admin) -> load the SPA so deep links survive refresh.
+#    React Router + the in-app domain guard handle routing client-side.
+RewriteRule ^(client|admin)(/|$) /index.html [L]
+
+# 4) Everything else (incl. "/", /about, /services, marketing) -> client login.
+RewriteRule ^ /client/login [R=302,L]

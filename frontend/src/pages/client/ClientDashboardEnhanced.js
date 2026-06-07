@@ -323,37 +323,40 @@ const ClientDashboardEnhanced = () => {
           </div>
         )}
 
-        {/* ── Welcome Header ── */}
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <Sparkles size={16} className="text-genz-blue" />
-              <span className="text-genz-blue text-sm font-semibold">Welcome back</span>
+        {/* ── Welcome / Membership Banner ── */}
+        <div className="gz-panel-dark relative overflow-hidden p-6 sm:p-7">
+          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(40rem 20rem at 100% 0%, rgba(6,182,212,0.22), transparent 60%)' }} />
+          <div className="relative flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <Sparkles size={15} className="text-genz-cyan" />
+                <span className="text-genz-cyan text-[13px] font-semibold uppercase tracking-wider">Welcome back</span>
+              </div>
+              <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-white leading-tight">
+                {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
+              </h1>
+              <p className="text-white/65 text-sm mt-1.5">
+                You have access to <span className="text-white font-bold">{activeTools.length}</span> premium tools.
+              </p>
             </div>
-            <h1 className="font-heading text-[32px] font-extrabold text-genz-navy leading-tight">
-              {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
-            </h1>
-            <p className="text-genz-muted text-sm mt-1">
-              You have access to <span className="text-genz-blue font-semibold">{activeTools.length}</span> premium tools
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
-            {user?.expiryDate && (
-              <div className="text-right">
-                <p className="text-xs text-genz-muted">Subscription</p>
-                <p className="text-sm font-semibold text-genz-navy">
-                  {new Date(user.expiryDate) > new Date()
-                    ? `Active until ${new Date(user.expiryDate).toLocaleDateString()}`
-                    : <span className="text-red-500">Expired</span>
-                  }
+            <div className="flex items-center gap-3">
+              <div className="rounded-2xl px-4 py-3" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                <p className="text-[11px] text-white/55 uppercase tracking-wider">Membership</p>
+                <p className="text-sm font-bold mt-0.5">
+                  {user?.expiryDate
+                    ? (new Date(user.expiryDate) > new Date()
+                        ? <span className="text-emerald-300">Active · until {new Date(user.expiryDate).toLocaleDateString()}</span>
+                        : <span className="text-red-300">Expired</span>)
+                    : <span className="text-emerald-300">Active</span>}
                 </p>
               </div>
-            )}
-            <Link to="/client/profile"
-                  className="w-10 h-10 rounded-xl flex items-center justify-center border border-genz-border hover:border-genz-blue/50 hover:bg-genz-blue/[0.06] transition-all"
-                  title="My Profile">
-              <User size={18} className="text-genz-blue" />
-            </Link>
+              <Link to="/client/profile"
+                    className="w-11 h-11 rounded-xl flex items-center justify-center text-white transition-all hover:-translate-y-0.5"
+                    style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
+                    title="My Profile">
+                <User size={18} />
+              </Link>
+            </div>
           </div>
         </div>
 
@@ -365,11 +368,11 @@ const ClientDashboardEnhanced = () => {
             { icon: Clock,        value: expiringTools.length, label: 'Expiring Soon', color: '#D97706' },
             { icon: Lock,         value: expiredTools.length,  label: 'Expired',       color: '#EF4444' },
           ].map(({ icon: Icon, value, label, color }) => (
-            <div key={label} className="gz-card p-5">
+            <div key={label} className="gz-card depth p-5">
               <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                <div className="w-11 h-11 rounded-xl flex items-center justify-center"
                      style={{ background: `${color}14`, border: `1px solid ${color}2e` }}>
-                  <Icon size={18} style={{ color }} />
+                  <Icon size={19} style={{ color }} />
                 </div>
               </div>
               <div className="font-heading text-[32px] font-extrabold leading-none" style={{ color }}>{value}</div>

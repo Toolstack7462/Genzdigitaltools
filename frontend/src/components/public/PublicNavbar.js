@@ -22,6 +22,7 @@ const NAV_LINKS = [
 ];
 
 const WHATSAPP_URL = 'https://wa.me/923027467462';
+const APP_LOGIN_URL = 'https://app.genzdigitalstore.com/client/login';
 
 const PublicNavbar = () => {
   const location = useLocation();
@@ -167,12 +168,12 @@ const PublicNavbar = () => {
               <MessageCircle size={15} />
               WhatsApp
             </a>
-            <Link
-              to="/client/login"
+            <a
+              href={APP_LOGIN_URL}
               className="px-4 py-2.5 text-[15px] font-semibold text-genz-navy rounded-[14px] border border-genz-border hover:border-genz-blue/40 hover:text-genz-blue transition-colors duration-200"
             >
               Member Login
-            </Link>
+            </a>
             <Link
               to="/contact"
               className="flex items-center gap-1.5 px-5 py-2.5 text-[15px] font-bold text-white rounded-[14px] transition-all duration-200 hover:-translate-y-0.5"
@@ -256,12 +257,12 @@ const PublicNavbar = () => {
                 <MessageCircle size={16} />
                 Chat on WhatsApp
               </a>
-              <Link
-                to="/client/login"
+              <a
+                href={APP_LOGIN_URL}
                 className="text-center py-3 text-[15px] font-semibold text-genz-navy border border-genz-border rounded-[14px] hover:border-genz-blue/40 hover:text-genz-blue transition-colors"
               >
                 Member Login
-              </Link>
+              </a>
               <Link
                 to="/contact"
                 className="text-center py-3 text-[15px] font-bold text-white rounded-[14px]"
@@ -278,4 +279,4 @@ const PublicNavbar = () => {
 };
 
 export default PublicNavbar;
-export { WHATSAPP_URL };
+export { WHATSAPP_URL, APP_LOGIN_URL };

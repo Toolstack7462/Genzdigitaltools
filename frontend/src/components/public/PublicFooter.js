@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
-import { WHATSAPP_URL } from './PublicNavbar';
+import { WHATSAPP_URL, APP_LOGIN_URL } from './PublicNavbar';
 
 const SERVICES_LINKS = [
   { to: '/services/digital-tools',           label: 'Digital Tools Access'       },
@@ -136,9 +136,9 @@ const PublicFooter = () => {
             <h4 className="text-white font-semibold text-xs uppercase tracking-widest mb-5">Dashboard</h4>
             <ul className="space-y-2.5 mb-8">
               <li>
-                <Link to="/client/login" className="text-genz-teal hover:text-genz-dark-teal text-sm font-medium transition-colors">
+                <a href={APP_LOGIN_URL} className="text-genz-teal hover:text-genz-dark-teal text-sm font-medium transition-colors">
                   Member Login →
-                </Link>
+                </a>
               </li>
               <li>
                 <Link to="/client/dashboard" className="text-white/55 hover:text-genz-teal text-sm transition-colors">

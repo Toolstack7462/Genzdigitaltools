@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { MessageCircle, ArrowRight, LayoutDashboard } from 'lucide-react';
-import { WHATSAPP_URL } from './PublicNavbar';
+import { WHATSAPP_URL, APP_LOGIN_URL } from './PublicNavbar';
 import { useReveal } from '../../hooks/useReveal';
 
 const CTASection = ({
@@ -50,13 +50,13 @@ const CTASection = ({
               >
                 View Services <ArrowRight size={15} />
               </Link>
-              <Link
-                to="/client/login"
+              <a
+                href={APP_LOGIN_URL}
                 className="flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-medium text-white/70 hover:text-white transition-all"
               >
                 <LayoutDashboard size={15} />
                 Member Login
-              </Link>
+              </a>
             </div>
           </div>
         </div>
