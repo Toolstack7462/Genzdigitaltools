@@ -4,8 +4,11 @@ import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../com
 import {
   Package, Clock, CheckCircle2, X, ExternalLink,
   Lock, Chrome, Download, Zap, Shield, User, Star, Search,
-  AlertTriangle, Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck
+  AlertTriangle, Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck,
+  MessageCircle
 } from 'lucide-react';
+
+const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { authService } from '../../services/authService';
@@ -365,14 +368,15 @@ const ClientDashboardEnhanced = () => {
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
-              { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    color: '#16A34A' },
-              { icon: Clock,        kind: 'num',    value: expiringTools.length, label: 'Expiring Soon',   color: '#D97706' },
-              { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', color: accountActive ? '#16A34A' : '#EF4444' },
-              { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', color: '#06B6D4' },
+              { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
+              { icon: Clock,        kind: 'num',    value: expiringTools.length, label: 'Expiring Soon',   sub: 'Within 7 days',     color: '#D97706' },
+              { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership', color: accountActive ? '#16A34A' : '#EF4444' },
+              { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', sub: 'Encrypted bridge', color: '#06B6D4' },
             ];
-            return cards.map(({ icon: Icon, kind, value, label, color, badge }) => (
-              <div key={label} className="ds-card ds-stat p-5">
-                <div className="flex items-center justify-between mb-4">
+            return cards.map(({ icon: Icon, kind, value, label, sub, color, badge }) => (
+              <div key={label} className="ds-card ds-stat relative overflow-hidden p-5">
+                <div className="absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, ${color}, ${color}55)` }} />
+                <div className="flex items-center justify-between mb-3.5">
                   <span className="w-11 h-11 rounded-xl flex items-center justify-center"
                         style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>
                     <Icon size={19} />
@@ -381,7 +385,8 @@ const ClientDashboardEnhanced = () => {
                 {kind === 'num'
                   ? <div className="font-heading text-[30px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
                   : <div className="mt-0.5"><span className={`ds-badge ${badge}`}><span className="dot" /> {value}</span></div>}
-                <div className="text-[13px] text-genz-muted mt-2">{label}</div>
+                <div className="text-[13.5px] font-semibold text-genz-navy mt-2">{label}</div>
+                <div className="text-[12px] text-genz-muted mt-0.5">{sub}</div>
               </div>
             ));
           })()}
@@ -561,26 +566,42 @@ const ClientDashboardEnhanced = () => {
           </div>
         )}
 
-        {/* ── Quick Help ── */}
+        {/* ── WhatsApp Support banner ── */}
+        <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
+           className="ds-card ds-stat group relative overflow-hidden flex items-center gap-4 p-5">
+          <div className="absolute inset-x-0 top-0 h-1" style={{ background: 'linear-gradient(90deg,#22c55e,#06B6D4)' }} />
+          <span className="w-12 h-12 rounded-xl flex items-center justify-center text-white flex-shrink-0"
+                style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 8px 18px -8px rgba(34,197,94,0.6)' }}>
+            <MessageCircle size={22} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <h4 className="text-[15px] font-bold text-genz-navy flex items-center gap-2">
+              WhatsApp Support <span className="ds-badge ds-badge-success"><span className="dot" /> Online</span>
+            </h4>
+            <p className="text-[13px] text-genz-muted mt-0.5">Chat with our team for help, tool requests, or a new order — fast replies.</p>
+          </div>
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2.5 rounded-[12px] text-[14px] font-bold text-white"
+                style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)' }}>
+            Chat now <ArrowRight size={15} />
+          </span>
+        </a>
+
+        {/* ── Quick actions ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           {[
-            { icon: Chrome,  title: 'Extension Setup',  desc: 'Install our Chrome extension for one-click access', to: '/chrome-extension', cta: 'Install'  },
-            { icon: Shield,  title: 'Account Security', desc: 'Manage your device binding and security settings',  to: '/client/profile', cta: 'Manage'   },
-            { icon: Zap,     title: 'Need More Tools?', desc: 'Upgrade your membership to access all 90+ tools',   to: '/pricing',        cta: 'Upgrade'  },
-          ].map(({ icon: Icon, title, desc, to, cta }) => (
-            <Link key={title} to={to}
-                  className="gz-card p-5 flex items-start gap-3 group">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                   style={{ background: 'rgba(37,99,235,0.1)' }}>
-                <Icon size={17} className="text-genz-blue" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h4 className="text-sm font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
-                <p className="text-xs text-genz-muted mt-0.5 leading-relaxed">{desc}</p>
-                <span className="inline-flex items-center gap-1 mt-2 text-xs text-genz-blue font-semibold">
-                  {cta} <ArrowRight size={11} />
-                </span>
-              </div>
+            { icon: Chrome, title: 'Extension Setup',  desc: 'Install the Chrome extension for one-click tool access.', to: '/chrome-extension', cta: 'Install', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)' },
+            { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',        to: '/client/profile',   cta: 'Manage',  grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
+            { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',         to: '/pricing',          cta: 'Upgrade', grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
+          ].map(({ icon: Icon, title, desc, to, cta, grad }) => (
+            <Link key={title} to={to} className="ds-card ds-stat p-5 flex flex-col group">
+              <span className="w-11 h-11 rounded-xl flex items-center justify-center text-white mb-3.5" style={{ background: grad, boxShadow: '0 8px 16px -8px rgba(37,99,235,0.5)' }}>
+                <Icon size={19} />
+              </span>
+              <h4 className="text-[15px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
+              <p className="text-[13px] text-genz-muted mt-1 leading-relaxed flex-1">{desc}</p>
+              <span className="inline-flex items-center gap-1.5 mt-3 text-[13px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
+                {cta} <ArrowRight size={13} />
+              </span>
             </Link>
           ))}
         </div>

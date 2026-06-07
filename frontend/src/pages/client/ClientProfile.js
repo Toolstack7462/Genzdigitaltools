@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import ClientLayoutEnhanced, { CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
-import { User, Mail, Calendar, Shield, Smartphone, Clock, CheckCircle2, AlertCircle } from 'lucide-react';
+import { User, Mail, Calendar, Shield, Smartphone, Clock, CheckCircle2, AlertCircle, MessageCircle, ArrowRight } from 'lucide-react';
+
+const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { authService } from '../../services/authService';
 import { useToast } from '../../components/Toast';
@@ -52,48 +54,38 @@ const ClientProfile = () => {
   return (
     <ClientLayoutEnhanced>
       <div className="max-w-4xl mx-auto space-y-8">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
-          <div className="w-24 h-24 bg-gradient-to-br from-genz-teal to-genz-dark-teal rounded-2xl flex items-center justify-center shadow-2xl shadow-genz-teal/30">
-            <span className="text-4xl font-bold text-white">
+        {/* Header card */}
+        <div className="gz-panel-dark relative overflow-hidden p-6 sm:p-7">
+          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(40rem 20rem at 100% 0%, rgba(6,182,212,0.22), transparent 60%)' }} />
+          <div className="relative flex flex-col sm:flex-row items-start sm:items-center gap-5">
+            <div className="w-20 h-20 rounded-2xl flex items-center justify-center text-white font-extrabold text-3xl flex-shrink-0"
+                 style={{ background: 'var(--gradient-cta)', boxShadow: '0 12px 26px -8px rgba(37,99,235,0.6)' }}>
               {userData?.fullName?.charAt(0) || 'U'}
-            </span>
-          </div>
-          <div>
-            <h1 className="font-heading text-3xl sm:text-4xl font-extrabold text-genz-navy mb-2">
-              {userData?.fullName || 'User'}
-            </h1>
-            <p className="text-genz-muted flex items-center gap-2">
-              <Mail size={16} />
-              {userData?.email || 'No email'}
-            </p>
+            </div>
+            <div className="flex-1 min-w-0">
+              <h1 className="font-heading text-[26px] sm:text-[30px] font-extrabold text-white leading-tight">{userData?.fullName || 'Member'}</h1>
+              <p className="text-white/70 flex items-center gap-2 mt-1.5 text-sm"><Mail size={15} /> {userData?.email || 'No email'}</p>
+            </div>
+            <span className="ds-badge ds-badge-success"><span className="dot" /> {userData?.status || 'Active'}</span>
           </div>
         </div>
 
         {/* Stats Row */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className={`${CARD_VARIANTS.green} rounded-2xl p-4 text-center`}>
-            <CheckCircle2 size={24} className="text-green-600 mx-auto mb-2" />
-            <p className="text-genz-navy font-semibold capitalize">{userData?.status || 'Active'}</p>
-            <p className="text-genz-muted text-xs">Account Status</p>
-          </div>
-          <div className={`${CARD_VARIANTS.blue} rounded-2xl p-4 text-center`}>
-            <Calendar size={24} className="text-blue-600 mx-auto mb-2" />
-            <p className="text-genz-navy font-semibold">
-              {userData?.createdAt ? new Date(userData.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '-'}
-            </p>
-            <p className="text-genz-muted text-xs">Member Since</p>
-          </div>
-          <div className={`${CARD_VARIANTS.purple} rounded-2xl p-4 text-center`}>
-            <Smartphone size={24} className="text-purple-600 mx-auto mb-2" />
-            <p className="text-genz-navy font-semibold">{userData?.devicePolicy?.enabled ? 'Bound' : 'Any'}</p>
-            <p className="text-genz-muted text-xs">Device Policy</p>
-          </div>
-          <div className={`${CARD_VARIANTS.orange} rounded-2xl p-4 text-center`}>
-            <Shield size={24} className="text-genz-teal mx-auto mb-2" />
-            <p className="text-genz-navy font-semibold">Secured</p>
-            <p className="text-genz-muted text-xs">Access Level</p>
-          </div>
+          {[
+            { icon: CheckCircle2, color: '#16A34A', label: 'Account Status', val: (userData?.status || 'Active') },
+            { icon: Calendar, color: '#2563EB', label: 'Member Since', val: userData?.createdAt ? new Date(userData.createdAt).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }) : '—' },
+            { icon: Smartphone, color: '#7C3AED', label: 'Device Policy', val: userData?.devicePolicy?.enabled ? 'Bound' : 'Any' },
+            { icon: Shield, color: '#06B6D4', label: 'Access Level', val: 'Secured' },
+          ].map(({ icon: Icon, color, label, val }) => (
+            <div key={label} className="ds-card ds-stat p-5">
+              <span className="w-11 h-11 rounded-xl flex items-center justify-center mb-3" style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>
+                <Icon size={19} />
+              </span>
+              <p className="text-genz-navy font-bold text-[16px] capitalize leading-none">{val}</p>
+              <p className="text-genz-muted text-[12.5px] mt-1.5">{label}</p>
+            </div>
+          ))}
         </div>
 
         {/* Account Information Card */}
@@ -233,22 +225,31 @@ const ClientProfile = () => {
           </div>
         </div>
 
-        {/* Support Card */}
-        <div className={`${CARD_VARIANTS.orange} rounded-2xl p-6`}>
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-xl font-semibold text-genz-navy mb-2">Need Help?</h2>
-              <p className="text-genz-muted text-sm">
-                If you have any questions about your account, tool access, or need assistance, 
-                please contact your administrator.
-              </p>
+        {/* Support Card — WhatsApp */}
+        <div className="gz-panel-dark relative overflow-hidden p-6">
+          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(36rem 18rem at 100% 0%, rgba(34,197,94,0.18), transparent 60%)' }} />
+          <div className="relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="flex items-start gap-4">
+              <span className="w-12 h-12 rounded-xl flex items-center justify-center text-white flex-shrink-0" style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)' }}>
+                <MessageCircle size={22} />
+              </span>
+              <div>
+                <h2 className="text-[18px] font-bold text-white mb-1">Need help?</h2>
+                <p className="text-white/70 text-sm max-w-md">
+                  Questions about your account, tool access, or a new order? Chat with our team on WhatsApp.
+                </p>
+              </div>
             </div>
             <a
-              href="mailto:support@toolstack.com"
-              className="flex-shrink-0 inline-flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl font-medium hover:shadow-lg hover:shadow-genz-teal/25 transition-all hover:scale-105"
+              href={WHATSAPP_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-shrink-0 inline-flex items-center gap-2 px-6 py-3 rounded-[14px] font-bold text-white transition-all hover:-translate-y-0.5"
+              style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 10px 24px -8px rgba(34,197,94,0.6)' }}
             >
-              <Mail size={18} />
-              Contact Support
+              <MessageCircle size={18} />
+              Chat on WhatsApp
+              <ArrowRight size={16} />
             </a>
           </div>
         </div>

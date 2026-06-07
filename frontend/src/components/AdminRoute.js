@@ -43,11 +43,10 @@ const AdminRoute = ({ children }) => {
 
   if (authState === 'checking') {
     return (
-      <div className="min-h-screen flex items-center justify-center"
-           style={{ background: '#000820' }}>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--gradient-app)' }}>
         <div className="text-center">
-          <div className="w-12 h-12 rounded-full border-2 border-genz-teal border-t-transparent animate-spin mx-auto mb-3" />
-          <p className="text-genz-muted text-sm">Verifying admin access...</p>
+          <div className="w-12 h-12 rounded-full border-2 border-genz-blue border-t-transparent animate-spin mx-auto mb-3" />
+          <p className="text-genz-muted text-sm">Verifying admin access…</p>
         </div>
       </div>
     );
@@ -55,10 +54,9 @@ const AdminRoute = ({ children }) => {
 
   if (authState === 'forbidden') {
     return (
-      <div className="min-h-screen flex items-center justify-center"
-           style={{ background: '#000820' }}>
+      <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--gradient-app)' }}>
         <div className="text-center">
-          <p className="text-red-400 font-bold mb-2">Access Denied</p>
+          <p className="text-red-500 font-bold mb-2">Access Denied</p>
           <p className="text-genz-muted text-sm">Your account does not have admin privileges.</p>
         </div>
       </div>
