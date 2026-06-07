@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, Mail, Eye, EyeOff, Shield } from 'lucide-react';
+import { Lock, Mail, Eye, EyeOff, Shield, ArrowRight } from 'lucide-react';
 import { useToast } from '../../components/Toast';
-import GenZDigitalStoreLogo from '../../components/GenZDigitalStoreLogo';
+import BrandLogo from '../../components/BrandLogo';
 import api from '../../services/api';
 
 const AdminLogin = () => {
@@ -37,57 +37,70 @@ const AdminLogin = () => {
     }
   };
 
+  const inputClass =
+    'w-full rounded-[14px] border border-genz-border bg-white py-3 text-[15px] text-genz-navy placeholder:text-genz-muted/70 outline-none transition-all duration-200 focus:border-genz-blue focus:ring-4 focus:ring-genz-blue/12';
+
   return (
-    <div className="min-h-screen flex items-center justify-center p-4"
-         style={{ background: 'linear-gradient(135deg, #000820, #001030)' }}>
-      <div className="max-w-md w-full">
-        <div className="text-center mb-8">
-          <GenZDigitalStoreLogo className="h-12 justify-center mb-6" textSize="2xl" />
-          <h1 className="text-2xl font-black text-white mb-1">Admin Panel</h1>
-          <p className="text-genz-muted text-sm">Gen Z Digital Store Management</p>
+    <div className="relative min-h-dvh flex items-center justify-center p-5 overflow-hidden"
+         style={{ background: 'var(--gradient-hero)' }}>
+      <div className="absolute inset-0 pointer-events-none" aria-hidden="true"
+        style={{ background: 'radial-gradient(40rem 40rem at 80% 15%, rgba(37,99,235,0.10), transparent 60%),radial-gradient(36rem 36rem at 15% 90%, rgba(6,182,212,0.12), transparent 60%)' }} />
+
+      <div className="max-w-md w-full relative z-10">
+        <div className="text-center mb-7">
+          <div className="inline-flex flex-col items-center mb-5">
+            <BrandLogo size="xl" />
+          </div>
+          <div className="flex items-center justify-center gap-2 mb-2">
+            <h1 className="font-heading text-[30px] font-extrabold text-genz-navy">Admin Panel</h1>
+            <span className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-genz-blue"
+                  style={{ background: 'rgba(37,99,235,0.1)', border: '1px solid rgba(37,99,235,0.2)' }}>
+              <Shield size={10} /> Secure
+            </span>
+          </div>
+          <p className="text-genz-muted text-[15px]">Gen Z Digital Store Management</p>
         </div>
 
-        <div className="p-8 rounded-2xl border"
-             style={{ background: 'rgba(0,175,193,0.05)', borderColor: 'rgba(0,175,193,0.15)' }}>
+        <div className="bg-white rounded-[24px] p-7 sm:p-8"
+             style={{ border: '1px solid var(--brand-border)', boxShadow: '0 24px 60px rgba(7,27,51,0.10)' }}>
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Admin Email</label>
+              <label className="block text-[14px] font-semibold text-genz-navy mb-2">Admin Email</label>
               <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" size={18} />
                 <input type="email" required value={formData.email}
                        onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                       className="w-full pl-10 pr-4 py-3 rounded-xl text-white placeholder-genz-muted focus:outline-none"
-                       style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(0,175,193,0.2)' }}
+                       className={`${inputClass} pl-11 pr-4`}
                        placeholder="admin@genzdigitalstore.com" />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Password</label>
+              <label className="block text-[14px] font-semibold text-genz-navy mb-2">Password</label>
               <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" size={18} />
                 <input type={showPassword ? 'text' : 'password'} required value={formData.password}
                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                       className="w-full pl-10 pr-12 py-3 rounded-xl text-white placeholder-genz-muted focus:outline-none"
-                       style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(0,175,193,0.2)' }}
+                       className={`${inputClass} pl-11 pr-12`}
                        placeholder="Enter admin password" />
                 <button type="button" onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-genz-muted hover:text-white transition-colors">
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-genz-muted hover:text-genz-blue transition-colors p-1 rounded-md">
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
                 </button>
               </div>
             </div>
             <button type="submit" disabled={loading}
-                    className="w-full py-3.5 font-bold text-genz-deep-navy rounded-xl transition-all hover:opacity-90 disabled:opacity-50"
-                    style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
-              {loading ? 'Signing In...' : 'Access Admin Panel'}
+                    className="w-full py-3.5 text-[15px] font-bold text-white rounded-[14px] flex items-center justify-center gap-2 transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-60 disabled:translate-y-0"
+                    style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 12px 28px rgba(37,99,235,0.28)' }}>
+              {loading ? 'Signing In…' : <>Access Admin Panel <ArrowRight size={16} /></>}
             </button>
           </form>
         </div>
 
-        <div className="mt-4 p-3 rounded-xl text-center flex items-center justify-center gap-2"
-             style={{ background: 'rgba(0,175,193,0.05)', border: '1px solid rgba(0,175,193,0.1)' }}>
-          <Shield size={13} className="text-genz-teal" />
-          <p className="text-xs text-genz-muted">Restricted access — authorized personnel only</p>
+        <div className="mt-5 p-3 rounded-xl text-center flex items-center justify-center gap-2"
+             style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.2)' }}>
+          <Shield size={13} style={{ color: '#06B6D4' }} />
+          <p className="text-xs text-genz-navy/70">Restricted access — authorized personnel only</p>
         </div>
       </div>
     </div>

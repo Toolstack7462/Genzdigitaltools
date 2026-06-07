@@ -127,12 +127,12 @@ const AdminBlogForm = () => {
         <div className="flex items-center gap-4 mb-8">
           <button
             onClick={() => navigate('/admin/blog')}
-            className="p-2 text-genz-muted hover:text-white transition-colors"
+            className="p-2 text-genz-muted hover:text-genz-navy transition-colors"
           >
             <ArrowLeft size={24} />
           </button>
           <div>
-            <h1 className="text-3xl font-bold text-white">
+            <h1 className="text-3xl font-bold text-genz-navy">
               {isEditing ? 'Edit Post' : 'Create Post'}
             </h1>
             <p className="text-genz-muted">Fill in the details below</p>
@@ -141,16 +141,16 @@ const AdminBlogForm = () => {
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6 space-y-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6 space-y-6">
             {/* Title */}
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Title *</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Title *</label>
               <input
                 type="text"
                 name="title"
                 value={formData.title}
                 onChange={handleChange}
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder="Enter post title"
                 data-testid="post-title"
               />
@@ -158,21 +158,21 @@ const AdminBlogForm = () => {
 
             {/* Slug */}
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Slug</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Slug</label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   name="slug"
                   value={formData.slug}
                   onChange={handleChange}
-                  className="flex-1 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="flex-1 px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="post-url-slug"
                   data-testid="post-slug"
                 />
                 <button
                   type="button"
                   onClick={generateSlug}
-                  className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white hover:border-genz-teal transition-colors"
+                  className="px-4 py-2 bg-genz-bg border border-genz-border rounded-xl text-genz-navy hover:border-genz-teal transition-colors"
                 >
                   Generate
                 </button>
@@ -181,14 +181,14 @@ const AdminBlogForm = () => {
 
             {/* Excerpt */}
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Excerpt</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Excerpt</label>
               <textarea
                 name="excerpt"
                 value={formData.excerpt}
                 onChange={handleChange}
                 rows={2}
                 maxLength={300}
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none"
                 placeholder="Brief description for previews (max 300 chars)"
                 data-testid="post-excerpt"
               />
@@ -197,7 +197,7 @@ const AdminBlogForm = () => {
 
             {/* Cover Image */}
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Cover Image URL</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Cover Image URL</label>
               <div className="flex gap-2">
                 <div className="relative flex-1">
                   <Image className="absolute left-4 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
@@ -206,7 +206,7 @@ const AdminBlogForm = () => {
                     name="coverImage"
                     value={formData.coverImage}
                     onChange={handleChange}
-                    className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full pl-12 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder="https://example.com/image.jpg"
                     data-testid="post-cover-image"
                   />
@@ -226,13 +226,13 @@ const AdminBlogForm = () => {
 
             {/* Content */}
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Content *</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Content *</label>
               <textarea
                 name="content"
                 value={formData.content}
                 onChange={handleChange}
                 rows={12}
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors font-mono text-sm"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors font-mono text-sm"
                 placeholder="Write your post content here... (Markdown supported)"
                 data-testid="post-content"
               />
@@ -241,28 +241,28 @@ const AdminBlogForm = () => {
             {/* Category & Tags */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Category</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Category</label>
                 <select
                   name="category"
                   value={formData.category}
                   onChange={handleChange}
-                  className="w-full px-4 py-3 bg-[#000c20] border border-white/10 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted"
+                  className="w-full px-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted"
                   style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.75rem' }}
                   data-testid="post-category"
                 >
                   {categories.map(cat => (
-                    <option key={cat} value={cat} className="bg-[#000c20] text-white">{cat}</option>
+                    <option key={cat} value={cat} className="bg-[#FFFFFF] text-genz-navy">{cat}</option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Tags</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Tags</label>
                 <input
                   type="text"
                   name="tags"
                   value={formData.tags}
                   onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="tag1, tag2, tag3"
                   data-testid="post-tags"
                 />
@@ -272,18 +272,18 @@ const AdminBlogForm = () => {
             {/* Status & Featured */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Status</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Status</label>
                 <select
                   name="status"
                   value={formData.status}
                   onChange={handleChange}
-                  className="w-full px-4 py-3 bg-[#000c20] border border-white/10 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted"
+                  className="w-full px-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted"
                   style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.75rem' }}
                   data-testid="post-status"
                 >
-                  <option value="draft" className="bg-[#000c20] text-white">Draft</option>
-                  <option value="published" className="bg-[#000c20] text-white">Published</option>
-                  <option value="archived" className="bg-[#000c20] text-white">Archived</option>
+                  <option value="draft" className="bg-[#FFFFFF] text-genz-navy">Draft</option>
+                  <option value="published" className="bg-[#FFFFFF] text-genz-navy">Published</option>
+                  <option value="archived" className="bg-[#FFFFFF] text-genz-navy">Archived</option>
                 </select>
               </div>
               <div className="flex items-center">
@@ -293,10 +293,10 @@ const AdminBlogForm = () => {
                     name="featured"
                     checked={formData.featured}
                     onChange={handleChange}
-                    className="w-5 h-5 rounded border-white/10 bg-white/5 text-genz-teal focus:ring-genz-teal focus:ring-offset-0"
+                    className="w-5 h-5 rounded border-genz-border bg-genz-bg text-genz-teal focus:ring-genz-teal focus:ring-offset-0"
                     data-testid="post-featured"
                   />
-                  <span className="text-white">Feature this post</span>
+                  <span className="text-genz-navy">Feature this post</span>
                 </label>
               </div>
             </div>
@@ -307,14 +307,14 @@ const AdminBlogForm = () => {
             <button
               type="button"
               onClick={() => navigate('/admin/blog')}
-              className="px-6 py-3 bg-white/[0.04] border border-white/10 rounded-full text-white font-medium hover:border-genz-teal transition-colors"
+              className="px-6 py-3 bg-white border border-genz-border rounded-full text-genz-navy font-medium hover:border-genz-teal transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="save-post-btn"
             >
               <Save size={18} />

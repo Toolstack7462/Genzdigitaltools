@@ -45,10 +45,10 @@ const AdminAnalytics = () => {
   };
 
   const statCards = data ? [
-    { icon: CheckCircle2, label: 'Successful Logins', value: data.stats.successLogins, color: 'text-green-400' },
+    { icon: CheckCircle2, label: 'Successful Logins', value: data.stats.successLogins, color: 'text-green-500' },
     { icon: Zap,          label: 'Tool Opens',        value: data.stats.toolOpens,     color: 'text-genz-teal' },
-    { icon: XCircle,      label: 'Login Failures',    value: data.stats.failures,      color: 'text-red-400'   },
-    { icon: RefreshCw,    label: 'Token Refreshes',   value: data.stats.tokenRefreshes,color: 'text-yellow-400'},
+    { icon: XCircle,      label: 'Login Failures',    value: data.stats.failures,      color: 'text-red-500'   },
+    { icon: RefreshCw,    label: 'Token Refreshes',   value: data.stats.tokenRefreshes,color: 'text-yellow-500'},
   ] : [];
 
   if (loading) {
@@ -66,11 +66,11 @@ const AdminAnalytics = () => {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-black text-white">Login Analytics</h1>
+            <h1 className="text-2xl font-black text-genz-navy">Login Analytics</h1>
             <p className="text-genz-muted text-sm">Tool access and login success/failure overview</p>
           </div>
           <button onClick={load}
-                  className="p-2 rounded-xl border border-white/10 text-genz-muted hover:text-genz-teal hover:border-genz-teal/30 transition-all">
+                  className="p-2 rounded-xl border border-genz-border text-genz-muted hover:text-genz-teal hover:border-genz-teal/30 transition-all">
             <RefreshCw size={16} />
           </button>
         </div>
@@ -80,7 +80,7 @@ const AdminAnalytics = () => {
           {statCards.map(({ icon: Icon, label, value, color }) => (
             <div key={label} className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
               <Icon size={18} className={`${color} mb-3`} />
-              <div className="text-2xl font-black text-white">{value}</div>
+              <div className="text-2xl font-black text-genz-navy">{value}</div>
               <div className="text-xs text-genz-muted mt-0.5">{label}</div>
             </div>
           ))}
@@ -89,7 +89,7 @@ const AdminAnalytics = () => {
         {/* Top Tools */}
         {data?.topTools?.length > 0 && (
           <div className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
-            <h2 className="font-bold text-white mb-4 flex items-center gap-2">
+            <h2 className="font-bold text-genz-navy mb-4 flex items-center gap-2">
               <BarChart3 size={16} className="text-genz-teal" /> Top Accessed Tools
             </h2>
             <div className="space-y-2">
@@ -99,12 +99,12 @@ const AdminAnalytics = () => {
                 return (
                   <div key={name}>
                     <div className="flex items-center justify-between text-sm mb-1">
-                      <span className="text-white/80 truncate">{name}</span>
+                      <span className="text-genz-muted truncate">{name}</span>
                       <span className="text-genz-teal font-mono text-xs ml-2">{count}</span>
                     </div>
-                    <div className="h-1.5 rounded-full bg-white/5 overflow-hidden">
+                    <div className="h-1.5 rounded-full bg-genz-bg overflow-hidden">
                       <div className="h-full rounded-full transition-all duration-500"
-                           style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#00AFC1,#008EA3)' }} />
+                           style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#06B6D4,#0891B2)' }} />
                     </div>
                   </div>
                 );
@@ -115,19 +115,19 @@ const AdminAnalytics = () => {
 
         {/* Recent Activity */}
         <div className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
-          <h2 className="font-bold text-white mb-4">Recent Activity</h2>
+          <h2 className="font-bold text-genz-navy mb-4">Recent Activity</h2>
           <div className="space-y-2">
             {data?.recentLogs?.map((log, i) => (
-              <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-white/[0.02] text-sm">
+              <div key={i} className="flex items-center gap-3 p-2.5 rounded-lg bg-white text-sm">
                 <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                  log.action === 'LOGIN'        ? 'bg-green-400' :
-                  log.action === 'LOGIN_FAILED' ? 'bg-red-400'   :
+                  log.action === 'LOGIN'        ? 'bg-green-500' :
+                  log.action === 'LOGIN_FAILED' ? 'bg-red-500'   :
                   log.action === 'TOOL_OPENED'  ? 'bg-genz-teal' : 'bg-genz-muted'
                 }`} />
                 <span className="text-genz-muted w-36 flex-shrink-0 text-xs font-mono">
                   {new Date(log.createdAt).toLocaleString([], { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })}
                 </span>
-                <span className="text-white/70 flex-1 truncate">{log.action}</span>
+                <span className="text-genz-muted flex-1 truncate">{log.action}</span>
                 <span className="text-genz-muted text-xs">{log.userRole}</span>
               </div>
             ))}

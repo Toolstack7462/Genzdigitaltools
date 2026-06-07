@@ -134,8 +134,8 @@ const AdminToolWizard = () => {
     }
   };
 
-  const cardClass = 'bg-white/[0.04] border border-white/10 rounded-2xl p-6';
-  const inputClass = 'w-full px-3 py-2.5 rounded-xl text-sm text-white placeholder-genz-muted focus:outline-none transition-all bg-white/[0.05] border border-white/10 focus:border-genz-teal';
+  const cardClass = 'bg-white border border-genz-border rounded-2xl p-6';
+  const inputClass = 'w-full px-3 py-2.5 rounded-xl text-sm text-genz-navy placeholder-genz-muted focus:outline-none transition-all bg-white border border-genz-border focus:border-genz-teal';
   const labelClass = 'block text-xs font-medium text-genz-muted mb-1.5';
 
   return (
@@ -144,7 +144,7 @@ const AdminToolWizard = () => {
 
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-2xl font-black text-white mb-1">Tool Setup Wizard</h1>
+          <h1 className="text-2xl font-black text-genz-navy mb-1">Tool Setup Wizard</h1>
           <p className="text-genz-muted text-sm">Configure a new tool step by step</p>
         </div>
 
@@ -159,12 +159,12 @@ const AdminToolWizard = () => {
                 <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all ${
                   active ? 'text-genz-deep-navy' : done ? 'text-genz-teal' : 'text-genz-muted'
                 }`}
-                style={active ? { background: 'linear-gradient(135deg,#00AFC1,#008EA3)' } : {}}>
+                style={active ? { background: 'linear-gradient(135deg,#06B6D4,#0891B2)' } : {}}>
                   {done ? <CheckCircle2 size={14} /> : <Icon size={14} />}
                   <span className="hidden sm:inline">{s.label}</span>
                 </div>
                 {i < STEPS.length - 1 && (
-                  <div className={`flex-1 h-0.5 rounded-full ${done ? 'bg-genz-teal' : 'bg-white/10'}`} />
+                  <div className={`flex-1 h-0.5 rounded-full ${done ? 'bg-genz-teal' : 'bg-genz-bg'}`} />
                 )}
               </div>
             );
@@ -174,7 +174,7 @@ const AdminToolWizard = () => {
         {/* Step 1 — Basic Info */}
         {step === 1 && (
           <div className={cardClass}>
-            <h2 className="font-bold text-white mb-5">Basic Tool Information</h2>
+            <h2 className="font-bold text-genz-navy mb-5">Basic Tool Information</h2>
             <div className="space-y-4">
               <div>
                 <label className={labelClass}>Tool Name *</label>
@@ -212,7 +212,7 @@ const AdminToolWizard = () => {
         {/* Step 2 — Credentials */}
         {step === 2 && (
           <div className={cardClass}>
-            <h2 className="font-bold text-white mb-2">Credential Configuration</h2>
+            <h2 className="font-bold text-genz-navy mb-2">Credential Configuration</h2>
             <p className="text-xs text-genz-muted mb-5">All credentials are AES-256-GCM encrypted at rest.</p>
 
             {/* Cred type picker */}
@@ -221,8 +221,8 @@ const AdminToolWizard = () => {
                 <button key={ct.value} onClick={() => update('credentialType', ct.value)}
                         className={`p-3 rounded-xl border text-left transition-all text-sm ${
                           form.credentialType === ct.value
-                            ? 'border-genz-teal text-white'
-                            : 'border-white/10 text-genz-muted hover:border-white/20'
+                            ? 'border-genz-teal text-genz-navy'
+                            : 'border-genz-border text-genz-muted hover:border-genz-blue/40'
                         }`}
                         style={form.credentialType === ct.value ? { background: 'rgba(0,175,193,0.1)' } : {}}>
                   <p className="font-semibold">{ct.label}</p>
@@ -245,7 +245,7 @@ const AdminToolWizard = () => {
                     <input className={`${inputClass} pr-10`} type={showPass ? 'text' : 'password'}
                            placeholder="••••••••" value={form.password}
                            onChange={e => update('password', e.target.value)} />
-                    <button className="absolute right-3 top-1/2 -translate-y-1/2 text-genz-muted hover:text-white"
+                    <button className="absolute right-3 top-1/2 -translate-y-1/2 text-genz-muted hover:text-genz-navy"
                             onClick={() => setShowPass(!showPass)}>
                       {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
                     </button>
@@ -292,8 +292,8 @@ const AdminToolWizard = () => {
             {form.credentialType === 'sso' && (
               <div className="space-y-3">
                 <div className="p-3 rounded-xl border border-yellow-500/30 bg-yellow-500/10 flex gap-2">
-                  <Info size={14} className="text-yellow-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-yellow-300">SSO flows may require manual completion if the provider triggers MFA or CAPTCHA. The extension will pause and notify the user.</p>
+                  <Info size={14} className="text-yellow-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-yellow-600">SSO flows may require manual completion if the provider triggers MFA or CAPTCHA. The extension will pause and notify the user.</p>
                 </div>
                 <div>
                   <label className={labelClass}>SSO Auth Start URL *</label>
@@ -330,7 +330,7 @@ const AdminToolWizard = () => {
         {/* Step 3 — Settings */}
         {step === 3 && (
           <div className={cardClass}>
-            <h2 className="font-bold text-white mb-5">Extension & Success Settings</h2>
+            <h2 className="font-bold text-genz-navy mb-5">Extension & Success Settings</h2>
             <div className="space-y-5">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
@@ -338,11 +338,11 @@ const AdminToolWizard = () => {
                   { key: 'autoInject',        label: 'Auto inject on load'     },
                   { key: 'reloadAfterLogin',  label: 'Reload after login'      },
                 ].map(({ key, label }) => (
-                  <label key={key} className="flex items-center gap-3 p-3 rounded-xl border border-white/10 cursor-pointer hover:border-genz-teal/30 transition-all">
+                  <label key={key} className="flex items-center gap-3 p-3 rounded-xl border border-genz-border cursor-pointer hover:border-genz-teal/30 transition-all">
                     <input type="checkbox" checked={form[key]}
                            onChange={e => update(key, e.target.checked)}
                            className="w-4 h-4 accent-genz-teal" />
-                    <span className="text-sm text-white/80">{label}</span>
+                    <span className="text-sm text-genz-muted">{label}</span>
                   </label>
                 ))}
               </div>
@@ -369,7 +369,7 @@ const AdminToolWizard = () => {
         {/* Step 4 — Test & Save */}
         {step === 4 && (
           <div className={cardClass}>
-            <h2 className="font-bold text-white mb-5">Review & Save</h2>
+            <h2 className="font-bold text-genz-navy mb-5">Review & Save</h2>
 
             {/* Summary */}
             <div className="space-y-2 mb-6 text-sm">
@@ -379,9 +379,9 @@ const AdminToolWizard = () => {
                 ['Target URL',  form.targetUrl],
                 ['Auth Method', CRED_TYPES.find(c => c.value === form.credentialType)?.label],
               ].map(([k, v]) => (
-                <div key={k} className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.03] border border-white/5">
+                <div key={k} className="flex items-center gap-3 p-3 rounded-lg bg-white border border-genz-border">
                   <span className="text-genz-muted w-28 flex-shrink-0">{k}</span>
-                  <span className="text-white font-medium truncate">{v}</span>
+                  <span className="text-genz-navy font-medium truncate">{v}</span>
                 </div>
               ))}
             </div>
@@ -399,8 +399,8 @@ const AdminToolWizard = () => {
               {testResult && (
                 <div className={`mt-3 flex items-center gap-2 p-3 rounded-xl text-sm ${
                   testResult.ok
-                    ? 'bg-green-500/10 border border-green-500/30 text-green-400'
-                    : 'bg-red-500/10 border border-red-500/30 text-red-400'
+                    ? 'bg-green-500/10 border border-green-500/30 text-green-500'
+                    : 'bg-red-500/10 border border-red-500/30 text-red-500'
                 }`}>
                   {testResult.ok ? <CheckCircle2 size={14} /> : <Shield size={14} />}
                   {testResult.message}
@@ -410,7 +410,7 @@ const AdminToolWizard = () => {
 
             <button onClick={handleSave} disabled={saving}
                     className="w-full py-3.5 rounded-xl font-bold text-genz-deep-navy flex items-center justify-center gap-2 transition-all hover:opacity-90 hover:scale-105 disabled:opacity-50 disabled:scale-100"
-                    style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                    style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}>
               <Zap size={18} />
               {saving ? 'Saving...' : 'Save Tool'}
             </button>
@@ -420,14 +420,14 @@ const AdminToolWizard = () => {
         {/* Navigation */}
         <div className="flex justify-between mt-6">
           <button onClick={() => step > 1 ? setStep(s => s - 1) : navigate('/admin/tools')}
-                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm border border-white/10 text-genz-muted hover:border-white/30 hover:text-white transition-all">
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-navy transition-all">
             <ArrowLeft size={15} />
             {step === 1 ? 'Cancel' : 'Back'}
           </button>
           {step < 4 && (
             <button onClick={() => setStep(s => s + 1)} disabled={!canNext()}
                     className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed"
-                    style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                    style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}>
               Continue <ArrowRight size={15} />
             </button>
           )}

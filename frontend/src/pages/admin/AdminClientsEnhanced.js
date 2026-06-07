@@ -104,15 +104,15 @@ const AdminClientsEnhanced = () => {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-3xl sm:text-4xl font-bold text-white mb-2 flex items-center gap-3">
+            <h1 className="text-3xl sm:text-4xl font-bold text-genz-navy mb-2 flex items-center gap-3">
               <UserPlus className="text-genz-teal" size={32} />
               Client Management
             </h1>
-            <p className="text-white/60">Manage client accounts and access</p>
+            <p className="text-genz-muted">Manage client accounts and access</p>
           </div>
           <button
             onClick={() => navigate('/admin/clients/new')}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all hover:scale-105"
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all hover:scale-105"
             data-testid="create-client-btn"
           >
             <Plus size={20} />
@@ -126,7 +126,7 @@ const AdminClientsEnhanced = () => {
             {/* Search */}
             <div className="md:col-span-2">
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-white/55" size={18} />
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
                 <input
                   type="text"
                   placeholder="Search clients by name or email..."
@@ -134,7 +134,7 @@ const AdminClientsEnhanced = () => {
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                  className="w-full pl-11 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all"
+                  className="w-full pl-11 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder:text-genz-muted focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all"
                   data-testid="search-input"
                 />
               </div>
@@ -145,19 +145,19 @@ const AdminClientsEnhanced = () => {
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
               aria-label="Filter clients by status"
-              className="px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
+              className="px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="status-filter"
             >
-              <option value="" className="bg-[#1a1a22] text-white">All Status</option>
-              <option value="active" className="bg-[#1a1a22] text-white">Active</option>
-              <option value="disabled" className="bg-[#1a1a22] text-white">Disabled</option>
+              <option value="" className="bg-[#1a1a22] text-genz-navy">All Status</option>
+              <option value="active" className="bg-[#1a1a22] text-genz-navy">Active</option>
+              <option value="disabled" className="bg-[#1a1a22] text-genz-navy">Disabled</option>
             </select>
           </div>
           
           <button
             onClick={handleSearch}
-            className="w-full md:w-auto px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all font-medium"
+            className="w-full md:w-auto px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all font-medium"
           >
             Apply Filters
           </button>
@@ -169,20 +169,20 @@ const AdminClientsEnhanced = () => {
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-6 animate-pulse`}>
                 <div className="flex items-start gap-4 mb-4">
-                  <div className="w-16 h-16 rounded-xl bg-white/10 flex-shrink-0" />
+                  <div className="w-16 h-16 rounded-xl bg-genz-bg flex-shrink-0" />
                   <div className="flex-1 space-y-2 pt-1">
-                    <div className="h-4 w-2/5 rounded bg-white/10" />
-                    <div className="h-3 w-3/5 rounded bg-white/[0.07]" />
-                    <div className="h-5 w-20 rounded-full bg-white/[0.07] mt-2" />
+                    <div className="h-4 w-2/5 rounded bg-genz-bg" />
+                    <div className="h-3 w-3/5 rounded bg-white" />
+                    <div className="h-5 w-20 rounded-full bg-white mt-2" />
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4 mb-4 p-4 bg-white/5 border border-white/10 rounded-xl">
-                  <div className="space-y-2"><div className="h-3 w-16 rounded bg-white/[0.07]" /><div className="h-4 w-12 rounded bg-white/10" /></div>
-                  <div className="space-y-2"><div className="h-3 w-16 rounded bg-white/[0.07]" /><div className="h-4 w-20 rounded bg-white/10" /></div>
+                <div className="grid grid-cols-2 gap-4 mb-4 p-4 bg-genz-bg border border-genz-border rounded-xl">
+                  <div className="space-y-2"><div className="h-3 w-16 rounded bg-white" /><div className="h-4 w-12 rounded bg-genz-bg" /></div>
+                  <div className="space-y-2"><div className="h-3 w-16 rounded bg-white" /><div className="h-4 w-20 rounded bg-genz-bg" /></div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <div className="h-10 rounded-xl bg-white/[0.07]" />
-                  <div className="h-10 rounded-xl bg-white/[0.07]" />
+                  <div className="h-10 rounded-xl bg-white" />
+                  <div className="h-10 rounded-xl bg-white" />
                 </div>
               </div>
             ))}
@@ -190,13 +190,13 @@ const AdminClientsEnhanced = () => {
         ) : clients.length === 0 ? (
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-green-500/20 to-cyan-500/20 rounded-2xl flex items-center justify-center">
-              <Users size={40} className="text-white/55" />
+              <Users size={40} className="text-genz-muted" />
             </div>
-            <h3 className="text-xl font-semibold text-white mb-2">No clients found</h3>
-            <p className="text-white/60 mb-6">Get started by adding your first client</p>
+            <h3 className="text-xl font-semibold text-genz-navy mb-2">No clients found</h3>
+            <p className="text-genz-muted mb-6">Get started by adding your first client</p>
             <button
               onClick={() => navigate('/admin/clients/new')}
-              className="px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all"
+              className="px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all"
             >
               Add Client
             </button>
@@ -220,25 +220,25 @@ const AdminClientsEnhanced = () => {
                   <div className="relative p-6">
                     <div className="flex items-start gap-4 mb-4">
                       <div className="w-16 h-16 bg-gradient-to-br from-genz-teal to-genz-dark-teal rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg shadow-genz-teal/25">
-                        <span className="text-white font-bold text-2xl">
+                        <span className="text-genz-navy font-bold text-2xl">
                           {client.fullName?.charAt(0) || '?'}
                         </span>
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h3 className="text-lg font-bold text-white mb-1 truncate group-hover:text-genz-teal transition-colors">
+                        <h3 className="text-lg font-bold text-genz-navy mb-1 truncate group-hover:text-genz-teal transition-colors">
                           {client.fullName}
                         </h3>
-                        <p className="text-sm text-white/60 truncate">{client.email}</p>
+                        <p className="text-sm text-genz-muted truncate">{client.email}</p>
                         <div className="flex items-center gap-2 mt-2">
                           <span className={`px-3 py-1 rounded-full text-xs font-medium ${
                             client.status === 'active' 
-                              ? 'bg-green-500/20 text-green-400' 
-                              : 'bg-red-500/20 text-red-400'
+                              ? 'bg-green-500/20 text-green-500' 
+                              : 'bg-red-500/20 text-red-500'
                           }`}>
                             {client.status}
                           </span>
                           {client.isDeviceLocked && (
-                            <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-400 flex items-center gap-1">
+                            <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-500 flex items-center gap-1">
                               <Smartphone size={12} />
                               Device Locked
                             </span>
@@ -247,27 +247,27 @@ const AdminClientsEnhanced = () => {
                       </div>
                     </div>
                     
-                    <div className="grid grid-cols-2 gap-4 mb-4 p-4 bg-white/5 border border-white/10 rounded-xl">
+                    <div className="grid grid-cols-2 gap-4 mb-4 p-4 bg-genz-bg border border-genz-border rounded-xl">
                       <div>
-                        <div className="flex items-center gap-2 text-white/50 text-xs mb-1">
+                        <div className="flex items-center gap-2 text-genz-muted text-xs mb-1">
                           <TrendingUp size={14} />
                           <span>Assignments</span>
                         </div>
-                        <p className="text-white font-semibold">{client.activeAssignments || 0} active</p>
+                        <p className="text-genz-navy font-semibold">{client.activeAssignments || 0} active</p>
                       </div>
                       <div>
-                        <div className="flex items-center gap-2 text-white/50 text-xs mb-1">
+                        <div className="flex items-center gap-2 text-genz-muted text-xs mb-1">
                           <Clock size={14} />
                           <span>Last Login</span>
                         </div>
-                        <p className="text-white font-semibold text-sm">{formatDate(client.lastLoginAt)}</p>
+                        <p className="text-genz-navy font-semibold text-sm">{formatDate(client.lastLoginAt)}</p>
                       </div>
                     </div>
                     
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={() => navigate(`/admin/clients/${client._id}/edit`)}
-                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-blue-500/20 text-blue-400 rounded-xl hover:bg-blue-500/30 transition-colors text-sm font-medium"
+                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-blue-500/20 text-blue-500 rounded-xl hover:bg-blue-500/30 transition-colors text-sm font-medium"
                         data-testid={`edit-client-${client._id}`}
                       >
                         <Edit2 size={14} />
@@ -275,7 +275,7 @@ const AdminClientsEnhanced = () => {
                       </button>
                       <button
                         onClick={() => navigate(`/admin/clients/${client._id}/assign`)}
-                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-purple-500/20 text-purple-400 rounded-xl hover:bg-purple-500/30 transition-colors text-sm font-medium"
+                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-purple-500/20 text-purple-500 rounded-xl hover:bg-purple-500/30 transition-colors text-sm font-medium"
                       >
                         <TrendingUp size={14} />
                         <span>Assign</span>
@@ -286,7 +286,7 @@ const AdminClientsEnhanced = () => {
                       {client.isDeviceLocked && (
                         <button
                           onClick={() => handleDeviceReset(client._id, client.fullName)}
-                          className="flex items-center justify-center gap-2 px-3 py-2.5 bg-yellow-500/20 text-yellow-400 rounded-xl hover:bg-yellow-500/30 transition-colors text-sm font-medium"
+                          className="flex items-center justify-center gap-2 px-3 py-2.5 bg-yellow-500/20 text-yellow-500 rounded-xl hover:bg-yellow-500/30 transition-colors text-sm font-medium"
                           data-testid={`reset-device-${client._id}`}
                         >
                           <ShieldOff size={14} />
@@ -302,7 +302,7 @@ const AdminClientsEnhanced = () => {
                       </button>
                       <button
                         onClick={() => handleDelete(client._id, client.fullName)}
-                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-red-500/20 text-red-400 rounded-xl hover:bg-red-500/30 transition-colors text-sm font-medium"
+                        className="flex items-center justify-center gap-2 px-3 py-2.5 bg-red-500/20 text-red-500 rounded-xl hover:bg-red-500/30 transition-colors text-sm font-medium"
                         data-testid={`delete-client-${client._id}`}
                       >
                         <Trash2 size={14} />
@@ -320,17 +320,17 @@ const AdminClientsEnhanced = () => {
                 <button
                   onClick={() => setPagination(prev => ({ ...prev, page: Math.max(1, prev.page - 1) }))}
                   disabled={pagination.page === 1}
-                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
+                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
                 >
                   Previous
                 </button>
-                <span className="text-white/60">
+                <span className="text-genz-muted">
                   Page {pagination.page} of {pagination.totalPages}
                 </span>
                 <button
                   onClick={() => setPagination(prev => ({ ...prev, page: Math.min(prev.totalPages, prev.page + 1) }))}
                   disabled={pagination.page >= pagination.totalPages}
-                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-white disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
+                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
                 >
                   Next
                 </button>

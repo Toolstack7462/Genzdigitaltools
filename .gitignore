@@ -107,3 +107,6 @@ android-sdk/
 test_reports/
 test_result.md
 TESTING_RESULTS.md
+# local preview artifacts
+.chrome-preview-profile/
+homepage-preview.png

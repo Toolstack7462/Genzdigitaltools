@@ -651,33 +651,33 @@ const AdminToolForm = () => {
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Auth Start URL</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Auth Start URL</label>
                 <input
                   type="url"
                   value={ssoConfig.authStartUrl || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, ssoConfig: { ...getSsoConfig(), authStartUrl: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-purple-500"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-purple-500"
                   placeholder="https://example.com/auth/sso"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Post-Login URL</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Post-Login URL</label>
                 <input
                   type="url"
                   value={ssoConfig.postLoginUrl || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, ssoConfig: { ...getSsoConfig(), postLoginUrl: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-purple-500"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-purple-500"
                   placeholder="https://example.com/dashboard"
                 />
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">SSO Provider</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">SSO Provider</label>
                 <select
                   value={ssoConfig.provider || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, ssoConfig: { ...getSsoConfig(), provider: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none"
+                  className="w-full px-3 py-2 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none"
                 >
                   <option value="">Auto-detect</option>
                   <option value="google">Google</option>
@@ -688,12 +688,12 @@ const AdminToolForm = () => {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Button Selector</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Button Selector</label>
                 <input
                   type="text"
                   value={ssoConfig.buttonSelector || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, ssoConfig: { ...getSsoConfig(), buttonSelector: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none"
                   placeholder='button[data-provider="google"]'
                 />
               </div>
@@ -703,11 +703,11 @@ const AdminToolForm = () => {
                 type="checkbox"
                 checked={ssoConfig.autoClick !== false}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, ssoConfig: { ...getSsoConfig(), autoClick: e.target.checked }}))}
-                className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
               />
               <div>
-                <div className="font-medium text-white text-sm">Auto-Click SSO Button</div>
-                <div className="text-xs text-green-300">Automatically click when ?auto=1</div>
+                <div className="font-medium text-genz-navy text-sm">Auto-Click SSO Button</div>
+                <div className="text-xs text-green-600">Automatically click when ?auto=1</div>
               </div>
             </label>
           </div>
@@ -719,33 +719,33 @@ const AdminToolForm = () => {
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Username / Email</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Username / Email</label>
                 <input
                   type="text"
                   value={formConfig.username || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), username: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none"
                   placeholder="user@example.com"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Password</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Password</label>
                 <input
                   type="password"
                   value={formConfig.password || ''}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), password: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none"
                   placeholder="••••••••"
                 />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Login URL (optional)</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Login URL (optional)</label>
               <input
                 type="url"
                 value={formConfig.loginUrl || ''}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), loginUrl: e.target.value }}))}
-                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none"
+                className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none"
                 placeholder="https://example.com/login"
               />
             </div>
@@ -755,34 +755,34 @@ const AdminToolForm = () => {
                   type="checkbox"
                   checked={formConfig.autoSubmit !== false}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), autoSubmit: e.target.checked }}))}
-                  className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                  className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
                 />
                 <div>
-                  <div className="font-medium text-white text-sm">Auto-Submit</div>
-                  <div className="text-xs text-green-300">Like SSO auto-click</div>
+                  <div className="font-medium text-genz-navy text-sm">Auto-Submit</div>
+                  <div className="text-xs text-green-600">Like SSO auto-click</div>
                 </div>
               </label>
-              <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10">
+              <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-lg cursor-pointer hover:bg-genz-bg">
                 <input
                   type="checkbox"
                   checked={formConfig.multiStep || false}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), multiStep: e.target.checked }}))}
-                  className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                  className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                 />
                 <div>
-                  <div className="font-medium text-white text-sm">Multi-Step</div>
+                  <div className="font-medium text-genz-navy text-sm">Multi-Step</div>
                   <div className="text-xs text-genz-muted">Email → Next → Pass</div>
                 </div>
               </label>
-              <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10">
+              <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-lg cursor-pointer hover:bg-genz-bg">
                 <input
                   type="checkbox"
                   checked={formConfig.rememberMe !== false}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), rememberMe: e.target.checked }}))}
-                  className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                  className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                 />
                 <div>
-                  <div className="font-medium text-white text-sm">Remember</div>
+                  <div className="font-medium text-genz-navy text-sm">Remember</div>
                   <div className="text-xs text-genz-muted">Check if avail</div>
                 </div>
               </label>
@@ -795,7 +795,7 @@ const AdminToolForm = () => {
                   step="100"
                   value={formConfig.submitDelay || 800}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, formConfig: { ...getFormConfig(), submitDelay: parseInt(e.target.value) || 800 }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none"
                 />
               </div>
             </div>
@@ -807,25 +807,25 @@ const AdminToolForm = () => {
         return (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Cookies JSON</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Cookies JSON</label>
               <textarea
                 value={cookiesConfig.cookies || ''}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, cookiesConfig: { ...getCookiesConfig(), cookies: e.target.value }}))}
                 rows={5}
-                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none font-mono text-sm"
+                className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none font-mono text-sm"
                 placeholder='[{"name": "session", "value": "abc123", "domain": ".example.com"}]'
               />
               <p className="mt-1 text-xs text-genz-muted">Paste cookies as JSON array. Export from DevTools.</p>
             </div>
-            <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10">
+            <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-lg cursor-pointer hover:bg-genz-bg">
               <input
                 type="checkbox"
                 checked={cookiesConfig.injectFirst !== false}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, cookiesConfig: { ...getCookiesConfig(), injectFirst: e.target.checked }}))}
-                className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
               />
               <div>
-                <div className="font-medium text-white text-sm">Inject Cookies First</div>
+                <div className="font-medium text-genz-navy text-sm">Inject Cookies First</div>
                 <div className="text-xs text-genz-muted">Inject cookies before trying other auth</div>
               </div>
             </label>
@@ -838,43 +838,43 @@ const AdminToolForm = () => {
           <div className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Header Name</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Header Name</label>
                 <input
                   type="text"
                   value={tokenConfig.header || 'Authorization'}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, tokenConfig: { ...getTokenConfig(), header: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy"
                   placeholder="Authorization"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Prefix</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Prefix</label>
                 <input
                   type="text"
                   value={tokenConfig.prefix || 'Bearer '}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, tokenConfig: { ...getTokenConfig(), prefix: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy"
                   placeholder="Bearer "
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-white mb-2">Storage Key</label>
+                <label className="block text-sm font-medium text-genz-navy mb-2">Storage Key</label>
                 <input
                   type="text"
                   value={tokenConfig.storageKey || 'access_token'}
                   onChange={(e) => setComboAuth(prev => ({ ...prev, tokenConfig: { ...getTokenConfig(), storageKey: e.target.value }}))}
-                  className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white"
+                  className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy"
                   placeholder="access_token"
                 />
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-white mb-2">Token Value</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">Token Value</label>
               <input
                 type="password"
                 value={tokenConfig.token || ''}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, tokenConfig: { ...getTokenConfig(), token: e.target.value }}))}
-                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted font-mono"
+                className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted font-mono"
                 placeholder="Enter token value..."
               />
             </div>
@@ -898,12 +898,12 @@ const AdminToolForm = () => {
         return (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-white mb-2">LocalStorage Data (JSON)</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">LocalStorage Data (JSON)</label>
               <textarea
                 value={localStorageConfig.data || ''}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, localStorageConfig: { ...getLocalStorageConfig(), data: e.target.value }}))}
                 rows={5}
-                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none font-mono text-sm"
+                className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none font-mono text-sm"
                 placeholder='{"key1": "value1", "token": "abc123"}'
               />
               <p className="mt-1 text-xs text-genz-muted">JSON object with key-value pairs to inject into localStorage</p>
@@ -915,12 +915,12 @@ const AdminToolForm = () => {
         return (
           <div className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-white mb-2">SessionStorage Data (JSON)</label>
+              <label className="block text-sm font-medium text-genz-navy mb-2">SessionStorage Data (JSON)</label>
               <textarea
                 value={comboAuth.sessionStorageConfig?.data || ''}
                 onChange={(e) => setComboAuth(prev => ({ ...prev, sessionStorageConfig: { ...prev.sessionStorageConfig, data: e.target.value }}))}
                 rows={5}
-                className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none font-mono text-sm"
+                className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none font-mono text-sm"
                 placeholder='{"sessionKey": "sessionValue", "tempToken": "xyz789"}'
               />
               <p className="mt-1 text-xs text-genz-muted">JSON object with key-value pairs to inject into sessionStorage (cleared on tab close)</p>
@@ -950,12 +950,12 @@ const AdminToolForm = () => {
         <div className="mb-8">
           <button
             onClick={() => navigate('/admin/tools')}
-            className="flex items-center gap-2 text-genz-muted hover:text-white transition-colors mb-4"
+            className="flex items-center gap-2 text-genz-muted hover:text-genz-navy transition-colors mb-4"
           >
             <ArrowLeft size={20} />
             Back to Tools
           </button>
-          <h1 className="text-3xl font-bold text-white">
+          <h1 className="text-3xl font-bold text-genz-navy">
             {isEdit ? 'Edit Tool' : 'Create Tool'}
           </h1>
           <p className="text-genz-muted mt-1">Configure tool details and credentials for Chrome Extension</p>
@@ -963,8 +963,8 @@ const AdminToolForm = () => {
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Basic Info Card */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-white mb-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-genz-navy mb-6">
               <Package size={20} className="text-genz-teal" />
               Basic Information
             </h2>
@@ -972,7 +972,7 @@ const AdminToolForm = () => {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Name */}
               <div>
-                <label htmlFor="name" className="block text-sm font-medium text-white mb-2">
+                <label htmlFor="name" className="block text-sm font-medium text-genz-navy mb-2">
                   Tool Name *
                 </label>
                 <input
@@ -982,7 +982,7 @@ const AdminToolForm = () => {
                   value={formData.name}
                   onChange={handleChange}
                   required
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="e.g., ChatGPT Premium"
                   data-testid="tool-name-input"
                 />
@@ -990,7 +990,7 @@ const AdminToolForm = () => {
 
               {/* Category */}
               <div>
-                <label htmlFor="category" className="block text-sm font-medium text-white mb-2">
+                <label htmlFor="category" className="block text-sm font-medium text-genz-navy mb-2">
                   Category
                 </label>
                 <select
@@ -998,19 +998,19 @@ const AdminToolForm = () => {
                   name="category"
                   value={formData.category}
                   onChange={handleChange}
-                  className="w-full px-4 py-3 bg-[#000c20] border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors appearance-none cursor-pointer"
+                  className="w-full px-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors appearance-none cursor-pointer"
                   style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.75rem' }}
                   data-testid="tool-category-select"
                 >
                   {CATEGORIES.map(cat => (
-                    <option key={cat} value={cat} className="bg-[#000c20] text-white">{cat}</option>
+                    <option key={cat} value={cat} className="bg-[#FFFFFF] text-genz-navy">{cat}</option>
                   ))}
                 </select>
               </div>
 
               {/* Target URL */}
               <div className="md:col-span-2">
-                <label htmlFor="targetUrl" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                <label htmlFor="targetUrl" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                   <LinkIcon size={16} className="text-genz-teal" />
                   Target URL *
                 </label>
@@ -1021,7 +1021,7 @@ const AdminToolForm = () => {
                   value={formData.targetUrl}
                   onChange={handleChange}
                   required
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="https://example.com"
                   data-testid="tool-url-input"
                 />
@@ -1030,7 +1030,7 @@ const AdminToolForm = () => {
               
               {/* Login URL */}
               <div className="md:col-span-2">
-                <label htmlFor="loginUrl" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                <label htmlFor="loginUrl" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                   <LogIn size={16} className="text-genz-teal" />
                   Login URL (Optional)
                 </label>
@@ -1040,7 +1040,7 @@ const AdminToolForm = () => {
                   name="loginUrl"
                   value={formData.loginUrl}
                   onChange={handleChange}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="https://example.com/login (defaults to Target URL)"
                   data-testid="tool-login-url-input"
                 />
@@ -1049,7 +1049,7 @@ const AdminToolForm = () => {
 
               {/* Description */}
               <div className="md:col-span-2">
-                <label htmlFor="description" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                <label htmlFor="description" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                   <FileText size={16} className="text-genz-teal" />
                   Description
                 </label>
@@ -1059,7 +1059,7 @@ const AdminToolForm = () => {
                   value={formData.description}
                   onChange={handleChange}
                   rows={2}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none"
                   placeholder="Brief description of the tool..."
                   data-testid="tool-description-input"
                 />
@@ -1068,8 +1068,8 @@ const AdminToolForm = () => {
           </div>
 
           {/* Credential Type Card */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-white mb-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-genz-navy mb-6">
               <Key size={20} className="text-genz-teal" />
               Authentication Type
             </h2>
@@ -1085,12 +1085,12 @@ const AdminToolForm = () => {
                       ? type.isCombo 
                         ? 'border-purple-500 bg-purple-500/20 ring-2 ring-purple-500/50'
                         : 'border-genz-teal bg-genz-teal/10'
-                      : 'border-white/10 bg-white/5 hover:border-genz-teal/50'
+                      : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
                   }`}
                   data-testid={`credential-type-${type.value}`}
                 >
                   <div className="text-2xl mb-1">{type.icon}</div>
-                  <div className="font-medium text-white text-xs">{type.label}</div>
+                  <div className="font-medium text-genz-navy text-xs">{type.label}</div>
                   <div className="text-xs text-genz-muted mt-0.5 line-clamp-2">{type.hint}</div>
                 </button>
               ))}
@@ -1100,14 +1100,14 @@ const AdminToolForm = () => {
             {formData.credentialType === 'combo' && (
               <div className="space-y-4">
                 <div className="flex items-center gap-2 p-3 bg-purple-500/10 border border-purple-500/30 rounded-xl mb-4">
-                  <Zap size={18} className="text-purple-400" />
-                  <span className="font-medium text-white">Universal Combo Auth</span>
-                  <span className="text-sm text-purple-300 ml-2">Configure auth strategies</span>
+                  <Zap size={18} className="text-purple-500" />
+                  <span className="font-medium text-genz-navy">Universal Combo Auth</span>
+                  <span className="text-sm text-purple-600 ml-2">Configure auth strategies</span>
                 </div>
 
                 {/* Run Mode Selection */}
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Run Mode
                   </label>
                   <div className="grid grid-cols-2 gap-3">
@@ -1117,11 +1117,11 @@ const AdminToolForm = () => {
                       className={`p-3 rounded-xl border text-left transition-all ${
                         comboAuth.runMode === 'sequential'
                           ? 'border-blue-500 bg-blue-500/20 ring-2 ring-blue-500/50'
-                          : 'border-white/10 bg-white/5 hover:border-blue-500/50'
+                          : 'border-genz-border bg-genz-bg hover:border-blue-500/50'
                       }`}
                     >
                       <div className="text-lg mb-1">🔄</div>
-                      <div className="font-medium text-white text-sm">Sequential</div>
+                      <div className="font-medium text-genz-navy text-sm">Sequential</div>
                       <div className="text-xs text-genz-muted">Primary → Fallback (if fails)</div>
                     </button>
                     <button
@@ -1130,11 +1130,11 @@ const AdminToolForm = () => {
                       className={`p-3 rounded-xl border text-left transition-all ${
                         comboAuth.runMode === 'parallel'
                           ? 'border-green-500 bg-green-500/20 ring-2 ring-green-500/50'
-                          : 'border-white/10 bg-white/5 hover:border-green-500/50'
+                          : 'border-genz-border bg-genz-bg hover:border-green-500/50'
                       }`}
                     >
                       <div className="text-lg mb-1">⚡</div>
-                      <div className="font-medium text-white text-sm">Parallel / Simultaneous</div>
+                      <div className="font-medium text-genz-navy text-sm">Parallel / Simultaneous</div>
                       <div className="text-xs text-genz-muted">Apply all session data at once</div>
                     </button>
                   </div>
@@ -1146,19 +1146,19 @@ const AdminToolForm = () => {
                     {/* Sequential Mode Info */}
                     <div className="p-3 bg-blue-500/10 border border-blue-500/30 rounded-xl mb-4">
                       <div className="text-sm text-blue-200 mb-1 font-medium">🔄 Sequential Mode:</div>
-                      <div className="text-xs text-blue-300">Try Primary auth first → If fails, try Fallback</div>
+                      <div className="text-xs text-blue-600">Try Primary auth first → If fails, try Fallback</div>
                     </div>
                 
                     {/* Type Selection for Sequential */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                       <div>
-                        <label className="block text-sm font-medium text-white mb-2">
-                          Primary Auth Type <span className="text-purple-400">(Try First)</span>
+                        <label className="block text-sm font-medium text-genz-navy mb-2">
+                          Primary Auth Type <span className="text-purple-500">(Try First)</span>
                         </label>
                         <select
                           value={comboAuth.primaryType}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, primaryType: e.target.value }))}
-                          className="w-full px-3 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none focus:border-purple-500"
+                          className="w-full px-3 py-2 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-purple-500"
                         >
                           {COMBO_AUTH_TYPES.map(type => (
                             <option key={type.value} value={type.value}>
@@ -1169,13 +1169,13 @@ const AdminToolForm = () => {
                       </div>
                       
                       <div>
-                        <label className="block text-sm font-medium text-white mb-2">
-                          Fallback Auth Type <span className="text-green-400">(If Primary Fails)</span>
+                        <label className="block text-sm font-medium text-genz-navy mb-2">
+                          Fallback Auth Type <span className="text-green-500">(If Primary Fails)</span>
                         </label>
                         <select
                           value={comboAuth.secondaryType}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, secondaryType: e.target.value }))}
-                          className="w-full px-3 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none focus:border-purple-500"
+                          className="w-full px-3 py-2 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-purple-500"
                         >
                           {COMBO_AUTH_TYPES.filter(t => t.value !== comboAuth.primaryType).map(type => (
                             <option key={type.value} value={type.value}>
@@ -1188,56 +1188,56 @@ const AdminToolForm = () => {
                     
                     {/* Strategy Controls for Sequential */}
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
-                      <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10">
+                      <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg">
                         <input
                           type="checkbox"
                           checked={comboAuth.skipIfLoggedIn}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, skipIfLoggedIn: e.target.checked }))}
-                          className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                          className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
                         />
                         <div>
-                          <div className="font-medium text-white text-sm">Skip if Logged In</div>
+                          <div className="font-medium text-genz-navy text-sm">Skip if Logged In</div>
                           <div className="text-xs text-genz-muted">Check first</div>
                         </div>
                       </label>
 
-                      <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10">
+                      <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg">
                         <input
                           type="checkbox"
                           checked={comboAuth.fallbackEnabled}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, fallbackEnabled: e.target.checked }))}
-                          className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                          className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                         />
                         <div>
-                          <div className="font-medium text-white text-sm">Fallback Enabled</div>
+                          <div className="font-medium text-genz-navy text-sm">Fallback Enabled</div>
                           <div className="text-xs text-genz-muted">Try secondary</div>
                         </div>
                       </label>
                       
-                      <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10">
+                      <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg">
                         <input
                           type="checkbox"
                           checked={comboAuth.triggerOnAuto}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, triggerOnAuto: e.target.checked }))}
-                          className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                          className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                         />
                         <div>
-                          <div className="font-medium text-white text-sm">Auto Only</div>
+                          <div className="font-medium text-genz-navy text-sm">Auto Only</div>
                           <div className="text-xs text-genz-muted">?auto=1</div>
                         </div>
                       </label>
                     </div>
                     
                     {/* Tabbed Interface for Sequential */}
-                    <div className="border border-white/10 rounded-xl overflow-hidden">
-                      <div className="flex border-b border-white/10">
+                    <div className="border border-genz-border rounded-xl overflow-hidden">
+                      <div className="flex border-b border-genz-border">
                         <button
                           type="button"
                           onClick={() => setComboAuthTab('primary')}
                           className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
                             comboAuthTab === 'primary'
-                              ? 'bg-purple-500/20 text-purple-300 border-b-2 border-purple-500'
-                              : 'text-genz-muted hover:text-white hover:bg-white/5'
+                              ? 'bg-purple-500/20 text-purple-600 border-b-2 border-purple-500'
+                              : 'text-genz-muted hover:text-genz-navy hover:bg-genz-bg'
                           }`}
                         >
                           {COMBO_AUTH_TYPES.find(t => t.value === comboAuth.primaryType)?.icon} {COMBO_AUTH_TYPES.find(t => t.value === comboAuth.primaryType)?.label} (Primary)
@@ -1247,8 +1247,8 @@ const AdminToolForm = () => {
                           onClick={() => setComboAuthTab('secondary')}
                           className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${
                             comboAuthTab === 'secondary'
-                              ? 'bg-green-500/20 text-green-300 border-b-2 border-green-500'
-                              : 'text-genz-muted hover:text-white hover:bg-white/5'
+                              ? 'bg-green-500/20 text-green-600 border-b-2 border-green-500'
+                              : 'text-genz-muted hover:text-genz-navy hover:bg-genz-bg'
                           }`}
                         >
                           {COMBO_AUTH_TYPES.find(t => t.value === comboAuth.secondaryType)?.icon} {COMBO_AUTH_TYPES.find(t => t.value === comboAuth.secondaryType)?.label} (Fallback)
@@ -1269,7 +1269,7 @@ const AdminToolForm = () => {
                     {/* Parallel Mode Info */}
                     <div className="p-3 bg-green-500/10 border border-green-500/30 rounded-xl mb-4">
                       <div className="text-sm text-green-200 mb-2 font-medium">⚡ Parallel / Simultaneous Mode:</div>
-                      <ul className="text-xs text-green-300 space-y-1">
+                      <ul className="text-xs text-green-600 space-y-1">
                         <li>• All session data (Cookies + LocalStorage + SessionStorage) applied <strong>simultaneously</strong></li>
                         <li>• Then auth method (SSO or Form) runs to verify/complete login</li>
                         <li>• Best for tools that need all session data injected at once</li>
@@ -1278,28 +1278,28 @@ const AdminToolForm = () => {
 
                     {/* Parallel Options */}
                     <div className="grid grid-cols-2 gap-3 mb-4">
-                      <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10">
+                      <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg">
                         <input
                           type="checkbox"
                           checked={comboAuth.skipIfLoggedIn}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, skipIfLoggedIn: e.target.checked }))}
-                          className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                          className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
                         />
                         <div>
-                          <div className="font-medium text-white text-sm">Skip if Already Logged In</div>
+                          <div className="font-medium text-genz-navy text-sm">Skip if Already Logged In</div>
                           <div className="text-xs text-genz-muted">Check login status first</div>
                         </div>
                       </label>
                       
-                      <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10">
+                      <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg">
                         <input
                           type="checkbox"
                           checked={comboAuth.triggerOnAuto}
                           onChange={(e) => setComboAuth(prev => ({ ...prev, triggerOnAuto: e.target.checked }))}
-                          className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                          className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
                         />
                         <div>
-                          <div className="font-medium text-white text-sm">Auto Trigger Only</div>
+                          <div className="font-medium text-genz-navy text-sm">Auto Trigger Only</div>
                           <div className="text-xs text-genz-muted">Only when ?auto=1 in URL</div>
                         </div>
                       </label>
@@ -1307,13 +1307,13 @@ const AdminToolForm = () => {
 
                     {/* Auth Method for Parallel (optional, after session injection) */}
                     <div className="mb-4">
-                      <label className="block text-sm font-medium text-white mb-2">
+                      <label className="block text-sm font-medium text-genz-navy mb-2">
                         Auth Method <span className="text-genz-muted text-xs">(After session injection)</span>
                       </label>
                       <select
                         value={comboAuth.primaryType}
                         onChange={(e) => setComboAuth(prev => ({ ...prev, primaryType: e.target.value }))}
-                        className="w-full px-3 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none focus:border-green-500"
+                        className="w-full px-3 py-2 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-green-500"
                       >
                         <option value="none">🔓 None (Session Only)</option>
                         <option value="sso">🔐 SSO / OAuth</option>
@@ -1328,21 +1328,21 @@ const AdminToolForm = () => {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <span className="text-lg">📦</span>
-                            <span className="font-medium text-white">Master Session Bundle</span>
+                            <span className="font-medium text-genz-navy">Master Session Bundle</span>
                             {sessionBundleVersion && (
-                              <span className="text-xs bg-green-500/30 text-green-300 px-2 py-0.5 rounded-full">
+                              <span className="text-xs bg-green-500/30 text-green-600 px-2 py-0.5 rounded-full">
                                 v{sessionBundleVersion}
                               </span>
                             )}
                           </div>
                         </div>
-                        <p className="text-xs text-green-300 mt-1">All data below will be applied simultaneously to the browser</p>
+                        <p className="text-xs text-green-600 mt-1">All data below will be applied simultaneously to the browser</p>
                       </div>
                       
                       <div className="p-4 space-y-4">
                         {/* Cookies */}
                         <div>
-                          <label className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                          <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                             🍪 Cookies <span className="text-xs text-genz-muted">(JSON Array)</span>
                           </label>
                           <textarea
@@ -1351,7 +1351,7 @@ const AdminToolForm = () => {
                               ...prev,
                               cookiesConfig: { ...prev.cookiesConfig, cookies: e.target.value }
                             }))}
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
+                            className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
                             rows={4}
                             placeholder='[{"name": "session", "value": "abc123", "domain": ".example.com"}]'
                           />
@@ -1359,7 +1359,7 @@ const AdminToolForm = () => {
 
                         {/* LocalStorage */}
                         <div>
-                          <label className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                          <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                             💾 LocalStorage <span className="text-xs text-genz-muted">(JSON Object)</span>
                           </label>
                           <textarea
@@ -1368,7 +1368,7 @@ const AdminToolForm = () => {
                               ...prev,
                               localStorageConfig: { ...prev.localStorageConfig, data: e.target.value }
                             }))}
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
+                            className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
                             rows={4}
                             placeholder='{"token": "eyJ...", "user": "{\"id\": 123}"}'
                           />
@@ -1376,7 +1376,7 @@ const AdminToolForm = () => {
 
                         {/* SessionStorage */}
                         <div>
-                          <label className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                          <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                             📦 SessionStorage <span className="text-xs text-genz-muted">(JSON Object)</span>
                           </label>
                           <textarea
@@ -1385,7 +1385,7 @@ const AdminToolForm = () => {
                               ...prev,
                               sessionStorageConfig: { ...prev.sessionStorageConfig, data: e.target.value }
                             }))}
-                            className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
+                            className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500 transition-colors font-mono text-sm"
                             rows={4}
                             placeholder='{"tempState": "value", "sessionId": "xyz789"}'
                           />
@@ -1393,8 +1393,8 @@ const AdminToolForm = () => {
 
                         {/* Auth Method Config (if SSO or Form selected) */}
                         {comboAuth.primaryType === 'sso' && (
-                          <div className="border-t border-white/10 pt-4">
-                            <label className="flex items-center gap-2 text-sm font-medium text-white mb-3">
+                          <div className="border-t border-genz-border pt-4">
+                            <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-3">
                               🔐 SSO Configuration
                             </label>
                             <div className="space-y-3">
@@ -1405,7 +1405,7 @@ const AdminToolForm = () => {
                                   ...prev,
                                   ssoConfig: { ...prev.ssoConfig, authStartUrl: e.target.value }
                                 }))}
-                                className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-green-500"
+                                className="w-full px-4 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500"
                                 placeholder="SSO Start URL"
                               />
                               <input
@@ -1415,7 +1415,7 @@ const AdminToolForm = () => {
                                   ...prev,
                                   ssoConfig: { ...prev.ssoConfig, buttonSelector: e.target.value }
                                 }))}
-                                className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-green-500"
+                                className="w-full px-4 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500"
                                 placeholder="SSO Button Selector (e.g., .google-login-btn)"
                               />
                             </div>
@@ -1423,8 +1423,8 @@ const AdminToolForm = () => {
                         )}
 
                         {comboAuth.primaryType === 'form' && (
-                          <div className="border-t border-white/10 pt-4">
-                            <label className="flex items-center gap-2 text-sm font-medium text-white mb-3">
+                          <div className="border-t border-genz-border pt-4">
+                            <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-3">
                               📝 Form Login Configuration
                             </label>
                             <div className="grid grid-cols-2 gap-3">
@@ -1435,7 +1435,7 @@ const AdminToolForm = () => {
                                   ...prev,
                                   formConfig: { ...prev.formConfig, username: e.target.value }
                                 }))}
-                                className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-green-500"
+                                className="w-full px-4 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500"
                                 placeholder="Username"
                               />
                               <input
@@ -1445,7 +1445,7 @@ const AdminToolForm = () => {
                                   ...prev,
                                   formConfig: { ...prev.formConfig, password: e.target.value }
                                 }))}
-                                className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-green-500"
+                                className="w-full px-4 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-green-500"
                                 placeholder="Password"
                               />
                             </div>
@@ -1463,92 +1463,92 @@ const AdminToolForm = () => {
               <div className="space-y-4">
                 <div className="flex items-center gap-2 mb-4">
                   <LogIn size={18} className="text-genz-teal" />
-                  <span className="font-medium text-white">Form Login Configuration</span>
+                  <span className="font-medium text-genz-navy">Form Login Configuration</span>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       Username / Email
                     </label>
                     <input
                       type="text"
                       value={formLoginData.username}
                       onChange={(e) => setFormLoginData(prev => ({ ...prev, username: e.target.value }))}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="user@example.com"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       Password
                     </label>
                     <input
                       type="password"
                       value={formLoginData.password}
                       onChange={(e) => setFormLoginData(prev => ({ ...prev, password: e.target.value }))}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="••••••••"
                     />
                   </div>
                 </div>
                 
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Login URL (optional)
                   </label>
                   <input
                     type="url"
                     value={formLoginData.loginUrl}
                     onChange={(e) => setFormLoginData(prev => ({ ...prev, loginUrl: e.target.value }))}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder="https://example.com/login (defaults to Target URL)"
                   />
                 </div>
                 
                 {/* Form Options */}
-                <div className="border-t border-white/10 pt-4 mt-4">
+                <div className="border-t border-genz-border pt-4 mt-4">
                   <div className="flex items-center gap-2 mb-4">
-                    <Settings size={16} className="text-blue-400" />
-                    <span className="text-sm font-medium text-white">Form Login Options</span>
+                    <Settings size={16} className="text-blue-500" />
+                    <span className="text-sm font-medium text-genz-navy">Form Login Options</span>
                   </div>
                   
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                    <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                       <input
                         type="checkbox"
                         checked={formOptions.autoSubmit}
                         onChange={(e) => setFormOptions(prev => ({ ...prev, autoSubmit: e.target.checked }))}
-                        className="w-5 h-5 rounded border-white/10 text-green-500 focus:ring-green-500"
+                        className="w-5 h-5 rounded border-genz-border text-green-500 focus:ring-green-500"
                       />
                       <div>
-                        <div className="font-medium text-white text-sm">Auto-Submit Form</div>
+                        <div className="font-medium text-genz-navy text-sm">Auto-Submit Form</div>
                         <div className="text-xs text-genz-muted">Auto-submit when ?auto=1 (like SSO)</div>
                       </div>
                     </label>
                     
-                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                    <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                       <input
                         type="checkbox"
                         checked={formOptions.multiStep}
                         onChange={(e) => setFormOptions(prev => ({ ...prev, multiStep: e.target.checked }))}
-                        className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                        className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                       />
                       <div>
-                        <div className="font-medium text-white text-sm">Multi-Step Login</div>
+                        <div className="font-medium text-genz-navy text-sm">Multi-Step Login</div>
                         <div className="text-xs text-genz-muted">Email first, then password (Google/Microsoft style)</div>
                       </div>
                     </label>
                     
-                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                    <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                       <input
                         type="checkbox"
                         checked={formOptions.rememberMe}
                         onChange={(e) => setFormOptions(prev => ({ ...prev, rememberMe: e.target.checked }))}
-                        className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                        className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                       />
                       <div>
-                        <div className="font-medium text-white text-sm">Remember Me</div>
+                        <div className="font-medium text-genz-navy text-sm">Remember Me</div>
                         <div className="text-xs text-genz-muted">Check "remember me" if available</div>
                       </div>
                     </label>
@@ -1556,22 +1556,22 @@ const AdminToolForm = () => {
                 </div>
                 
                 {/* MFA Handling */}
-                <div className="border-t border-white/10 pt-4 mt-4">
+                <div className="border-t border-genz-border pt-4 mt-4">
                   <div className="flex items-center gap-2 mb-4">
-                    <Shield size={16} className="text-yellow-400" />
-                    <span className="text-sm font-medium text-white">MFA / 2FA Handling</span>
+                    <Shield size={16} className="text-yellow-500" />
+                    <span className="text-sm font-medium text-genz-navy">MFA / 2FA Handling</span>
                   </div>
                   
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                    <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                       <input
                         type="checkbox"
                         checked={mfaOptions.detectMFA}
                         onChange={(e) => setMfaOptions(prev => ({ ...prev, detectMFA: e.target.checked }))}
-                        className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                        className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                       />
                       <div>
-                        <div className="font-medium text-white text-sm">Detect MFA</div>
+                        <div className="font-medium text-genz-navy text-sm">Detect MFA</div>
                         <div className="text-xs text-genz-muted">Auto-detect 2FA/MFA pages</div>
                       </div>
                     </label>
@@ -1581,7 +1581,7 @@ const AdminToolForm = () => {
                       <select
                         value={mfaOptions.action}
                         onChange={(e) => setMfaOptions(prev => ({ ...prev, action: e.target.value }))}
-                        className="w-full px-3 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy text-sm focus:outline-none focus:border-genz-teal"
                       >
                         <option value="notify">Notify user to complete manually</option>
                         <option value="wait">Wait for user to complete</option>
@@ -1592,9 +1592,9 @@ const AdminToolForm = () => {
                 </div>
                 
                 {/* Custom Selectors */}
-                <div className="border-t border-white/10 pt-4 mt-4">
+                <div className="border-t border-genz-border pt-4 mt-4">
                   <div className="flex items-center gap-2 mb-4">
-                    <Info size={16} className="text-blue-400" />
+                    <Info size={16} className="text-blue-500" />
                     <span className="text-sm text-genz-muted">Custom Selectors (optional - uses smart detection by default)</span>
                   </div>
                   
@@ -1605,7 +1605,7 @@ const AdminToolForm = () => {
                         type="text"
                         value={formSelectors.username}
                         onChange={(e) => setFormSelectors(prev => ({ ...prev, username: e.target.value }))}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder='input[name="email"]'
                       />
                     </div>
@@ -1615,7 +1615,7 @@ const AdminToolForm = () => {
                         type="text"
                         value={formSelectors.password}
                         onChange={(e) => setFormSelectors(prev => ({ ...prev, password: e.target.value }))}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder='input[type="password"]'
                       />
                     </div>
@@ -1625,7 +1625,7 @@ const AdminToolForm = () => {
                         type="text"
                         value={formSelectors.submit}
                         onChange={(e) => setFormSelectors(prev => ({ ...prev, submit: e.target.value }))}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder='button[type="submit"]'
                       />
                     </div>
@@ -1635,7 +1635,7 @@ const AdminToolForm = () => {
                         type="text"
                         value={formSelectors.next}
                         onChange={(e) => setFormSelectors(prev => ({ ...prev, next: e.target.value }))}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder='button[class*="next"]'
                       />
                     </div>
@@ -1649,32 +1649,32 @@ const AdminToolForm = () => {
               <div className="space-y-4">
                 <div className="flex items-center gap-2 mb-4">
                   <Globe size={18} className="text-genz-teal" />
-                  <span className="font-medium text-white">SSO / OAuth Configuration</span>
+                  <span className="font-medium text-genz-navy">SSO / OAuth Configuration</span>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       Auth Start URL *
                     </label>
                     <input
                       type="url"
                       value={ssoData.authStartUrl}
                       onChange={(e) => setSsoData(prev => ({ ...prev, authStartUrl: e.target.value }))}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="https://example.com/auth/sso"
                     />
                     <p className="mt-1 text-xs text-genz-muted">URL to start the SSO flow</p>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       Post-Login URL
                     </label>
                     <input
                       type="url"
                       value={ssoData.postLoginUrl}
                       onChange={(e) => setSsoData(prev => ({ ...prev, postLoginUrl: e.target.value }))}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="https://example.com/dashboard"
                     />
                     <p className="mt-1 text-xs text-genz-muted">Expected URL after successful login</p>
@@ -1683,13 +1683,13 @@ const AdminToolForm = () => {
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       SSO Provider
                     </label>
                     <select
                       value={ssoData.provider}
                       onChange={(e) => setSsoData(prev => ({ ...prev, provider: e.target.value }))}
-                      className="w-full px-4 py-3 bg-[#000c20] border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal"
+                      className="w-full px-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal"
                     >
                       <option value="">Auto-detect</option>
                       <option value="google">Google</option>
@@ -1701,28 +1701,28 @@ const AdminToolForm = () => {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-white mb-2">
+                    <label className="block text-sm font-medium text-genz-navy mb-2">
                       Provider Button Selector
                     </label>
                     <input
                       type="text"
                       value={ssoData.buttonSelector}
                       onChange={(e) => setSsoData(prev => ({ ...prev, buttonSelector: e.target.value }))}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder='button[data-provider="google"]'
                     />
                   </div>
                 </div>
                 
-                <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                   <input
                     type="checkbox"
                     checked={ssoData.autoClick}
                     onChange={(e) => setSsoData(prev => ({ ...prev, autoClick: e.target.checked }))}
-                    className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                    className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                   />
                   <div>
-                    <div className="font-medium text-white">Auto-click provider button</div>
+                    <div className="font-medium text-genz-navy">Auto-click provider button</div>
                     <div className="text-xs text-genz-muted">Automatically click the SSO provider button on the login page</div>
                   </div>
                 </label>
@@ -1735,7 +1735,7 @@ const AdminToolForm = () => {
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">
                     <Database size={18} className="text-genz-teal" />
-                    <span className="font-medium text-white">Custom Headers</span>
+                    <span className="font-medium text-genz-navy">Custom Headers</span>
                   </div>
                   <button
                     type="button"
@@ -1767,7 +1767,7 @@ const AdminToolForm = () => {
                           newHeaders[index].name = e.target.value;
                           setHeadersData(newHeaders);
                         }}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder="Header Name"
                       />
                     </div>
@@ -1780,7 +1780,7 @@ const AdminToolForm = () => {
                           newHeaders[index].prefix = e.target.value;
                           setHeadersData(newHeaders);
                         }}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder="Prefix"
                       />
                     </div>
@@ -1793,7 +1793,7 @@ const AdminToolForm = () => {
                           newHeaders[index].value = e.target.value;
                           setHeadersData(newHeaders);
                         }}
-                        className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
+                        className="w-full px-3 py-2 bg-genz-bg border border-genz-border rounded-lg text-genz-navy text-sm placeholder-genz-muted focus:outline-none focus:border-genz-teal"
                         placeholder="Header Value"
                       />
                     </div>
@@ -1802,7 +1802,7 @@ const AdminToolForm = () => {
                         <button
                           type="button"
                           onClick={() => setHeadersData(prev => prev.filter((_, i) => i !== index))}
-                          className="text-red-400 hover:text-red-300"
+                          className="text-red-500 hover:text-red-600"
                         >
                           ×
                         </button>
@@ -1816,7 +1816,7 @@ const AdminToolForm = () => {
             {/* Cookies Input */}
             {formData.credentialType === 'cookies' && (
               <div>
-                <label htmlFor="cookiesEncrypted" className="block text-sm font-medium text-white mb-2">
+                <label htmlFor="cookiesEncrypted" className="block text-sm font-medium text-genz-navy mb-2">
                   Cookies JSON {isEdit && '(leave empty to keep existing)'}
                 </label>
                 <textarea
@@ -1829,7 +1829,7 @@ const AdminToolForm = () => {
                   autoComplete="off"
                   autoCorrect="off"
                   autoCapitalize="off"
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none font-mono text-sm"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none font-mono text-sm"
                   placeholder='[{"name": "session", "value": "abc123", "domain": ".example.com"}]'
                   data-testid="tool-cookies-input"
                 />
@@ -1844,7 +1844,7 @@ const AdminToolForm = () => {
               <div className="space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="tokenHeader" className="block text-sm font-medium text-white mb-2">
+                    <label htmlFor="tokenHeader" className="block text-sm font-medium text-genz-navy mb-2">
                       Header Name
                     </label>
                     <input
@@ -1853,13 +1853,13 @@ const AdminToolForm = () => {
                       name="tokenHeader"
                       value={formData.tokenHeader}
                       onChange={handleChange}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="Authorization"
                       data-testid="tool-token-header"
                     />
                   </div>
                   <div>
-                    <label htmlFor="tokenPrefix" className="block text-sm font-medium text-white mb-2">
+                    <label htmlFor="tokenPrefix" className="block text-sm font-medium text-genz-navy mb-2">
                       Token Prefix
                     </label>
                     <input
@@ -1868,14 +1868,14 @@ const AdminToolForm = () => {
                       name="tokenPrefix"
                       value={formData.tokenPrefix}
                       onChange={handleChange}
-                      className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                      className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                       placeholder="Bearer "
                       data-testid="tool-token-prefix"
                     />
                   </div>
                 </div>
                 <div>
-                  <label htmlFor="tokenEncrypted" className="block text-sm font-medium text-white mb-2">
+                  <label htmlFor="tokenEncrypted" className="block text-sm font-medium text-genz-navy mb-2">
                     Token Value {isEdit && '(leave empty to keep existing)'}
                   </label>
                   <input
@@ -1884,7 +1884,7 @@ const AdminToolForm = () => {
                     name="tokenEncrypted"
                     value={formData.tokenEncrypted}
                     onChange={handleChange}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors font-mono"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors font-mono"
                     placeholder="Enter token value..."
                     data-testid="tool-token-value"
                   />
@@ -1898,7 +1898,7 @@ const AdminToolForm = () => {
             {/* LocalStorage / SessionStorage Input */}
             {(formData.credentialType === 'localStorage' || formData.credentialType === 'sessionStorage') && (
               <div>
-                <label htmlFor="localStorageEncrypted" className="block text-sm font-medium text-white mb-2">
+                <label htmlFor="localStorageEncrypted" className="block text-sm font-medium text-genz-navy mb-2">
                   {formData.credentialType === 'sessionStorage' ? 'Session' : 'Local'}Storage Data {isEdit && '(leave empty to keep existing)'}
                 </label>
                 <textarea
@@ -1909,7 +1909,7 @@ const AdminToolForm = () => {
                   rows={5}
                   spellCheck="false"
                   autoComplete="off"
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none font-mono text-sm"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none font-mono text-sm"
                   placeholder='{"key1": "value1", "key2": "value2"}'
                   data-testid="tool-localstorage-input"
                 />
@@ -1920,7 +1920,7 @@ const AdminToolForm = () => {
             )}
 
             {formData.credentialType === 'none' && (
-              <div className="p-4 bg-white/5 rounded-xl text-center">
+              <div className="p-4 bg-genz-bg rounded-xl text-center">
                 <p className="text-genz-muted">No credentials required for this tool.</p>
               </div>
             )}
@@ -1928,8 +1928,8 @@ const AdminToolForm = () => {
 
           {/* Success Check Card (shown for form, sso, headers, combo) */}
           {['form', 'sso', 'headers', 'combo'].includes(formData.credentialType) && (
-            <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
-              <h2 className="flex items-center gap-2 text-lg font-semibold text-white mb-6">
+            <div className="bg-white border border-genz-border rounded-xl p-6">
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-genz-navy mb-6">
                 <CheckCircle size={20} className="text-green-500" />
                 Success Validation (Optional)
               </h2>
@@ -1939,50 +1939,50 @@ const AdminToolForm = () => {
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     URL Should Include
                   </label>
                   <input
                     type="text"
                     value={successCheck.urlIncludes}
                     onChange={(e) => setSuccessCheck(prev => ({ ...prev, urlIncludes: e.target.value }))}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder="/dashboard"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     URL Should NOT Include
                   </label>
                   <input
                     type="text"
                     value={successCheck.urlExcludes}
                     onChange={(e) => setSuccessCheck(prev => ({ ...prev, urlExcludes: e.target.value }))}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder="/login"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Element Should Exist (CSS Selector)
                   </label>
                   <input
                     type="text"
                     value={successCheck.elementExists}
                     onChange={(e) => setSuccessCheck(prev => ({ ...prev, elementExists: e.target.value }))}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder=".user-avatar, [data-testid='user-menu']"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Cookie Names (comma-separated)
                   </label>
                   <input
                     type="text"
                     value={successCheck.cookieNames}
                     onChange={(e) => setSuccessCheck(prev => ({ ...prev, cookieNames: e.target.value }))}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                     placeholder="session, auth_token"
                   />
                 </div>
@@ -1991,87 +1991,87 @@ const AdminToolForm = () => {
           )}
 
           {/* Extension Settings Card */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-white mb-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-genz-navy mb-6">
               <Settings size={20} className="text-genz-teal" />
               Extension Settings
             </h2>
             
             <div className="space-y-4">
-              <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+              <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                 <input
                   type="checkbox"
                   name="extensionSettings.autoInject"
                   checked={formData.extensionSettings.autoInject}
                   onChange={handleChange}
-                  className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                  className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                 />
                 <div>
-                  <div className="font-medium text-white">Auto-inject credentials</div>
+                  <div className="font-medium text-genz-navy">Auto-inject credentials</div>
                   <div className="text-xs text-genz-muted">Automatically inject when visiting tool URL</div>
                 </div>
               </label>
 
-              <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+              <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                 <input
                   type="checkbox"
                   name="extensionSettings.reloadAfterLogin"
                   checked={formData.extensionSettings.reloadAfterLogin}
                   onChange={handleChange}
-                  className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                  className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                 />
                 <div>
-                  <div className="font-medium text-white">Reload after login</div>
+                  <div className="font-medium text-genz-navy">Reload after login</div>
                   <div className="text-xs text-genz-muted">Reload the page after credentials are injected</div>
                 </div>
               </label>
 
-              <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+              <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                 <input
                   type="checkbox"
                   name="extensionSettings.spaMode"
                   checked={formData.extensionSettings.spaMode}
                   onChange={handleChange}
-                  className="w-5 h-5 rounded border-white/10 text-genz-teal focus:ring-genz-teal"
+                  className="w-5 h-5 rounded border-genz-border text-genz-teal focus:ring-genz-teal"
                 />
                 <div>
-                  <div className="font-medium text-white">SPA Mode</div>
+                  <div className="font-medium text-genz-navy">SPA Mode</div>
                   <div className="text-xs text-genz-muted">Enable for React/Vue/Angular apps with client-side routing</div>
                 </div>
               </label>
               
               {/* Hidden Mode Settings */}
-              <div className="border-t border-white/10 pt-4 mt-4">
+              <div className="border-t border-genz-border pt-4 mt-4">
                 <div className="flex items-center gap-2 mb-4">
-                  <Shield size={16} className="text-purple-400" />
-                  <span className="text-sm font-medium text-white">Hidden Mode & Auto-Start</span>
+                  <Shield size={16} className="text-purple-500" />
+                  <span className="text-sm font-medium text-genz-navy">Hidden Mode & Auto-Start</span>
                 </div>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                  <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                     <input
                       type="checkbox"
                       name="extensionSettings.hiddenModeEnabled"
                       checked={formData.extensionSettings.hiddenModeEnabled}
                       onChange={handleChange}
-                      className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                      className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                     />
                     <div>
-                      <div className="font-medium text-white text-sm">Hidden Mode</div>
+                      <div className="font-medium text-genz-navy text-sm">Hidden Mode</div>
                       <div className="text-xs text-genz-muted">Run auth in hidden tab (?hidden=1)</div>
                     </div>
                   </label>
                   
-                  <label className="flex items-center gap-3 p-3 bg-white/5 rounded-xl cursor-pointer hover:bg-white/10 transition-colors">
+                  <label className="flex items-center gap-3 p-3 bg-genz-bg rounded-xl cursor-pointer hover:bg-genz-bg transition-colors">
                     <input
                       type="checkbox"
                       name="extensionSettings.autoStartEnabled"
                       checked={formData.extensionSettings.autoStartEnabled}
                       onChange={handleChange}
-                      className="w-5 h-5 rounded border-white/10 text-purple-500 focus:ring-purple-500"
+                      className="w-5 h-5 rounded border-genz-border text-purple-500 focus:ring-purple-500"
                     />
                     <div>
-                      <div className="font-medium text-white text-sm">Auto-Start</div>
+                      <div className="font-medium text-genz-navy text-sm">Auto-Start</div>
                       <div className="text-xs text-genz-muted">Start login when ?auto=1</div>
                     </div>
                   </label>
@@ -2079,9 +2079,9 @@ const AdminToolForm = () => {
               </div>
               
               {/* Timing Settings */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-white/10 mt-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 pt-4 border-t border-genz-border mt-4">
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Retry Attempts
                   </label>
                   <input
@@ -2091,11 +2091,11 @@ const AdminToolForm = () => {
                     name="extensionSettings.retryAttempts"
                     value={formData.extensionSettings.retryAttempts}
                     onChange={handleChange}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Retry Delay (ms)
                   </label>
                   <input
@@ -2106,11 +2106,11 @@ const AdminToolForm = () => {
                     name="extensionSettings.retryDelayMs"
                     value={formData.extensionSettings.retryDelayMs}
                     onChange={handleChange}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Auto-Start Delay
                   </label>
                   <input
@@ -2121,11 +2121,11 @@ const AdminToolForm = () => {
                     name="extensionSettings.autoStartDelay"
                     value={formData.extensionSettings.autoStartDelay}
                     onChange={handleChange}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-white mb-2">
+                  <label className="block text-sm font-medium text-genz-navy mb-2">
                     Hidden Timeout
                   </label>
                   <input
@@ -2136,7 +2136,7 @@ const AdminToolForm = () => {
                     name="extensionSettings.hiddenModeTimeout"
                     value={formData.extensionSettings.hiddenModeTimeout}
                     onChange={handleChange}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                    className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   />
                 </div>
               </div>
@@ -2144,8 +2144,8 @@ const AdminToolForm = () => {
           </div>
 
           {/* Status Card */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
-            <h2 className="flex items-center gap-2 text-lg font-semibold text-white mb-4">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
+            <h2 className="flex items-center gap-2 text-lg font-semibold text-genz-navy mb-4">
               <Shield size={20} className="text-genz-teal" />
               Status
             </h2>
@@ -2160,7 +2160,7 @@ const AdminToolForm = () => {
                   onChange={handleChange}
                   className="w-4 h-4 text-genz-teal focus:ring-genz-teal"
                 />
-                <span className="text-white">Active</span>
+                <span className="text-genz-navy">Active</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -2171,7 +2171,7 @@ const AdminToolForm = () => {
                   onChange={handleChange}
                   className="w-4 h-4 text-genz-teal focus:ring-genz-teal"
                 />
-                <span className="text-white">Inactive</span>
+                <span className="text-genz-navy">Inactive</span>
               </label>
             </div>
           </div>
@@ -2181,14 +2181,14 @@ const AdminToolForm = () => {
             <button
               type="button"
               onClick={() => navigate('/admin/tools')}
-              className="px-6 py-3 text-genz-muted hover:text-white transition-colors"
+              className="px-6 py-3 text-genz-muted hover:text-genz-navy transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="save-tool-btn"
             >
               <Save size={20} />

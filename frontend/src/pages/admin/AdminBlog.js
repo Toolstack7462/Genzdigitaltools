@@ -76,13 +76,13 @@ const AdminBlog = () => {
   const getStatusBadge = (status) => {
     switch (status) {
       case 'published':
-        return 'bg-green-500/20 text-green-400';
+        return 'bg-green-500/20 text-green-500';
       case 'draft':
-        return 'bg-yellow-500/20 text-yellow-400';
+        return 'bg-yellow-500/20 text-yellow-500';
       case 'archived':
-        return 'bg-gray-500/20 text-gray-400';
+        return 'bg-gray-500/20 text-gray-500';
       default:
-        return 'bg-gray-500/20 text-gray-400';
+        return 'bg-gray-500/20 text-gray-500';
     }
   };
 
@@ -92,20 +92,20 @@ const AdminBlog = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading posts">
           <div className="flex justify-between items-center gap-4 mb-8 animate-pulse">
             <div className="space-y-2">
-              <div className="h-7 w-40 rounded bg-white/10" />
-              <div className="h-4 w-52 rounded bg-white/[0.07]" />
+              <div className="h-7 w-40 rounded bg-genz-bg" />
+              <div className="h-4 w-52 rounded bg-white" />
             </div>
-            <div className="h-11 w-32 rounded-full bg-white/10" />
+            <div className="h-11 w-32 rounded-full bg-genz-bg" />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden animate-pulse">
-                <div className="h-40 bg-white/[0.07]" />
+              <div key={i} className="bg-genz-bg border border-genz-border rounded-2xl overflow-hidden animate-pulse">
+                <div className="h-40 bg-white" />
                 <div className="p-5 space-y-3">
-                  <div className="h-5 w-20 rounded-full bg-white/10" />
-                  <div className="h-4 w-4/5 rounded bg-white/10" />
-                  <div className="h-3 w-full rounded bg-white/[0.07]" />
-                  <div className="h-3 w-2/3 rounded bg-white/[0.07]" />
+                  <div className="h-5 w-20 rounded-full bg-genz-bg" />
+                  <div className="h-4 w-4/5 rounded bg-genz-bg" />
+                  <div className="h-3 w-full rounded bg-white" />
+                  <div className="h-3 w-2/3 rounded bg-white" />
                 </div>
               </div>
             ))}
@@ -121,12 +121,12 @@ const AdminBlog = () => {
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-bold text-white mb-2">Blog Posts</h1>
+            <h1 className="text-3xl font-bold text-genz-navy mb-2">Blog Posts</h1>
             <p className="text-genz-muted">Manage your blog content</p>
           </div>
           <button
             onClick={() => navigate('/admin/blog/new')}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity"
+            className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity"
             data-testid="create-post-btn"
           >
             <Plus size={20} />
@@ -143,29 +143,29 @@ const AdminBlog = () => {
               placeholder="Search posts..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-12 pr-4 py-3 bg-[#000c20] border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all hover:border-genz-muted"
+              className="w-full pl-12 pr-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all hover:border-genz-muted"
               data-testid="search-posts-input"
             />
           </div>
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-4 py-3 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted min-w-[160px]"
+            className="px-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted min-w-[160px]"
             style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.75rem' }}
             data-testid="status-filter"
           >
-            <option value="" className="bg-[#000c20] text-white">All Status</option>
-            <option value="published" className="bg-[#000c20] text-white">Published</option>
-            <option value="draft" className="bg-[#000c20] text-white">Draft</option>
-            <option value="archived" className="bg-[#000c20] text-white">Archived</option>
+            <option value="" className="bg-[#FFFFFF] text-genz-navy">All Status</option>
+            <option value="published" className="bg-[#FFFFFF] text-genz-navy">Published</option>
+            <option value="draft" className="bg-[#FFFFFF] text-genz-navy">Draft</option>
+            <option value="archived" className="bg-[#FFFFFF] text-genz-navy">Archived</option>
           </select>
         </div>
 
         {/* Posts Grid */}
         {filteredPosts.length === 0 ? (
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-12 text-center">
+          <div className="bg-white border border-genz-border rounded-xl p-12 text-center">
             <FileText size={48} className="mx-auto mb-4 text-genz-muted opacity-50" />
-            <h3 className="text-lg font-medium text-white mb-2">
+            <h3 className="text-lg font-medium text-genz-navy mb-2">
               {searchTerm ? 'No posts found' : 'No blog posts yet'}
             </h3>
             <p className="text-genz-muted mb-4">
@@ -174,7 +174,7 @@ const AdminBlog = () => {
             {!searchTerm && (
               <button
                 onClick={() => navigate('/admin/blog/new')}
-                className="px-6 py-2 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90"
+                className="px-6 py-2 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90"
               >
                 Create Post
               </button>
@@ -185,13 +185,13 @@ const AdminBlog = () => {
             {filteredPosts.map((post) => (
               <div
                 key={post._id}
-                className="bg-white/[0.04] border border-white/10 rounded-xl p-6 hover:border-genz-teal/50 transition-all duration-300"
+                className="bg-white border border-genz-border rounded-xl p-6 hover:border-genz-teal/50 transition-all duration-300"
                 data-testid={`post-card-${post._id}`}
               >
                 <div className="flex flex-col sm:flex-row justify-between gap-4">
                   <div className="flex-1">
                     <div className="flex items-center gap-3 mb-2 flex-wrap">
-                      <h3 className="text-lg font-semibold text-white">{post.title}</h3>
+                      <h3 className="text-lg font-semibold text-genz-navy">{post.title}</h3>
                       <span className={`px-2 py-0.5 text-xs rounded-full ${getStatusBadge(post.status)}`}>
                         {post.status}
                       </span>
@@ -203,7 +203,7 @@ const AdminBlog = () => {
                     </div>
                     <p className="text-genz-muted text-sm mb-3 line-clamp-2">{post.excerpt || 'No excerpt'}</p>
                     <div className="flex items-center gap-4 text-xs text-genz-muted">
-                      <span className="bg-white/5 px-2 py-1 rounded">{post.category}</span>
+                      <span className="bg-genz-bg px-2 py-1 rounded">{post.category}</span>
                       <span>{post.views || 0} views</span>
                       <span>Created: {new Date(post.createdAt).toLocaleDateString()}</span>
                     </div>
@@ -211,24 +211,24 @@ const AdminBlog = () => {
                   <div className="flex items-center gap-2 sm:flex-col sm:items-end">
                     <button
                       onClick={() => toggleStatus(post)}
-                      className="p-2 text-genz-muted hover:text-white transition-colors"
+                      className="p-2 text-genz-muted hover:text-genz-navy transition-colors"
                       title={post.status === 'published' ? 'Unpublish' : 'Publish'}
                       data-testid={`toggle-status-${post._id}`}
                     >
                       {post.status === 'published' ? (
-                        <Eye size={20} className="text-green-400" />
+                        <Eye size={20} className="text-green-500" />
                       ) : (
                         <EyeOff size={20} />
                       )}
                     </button>
                     <button
                       onClick={() => toggleFeatured(post)}
-                      className="p-2 text-genz-muted hover:text-yellow-400 transition-colors"
+                      className="p-2 text-genz-muted hover:text-yellow-500 transition-colors"
                       title={post.featured ? 'Unfeature' : 'Feature'}
                       data-testid={`toggle-featured-${post._id}`}
                     >
                       {post.featured ? (
-                        <Star size={20} className="text-yellow-400 fill-yellow-400" />
+                        <Star size={20} className="text-yellow-500 fill-yellow-400" />
                       ) : (
                         <StarOff size={20} />
                       )}
@@ -243,7 +243,7 @@ const AdminBlog = () => {
                     </button>
                     <button
                       onClick={() => setDeleteModal({ open: true, post })}
-                      className="p-2 text-genz-muted hover:text-red-400 transition-colors"
+                      className="p-2 text-genz-muted hover:text-red-500 transition-colors"
                       title="Delete"
                       data-testid={`delete-post-${post._id}`}
                     >

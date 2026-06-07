@@ -66,10 +66,10 @@ const ClientToolsEnhanced = () => {
   };
   
   const getStatusColor = (daysLeft) => {
-    if (daysLeft === null) return 'bg-green-500/20 text-green-400';
-    if (daysLeft <= 3) return 'bg-red-500/20 text-red-400';
-    if (daysLeft <= 7) return 'bg-yellow-500/20 text-yellow-400';
-    return 'bg-green-500/20 text-green-400';
+    if (daysLeft === null) return 'bg-green-100 text-green-700';
+    if (daysLeft <= 3) return 'bg-red-100 text-red-600';
+    if (daysLeft <= 7) return 'bg-amber-100 text-amber-700';
+    return 'bg-green-100 text-green-700';
   };
   
   const getCategoryColor = (category) => {
@@ -103,15 +103,15 @@ const ClientToolsEnhanced = () => {
   
   return (
     <ClientLayoutEnhanced>
-      <div className="max-w-7xl mx-auto space-y-6" data-testid="client-tools-page">
+      <div className="max-w-[1200px] mx-auto space-y-6" data-testid="client-tools-page">
         {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold text-white mb-2">My Tools</h1>
+          <h1 className="font-heading text-[32px] font-extrabold text-genz-navy mb-1.5">My Tools</h1>
           <p className="text-genz-muted">Access and manage your assigned tools</p>
         </div>
-        
+
         {/* Filters */}
-        <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-6 space-y-4">
+        <div className="gz-card p-5 space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Search */}
             <div className="relative">
@@ -121,34 +121,36 @@ const ClientToolsEnhanced = () => {
                 placeholder="Search tools..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full pl-10 pr-4 py-2.5 bg-white border border-genz-border rounded-[14px] text-genz-navy placeholder:text-genz-muted/70 focus:outline-none focus:border-genz-blue focus:ring-4 focus:ring-genz-blue/12 transition-all"
                 data-testid="search-input"
               />
             </div>
-            
+
             {/* Category Filter */}
             <div className="relative">
               <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" size={18} />
               <select
                 value={selectedCategory}
                 onChange={(e) => setSelectedCategory(e.target.value)}
-                className="w-full pl-10 pr-10 py-2 bg-[#000c20] border border-white/10 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-genz-teal/30 focus:border-genz-teal transition-all appearance-none cursor-pointer hover:border-genz-muted"
-                style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.75rem center', backgroundSize: '0.65rem' }}
+                className="w-full pl-10 pr-10 py-2.5 bg-white border border-genz-border rounded-[14px] text-genz-navy focus:outline-none focus:ring-4 focus:ring-genz-blue/12 focus:border-genz-blue transition-all appearance-none cursor-pointer hover:border-genz-blue/40"
+                style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%235B6B7C%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.75rem center', backgroundSize: '0.65rem' }}
                 data-testid="category-filter"
               >
                 {categories.map(cat => (
-                  <option key={cat} value={cat} className="bg-[#000c20] text-white">{cat}</option>
+                  <option key={cat} value={cat}>{cat}</option>
                 ))}
               </select>
             </div>
           </div>
         </div>
-        
+
         {/* Tools Grid */}
         {filteredTools.length === 0 ? (
-          <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-12 text-center">
-            <Package size={64} className="mx-auto mb-4 text-genz-muted opacity-50" />
-            <h3 className="text-xl font-semibold text-white mb-2">No tools found</h3>
+          <div className="gz-card p-12 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-genz-bg flex items-center justify-center mx-auto mb-4">
+              <Package size={30} className="text-genz-muted" />
+            </div>
+            <h3 className="text-xl font-bold text-genz-navy mb-1">No tools found</h3>
             <p className="text-genz-muted">Try adjusting your search or filters</p>
           </div>
         ) : (
@@ -161,7 +163,7 @@ const ClientToolsEnhanced = () => {
                 <button
                   key={tool._id}
                   onClick={() => navigate(`/client/tools/${tool._id}`)}
-                  className="group relative overflow-hidden p-6 bg-white/[0.04] border border-white/10 rounded-2xl text-left hover:border-genz-teal transition-all hover:-translate-y-1 hover:shadow-xl"
+                  className="gz-card group relative overflow-hidden p-6 text-left"
                   data-testid={`tool-card-${tool._id}`}
                 >
                   {/* Background gradient */}
@@ -174,27 +176,27 @@ const ClientToolsEnhanced = () => {
                         <Package size={24} className="text-white" />
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h3 className="font-bold text-white group-hover:text-genz-teal transition-colors truncate text-lg">
+                        <h3 className="font-bold text-genz-navy group-hover:text-genz-blue transition-colors truncate text-lg">
                           {tool.name}
                         </h3>
                         <p className="text-xs text-genz-muted truncate">{tool.category}</p>
                       </div>
                     </div>
-                    
+
                     {/* Description */}
                     <p className="text-sm text-genz-muted line-clamp-2 mb-4">
                       {tool.description || 'No description available'}
                     </p>
-                    
+
                     {/* Date Range */}
-                    <div className="space-y-2 mb-4 p-3 bg-white/5 rounded-lg border border-white/10">
+                    <div className="space-y-2 mb-4 p-3 bg-genz-bg rounded-xl border border-genz-border">
                       {tool.startDate && (
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-genz-muted flex items-center gap-1">
                             <Calendar size={12} />
                             Start Date
                           </span>
-                          <span className="text-white font-medium">{formatDate(tool.startDate)}</span>
+                          <span className="text-genz-navy font-semibold">{formatDate(tool.startDate)}</span>
                         </div>
                       )}
                       {tool.endDate && (
@@ -204,11 +206,11 @@ const ClientToolsEnhanced = () => {
                               <Clock size={12} />
                               Expires On
                             </span>
-                            <span className="text-white font-medium">{formatDate(tool.endDate)}</span>
+                            <span className="text-genz-navy font-semibold">{formatDate(tool.endDate)}</span>
                           </div>
-                          
+
                           {/* Days Left Badge */}
-                          <div className="flex items-center justify-center pt-2 border-t border-white/10">
+                          <div className="flex items-center justify-center pt-2 border-t border-genz-border">
                             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${statusColor} text-xs font-semibold`}>
                               {daysLeft <= 3 && <AlertTriangle size={12} />}
                               {daysLeft > 3 && <CheckCircle size={12} />}
@@ -220,16 +222,16 @@ const ClientToolsEnhanced = () => {
                         </>
                       )}
                       {!tool.endDate && (
-                        <div className="text-center text-xs text-green-400 font-medium">
+                        <div className="text-center text-xs text-green-600 font-semibold">
                           No expiry date
                         </div>
                       )}
                     </div>
-                    
+
                     {/* Action Button */}
                     <div className="flex items-center justify-between text-sm">
-                      <span className="text-genz-teal font-medium">View Details</span>
-                      <ArrowRight size={16} className="text-genz-teal group-hover:translate-x-1 transition-transform" />
+                      <span className="text-genz-blue font-semibold">View Details</span>
+                      <ArrowRight size={16} className="text-genz-blue group-hover:translate-x-1 transition-transform" />
                     </div>
                   </div>
                 </button>

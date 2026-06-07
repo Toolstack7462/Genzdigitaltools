@@ -1,14 +1,14 @@
-const FeatureCard = ({ icon: Icon, title, description, accentColor = '#00AFC1' }) => (
-  <div className="card-premium flex gap-4 p-5">
+const FeatureCard = ({ icon: Icon, title, description, accentColor = '#06B6D4' }) => (
+  <div className="gz-card flex gap-4 p-6">
     <div
-      className="w-10 h-10 rounded-xl flex-shrink-0 flex items-center justify-center mt-0.5"
-      style={{ background: `${accentColor}18`, border: `1px solid ${accentColor}30` }}
+      className="w-11 h-11 rounded-2xl flex-shrink-0 flex items-center justify-center mt-0.5"
+      style={{ background: `${accentColor}14`, border: `1px solid ${accentColor}26`, color: accentColor }}
     >
-      {Icon && <Icon size={18} style={{ color: accentColor }} />}
+      {Icon && <Icon size={19} />}
     </div>
     <div>
-      <h4 className="text-white font-semibold text-sm mb-1.5">{title}</h4>
-      <p className="text-white/55 text-sm leading-relaxed">{description}</p>
+      <h4 className="text-genz-navy font-bold text-[16px] mb-1.5">{title}</h4>
+      <p className="text-genz-muted text-[15px] leading-relaxed">{description}</p>
     </div>
   </div>
 );

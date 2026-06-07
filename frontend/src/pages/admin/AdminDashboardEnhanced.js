@@ -26,13 +26,13 @@ function formatDate(date) {
 
 function getActionIcon(action) {
   const a = String(action || '').toUpperCase();
-  if (a.includes('LOGIN'))   return <CheckCircle2 size={14} className="text-green-400 flex-shrink-0" />;
-  if (a.includes('CREAT'))   return <UserPlus      size={14} className="text-blue-400 flex-shrink-0" />;
-  if (a.includes('DELET'))   return <AlertCircle   size={14} className="text-red-400 flex-shrink-0" />;
-  if (a.includes('UPDAT') || a.includes('EDIT')) return <Clock size={14} className="text-yellow-400 flex-shrink-0" />;
-  if (a.includes('ACCESS') || a.includes('OPEN')) return <Layers size={14} className="text-purple-400 flex-shrink-0" />;
-  if (a.includes('DEVICE') || a.includes('BIND')) return <Shield size={14} className="text-cyan-400 flex-shrink-0" />;
-  return <ActivityIcon size={14} className="text-white/55 flex-shrink-0" />;
+  if (a.includes('LOGIN'))   return <CheckCircle2 size={14} className="text-green-500 flex-shrink-0" />;
+  if (a.includes('CREAT'))   return <UserPlus      size={14} className="text-blue-500 flex-shrink-0" />;
+  if (a.includes('DELET'))   return <AlertCircle   size={14} className="text-red-500 flex-shrink-0" />;
+  if (a.includes('UPDAT') || a.includes('EDIT')) return <Clock size={14} className="text-yellow-500 flex-shrink-0" />;
+  if (a.includes('ACCESS') || a.includes('OPEN')) return <Layers size={14} className="text-purple-500 flex-shrink-0" />;
+  if (a.includes('DEVICE') || a.includes('BIND')) return <Shield size={14} className="text-cyan-500 flex-shrink-0" />;
+  return <ActivityIcon size={14} className="text-genz-muted flex-shrink-0" />;
 }
 
 /* ─────────────────────────────────────────────────────────────────
@@ -40,13 +40,13 @@ function getActionIcon(action) {
 ───────────────────────────────────────────────────────────────── */
 function SkeletonCard() {
   return (
-    <div className="rounded-2xl p-6 border border-white/10 bg-white/[0.03] animate-pulse">
+    <div className="rounded-2xl p-6 border border-genz-border bg-white animate-pulse">
       <div className="flex items-center justify-between mb-5">
-        <div className="w-12 h-12 rounded-xl bg-white/10" />
+        <div className="w-12 h-12 rounded-xl bg-genz-bg" />
       </div>
-      <div className="h-8 w-16 bg-white/10 rounded mb-2" />
-      <div className="h-4 w-24 bg-white/10 rounded mb-1" />
-      <div className="h-3 w-20 bg-white/10 rounded" />
+      <div className="h-8 w-16 bg-genz-bg rounded mb-2" />
+      <div className="h-4 w-24 bg-genz-bg rounded mb-1" />
+      <div className="h-3 w-20 bg-genz-bg rounded" />
     </div>
   );
 }
@@ -127,17 +127,17 @@ const AdminDashboardEnhanced = () => {
     {
       icon: Package, label: 'Total Tools', value: stats.totalTools,
       sublabel: `${stats.activeTools} active`,
-      variant: 'blue', textColor: 'text-blue-400', glow: 'bg-blue-500/20',
+      variant: 'blue', textColor: 'text-blue-500', glow: 'bg-blue-500/20',
     },
     {
       icon: Users, label: 'Total Members', value: stats.totalClients,
       sublabel: `${stats.activeClients} active`,
-      variant: 'green', textColor: 'text-green-400', glow: 'bg-green-500/20',
+      variant: 'green', textColor: 'text-green-500', glow: 'bg-green-500/20',
     },
     {
       icon: TrendingUp, label: 'Assignments', value: stats.totalAssignments,
       sublabel: 'Active',
-      variant: 'purple', textColor: 'text-purple-400', glow: 'bg-purple-500/20',
+      variant: 'purple', textColor: 'text-purple-500', glow: 'bg-purple-500/20',
     },
     {
       icon: Shield, label: 'Device Bindings', value: stats.deviceBindings,
@@ -172,11 +172,11 @@ const AdminDashboardEnhanced = () => {
   const SecurityBanner = () => securityAlertCount > 0 ? (
     <Link to="/admin/security"
           className="flex items-center gap-3 p-3.5 mb-6 rounded-xl border border-red-500/30 bg-red-500/10 hover:bg-red-500/15 transition-all">
-      <ShieldAlert size={16} className="text-red-400 flex-shrink-0" />
-      <span className="text-red-400 text-sm font-semibold flex-1">
+      <ShieldAlert size={16} className="text-red-500 flex-shrink-0" />
+      <span className="text-red-500 text-sm font-semibold flex-1">
         {securityAlertCount} high/critical alert{securityAlertCount !== 1 ? 's' : ''} need attention
       </span>
-      <span className="text-xs text-red-400/60">Review →</span>
+      <span className="text-xs text-red-500/60">Review →</span>
     </Link>
   ) : null;
 
@@ -186,13 +186,13 @@ const AdminDashboardEnhanced = () => {
       <AdminLayoutEnhanced>
         <SecurityBanner />
         <div className="max-w-7xl mx-auto space-y-8">
-          <div className="h-10 w-48 bg-white/10 rounded-xl animate-pulse mb-2" />
+          <div className="h-10 w-48 bg-genz-bg rounded-xl animate-pulse mb-2" />
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {[0,1,2,3].map(i => <SkeletonCard key={i} />)}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 h-56 animate-pulse" />
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 h-56 animate-pulse" />
+            <div className="rounded-2xl border border-genz-border bg-white p-6 h-56 animate-pulse" />
+            <div className="rounded-2xl border border-genz-border bg-white p-6 h-56 animate-pulse" />
           </div>
         </div>
       </AdminLayoutEnhanced>
@@ -205,14 +205,14 @@ const AdminDashboardEnhanced = () => {
       <AdminLayoutEnhanced>
         <div className="max-w-xl mx-auto mt-16 text-center">
           <div className="w-16 h-16 mx-auto mb-5 rounded-2xl bg-red-500/10 border border-red-500/20 flex items-center justify-center">
-            <AlertCircle size={28} className="text-red-400" />
+            <AlertCircle size={28} className="text-red-500" />
           </div>
-          <h2 className="text-xl font-bold text-white mb-2">Dashboard unavailable</h2>
-          <p className="text-white/50 text-sm mb-6">{dashboardError}</p>
+          <h2 className="text-xl font-bold text-genz-navy mb-2">Dashboard unavailable</h2>
+          <p className="text-genz-muted text-sm mb-6">{dashboardError}</p>
           <button
             onClick={loadDashboard}
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-genz-deep-navy"
-            style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}
+            style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}
           >
             <RefreshCw size={15} />
             Try Again
@@ -232,18 +232,18 @@ const AdminDashboardEnhanced = () => {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-black text-white flex items-center gap-3">
+            <h1 className="text-2xl sm:text-3xl font-black text-genz-navy flex items-center gap-3">
               <Sparkles className="text-genz-teal" size={26} />
               Welcome back
             </h1>
-            <p className="text-white/50 text-sm mt-1 flex items-center gap-1.5">
+            <p className="text-genz-muted text-sm mt-1 flex items-center gap-1.5">
               <Calendar size={13} />
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </p>
           </div>
           <button
             onClick={loadDashboard}
-            className="p-2.5 rounded-xl border border-white/10 text-white/55 hover:text-white hover:border-white/20 transition-all"
+            className="p-2.5 rounded-xl border border-genz-border text-genz-muted hover:text-genz-navy hover:border-genz-blue/40 transition-all"
             title="Refresh dashboard"
           >
             <RefreshCw size={16} />
@@ -263,8 +263,8 @@ const AdminDashboardEnhanced = () => {
                   <div className={`w-12 h-12 rounded-xl ${stat.glow} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
                     <Icon size={24} className={stat.textColor} />
                   </div>
-                  <div className="text-3xl font-black text-white mb-1 tabular-nums">{stat.value}</div>
-                  <div className="text-sm text-white/60 font-medium mb-1">{stat.label}</div>
+                  <div className="text-3xl font-black text-genz-navy mb-1 tabular-nums">{stat.value}</div>
+                  <div className="text-sm text-genz-muted font-medium mb-1">{stat.label}</div>
                   <div className={`text-xs ${stat.textColor} flex items-center gap-1`}>
                     <TrendingUp size={11} /> {stat.sublabel}
                   </div>
@@ -276,7 +276,7 @@ const AdminDashboardEnhanced = () => {
 
         {/* Quick Actions */}
         <div>
-          <h2 className="text-lg font-bold text-white mb-4">Quick Actions</h2>
+          <h2 className="text-lg font-bold text-genz-navy mb-4">Quick Actions</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             {quickActions.map((action, i) => {
               const Icon = action.icon;
@@ -286,10 +286,10 @@ const AdminDashboardEnhanced = () => {
                   <div className={`absolute top-0 right-0 w-36 h-36 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-15 rounded-full blur-3xl transition-opacity duration-500 pointer-events-none`} />
                   <div className="relative">
                     <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-lg group-hover:scale-110 transition-transform`}>
-                      <Icon size={24} className="text-white" />
+                      <Icon size={24} className="text-genz-navy" />
                     </div>
-                    <h3 className="text-base font-bold text-white mb-1 group-hover:text-genz-teal transition-colors">{action.title}</h3>
-                    <p className="text-xs text-white/50 mb-3">{action.description}</p>
+                    <h3 className="text-base font-bold text-genz-navy mb-1 group-hover:text-genz-teal transition-colors">{action.title}</h3>
+                    <p className="text-xs text-genz-muted mb-3">{action.description}</p>
                     <span className="inline-flex items-center gap-1.5 text-xs text-genz-teal font-semibold">
                       Get Started <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
                     </span>
@@ -306,7 +306,7 @@ const AdminDashboardEnhanced = () => {
           {/* Recent Clients */}
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-genz-navy flex items-center gap-2">
                 <Users size={16} className="text-genz-teal" /> Recent Members
               </h2>
               <button onClick={() => navigate('/admin/clients')}
@@ -318,9 +318,9 @@ const AdminDashboardEnhanced = () => {
             {recentClients.length === 0 ? (
               <div className="py-10 text-center">
                 <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-green-500/10 flex items-center justify-center">
-                  <Users size={24} className="text-white/55" />
+                  <Users size={24} className="text-genz-muted" />
                 </div>
-                <p className="text-white/55 text-sm">No members yet</p>
+                <p className="text-genz-muted text-sm">No members yet</p>
               </div>
             ) : (
               <div className="space-y-2">
@@ -332,20 +332,20 @@ const AdminDashboardEnhanced = () => {
                   const id = client?._id || client?.id || idx;
                   return (
                     <div key={String(id)}
-                         className="flex items-center gap-3 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.07] hover:border-genz-teal/20 transition-all cursor-pointer"
+                         className="flex items-center gap-3 p-3 rounded-xl bg-white border border-white/[0.06] hover:bg-white hover:border-genz-teal/20 transition-all cursor-pointer"
                          onClick={() => id && id !== idx && navigate(`/admin/clients/${id}/edit`)}>
                       <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 font-bold text-sm text-genz-deep-navy"
-                           style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                           style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}>
                         {initial}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-white truncate">{name}</p>
-                        <p className="text-xs text-white/55 truncate">{email}</p>
+                        <p className="text-sm font-semibold text-genz-navy truncate">{name}</p>
+                        <p className="text-xs text-genz-muted truncate">{email}</p>
                       </div>
                       <span className={`px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${
                         status === 'active'
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-red-500/20 text-red-400'
+                          ? 'bg-green-500/20 text-green-500'
+                          : 'bg-red-500/20 text-red-500'
                       }`}>
                         {status}
                       </span>
@@ -359,7 +359,7 @@ const AdminDashboardEnhanced = () => {
           {/* Recent Activity */}
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-6`}>
             <div className="flex items-center justify-between mb-5">
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
+              <h2 className="text-base font-bold text-genz-navy flex items-center gap-2">
                 <ActivityIcon size={16} className="text-genz-teal" /> Recent Activity
               </h2>
               <button onClick={() => navigate('/admin/activity')}
@@ -371,14 +371,14 @@ const AdminDashboardEnhanced = () => {
             {recentActivity.length === 0 ? (
               <div className="py-10 text-center">
                 <div className="w-12 h-12 mx-auto mb-3 rounded-2xl bg-purple-500/10 flex items-center justify-center">
-                  <ActivityIcon size={24} className="text-white/55" />
+                  <ActivityIcon size={24} className="text-genz-muted" />
                 </div>
-                <p className="text-white/55 text-sm">No recent activity</p>
+                <p className="text-genz-muted text-sm">No recent activity</p>
               </div>
             ) : (
               <div className="space-y-2 max-h-80 overflow-y-auto pr-1
                               [&::-webkit-scrollbar]:w-1 [&::-webkit-scrollbar-track]:transparent
-                              [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-white/10">
+                              [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-genz-bg">
                 {recentActivity.map((activity, idx) => {
                   const action     = String(activity?.action      || '');
                   const actorRole  = String(activity?.actorRole   || '');
@@ -387,14 +387,14 @@ const AdminDashboardEnhanced = () => {
                   const label      = action.replace(/_/g, ' ').toLowerCase() || 'activity';
                   return (
                     <div key={String(actId)}
-                         className="flex items-start gap-2.5 p-3 rounded-xl bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] transition-colors">
+                         className="flex items-start gap-2.5 p-3 rounded-xl bg-white border border-white/[0.06] hover:bg-white transition-colors">
                       <div className="mt-0.5">{getActionIcon(action)}</div>
                       <div className="flex-1 min-w-0">
-                        <p className="text-xs text-white leading-relaxed">
-                          {actorRole && <span className="font-semibold text-white/80 mr-1">{actorRole}</span>}
-                          <span className="text-white/50">{label}</span>
+                        <p className="text-xs text-genz-navy leading-relaxed">
+                          {actorRole && <span className="font-semibold text-genz-muted mr-1">{actorRole}</span>}
+                          <span className="text-genz-muted">{label}</span>
                         </p>
-                        <p className="text-xs text-white/55 mt-0.5">{formatDate(createdAt)}</p>
+                        <p className="text-xs text-genz-muted mt-0.5">{formatDate(createdAt)}</p>
                       </div>
                     </div>
                   );

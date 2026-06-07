@@ -2,10 +2,9 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import {
-  Package, Clock, CheckCircle2, X, TrendingUp, Calendar, ExternalLink,
-  Lock, Chrome, Download, Zap, Shield, User, Star, Search, Filter,
-  Bot, BookOpen, BarChart3, Palette, Code2, Globe, AlertTriangle,
-  Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck
+  Package, Clock, CheckCircle2, X, ExternalLink,
+  Lock, Chrome, Download, Zap, Shield, User, Star, Search,
+  AlertTriangle, Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
@@ -20,26 +19,25 @@ const ToolCard = ({ tool, onOpen, openState }) => {
   const theme = getCategoryTheme(tool.category);
   const isExpired  = tool.status === 'expired';
   const isExpiring = tool.daysUntilExpiry !== undefined && tool.daysUntilExpiry <= 7 && !isExpired;
-  const needsExt   = tool.accessMethod === 'extension';
 
   const getBadges = () => {
     const badges = [];
-    if (tool.isFeatured) badges.push({ label: 'Featured', color: 'bg-yellow-500/20 text-yellow-300' });
-    if (tool.isNew)      badges.push({ label: 'New',      color: 'bg-green-500/20 text-green-300'  });
-    if (tool.isPopular)  badges.push({ label: 'Popular',  color: 'bg-purple-500/20 text-purple-300' });
-    if (tool.isAI)       badges.push({ label: 'AI',       color: 'bg-blue-500/20 text-blue-300'    });
+    if (tool.isFeatured) badges.push({ label: 'Featured', color: 'bg-amber-100 text-amber-700' });
+    if (tool.isNew)      badges.push({ label: 'New',      color: 'bg-green-100 text-green-700' });
+    if (tool.isPopular)  badges.push({ label: 'Popular',  color: 'bg-purple-100 text-purple-700' });
+    if (tool.isAI)       badges.push({ label: 'AI',       color: 'bg-blue-100 text-blue-700' });
     return badges;
   };
 
   return (
-    <div className={`relative group rounded-2xl p-5 border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl ${
+    <div className={`relative group rounded-2xl p-5 flex flex-col transition-all duration-200 hover:-translate-y-1 ${
       isExpired
-        ? 'opacity-60 border-red-500/20 bg-red-500/5'
-        : `${CARD_VARIANTS.default} hover:border-white/20`
+        ? 'opacity-70 border border-red-200 bg-red-50'
+        : 'gz-card'
     }`}>
       {/* Status indicator */}
       {isExpiring && (
-        <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+        <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
       )}
 
       {/* Tool header */}
@@ -49,7 +47,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
         </div>
         <div className="flex flex-wrap gap-1 justify-end">
           {getBadges().slice(0, 2).map(b => (
-            <span key={b.label} className={`text-xs px-2 py-0.5 rounded-full font-medium ${b.color}`}>
+            <span key={b.label} className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${b.color}`}>
               {b.label}
             </span>
           ))}
@@ -57,23 +55,23 @@ const ToolCard = ({ tool, onOpen, openState }) => {
       </div>
 
       {/* Tool info */}
-      <h3 className="font-bold text-white text-sm mb-0.5 truncate group-hover:text-genz-teal transition-colors">
+      <h3 className="font-bold text-genz-navy text-[15px] mb-0.5 truncate group-hover:text-genz-blue transition-colors">
         {tool.name}
       </h3>
-      <p className={`text-xs font-medium mb-2 ${theme.text}`}>{tool.category}</p>
+      <p className={`text-[12px] font-semibold mb-2 ${theme.text}`}>{tool.category}</p>
       {tool.shortDescription && (
-        <p className="text-xs text-white/50 leading-relaxed mb-3 line-clamp-2">{tool.shortDescription}</p>
+        <p className="text-[12.5px] text-genz-muted leading-relaxed mb-3 line-clamp-2">{tool.shortDescription}</p>
       )}
 
       {/* Status / expiry */}
       {isExpiring && (
-        <div className="flex items-center gap-1 text-xs text-yellow-400 mb-3">
+        <div className="flex items-center gap-1 text-[12px] text-amber-600 mb-3">
           <AlertTriangle size={11} />
           <span>Expires in {tool.daysUntilExpiry}d</span>
         </div>
       )}
       {isExpired && (
-        <div className="flex items-center gap-1 text-xs text-red-400 mb-3">
+        <div className="flex items-center gap-1 text-[12px] text-red-500 mb-3">
           <Lock size={11} />
           <span>Subscription expired</span>
         </div>
@@ -86,8 +84,8 @@ const ToolCard = ({ tool, onOpen, openState }) => {
             <button
               onClick={() => onOpen && onOpen(tool)}
               disabled={openState?.loading}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0"
+              style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 8px 18px rgba(37,99,235,0.22)' }}>
               {openState?.loading
                 ? <Loader2 size={13} className="animate-spin" />
                 : <ExternalLink size={13} />
@@ -96,20 +94,20 @@ const ToolCard = ({ tool, onOpen, openState }) => {
             </button>
           ) : (
             <Link to="/contact"
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl text-xs font-medium border border-genz-teal/30 text-genz-teal hover:bg-genz-teal/10 transition-all">
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[13px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
               <RefreshCw size={13} />
               Renew
             </Link>
           )}
           <Link to={`/client/tools/${tool._id}`}
-                className="px-3 py-2 rounded-xl text-xs border border-white/10 text-white/60 hover:border-white/30 hover:text-white transition-all">
+                className="px-3 py-2.5 rounded-xl text-[13px] font-medium border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue transition-all">
             Info
           </Link>
         </div>
         {openState?.error && (
-          <div className="flex items-start gap-1.5 px-1 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20">
-            <AlertCircle size={12} className="text-red-400 flex-shrink-0 mt-0.5" />
-            <span className="text-xs text-red-300 leading-snug">{openState.error}</span>
+          <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg bg-red-50 border border-red-200">
+            <AlertCircle size={12} className="text-red-500 flex-shrink-0 mt-0.5" />
+            <span className="text-[12px] text-red-600 leading-snug">{openState.error}</span>
           </div>
         )}
       </div>
@@ -131,7 +129,6 @@ const ClientDashboardEnhanced = () => {
 
   const user = authService.getCurrentUser();
   const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
-  const extStatus = extConnStatus; // bridge-based status, no extension ID required
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -272,28 +269,28 @@ const ClientDashboardEnhanced = () => {
         <div className="space-y-6 animate-pulse">
           {/* Header skeleton */}
           <div className="space-y-2">
-            <div className="h-3 w-28 rounded bg-white/10" />
-            <div className="h-8 w-64 rounded-lg bg-white/10" />
-            <div className="h-3 w-40 rounded bg-white/5" />
+            <div className="h-3 w-28 rounded bg-genz-border" />
+            <div className="h-8 w-64 rounded-lg bg-genz-border" />
+            <div className="h-3 w-40 rounded bg-genz-border/60" />
           </div>
           {/* Stats skeleton */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="p-4 rounded-2xl bg-white/[0.04] border border-white/10">
-                <div className="h-9 w-9 rounded-xl bg-white/10 mb-3" />
-                <div className="h-6 w-12 rounded bg-white/10 mb-2" />
-                <div className="h-3 w-16 rounded bg-white/5" />
+              <div key={i} className="p-5 rounded-2xl bg-white border border-genz-border">
+                <div className="h-9 w-9 rounded-xl bg-genz-border mb-3" />
+                <div className="h-6 w-12 rounded bg-genz-border mb-2" />
+                <div className="h-3 w-16 rounded bg-genz-border/60" />
               </div>
             ))}
           </div>
           {/* Tool grid skeleton */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="p-5 rounded-2xl bg-white/[0.04] border border-white/10">
-                <div className="h-11 w-11 rounded-xl bg-white/10 mb-3" />
-                <div className="h-4 w-3/4 rounded bg-white/10 mb-2" />
-                <div className="h-3 w-1/3 rounded bg-white/5 mb-3" />
-                <div className="h-9 w-full rounded-xl bg-white/5" />
+              <div key={i} className="p-5 rounded-2xl bg-white border border-genz-border">
+                <div className="h-11 w-11 rounded-xl bg-genz-border mb-3" />
+                <div className="h-4 w-3/4 rounded bg-genz-border mb-2" />
+                <div className="h-3 w-1/3 rounded bg-genz-border/60 mb-3" />
+                <div className="h-9 w-full rounded-xl bg-genz-border/60" />
               </div>
             ))}
           </div>
@@ -309,18 +306,18 @@ const ClientDashboardEnhanced = () => {
 
         {/* ── Expiry Warning Banner ── */}
         {showExpiryWarning && expiringTools.length > 0 && (
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10">
-            <AlertTriangle size={18} className="text-yellow-400 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 p-4 rounded-2xl border border-amber-200 bg-amber-50">
+            <AlertTriangle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="text-yellow-300 font-semibold text-sm mb-1">
+              <p className="text-amber-700 font-semibold text-sm mb-1">
                 {expiringTools.length} tool{expiringTools.length > 1 ? 's' : ''} expiring soon
               </p>
-              <p className="text-yellow-400/70 text-xs">
+              <p className="text-amber-600/80 text-xs">
                 {expiringTools.slice(0, 3).map(t => t.toolName).join(', ')}
                 {expiringTools.length > 3 && ` +${expiringTools.length - 3} more`}
               </p>
             </div>
-            <button onClick={dismissExpiryWarning} className="text-yellow-400/60 hover:text-yellow-300 transition-colors">
+            <button onClick={dismissExpiryWarning} className="text-amber-500/70 hover:text-amber-700 transition-colors">
               <X size={16} />
             </button>
           </div>
@@ -330,32 +327,32 @@ const ClientDashboardEnhanced = () => {
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <div className="flex items-center gap-2 mb-1">
-              <Sparkles size={16} className="text-genz-teal" />
-              <span className="text-genz-teal text-sm font-medium">Welcome back</span>
+              <Sparkles size={16} className="text-genz-blue" />
+              <span className="text-genz-blue text-sm font-semibold">Welcome back</span>
             </div>
-            <h1 className="text-3xl font-black text-white">
+            <h1 className="font-heading text-[32px] font-extrabold text-genz-navy leading-tight">
               {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
             </h1>
             <p className="text-genz-muted text-sm mt-1">
-              You have access to <span className="text-genz-teal font-semibold">{activeTools.length}</span> premium tools
+              You have access to <span className="text-genz-blue font-semibold">{activeTools.length}</span> premium tools
             </p>
           </div>
           <div className="flex items-center gap-3">
             {user?.expiryDate && (
               <div className="text-right">
                 <p className="text-xs text-genz-muted">Subscription</p>
-                <p className="text-sm font-semibold text-white">
+                <p className="text-sm font-semibold text-genz-navy">
                   {new Date(user.expiryDate) > new Date()
                     ? `Active until ${new Date(user.expiryDate).toLocaleDateString()}`
-                    : <span className="text-red-400">Expired</span>
+                    : <span className="text-red-500">Expired</span>
                   }
                 </p>
               </div>
             )}
             <Link to="/client/profile"
-                  className="w-10 h-10 rounded-xl flex items-center justify-center border border-genz-teal/20 hover:border-genz-teal/50 hover:bg-genz-teal/10 transition-all"
+                  className="w-10 h-10 rounded-xl flex items-center justify-center border border-genz-border hover:border-genz-blue/50 hover:bg-genz-blue/[0.06] transition-all"
                   title="My Profile">
-              <User size={18} className="text-genz-teal" />
+              <User size={18} className="text-genz-blue" />
             </Link>
           </div>
         </div>
@@ -363,42 +360,39 @@ const ClientDashboardEnhanced = () => {
         {/* ── Stats Row ── */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
           {[
-            { icon: Package,      value: tools.length,         label: 'Total Tools',   color: '#00AFC1', text: 'text-genz-teal'  },
-            { icon: CheckCircle2, value: activeTools.length,   label: 'Active Tools',  color: '#4ade80', text: 'text-green-400'  },
-            { icon: Clock,        value: expiringTools.length, label: 'Expiring Soon', color: '#fbbf24', text: 'text-yellow-400' },
-            { icon: Lock,         value: expiredTools.length,  label: 'Expired',       color: '#f87171', text: 'text-red-400'    },
-          ].map(({ icon: Icon, value, label, color, text }) => (
-            <div key={label} className="card-premium p-4 sm:p-5">
+            { icon: Package,      value: tools.length,         label: 'Total Tools',   color: '#2563EB' },
+            { icon: CheckCircle2, value: activeTools.length,   label: 'Active Tools',  color: '#16A34A' },
+            { icon: Clock,        value: expiringTools.length, label: 'Expiring Soon', color: '#D97706' },
+            { icon: Lock,         value: expiredTools.length,  label: 'Expired',       color: '#EF4444' },
+          ].map(({ icon: Icon, value, label, color }) => (
+            <div key={label} className="gz-card p-5">
               <div className="flex items-center justify-between mb-3">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                     style={{ background: `${color}1f`, border: `1px solid ${color}40` }}>
-                  <Icon size={17} style={{ color }} />
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                     style={{ background: `${color}14`, border: `1px solid ${color}2e` }}>
+                  <Icon size={18} style={{ color }} />
                 </div>
               </div>
-              <div className={`text-2xl sm:text-3xl font-extrabold ${text}`}>{value}</div>
-              <div className="text-xs text-white/55 mt-0.5">{label}</div>
+              <div className="font-heading text-[32px] font-extrabold leading-none" style={{ color }}>{value}</div>
+              <div className="text-[13px] text-genz-muted mt-1.5">{label}</div>
             </div>
           ))}
         </div>
 
         {/* ── Chrome Extension Banner ── hide after connected and dismissed */}
         {showExtensionBanner && !(bridgeReady && extConnStatus?.connected) && (
-          <div className="relative p-5 rounded-2xl border border-genz-teal/30 overflow-hidden"
-               style={{ background: 'linear-gradient(135deg, rgba(0,175,193,0.12), rgba(0,16,48,0.8))' }}>
-            {/* Decorative glow */}
-            <div className="absolute top-0 right-0 w-40 h-40 rounded-full pointer-events-none"
-                 style={{ background: 'radial-gradient(circle, rgba(0,175,193,0.2) 0%, transparent 70%)', filter: 'blur(20px)' }} />
+          <div className="relative p-5 rounded-2xl border overflow-hidden"
+               style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(6,182,212,0.07))', borderColor: 'rgba(6,182,212,0.25)' }}>
             <button onClick={() => setShowExtensionBanner(false)}
-                    className="absolute top-3 right-3 text-genz-muted hover:text-white transition-colors z-10">
+                    className="absolute top-3 right-3 text-genz-muted hover:text-genz-navy transition-colors z-10">
               <X size={16} />
             </button>
             <div className="flex items-start gap-4 relative z-10">
               <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
-                   style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
-                <Chrome size={24} className="text-genz-deep-navy" />
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>
+                <Chrome size={24} className="text-white" />
               </div>
               <div className="flex-1">
-                <h3 className="font-bold text-white mb-1">
+                <h3 className="font-bold text-genz-navy mb-1">
                 {bridgeReady
                   ? extConnStatus?.connected
                     ? `Extension Connected${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
@@ -414,24 +408,24 @@ const ClientDashboardEnhanced = () => {
                 <div className="flex flex-wrap gap-3">
                   {!bridgeReady && !extConnStatus?.checking && (
                     <Link to="/chrome-extension"
-                       className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
-                       style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                       className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:-translate-y-0.5"
+                       style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>
                       <Download size={15} />
                       Install Extension
                     </Link>
                   )}
                   {!bridgeReady && extConnStatus?.checking && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-teal/30 text-genz-teal">
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
                       <Loader2 size={15} className="animate-spin" /> Detecting extension…
                     </span>
                   )}
                   {bridgeReady && !extConnStatus?.connected && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-teal/30 text-genz-teal">
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
                       <Loader2 size={15} className="animate-spin" /> Auto connecting…
                     </span>
                   )}
                   {bridgeReady && extConnStatus?.connected && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-500/30 text-green-300">
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-200 text-green-600 bg-green-50">
                       <CheckCircle2 size={15} /> Ready
                     </span>
                   )}
@@ -446,10 +440,10 @@ const ClientDashboardEnhanced = () => {
           <div>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <Star size={16} className="text-yellow-400" />
-                <h2 className="font-bold text-white">Featured Tools</h2>
+                <Star size={16} className="text-amber-500" />
+                <h2 className="font-bold text-genz-navy text-[18px]">Featured Tools</h2>
               </div>
-              <button onClick={() => setActiveFilter('All')} className="text-xs text-genz-teal hover:underline">
+              <button onClick={() => setActiveFilter('All')} className="text-[13px] font-semibold text-genz-blue hover:underline">
                 View All
               </button>
             </div>
@@ -462,8 +456,8 @@ const ClientDashboardEnhanced = () => {
         {/* ── All Tools with Search/Filter ── */}
         <div>
           <div className="flex items-center justify-between mb-4">
-            <h2 className="font-bold text-white flex items-center gap-2">
-              <Package size={16} className="text-genz-teal" />
+            <h2 className="font-bold text-genz-navy text-[18px] flex items-center gap-2">
+              <Package size={17} className="text-genz-blue" />
               All Your Tools
             </h2>
           </div>
@@ -478,20 +472,20 @@ const ClientDashboardEnhanced = () => {
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 aria-label="Search tools"
-                className="input-premium w-full pl-9 pr-4 py-2.5 text-sm"
+                className="w-full rounded-[14px] border border-genz-border bg-white pl-9 pr-4 py-2.5 text-sm text-genz-navy placeholder:text-genz-muted/70 outline-none transition-all focus:border-genz-blue focus:ring-4 focus:ring-genz-blue/12"
               />
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">
               {categories.slice(0, 8).map(cat => (
                 <button key={cat}
                         onClick={() => setActiveFilter(cat)}
-                        className={`flex-shrink-0 px-3 py-2 rounded-xl text-xs font-medium transition-all ${
+                        className={`flex-shrink-0 px-3.5 py-2 rounded-xl text-[13px] font-semibold transition-all ${
                           activeFilter === cat
-                            ? 'text-genz-deep-navy'
-                            : 'border border-genz-border/30 text-genz-muted hover:border-genz-teal/30 hover:text-genz-teal'
+                            ? 'text-white'
+                            : 'border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue'
                         }`}
                         style={activeFilter === cat
-                          ? { background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }
+                          ? { background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }
                           : {}}>
                   {cat}
                 </button>
@@ -501,16 +495,23 @@ const ClientDashboardEnhanced = () => {
 
           {/* Tool Grid */}
           {filteredTools.length === 0 ? (
-            <div className="text-center py-16">
-              <Package size={40} className="text-genz-muted mx-auto mb-3 opacity-40" />
-              <p className="text-genz-muted">
+            <div className="gz-card text-center py-16 px-6">
+              <div className="w-14 h-14 rounded-2xl bg-genz-bg flex items-center justify-center mx-auto mb-4">
+                <Package size={26} className="text-genz-muted" />
+              </div>
+              <p className="text-genz-navy font-semibold">
                 {searchQuery || activeFilter !== 'All'
                   ? 'No tools match your search'
-                  : 'No tools assigned yet. Contact admin.'}
+                  : 'No tools assigned yet'}
+              </p>
+              <p className="text-genz-muted text-sm mt-1">
+                {searchQuery || activeFilter !== 'All'
+                  ? 'Try a different keyword or filter.'
+                  : 'Contact your admin to get tools assigned to your account.'}
               </p>
               {(searchQuery || activeFilter !== 'All') && (
                 <button onClick={() => { setSearchQuery(''); setActiveFilter('All'); }}
-                        className="mt-3 text-sm text-genz-teal hover:underline">
+                        className="mt-4 text-sm font-semibold text-genz-blue hover:underline">
                   Clear filters
                 </button>
               )}
@@ -527,10 +528,10 @@ const ClientDashboardEnhanced = () => {
 
         {/* Scanner consent prompt — shown only when bridge ready and consent not yet given */}
         {bridgeReady && scanConsent === false && (
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-genz-border/30 bg-white/[0.03]">
-            <ShieldCheck size={18} className="text-genz-teal flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 p-4 rounded-2xl border border-genz-border bg-white">
+            <ShieldCheck size={18} className="text-genz-blue flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="text-white text-sm font-semibold mb-1">Optional Security Scanner</p>
+              <p className="text-genz-navy text-sm font-semibold mb-1">Optional Security Scanner</p>
               <p className="text-genz-muted text-xs leading-relaxed mb-3">
                 Allow Gen Z Digital Store to check installed browser extensions for session-access
                 risks. Only extension names and permissions are shared — no cookies, browsing history,
@@ -538,12 +539,12 @@ const ClientDashboardEnhanced = () => {
               </p>
               <div className="flex gap-3">
                 <button onClick={() => grantScanConsent().then(() => setScanConsent(true)).catch(() => {})}
-                        className="px-4 py-1.5 rounded-lg text-xs font-semibold text-genz-deep-navy"
-                        style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
+                        className="px-4 py-2 rounded-lg text-xs font-bold text-white"
+                        style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
                   Enable Scanner
                 </button>
                 <button onClick={() => setScanConsent(true)}
-                        className="px-4 py-1.5 rounded-lg text-xs text-genz-muted hover:text-white transition-colors">
+                        className="px-4 py-2 rounded-lg text-xs font-semibold text-genz-muted hover:text-genz-navy transition-colors">
                   Not now
                 </button>
               </div>
@@ -559,15 +560,15 @@ const ClientDashboardEnhanced = () => {
             { icon: Zap,     title: 'Need More Tools?', desc: 'Upgrade your membership to access all 90+ tools',   to: '/pricing',        cta: 'Upgrade'  },
           ].map(({ icon: Icon, title, desc, to, cta }) => (
             <Link key={title} to={to}
-                  className={`${CARD_VARIANTS.default} p-5 rounded-2xl flex items-start gap-3 hover:border-genz-teal/30 transition-all group`}>
-              <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
-                   style={{ background: 'rgba(0,175,193,0.12)' }}>
-                <Icon size={16} className="text-genz-teal" />
+                  className="gz-card p-5 flex items-start gap-3 group">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                   style={{ background: 'rgba(37,99,235,0.1)' }}>
+                <Icon size={17} className="text-genz-blue" />
               </div>
               <div className="flex-1 min-w-0">
-                <h4 className="text-sm font-semibold text-white group-hover:text-genz-teal transition-colors">{title}</h4>
+                <h4 className="text-sm font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
                 <p className="text-xs text-genz-muted mt-0.5 leading-relaxed">{desc}</p>
-                <span className="inline-flex items-center gap-1 mt-2 text-xs text-genz-teal font-medium">
+                <span className="inline-flex items-center gap-1 mt-2 text-xs text-genz-blue font-semibold">
                   {cta} <ArrowRight size={11} />
                 </span>
               </div>

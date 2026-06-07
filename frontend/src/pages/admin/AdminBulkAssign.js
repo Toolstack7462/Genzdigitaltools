@@ -151,21 +151,21 @@ const AdminBulkAssign = () => {
         <div className="mb-8">
           <button
             onClick={() => navigate('/admin/clients')}
-            className="flex items-center gap-2 text-genz-muted hover:text-white transition-colors mb-4"
+            className="flex items-center gap-2 text-genz-muted hover:text-genz-navy transition-colors mb-4"
           >
             <ArrowLeft size={20} />
             Back to Clients
           </button>
-          <h1 className="text-3xl font-bold text-white">Bulk Assign Tool</h1>
+          <h1 className="text-3xl font-bold text-genz-navy">Bulk Assign Tool</h1>
           <p className="text-genz-muted mt-2">Assign one tool to multiple clients at once</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           {/* Step 1: Select Tool */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-white font-bold">1</div>
-              <h2 className="text-lg font-semibold text-white">Select Tool</h2>
+              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">1</div>
+              <h2 className="text-lg font-semibold text-genz-navy">Select Tool</h2>
             </div>
 
             <div className="relative mb-4">
@@ -175,7 +175,7 @@ const AdminBulkAssign = () => {
                 placeholder="Search tools..."
                 value={toolSearch}
                 onChange={(e) => setToolSearch(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full pl-12 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
               />
             </div>
 
@@ -188,14 +188,14 @@ const AdminBulkAssign = () => {
                   className={`p-4 rounded-xl border text-left transition-all ${
                     selectedTool?._id === tool._id
                       ? 'border-genz-teal bg-genz-teal/10'
-                      : 'border-white/10 bg-white/5 hover:border-genz-teal/50'
+                      : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
                   }`}
                   data-testid={`select-tool-${tool._id}`}
                 >
                   <div className="flex items-center gap-3">
                     <Package size={20} className={selectedTool?._id === tool._id ? 'text-genz-teal' : 'text-genz-muted'} />
                     <div>
-                      <p className="font-medium text-white">{tool.name}</p>
+                      <p className="font-medium text-genz-navy">{tool.name}</p>
                       <p className="text-xs text-genz-muted truncate">{tool.description}</p>
                     </div>
                     {selectedTool?._id === tool._id && (
@@ -212,11 +212,11 @@ const AdminBulkAssign = () => {
           </div>
 
           {/* Step 2: Select Clients */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-white font-bold">2</div>
-                <h2 className="text-lg font-semibold text-white">Select Clients</h2>
+                <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">2</div>
+                <h2 className="text-lg font-semibold text-genz-navy">Select Clients</h2>
                 <span className="px-2 py-1 bg-genz-teal/20 text-genz-teal text-sm rounded-full">
                   {selectedClients.length} selected
                 </span>
@@ -237,20 +237,20 @@ const AdminBulkAssign = () => {
                 placeholder="Search clients..."
                 value={clientSearch}
                 onChange={(e) => setClientSearch(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full pl-12 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
               />
             </div>
 
             {/* Selected Clients Tags */}
             {selectedClients.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-4 p-3 bg-white/5 rounded-xl">
+              <div className="flex flex-wrap gap-2 mb-4 p-3 bg-genz-bg rounded-xl">
                 {selectedClients.map(client => (
                   <span
                     key={client._id}
                     className="inline-flex items-center gap-1 px-3 py-1 bg-genz-teal/20 text-genz-teal text-sm rounded-full"
                   >
                     {client.fullName}
-                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-white">
+                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-genz-navy">
                       <X size={14} />
                     </button>
                   </span>
@@ -269,14 +269,14 @@ const AdminBulkAssign = () => {
                     className={`p-4 rounded-xl border text-left transition-all ${
                       isSelected
                         ? 'border-genz-teal bg-genz-teal/10'
-                        : 'border-white/10 bg-white/5 hover:border-genz-teal/50'
+                        : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
                     }`}
                     data-testid={`select-client-${client._id}`}
                   >
                     <div className="flex items-center gap-3">
                       <Users size={20} className={isSelected ? 'text-genz-teal' : 'text-genz-muted'} />
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium text-white">{client.fullName}</p>
+                        <p className="font-medium text-genz-navy">{client.fullName}</p>
                         <p className="text-xs text-genz-muted truncate">{client.email}</p>
                       </div>
                       {isSelected && <CheckCircle2 size={20} className="text-genz-teal flex-shrink-0" />}
@@ -292,10 +292,10 @@ const AdminBulkAssign = () => {
           </div>
 
           {/* Step 3: Set Duration */}
-          <div className="bg-white/[0.04] border border-white/10 rounded-xl p-6">
+          <div className="bg-white border border-genz-border rounded-xl p-6">
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-white font-bold">3</div>
-              <h2 className="text-lg font-semibold text-white">Set Access Duration</h2>
+              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">3</div>
+              <h2 className="text-lg font-semibold text-genz-navy">Set Access Duration</h2>
             </div>
 
             <div className="flex flex-wrap gap-2 mb-4">
@@ -306,8 +306,8 @@ const AdminBulkAssign = () => {
                   onClick={() => handlePresetChange(days)}
                   className={`px-4 py-2 rounded-full text-sm transition-all ${
                     duration.preset === days
-                      ? 'bg-gradient-orange text-white'
-                      : 'bg-white/5 text-genz-muted hover:bg-white/10'
+                      ? 'bg-gradient-orange text-genz-navy'
+                      : 'bg-genz-bg text-genz-muted hover:bg-genz-bg'
                   }`}
                 >
                   {days === '7' && '1 Week'}
@@ -320,7 +320,7 @@ const AdminBulkAssign = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                   <Calendar size={16} className="text-genz-teal" />
                   Start Date
                 </label>
@@ -328,12 +328,12 @@ const AdminBulkAssign = () => {
                   type="date"
                   value={duration.startDate}
                   onChange={(e) => setDuration(prev => ({ ...prev, startDate: e.target.value }))}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   data-testid="start-date-input"
                 />
               </div>
               <div>
-                <label className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                   <Calendar size={16} className="text-genz-teal" />
                   End Date
                 </label>
@@ -342,7 +342,7 @@ const AdminBulkAssign = () => {
                   value={duration.endDate}
                   onChange={(e) => setDuration(prev => ({ ...prev, endDate: e.target.value, preset: '' }))}
                   min={duration.startDate}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   data-testid="end-date-input"
                 />
               </div>
@@ -354,14 +354,14 @@ const AdminBulkAssign = () => {
             <button
               type="button"
               onClick={() => navigate('/admin/clients')}
-              className="px-6 py-3 text-genz-muted hover:text-white transition-colors"
+              className="px-6 py-3 text-genz-muted hover:text-genz-navy transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving || !selectedTool || selectedClients.length === 0}
-              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="bulk-assign-btn"
             >
               <Save size={20} />

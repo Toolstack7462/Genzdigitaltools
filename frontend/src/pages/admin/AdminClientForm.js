@@ -115,22 +115,22 @@ const AdminClientForm = () => {
         <div className="mb-8">
           <button
             onClick={() => navigate('/admin/clients')}
-            className="flex items-center gap-2 text-genz-muted hover:text-white transition-colors mb-4"
+            className="flex items-center gap-2 text-genz-muted hover:text-genz-navy transition-colors mb-4"
           >
             <ArrowLeft size={20} />
             Back to Clients
           </button>
-          <h1 className="text-3xl font-bold text-white">
+          <h1 className="text-3xl font-bold text-genz-navy">
             {isEdit ? 'Edit Client' : 'Create Client'}
           </h1>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="bg-white/[0.04] border border-white/10 rounded-xl p-6 sm:p-8">
+        <form onSubmit={handleSubmit} className="bg-white border border-genz-border rounded-xl p-6 sm:p-8">
           <div className="space-y-6">
             {/* Full Name */}
             <div>
-              <label htmlFor="fullName" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+              <label htmlFor="fullName" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                 <User size={16} className="text-genz-teal" />
                 Full Name *
               </label>
@@ -141,7 +141,7 @@ const AdminClientForm = () => {
                 value={formData.fullName}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder="John Doe"
                 data-testid="client-name-input"
               />
@@ -149,7 +149,7 @@ const AdminClientForm = () => {
 
             {/* Email */}
             <div>
-              <label htmlFor="email" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+              <label htmlFor="email" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                 <Mail size={16} className="text-genz-teal" />
                 Email Address *
               </label>
@@ -160,7 +160,7 @@ const AdminClientForm = () => {
                 value={formData.email}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder="john@example.com"
                 data-testid="client-email-input"
               />
@@ -168,7 +168,7 @@ const AdminClientForm = () => {
 
             {/* Password */}
             <div>
-              <label htmlFor="password" className="flex items-center gap-2 text-sm font-medium text-white mb-2">
+              <label htmlFor="password" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
                 <Lock size={16} className="text-genz-teal" />
                 Password {isEdit ? '(leave empty to keep existing)' : '*'}
               </label>
@@ -179,7 +179,7 @@ const AdminClientForm = () => {
                 value={formData.password}
                 onChange={handleChange}
                 required={!isEdit}
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder={isEdit ? '••••••••' : 'Enter password'}
                 data-testid="client-password-input"
               />
@@ -187,7 +187,7 @@ const AdminClientForm = () => {
 
             {/* Status */}
             <div>
-              <label className="text-sm font-medium text-white mb-2 block">Status</label>
+              <label className="text-sm font-medium text-genz-navy mb-2 block">Status</label>
               <div className="flex gap-4">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -198,7 +198,7 @@ const AdminClientForm = () => {
                     onChange={handleChange}
                     className="w-4 h-4 text-genz-teal"
                   />
-                  <span className="text-white">Active</span>
+                  <span className="text-genz-navy">Active</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
@@ -209,16 +209,16 @@ const AdminClientForm = () => {
                     onChange={handleChange}
                     className="w-4 h-4 text-genz-teal"
                   />
-                  <span className="text-white">Disabled</span>
+                  <span className="text-genz-navy">Disabled</span>
                 </label>
               </div>
             </div>
 
             {/* Device Policy */}
-            <div className="flex items-center gap-3 p-4 bg-white/5 rounded-xl">
+            <div className="flex items-center gap-3 p-4 bg-genz-bg rounded-xl">
               <Shield size={20} className="text-genz-teal" />
               <div className="flex-1">
-                <label htmlFor="devicePolicyEnabled" className="text-sm font-medium text-white cursor-pointer">
+                <label htmlFor="devicePolicyEnabled" className="text-sm font-medium text-genz-navy cursor-pointer">
                   Enable Device Binding
                 </label>
                 <p className="text-xs text-genz-muted mt-1">
@@ -237,18 +237,18 @@ const AdminClientForm = () => {
           </div>
 
           {/* Actions */}
-          <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-white/10">
+          <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-genz-border">
             <button
               type="button"
               onClick={() => navigate('/admin/clients')}
-              className="px-6 py-3 text-genz-muted hover:text-white transition-colors"
+              className="px-6 py-3 text-genz-muted hover:text-genz-navy transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="save-client-btn"
             >
               <Save size={20} />

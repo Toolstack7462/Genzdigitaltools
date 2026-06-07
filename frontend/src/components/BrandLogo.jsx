@@ -1,35 +1,35 @@
-import logoSvg from '../assets/brand/genz-digital-store-logo.svg';
+import logoPng from '../assets/brand/logo-genz-digital-store.png';
 
+// Original Gen Z Digital Store badge (circular, transparent corners).
+// Rendered from the source PNG so the original identity, colours, curves and
+// text are preserved exactly — no fake vector trace, no box, no background.
 const SIZE_CLASSES = {
-  sm: {
-    mark: 'h-8 w-8',
-    horizontal: 'h-9 w-auto',
-  },
-  md: {
-    mark: 'h-10 w-10',
-    horizontal: 'h-11 w-auto',
-  },
-  lg: {
-    mark: 'h-12 w-12',
-    horizontal: 'h-14 w-auto',
-  },
+  xs: 'h-8 w-8',
+  sm: 'h-9 w-9',
+  md: 'h-11 w-11',
+  lg: 'h-14 w-14',
+  xl: 'h-20 w-20',
+  '2xl': 'h-28 w-28',
 };
 
 const BrandLogo = ({
-  variant = 'horizontal',
   size = 'md',
   className = '',
+  imgClassName = '',
   ariaLabel = 'Gen Z Digital Store',
 }) => {
-  const classes = SIZE_CLASSES[size] || SIZE_CLASSES.md;
-  const sizeClass = variant === 'mark' ? classes.mark : classes.horizontal;
+  const sizeClass = SIZE_CLASSES[size] || SIZE_CLASSES.md;
 
   return (
-    <span className={`inline-flex items-center ${className}`} role="img" aria-label={ariaLabel}>
+    <span
+      className={`inline-flex items-center ${className}`}
+      role="img"
+      aria-label={ariaLabel}
+    >
       <img
-        src={logoSvg}
+        src={logoPng}
         alt=""
-        className={`${sizeClass} block object-contain`}
+        className={`${sizeClass} block object-contain select-none ${imgClassName}`}
         draggable="false"
       />
     </span>

@@ -29,7 +29,7 @@
   --space-section-desktop: 96px;
   --space-section-tablet: 72px;
   --space-section-mobile: 56px;
-  --container-max: 1240px;
+  --container-max: 1200px;
 }
 
 .brand-container {
@@ -127,6 +127,69 @@
 .brand-public .section-divider {
   background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.28), transparent);
 }
+
+/* =====================================================================
+   UNIFIED CARD SYSTEM  — consistent radius / border / shadow / hover
+   Used by service, tool, pricing, portfolio, feature and dashboard cards.
+   ===================================================================== */
+.gz-card {
+  position: relative;
+  display: block;
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-light-card);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.gz-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(6, 182, 212, 0.35);
+  box-shadow: var(--shadow-premium-hover);
+}
+@media (max-width: 767px) {
+  .gz-card { border-radius: 20px; }
+}
+
+/* Soft brand chip / eyebrow pill */
+.gz-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brand-blue);
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.16);
+}
+.gz-eyebrow .glow-dot { background: var(--brand-cyan); box-shadow: 0 0 10px rgba(6,182,212,0.7); }
+
+/* Deep-navy accent panel (intentional dark in the light+dark hybrid) */
+.gz-panel-dark {
+  background: linear-gradient(160deg, #071b33 0%, #0b2747 100%);
+  border: 1px solid rgba(6, 182, 212, 0.18);
+  border-radius: 28px;
+  box-shadow: var(--shadow-dark-panel);
+  color: #fff;
+}
+
+/* Section vertical rhythm (8px system: 56 / 72 / 96) */
+.gz-section { padding-block: var(--space-section-mobile); }
+@media (min-width: 768px) { .gz-section { padding-block: var(--space-section-tablet); } }
+@media (min-width: 1024px) { .gz-section { padding-block: var(--space-section-desktop); } }
+
+.gz-container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: 20px;
+}
+@media (min-width: 1024px) { .gz-container { padding-inline: 32px; } }
 
 @media (min-width: 768px) {
   .brand-container {

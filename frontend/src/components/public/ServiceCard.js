@@ -3,43 +3,43 @@ import { ArrowRight } from 'lucide-react';
 
 const ServiceCard = ({ icon: Icon, title, description, to, color = 'teal', delay = 0 }) => {
   const colorMap = {
-    teal:   { bg: 'rgba(0,175,193,0.1)',  border: 'rgba(0,175,193,0.2)',  text: '#00AFC1' },
-    blue:   { bg: 'rgba(59,130,246,0.1)', border: 'rgba(59,130,246,0.2)', text: '#60a5fa' },
-    purple: { bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.2)', text: '#a78bfa' },
-    green:  { bg: 'rgba(34,197,94,0.1)',  border: 'rgba(34,197,94,0.2)',  text: '#4ade80' },
-    pink:   { bg: 'rgba(236,72,153,0.1)', border: 'rgba(236,72,153,0.2)', text: '#f472b6' },
-    orange: { bg: 'rgba(249,115,22,0.1)', border: 'rgba(249,115,22,0.2)', text: '#fb923c' },
-    cyan:   { bg: 'rgba(6,182,212,0.1)',  border: 'rgba(6,182,212,0.2)',  text: '#22d3ee' },
-    indigo: { bg: 'rgba(99,102,241,0.1)', border: 'rgba(99,102,241,0.2)', text: '#818cf8' },
+    teal:   '#06B6D4',
+    blue:   '#2563EB',
+    purple: '#7C3AED',
+    green:  '#16A34A',
+    pink:   '#DB2777',
+    orange: '#EA580C',
+    cyan:   '#0891B2',
+    indigo: '#4F46E5',
   };
   const c = colorMap[color] || colorMap.teal;
 
   return (
     <Link
       to={to}
-      className="group card-premium card-glow block p-6"
+      className="gz-card group flex flex-col p-7"
       style={{ transitionDelay: `${delay}ms` }}
     >
       {/* Icon */}
       <div
-        className="w-12 h-12 rounded-xl flex items-center justify-center mb-5 transition-all duration-300 group-hover:scale-110"
-        style={{ background: c.bg, border: `1px solid ${c.border}` }}
+        className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5 transition-transform duration-300 group-hover:scale-105"
+        style={{ background: `${c}14`, border: `1px solid ${c}26`, color: c }}
       >
-        {Icon && <Icon size={22} style={{ color: c.text }} />}
+        {Icon && <Icon size={22} />}
       </div>
 
       {/* Content */}
-      <h3 className="text-white font-semibold text-base mb-2 group-hover:text-genz-teal transition-colors duration-200">
+      <h3 className="text-genz-navy font-bold text-[20px] leading-tight mb-2 transition-colors duration-200 group-hover:text-genz-blue">
         {title}
       </h3>
-      <p className="text-white/50 text-sm leading-relaxed mb-4">{description}</p>
+      <p className="text-genz-muted text-[15px] leading-relaxed mb-5 flex-1">{description}</p>
 
       {/* CTA */}
       <span
-        className="inline-flex items-center gap-1.5 text-xs font-semibold transition-all duration-200 group-hover:gap-2.5"
-        style={{ color: c.text }}
+        className="inline-flex items-center gap-1.5 text-[14px] font-semibold transition-all duration-200 group-hover:gap-2.5"
+        style={{ color: c }}
       >
-        Learn More <ArrowRight size={12} />
+        Learn More <ArrowRight size={14} />
       </span>
     </Link>
   );

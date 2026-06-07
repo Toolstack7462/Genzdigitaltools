@@ -26,13 +26,13 @@ const PublicFooter = () => {
   const year = new Date().getFullYear();
 
   return (
-    <footer style={{ background: '#000820', borderTop: '1px solid rgba(0,175,193,0.12)' }}>
+    <footer style={{ background: 'linear-gradient(180deg,#071B33 0%,#000820 100%)', borderTop: '1px solid rgba(6,182,212,0.15)' }}>
       {/* Top CTA band */}
       <div
         className="border-b"
-        style={{ borderColor: 'rgba(0,175,193,0.1)', background: 'rgba(0,175,193,0.04)' }}
+        style={{ borderColor: 'rgba(6,182,212,0.1)', background: 'rgba(6,182,212,0.04)' }}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
+        <div className="mx-auto max-w-[1200px] px-5 sm:px-6 lg:px-8 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
           <div>
             <h3 className="text-white font-bold text-xl mb-1">
               Ready to grow your digital presence?
@@ -46,15 +46,15 @@ const PublicFooter = () => {
               href={WHATSAPP_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-genz-deep-navy rounded-full hover:opacity-90 transition-all"
-              style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-[14px] hover:-translate-y-0.5 transition-all"
+              style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 8px 20px rgba(37,99,235,0.25)' }}
             >
               <MessageCircle size={15} />
               Chat on WhatsApp
             </a>
             <Link
               to="/services"
-              className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium text-genz-teal border border-genz-teal/40 rounded-full hover:bg-genz-teal/10 transition-all"
+              className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-semibold text-genz-cyan border border-genz-cyan/40 rounded-[14px] hover:bg-genz-cyan/10 transition-all"
             >
               View Services <ArrowRight size={14} />
             </Link>
@@ -63,7 +63,7 @@ const PublicFooter = () => {
       </div>
 
       {/* Main footer */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+      <div className="mx-auto max-w-[1200px] px-5 sm:px-6 lg:px-8 py-16">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10 mb-12">
 
           {/* Brand */}

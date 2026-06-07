@@ -8,8 +8,9 @@ const FAQItem = ({ question, answer, defaultOpen = false }) => {
     <div
       className="rounded-2xl overflow-hidden transition-all duration-200"
       style={{
-        background: open ? 'rgba(0,175,193,0.07)' : 'rgba(255,255,255,0.03)',
-        border: open ? '1px solid rgba(0,175,193,0.25)' : '1px solid rgba(255,255,255,0.06)',
+        background: open ? 'rgba(6,182,212,0.05)' : '#ffffff',
+        border: open ? '1px solid rgba(6,182,212,0.3)' : '1px solid var(--brand-border)',
+        boxShadow: open ? '0 12px 30px rgba(7,27,51,0.06)' : 'none',
       }}
     >
       <button
@@ -17,27 +18,28 @@ const FAQItem = ({ question, answer, defaultOpen = false }) => {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
       >
-        <span className="text-white font-medium text-sm leading-relaxed pr-2">
+        <span className="text-genz-navy font-semibold text-[15.5px] leading-relaxed pr-2">
           {question}
         </span>
         <span
           className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center transition-all duration-200"
-          style={{
-            background: open ? 'rgba(0,175,193,0.2)' : 'rgba(255,255,255,0.06)',
-          }}
+          style={{ background: open ? 'rgba(6,182,212,0.15)' : 'rgba(7,27,51,0.05)' }}
         >
           {open ? (
-            <Minus size={13} className="text-genz-teal" />
+            <Minus size={14} className="text-genz-blue" />
           ) : (
-            <Plus size={13} className="text-white/50" />
+            <Plus size={14} className="text-genz-muted" />
           )}
         </span>
       </button>
-      {open && (
-        <div className="px-5 pb-5">
-          <p className="text-white/55 text-sm leading-relaxed">{answer}</p>
+      <div
+        className="grid transition-all duration-300 ease-out"
+        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+      >
+        <div className="overflow-hidden">
+          <p className="px-5 pb-5 text-genz-muted text-[15px] leading-relaxed">{answer}</p>
         </div>
-      )}
+      </div>
     </div>
   );
 };
