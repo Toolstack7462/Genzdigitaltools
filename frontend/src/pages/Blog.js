@@ -70,7 +70,7 @@ const Blog = () => {
   
   if (loading) {
     return (
-      <div className="text-white min-h-screen pt-24 pb-16 px-4">
+      <div className="text-genz-navy min-h-screen pt-24 pb-16 px-4">
         <div className="max-w-7xl mx-auto flex items-center justify-center min-h-[60vh]">
           <div className="animate-spin rounded-full h-12 w-12 border-4 border-genz-teal border-t-transparent"></div>
         </div>
@@ -79,7 +79,7 @@ const Blog = () => {
   }
   
   return (
-    <div className="text-white min-h-screen pt-24 pb-16 px-4">
+    <div className="text-genz-navy min-h-screen pt-24 pb-16 px-4">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="text-center mb-12">
@@ -98,7 +98,7 @@ const Blog = () => {
               placeholder="Search articles..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-12 pr-4 py-4 bg-white/[0.04] border border-white/10 rounded-full text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+              className="w-full pl-12 pr-4 py-4 bg-white border border-genz-border rounded-full text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
               data-testid="blog-search-input"
             />
           </div>
@@ -112,8 +112,8 @@ const Blog = () => {
               onClick={() => setSelectedCategory(category)}
               className={`px-6 py-2 rounded-full text-sm font-medium transition-all duration-300 ${
                 selectedCategory === category
-                  ? 'bg-gradient-orange text-white shadow-lg shadow-genz-teal/25'
-                  : 'border border-white/10 text-genz-muted hover:border-genz-teal hover:text-white bg-white/[0.04]/50'
+                  ? 'bg-gradient-orange text-genz-navy shadow-lg shadow-genz-teal/25'
+                  : 'border border-genz-border text-genz-muted hover:border-genz-teal hover:text-genz-navy bg-white/50'
               }`}
               data-testid={`blog-category-${category.toLowerCase().replace(/ /g, '-')}`}
             >
@@ -129,7 +129,7 @@ const Blog = () => {
             className="block mb-12 group"
             data-testid="featured-post"
           >
-            <div className="bg-white/[0.04] border border-white/10 rounded-2xl overflow-hidden transition-all duration-300 hover:border-genz-teal hover:shadow-lg hover:shadow-genz-teal/10">
+            <div className="bg-white border border-genz-border rounded-2xl overflow-hidden transition-all duration-300 hover:border-genz-teal hover:shadow-lg hover:shadow-genz-teal/10">
               <div className="grid md:grid-cols-2 gap-0">
                 {/* Image */}
                 <div 
@@ -146,7 +146,7 @@ const Blog = () => {
                 <div className="p-8 flex flex-col justify-center">
                   <div className="flex items-center gap-2 mb-4">
                     {featuredPost.featured && (
-                      <span className="px-3 py-1 bg-yellow-500/20 text-yellow-400 text-xs rounded-full">
+                      <span className="px-3 py-1 bg-yellow-500/20 text-yellow-500 text-xs rounded-full">
                         Featured
                       </span>
                     )}
@@ -193,7 +193,7 @@ const Blog = () => {
               <Link
                 key={post.slug}
                 to={`/blog/${post.slug}`}
-                className="group bg-white/[0.04] border border-white/10 rounded-xl overflow-hidden transition-all duration-300 hover:-translate-y-2 hover:border-genz-teal hover:shadow-lg"
+                className="group bg-white border border-genz-border rounded-xl overflow-hidden transition-all duration-300 hover:-translate-y-2 hover:border-genz-teal hover:shadow-lg"
                 data-testid={`blog-post-${post.slug}`}
               >
                 {/* Cover Image */}

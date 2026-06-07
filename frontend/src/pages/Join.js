@@ -65,11 +65,11 @@ const Join = () => {
   
   if (success) {
     return (
-      <div className="text-white min-h-screen flex items-center justify-center px-4 py-24">
+      <div className="text-genz-navy min-h-screen flex items-center justify-center px-4 py-24">
         <div className="max-w-md w-full text-center">
-          <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-8">
+          <div className="bg-white border border-genz-border rounded-2xl p-8">
             <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
-              <CheckCircle2 size={40} className="text-green-400" />
+              <CheckCircle2 size={40} className="text-green-500" />
             </div>
             <h2 className="text-2xl font-bold mb-4">Account Created!</h2>
             <p className="text-genz-muted mb-6">
@@ -77,7 +77,7 @@ const Join = () => {
             </p>
             <Link 
               to="/client/login"
-              className="inline-block px-8 py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90"
+              className="inline-block px-8 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90"
             >
               Go to Login
             </Link>
@@ -88,7 +88,7 @@ const Join = () => {
   }
   
   return (
-    <div className="text-white min-h-screen flex items-center justify-center px-4 py-24">
+    <div className="text-genz-navy min-h-screen flex items-center justify-center px-4 py-24">
       <div className="max-w-md w-full">
         {/* Logo */}
         <div className="text-center mb-8">
@@ -100,7 +100,7 @@ const Join = () => {
         </div>
         
         {/* Signup Form */}
-        <div className="bg-white/[0.04] border border-white/10 rounded-2xl p-8">
+        <div className="bg-white border border-genz-border rounded-2xl p-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label htmlFor="name" className="block text-sm font-medium mb-2">
@@ -115,7 +115,7 @@ const Join = () => {
                   required
                   value={formData.name}
                   onChange={handleChange}
-                  className="w-full pl-12 pr-4 py-3 bg-[#000c20] border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full pl-12 pr-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="John Doe"
                   data-testid="join-name-input"
                 />
@@ -135,7 +135,7 @@ const Join = () => {
                   required
                   value={formData.email}
                   onChange={handleChange}
-                  className="w-full pl-12 pr-4 py-3 bg-[#000c20] border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full pl-12 pr-4 py-3 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="you@example.com"
                   data-testid="join-email-input"
                 />
@@ -156,7 +156,7 @@ const Join = () => {
                   minLength={6}
                   value={formData.password}
                   onChange={handleChange}
-                  className="w-full pl-12 pr-12 py-3 bg-[#000c20] border border-white/10 rounded-lg text-white placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full pl-12 pr-12 py-3 bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                   placeholder="••••••••"
                   data-testid="join-password-input"
                 />
@@ -189,7 +189,7 @@ const Join = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-gradient-orange text-white rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="w-full py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="join-submit-btn"
             >
               {loading ? 'Creating Account...' : 'Create Account'}

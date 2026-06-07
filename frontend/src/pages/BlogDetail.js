@@ -78,7 +78,7 @@ const BlogDetail = () => {
   
   if (loading) {
     return (
-      <div className="text-white min-h-screen pt-24 pb-16 px-4">
+      <div className="text-genz-navy min-h-screen pt-24 pb-16 px-4">
         <div className="max-w-4xl mx-auto flex items-center justify-center min-h-[60vh]">
           <div className="animate-spin rounded-full h-12 w-12 border-4 border-genz-teal border-t-transparent"></div>
         </div>
@@ -88,11 +88,11 @@ const BlogDetail = () => {
   
   if (!post) {
     return (
-      <div className="text-white min-h-screen pt-24 pb-16 px-4">
+      <div className="text-genz-navy min-h-screen pt-24 pb-16 px-4">
         <div className="max-w-4xl mx-auto text-center">
           <h1 className="text-4xl font-bold mb-4">Article Not Found</h1>
           <p className="text-genz-muted mb-8">The article you're looking for doesn't exist.</p>
-          <Link to="/blog" className="inline-block px-6 py-3 bg-gradient-orange text-white rounded-full hover:opacity-90 transition-opacity">
+          <Link to="/blog" className="inline-block px-6 py-3 bg-gradient-orange text-genz-navy rounded-full hover:opacity-90 transition-opacity">
             Back to Blog
           </Link>
         </div>
@@ -124,7 +124,7 @@ const BlogDetail = () => {
   };
   
   return (
-    <div className="text-white min-h-screen pt-24 pb-16 px-4">
+    <div className="text-genz-navy min-h-screen pt-24 pb-16 px-4">
       <div className="max-w-4xl mx-auto">
         {/* Back Button */}
         <Link 
@@ -145,7 +145,7 @@ const BlogDetail = () => {
               {post.category}
             </span>
             {post.tags?.map(tag => (
-              <span key={tag} className="px-3 py-1 bg-white/10 text-genz-muted text-sm rounded-full">
+              <span key={tag} className="px-3 py-1 bg-genz-bg text-genz-muted text-sm rounded-full">
                 {tag}
               </span>
             ))}
@@ -157,7 +157,7 @@ const BlogDetail = () => {
           </h1>
           
           {/* Meta */}
-          <div className="flex items-center gap-6 text-genz-muted mb-8 pb-8 border-b border-white/10 flex-wrap">
+          <div className="flex items-center gap-6 text-genz-muted mb-8 pb-8 border-b border-genz-border flex-wrap">
             <div className="flex items-center gap-2">
               <Calendar size={18} />
               <span>{post.date}</span>
@@ -173,7 +173,7 @@ const BlogDetail = () => {
               </div>
             )}
             {post.author && (
-              <div className="text-white">
+              <div className="text-genz-navy">
                 By <span className="font-medium">{post.author}</span>
               </div>
             )}
@@ -212,14 +212,14 @@ const BlogDetail = () => {
         
         {/* Related Posts */}
         {relatedPosts.length > 0 && (
-          <div className="mt-16 pt-16 border-t border-white/10">
+          <div className="mt-16 pt-16 border-t border-genz-border">
             <h2 className="text-2xl font-bold mb-8">Related Articles</h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {relatedPosts.map(relatedPost => (
                 <Link
                   key={relatedPost.slug}
                   to={`/blog/${relatedPost.slug}`}
-                  className="group bg-white/[0.04] border border-white/10 rounded-xl overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:border-genz-teal"
+                  className="group bg-white border border-genz-border rounded-xl overflow-hidden transition-all duration-300 hover:-translate-y-1 hover:border-genz-teal"
                   data-testid={`related-post-${relatedPost.slug}`}
                 >
                   <div 

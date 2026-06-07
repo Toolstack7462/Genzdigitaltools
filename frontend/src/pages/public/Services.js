@@ -4,7 +4,7 @@ import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
 
 const SERVICES = [
-  { icon: Cpu,        color: '#00AFC1', title: 'Digital Tools Access',       sub: 'Secure access to AI, SEO, design and productivity tools via your client dashboard.',   to: '/services/digital-tools' },
+  { icon: Cpu,        color: '#06B6D4', title: 'Digital Tools Access',       sub: 'Secure access to AI, SEO, design and productivity tools via your client dashboard.',   to: '/services/digital-tools' },
   { icon: Instagram,  color: '#e1306c', title: 'Social Media Management',    sub: 'Full social media management — content, design, strategy, and growth reporting.',       to: '/services/social-media-management' },
   { icon: PenTool,    color: '#a78bfa', title: 'Writing Services',           sub: 'Website copy, blog articles, business writing, academic support and proofreading.',       to: '/services/writing-services' },
   { icon: Globe,      color: '#60a5fa', title: 'Web Design & Development',   sub: 'Animated, responsive websites — landing pages, business sites, and dashboards.',          to: '/services/web-design-development' },
@@ -19,7 +19,7 @@ const Services = () => {
   const [cardsRef, cardsVisible] = useReveal();
 
   return (
-    <div style={{ background: '#000820' }} className="overflow-x-hidden">
+    <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       {/* Hero */}
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
@@ -29,10 +29,10 @@ const Services = () => {
             style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
             <span className="glow-dot" /> What We Offer
           </div>
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-white mb-5 leading-tight">
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
             All Our <span className="text-gradient-teal">Digital Services</span>
           </h1>
-          <p className="text-white/55 text-base sm:text-lg leading-relaxed max-w-2xl mx-auto">
+          <p className="text-genz-muted text-base sm:text-lg leading-relaxed max-w-2xl mx-auto">
             From secure premium tool access to complete creative and technical services —
             Gen Z Digital Store is your full digital growth partner.
           </p>
@@ -48,7 +48,7 @@ const Services = () => {
                 key={to}
                 to={to}
                 className="group flex gap-6 p-7 rounded-2xl transition-all duration-300 hover:-translate-y-0.5"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}
+                style={{ background: '#ffffff', border: '1px solid var(--brand-border)' }}
               >
                 <div className="flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-300 group-hover:scale-110"
                   style={{ background: `${color}18`, border: `1px solid ${color}30` }}>
@@ -56,10 +56,10 @@ const Services = () => {
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-2 mb-2">
-                    <h3 className="text-white font-semibold text-base group-hover:text-genz-teal transition-colors">{title}</h3>
-                    <ArrowRight size={15} className="flex-shrink-0 text-white/20 group-hover:text-genz-teal group-hover:translate-x-1 transition-all" />
+                    <h3 className="text-genz-navy font-semibold text-base group-hover:text-genz-teal transition-colors">{title}</h3>
+                    <ArrowRight size={15} className="flex-shrink-0 text-genz-muted group-hover:text-genz-teal group-hover:translate-x-1 transition-all" />
                   </div>
-                  <p className="text-white/50 text-sm leading-relaxed">{sub}</p>
+                  <p className="text-genz-muted text-sm leading-relaxed">{sub}</p>
                 </div>
               </Link>
             ))}

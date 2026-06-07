@@ -48,9 +48,9 @@ const SAMPLE_TOOLS = [
 
 const BADGE_STYLES = {
   Popular:  'bg-genz-teal/20 text-genz-teal',
-  AI:       'bg-purple-500/20 text-purple-300',
-  New:      'bg-green-500/20 text-green-300',
-  Featured: 'bg-yellow-500/20 text-yellow-300',
+  AI:       'bg-purple-500/20 text-purple-600',
+  New:      'bg-green-500/20 text-green-600',
+  Featured: 'bg-yellow-500/20 text-yellow-600',
 };
 
 const Tools = () => {
@@ -67,7 +67,7 @@ const Tools = () => {
 
   return (
     <div className="min-h-screen pt-20 pb-20 px-4"
-         style={{ background: 'linear-gradient(180deg, #000820 0%, #001030 100%)' }}>
+         style={{ background: 'linear-gradient(180deg, #000820 0%, #FFFFFF 100%)' }}>
       <div className="max-w-7xl mx-auto">
 
         {/* Header */}
@@ -77,7 +77,7 @@ const Tools = () => {
             <Zap size={14} className="text-genz-teal" />
             <span className="text-genz-teal text-sm font-medium">90+ Premium Tools Available</span>
           </div>
-          <h1 className="text-5xl font-black text-white mb-4">
+          <h1 className="text-5xl font-black text-genz-navy mb-4">
             Browse <span className="text-genz-teal">All Tools</span>
           </h1>
           <p className="text-genz-muted text-lg max-w-2xl mx-auto mb-8">
@@ -92,7 +92,7 @@ const Tools = () => {
               placeholder="Search tools..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              className="w-full pl-12 pr-4 py-3.5 rounded-2xl text-white placeholder-genz-muted focus:outline-none transition-all text-base"
+              className="w-full pl-12 pr-4 py-3.5 rounded-2xl text-genz-navy placeholder-genz-muted focus:outline-none transition-all text-base"
               style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}
             />
           </div>
@@ -108,11 +108,11 @@ const Tools = () => {
                         ? 'text-genz-deep-navy border-transparent'
                         : 'text-genz-muted border-genz-border/30 hover:border-genz-teal/40 hover:text-genz-teal'
                     }`}
-                    style={activeCategory === id ? { background: 'linear-gradient(135deg, #00AFC1, #008EA3)' } : {}}>
+                    style={activeCategory === id ? { background: 'linear-gradient(135deg, #06B6D4, #0891B2)' } : {}}>
               <Icon size={15} />
               {label}
               <span className={`text-xs px-1.5 py-0.5 rounded-full ${
-                activeCategory === id ? 'bg-genz-deep-navy/20 text-genz-deep-navy' : 'bg-white/5 text-genz-muted'
+                activeCategory === id ? 'bg-genz-deep-navy/20 text-genz-deep-navy' : 'bg-genz-bg text-genz-muted'
               }`}>{count}</span>
             </button>
           ))}
@@ -136,8 +136,8 @@ const Tools = () => {
                    style={{ background: 'rgba(0,175,193,0.04)', borderColor: 'rgba(0,175,193,0.10)' }}>
                 {/* Tool icon */}
                 <div className="flex items-start justify-between mb-3">
-                  <div className="w-11 h-11 rounded-xl flex items-center justify-center font-black text-white"
-                       style={{ background: 'linear-gradient(135deg, #001030, #00AFC1)' }}>
+                  <div className="w-11 h-11 rounded-xl flex items-center justify-center font-black text-genz-navy"
+                       style={{ background: 'linear-gradient(135deg, #FFFFFF, #06B6D4)' }}>
                     {tool.name.charAt(0)}
                   </div>
                   {tool.badge && (
@@ -146,7 +146,7 @@ const Tools = () => {
                     </span>
                   )}
                 </div>
-                <h3 className="font-bold text-white text-sm mb-1 group-hover:text-genz-teal transition-colors">{tool.name}</h3>
+                <h3 className="font-bold text-genz-navy text-sm mb-1 group-hover:text-genz-teal transition-colors">{tool.name}</h3>
                 <p className="text-xs text-genz-muted mb-3 leading-relaxed line-clamp-2">{tool.desc}</p>
                 <Link to="/join"
                       className="inline-flex items-center gap-1.5 text-xs font-medium text-genz-teal hover:underline">
@@ -161,12 +161,12 @@ const Tools = () => {
         <div className="mt-16 text-center">
           <div className="inline-block p-8 rounded-3xl border"
                style={{ background: 'rgba(0,175,193,0.06)', borderColor: 'rgba(0,175,193,0.2)' }}>
-            <h3 className="text-2xl font-black text-white mb-2">Ready to access all tools?</h3>
+            <h3 className="text-2xl font-black text-genz-navy mb-2">Ready to access all tools?</h3>
             <p className="text-genz-muted mb-6">Get your Gen Z Digital Store membership today</p>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <Link to="/join"
                     className="inline-flex items-center gap-2 px-8 py-3 rounded-2xl font-semibold text-genz-deep-navy transition-all hover:opacity-90 hover:scale-105"
-                    style={{ background: 'linear-gradient(135deg, #00AFC1, #008EA3)' }}>
+                    style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}>
                 <Zap size={18} /> Start Membership
               </Link>
               <Link to="/pricing"

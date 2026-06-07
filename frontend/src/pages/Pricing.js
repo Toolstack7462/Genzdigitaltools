@@ -94,7 +94,7 @@ const Pricing = () => {
   const [faqRef, faqVisible] = useReveal();
 
   return (
-    <div style={{ background: '#000820' }} className="overflow-x-hidden">
+    <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       {/* Hero */}
       <section className="relative pt-32 pb-16 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
@@ -104,10 +104,10 @@ const Pricing = () => {
             style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
             <span className="glow-dot" /> Pricing
           </div>
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-white mb-5 leading-tight">
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
             Transparent, <span className="text-gradient-teal">flexible</span> pricing
           </h1>
-          <p className="text-white/55 text-base leading-relaxed">
+          <p className="text-genz-muted text-base leading-relaxed">
             Every project is scoped individually. Contact us for a custom quote — we don't do one-size-fits-all.
           </p>
         </div>
@@ -119,7 +119,7 @@ const Pricing = () => {
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
             {PLANS.map(p => <PricingCard key={p.tier} {...p} />)}
           </div>
-          <p className="text-center text-white/55 text-xs mt-8">
+          <p className="text-center text-genz-muted text-xs mt-8">
             All prices are quoted individually based on your requirements. Contact us to discuss your project.
           </p>
         </div>
@@ -128,8 +128,8 @@ const Pricing = () => {
       {/* Add-ons */}
       <section className="py-16 px-4">
         <div ref={addonRef} className={`max-w-4xl mx-auto reveal ${addonVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl font-bold text-white text-center mb-4">Individual service pricing</h2>
-          <p className="text-white/50 text-center text-sm mb-10">Need just one service? We quote individually for all of the following:</p>
+          <h2 className="text-2xl font-bold text-genz-navy text-center mb-4">Individual service pricing</h2>
+          <p className="text-genz-muted text-center text-sm mb-10">Need just one service? We quote individually for all of the following:</p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {[
               'Single landing page design',
@@ -145,8 +145,8 @@ const Pricing = () => {
               'Pitch deck design',
               'Chrome extension development',
             ].map(item => (
-              <div key={item} className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm text-white/60"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+              <div key={item} className="flex items-center gap-2.5 px-4 py-3 rounded-xl text-sm text-genz-muted"
+                style={{ background: '#ffffff', border: '1px solid var(--brand-border)' }}>
                 <CheckCircle size={13} className="text-genz-teal flex-shrink-0" />
                 {item}
               </div>
@@ -155,7 +155,7 @@ const Pricing = () => {
           <div className="text-center mt-8">
             <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90"
-              style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
+              style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
               <MessageCircle size={15} /> Get a Quote on WhatsApp
             </a>
           </div>
@@ -167,7 +167,7 @@ const Pricing = () => {
       {/* FAQ */}
       <section className="py-16 px-4">
         <div ref={faqRef} className={`max-w-2xl mx-auto reveal ${faqVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl font-bold text-white text-center mb-8">Pricing FAQs</h2>
+          <h2 className="text-2xl font-bold text-genz-navy text-center mb-8">Pricing FAQs</h2>
           <div className="space-y-3">
             {FAQS.map((f,i) => <FAQItem key={i} question={f.q} answer={f.a} />)}
           </div>

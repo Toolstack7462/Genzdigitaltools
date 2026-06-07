@@ -35,7 +35,7 @@ const ServiceDigitalTools = () => {
   const [catsRef, catsVisible] = useReveal();
 
   return (
-    <div style={{ background: '#000820' }} className="overflow-x-hidden">
+    <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       {/* Hero */}
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
@@ -45,17 +45,17 @@ const ServiceDigitalTools = () => {
             style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
             <span className="glow-dot" /> Digital Tools Access
           </div>
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-white mb-5 leading-tight">
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
             Premium <span className="text-gradient-teal">Digital Tools</span>, Securely Accessed
           </h1>
-          <p className="text-white/55 text-base sm:text-lg leading-relaxed mb-8">
+          <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Get admin-managed access to 50+ professional AI, SEO, design, and productivity tools —
             all through one secure, extension-powered client dashboard.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
             <Link to="/client/login"
               className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy"
-              style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
+              style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
               <LayoutDashboard size={15} /> Access Dashboard
             </Link>
             <Link to="/chrome-extension"
@@ -69,21 +69,21 @@ const ServiceDigitalTools = () => {
       {/* How it works */}
       <section className="py-20 px-4">
         <div ref={stepsRef} className={`max-w-5xl mx-auto reveal ${stepsVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl sm:text-3xl font-bold text-white text-center mb-12">How tool access works</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-genz-navy text-center mb-12">How tool access works</h2>
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {HOW_STEPS.map(({ icon: Icon, label, sub }, i) => (
               <div key={label} className="relative flex flex-col items-center text-center p-6 rounded-2xl"
                 style={{ background: 'rgba(0,175,193,0.06)', border: '1px solid rgba(0,175,193,0.15)' }}>
                 <div className="absolute -top-4 left-1/2 -translate-x-1/2 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-genz-deep-navy"
-                  style={{ background: 'linear-gradient(135deg,#00AFC1,#008EA3)' }}>
+                  style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
                   {i + 1}
                 </div>
                 <div className="w-12 h-12 rounded-xl flex items-center justify-center mt-4 mb-4"
                   style={{ background: 'rgba(0,175,193,0.15)' }}>
                   <Icon size={20} className="text-genz-teal" />
                 </div>
-                <h3 className="text-white font-semibold text-sm mb-2">{label}</h3>
-                <p className="text-white/55 text-xs leading-relaxed">{sub}</p>
+                <h3 className="text-genz-navy font-semibold text-sm mb-2">{label}</h3>
+                <p className="text-genz-muted text-xs leading-relaxed">{sub}</p>
               </div>
             ))}
           </div>
@@ -93,14 +93,14 @@ const ServiceDigitalTools = () => {
       {/* Tool categories */}
       <section className="py-20 px-4">
         <div ref={catsRef} className={`max-w-5xl mx-auto reveal ${catsVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl sm:text-3xl font-bold text-white text-center mb-4">Tool categories</h2>
-          <p className="text-white/50 text-center text-sm mb-12">Categories available across plans — specific tools assigned per membership.</p>
+          <h2 className="text-2xl sm:text-3xl font-bold text-genz-navy text-center mb-4">Tool categories</h2>
+          <p className="text-genz-muted text-center text-sm mb-12">Categories available across plans — specific tools assigned per membership.</p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             {TOOLS_CATEGORIES.map(({ label, n }) => (
               <div key={label} className="flex flex-col items-center text-center p-5 rounded-2xl"
-                style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                style={{ background: '#ffffff', border: '1px solid var(--brand-border)' }}>
                 <span className="text-2xl font-extrabold text-genz-teal mb-1">{n}</span>
-                <span className="text-white/55 text-xs leading-tight">{label}</span>
+                <span className="text-genz-muted text-xs leading-tight">{label}</span>
               </div>
             ))}
           </div>
@@ -112,8 +112,8 @@ const ServiceDigitalTools = () => {
         <div className="max-w-3xl mx-auto rounded-3xl p-8 text-center"
           style={{ background: 'rgba(0,175,193,0.07)', border: '1px solid rgba(0,175,193,0.2)' }}>
           <Shield size={28} className="text-genz-teal mx-auto mb-4" />
-          <h3 className="text-white font-bold text-xl mb-3">Enterprise-grade security</h3>
-          <p className="text-white/55 text-sm leading-relaxed mb-6">
+          <h3 className="text-genz-navy font-bold text-xl mb-3">Enterprise-grade security</h3>
+          <p className="text-genz-muted text-sm leading-relaxed mb-6">
             No credentials are ever exposed to clients. Tool access is handled entirely through the
             extension bridge — admin-controlled, session-bound, and always encrypted.
           </p>
@@ -131,7 +131,7 @@ const ServiceDigitalTools = () => {
       {/* FAQ */}
       <section className="py-16 px-4">
         <div className="max-w-2xl mx-auto">
-          <h2 className="text-2xl font-bold text-white text-center mb-8">Questions about tool access</h2>
+          <h2 className="text-2xl font-bold text-genz-navy text-center mb-8">Questions about tool access</h2>
           <div className="space-y-3">
             {FAQS.map((f,i)=><FAQItem key={i} question={f.q} answer={f.a} />)}
           </div>

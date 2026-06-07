@@ -17,7 +17,7 @@ const ServiceSEO = () => {
   const [servRef, servVisible] = useReveal();
 
   return (
-    <div style={{ background: '#000820' }} className="overflow-x-hidden">
+    <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(6,182,212,0.1),transparent 70%)' }} />
@@ -26,10 +26,10 @@ const ServiceSEO = () => {
             style={{ borderColor: 'rgba(6,182,212,0.3)', background: 'rgba(6,182,212,0.08)', color: '#22d3ee' }}>
             <span className="glow-dot" style={{ background: '#22d3ee' }} /> SEO & Digital Growth
           </div>
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-white mb-5 leading-tight">
+          <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
             Rank higher. <span style={{ WebkitTextFillColor:'transparent', background:'linear-gradient(135deg,#22d3ee,#0891b2)', WebkitBackgroundClip:'text', backgroundClip:'text' }}>Grow faster.</span>
           </h1>
-          <p className="text-white/55 text-base sm:text-lg leading-relaxed mb-8">
+          <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Data-driven SEO strategies that improve your search rankings, increase organic traffic,
             and turn visitors into customers — with measurable results.
           </p>
@@ -43,7 +43,7 @@ const ServiceSEO = () => {
 
       <section className="py-20 px-4">
         <div ref={servRef} className={`max-w-6xl mx-auto reveal ${servVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl sm:text-3xl font-bold text-white text-center mb-12">SEO services</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-genz-navy text-center mb-12">SEO services</h2>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {SEO_SERVICES.map(({ icon: Icon, color, title, desc }) => (
               <div key={title} className="p-6 rounded-2xl transition-all hover:-translate-y-0.5"
@@ -51,8 +51,8 @@ const ServiceSEO = () => {
                 <div className="w-11 h-11 rounded-xl flex items-center justify-center mb-4" style={{ background: `${color}20` }}>
                   <Icon size={20} style={{ color }} />
                 </div>
-                <h3 className="text-white font-semibold text-sm mb-2">{title}</h3>
-                <p className="text-white/50 text-sm leading-relaxed">{desc}</p>
+                <h3 className="text-genz-navy font-semibold text-sm mb-2">{title}</h3>
+                <p className="text-genz-muted text-sm leading-relaxed">{desc}</p>
               </div>
             ))}
           </div>
@@ -61,10 +61,10 @@ const ServiceSEO = () => {
 
       <section className="py-16 px-4">
         <div className="max-w-3xl mx-auto rounded-3xl p-8" style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.18)' }}>
-          <h3 className="text-white font-bold text-xl mb-6 text-center">What makes our SEO different</h3>
+          <h3 className="text-genz-navy font-bold text-xl mb-6 text-center">What makes our SEO different</h3>
           <div className="grid sm:grid-cols-2 gap-3">
             {['White-hat techniques only','Industry-specific keyword targeting','Competitor gap analysis','Full technical SEO audit','Transparent monthly reporting','Long-term growth focus'].map(f=>(
-              <div key={f} className="flex items-start gap-2.5 text-white/65 text-sm">
+              <div key={f} className="flex items-start gap-2.5 text-genz-muted text-sm">
                 <CheckCircle size={14} style={{ color:'#22d3ee', flexShrink:0 }} className="mt-0.5" /> {f}
               </div>
             ))}
