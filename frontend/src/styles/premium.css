@@ -107,7 +107,7 @@
 
 /* premium gradient button */
 .btn-grad {
-  background: linear-gradient(135deg, #2563EB 0%, #06B6D4 100%);
+  background: var(--gradient-cta);
   color: #fff;
   box-shadow: 0 14px 30px -10px rgba(37,99,235,0.55);
   transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s, filter 0.18s;

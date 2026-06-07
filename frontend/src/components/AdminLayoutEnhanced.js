@@ -62,7 +62,7 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   const SidebarContent = () => (
     <div className="flex flex-col h-full"
-         style={{ background: 'linear-gradient(180deg, #071B33 0%, #0B2747 100%)', borderRight: '1px solid rgba(6,182,212,0.14)' }}>
+         style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
       <div className="h-[68px] flex flex-col justify-center px-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
         <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-2" aria-label="Admin dashboard">
           <BrandLogo size="sm" />
@@ -125,7 +125,7 @@ const AdminLayoutEnhanced = ({ children }) => {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--brand-soft)' }}>
+    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
       {/* Desktop sidebar */}
       <div className="hidden lg:flex w-56 flex-shrink-0">
         <SidebarContent />
@@ -189,8 +189,8 @@ export default AdminLayoutEnhanced;
 // EXPORTED ADMIN THEME CONSTANTS (used by admin pages) — light surfaces
 // ============================================================================
 export const ADMIN_CARD_VARIANTS = {
-  default:  'bg-white border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.06)]',
-  elevated: 'bg-white border border-genz-border shadow-[0_18px_45px_rgba(7,27,51,0.10)]',
+  default:  'ds-card',
+  elevated: 'ds-card-elevated',
   teal:     'bg-cyan-50 border border-cyan-200',
   blue:     'bg-blue-50 border border-blue-200',
   green:    'bg-green-50 border border-green-200',

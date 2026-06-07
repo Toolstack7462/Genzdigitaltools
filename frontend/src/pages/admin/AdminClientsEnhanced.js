@@ -104,19 +104,19 @@ const AdminClientsEnhanced = () => {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-3xl sm:text-4xl font-bold text-genz-navy mb-2 flex items-center gap-3">
-              <UserPlus className="text-genz-teal" size={32} />
+            <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-genz-navy mb-1.5 flex items-center gap-2.5">
+              <span className="ds-icon-grad w-10 h-10 rounded-xl flex items-center justify-center"><UserPlus size={20} /></span>
               Client Management
             </h1>
             <p className="text-genz-muted">Manage client accounts and access</p>
           </div>
           <button
             onClick={() => navigate('/admin/clients/new')}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all hover:scale-105"
+            className="btn-grad flex items-center gap-2 px-5 py-3 rounded-[14px] text-[15px] font-bold"
             data-testid="create-client-btn"
           >
-            <Plus size={20} />
-            <span className="font-medium">Add Client</span>
+            <Plus size={18} />
+            <span>Add Client</span>
           </button>
         </div>
         
@@ -149,15 +149,15 @@ const AdminClientsEnhanced = () => {
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="status-filter"
             >
-              <option value="" className="bg-[#1a1a22] text-genz-navy">All Status</option>
-              <option value="active" className="bg-[#1a1a22] text-genz-navy">Active</option>
-              <option value="disabled" className="bg-[#1a1a22] text-genz-navy">Disabled</option>
+              <option value="">All Status</option>
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
             </select>
           </div>
-          
+
           <button
             onClick={handleSearch}
-            className="w-full md:w-auto px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all font-medium"
+            className="btn-grad w-full md:w-auto px-6 py-3 rounded-[14px] text-[15px] font-bold"
           >
             Apply Filters
           </button>
@@ -192,13 +192,13 @@ const AdminClientsEnhanced = () => {
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-green-500/20 to-cyan-500/20 rounded-2xl flex items-center justify-center">
               <Users size={40} className="text-genz-muted" />
             </div>
-            <h3 className="text-xl font-semibold text-genz-navy mb-2">No clients found</h3>
+            <h3 className="text-xl font-bold text-genz-navy mb-2">No clients found</h3>
             <p className="text-genz-muted mb-6">Get started by adding your first client</p>
             <button
               onClick={() => navigate('/admin/clients/new')}
-              className="px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all"
+              className="btn-grad inline-flex items-center gap-2 px-6 py-3 rounded-[14px] text-[15px] font-bold"
             >
-              Add Client
+              <Plus size={18} /> Add Client
             </button>
           </div>
         ) : (
@@ -207,41 +207,29 @@ const AdminClientsEnhanced = () => {
               {clients.map(client => (
                 <div
                   key={client._id}
-                  className={`group relative overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl ${
-                    client.status === 'active' 
-                      ? 'bg-gradient-to-br from-green-500/10 to-green-600/5 border border-green-500/30' 
-                      : 'bg-gradient-to-br from-red-500/10 to-red-600/5 border border-red-500/30'
-                  }`}
+                  className="ds-card ds-stat group relative overflow-hidden"
                   data-testid={`client-card-${client._id}`}
                 >
-                  {/* Glow effect on hover */}
-                  <div className={`absolute top-0 right-0 w-40 h-40 ${client.status === 'active' ? 'bg-green-500' : 'bg-red-500'} opacity-0 group-hover:opacity-10 rounded-full blur-3xl transition-opacity duration-500`} />
-                  
+                  {/* status top accent */}
+                  <div className="absolute inset-x-0 top-0 h-1" style={{ background: client.status === 'active' ? 'linear-gradient(90deg,#16A34A,#06B6D4)' : 'linear-gradient(90deg,#EF4444,#f59e0b)' }} />
+
                   <div className="relative p-6">
                     <div className="flex items-start gap-4 mb-4">
-                      <div className="w-16 h-16 bg-gradient-to-br from-genz-teal to-genz-dark-teal rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg shadow-genz-teal/25">
-                        <span className="text-genz-navy font-bold text-2xl">
-                          {client.fullName?.charAt(0) || '?'}
-                        </span>
+                      <div className="w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0 text-white font-bold text-xl"
+                           style={{ background: 'var(--gradient-cta)', boxShadow: '0 8px 18px -8px rgba(37,99,235,0.6)' }}>
+                        {client.fullName?.charAt(0) || '?'}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <h3 className="text-lg font-bold text-genz-navy mb-1 truncate group-hover:text-genz-teal transition-colors">
+                        <h3 className="text-[17px] font-bold text-genz-navy mb-1 truncate group-hover:text-genz-blue transition-colors">
                           {client.fullName}
                         </h3>
                         <p className="text-sm text-genz-muted truncate">{client.email}</p>
                         <div className="flex items-center gap-2 mt-2">
-                          <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                            client.status === 'active' 
-                              ? 'bg-green-500/20 text-green-500' 
-                              : 'bg-red-500/20 text-red-500'
-                          }`}>
-                            {client.status}
+                          <span className={`ds-badge ${client.status === 'active' ? 'ds-badge-success' : 'ds-badge-danger'}`}>
+                            <span className="dot" /> {client.status}
                           </span>
                           {client.isDeviceLocked && (
-                            <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-500/20 text-blue-500 flex items-center gap-1">
-                              <Smartphone size={12} />
-                              Device Locked
-                            </span>
+                            <span className="ds-badge ds-badge-info"><Smartphone size={11} /> Device Locked</span>
                           )}
                         </div>
                       </div>

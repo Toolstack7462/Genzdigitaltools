@@ -371,7 +371,7 @@ const ClientDashboardEnhanced = () => {
               { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', color: '#06B6D4' },
             ];
             return cards.map(({ icon: Icon, kind, value, label, color, badge }) => (
-              <div key={label} className="ds-stat bg-white rounded-[22px] border border-genz-border p-5 shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+              <div key={label} className="ds-card ds-stat p-5">
                 <div className="flex items-center justify-between mb-4">
                   <span className="w-11 h-11 rounded-xl flex items-center justify-center"
                         style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>

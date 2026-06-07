@@ -33,8 +33,8 @@ export const getCategoryGradient = (category) =>
 
 // Light, consistent dashboard card surfaces.
 export const CARD_VARIANTS = {
-  default:  'bg-white border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.06)]',
-  elevated: 'bg-white border border-genz-border shadow-[0_18px_45px_rgba(7,27,51,0.10)]',
+  default:  'ds-card',
+  elevated: 'ds-card-elevated',
   teal:     'bg-cyan-50 border border-cyan-200',
   blue:     'bg-blue-50 border border-blue-200',
   green:    'bg-green-50 border border-green-200',
@@ -99,7 +99,7 @@ const ClientLayoutEnhanced = ({ children }) => {
 
   const Sidebar = ({ mobile = false }) => (
     <div className={`flex flex-col h-full ${mobile ? 'w-full' : 'w-64'}`}
-         style={{ background: 'linear-gradient(180deg, #071B33 0%, #0B2747 100%)', borderRight: '1px solid rgba(6,182,212,0.14)' }}>
+         style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
       {/* Logo */}
       <div className="h-[68px] flex items-center px-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
         <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} aria-label="Gen Z Digital Store dashboard">
@@ -159,7 +159,7 @@ const ClientLayoutEnhanced = ({ children }) => {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--brand-soft)' }}>
+    <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
       {/* Desktop Sidebar */}
       <div className="hidden lg:flex flex-shrink-0">
         <Sidebar />
@@ -227,7 +227,7 @@ const ClientLayoutEnhanced = ({ children }) => {
         </div>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-5 sm:p-6 lg:p-8" style={{ background: 'var(--brand-soft)' }}>
+        <main className="flex-1 overflow-y-auto p-5 sm:p-6 lg:p-8" style={{ background: 'var(--gradient-app)' }}>
           <div className="max-w-[1200px] mx-auto">
             {children}
           </div>

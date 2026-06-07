@@ -239,7 +239,7 @@ const AdminDashboardEnhanced = () => {
           {statCards.map((stat, i) => {
             const Icon = stat.icon;
             return (
-              <div key={i} className="ds-stat bg-white rounded-[22px] border border-genz-border p-5 shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+              <div key={i} className="ds-card ds-stat p-5">
                 <div className="flex items-start justify-between mb-4">
                   <span className="w-11 h-11 rounded-xl flex items-center justify-center"
                         style={{ background: `${stat.hex}14`, color: stat.hex, border: `1px solid ${stat.hex}26` }}>
@@ -262,7 +262,7 @@ const AdminDashboardEnhanced = () => {
               const Icon = action.icon;
               return (
                 <button key={i} onClick={action.action}
-                        className="ds-stat group bg-white rounded-[22px] border border-genz-border p-5 text-left shadow-[0_10px_30px_rgba(7,27,51,0.05)]">
+                        className="ds-card ds-stat group p-5 text-left">
                   <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-md`}>
                     <Icon size={22} className="text-white" />
                   </div>
@@ -281,8 +281,8 @@ const AdminDashboardEnhanced = () => {
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
 
           {/* Recent Members table */}
-          <div className="lg:col-span-3 bg-white rounded-[22px] border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.05)] overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-genz-border">
+          <div className="lg:col-span-3 ds-card overflow-hidden">
+            <div className="ds-panel-head flex items-center justify-between px-5 py-4">
               <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
                 <Users size={16} className="text-genz-blue" /> Recent Members
               </h2>
@@ -338,8 +338,8 @@ const AdminDashboardEnhanced = () => {
           </div>
 
           {/* Recent Activity feed */}
-          <div className="lg:col-span-2 bg-white rounded-[22px] border border-genz-border shadow-[0_10px_30px_rgba(7,27,51,0.05)] overflow-hidden">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-genz-border">
+          <div className="lg:col-span-2 ds-card overflow-hidden">
+            <div className="ds-panel-head flex items-center justify-between px-5 py-4">
               <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
                 <ActivityIcon size={16} className="text-genz-blue" /> Recent Activity
               </h2>

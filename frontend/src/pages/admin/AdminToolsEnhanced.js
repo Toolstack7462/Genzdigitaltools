@@ -77,19 +77,19 @@ const AdminToolsEnhanced = () => {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-3xl sm:text-4xl font-bold text-genz-navy mb-2 flex items-center gap-3">
-              <Sparkles className="text-genz-teal" size={32} />
+            <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-genz-navy mb-1.5 flex items-center gap-2.5">
+              <span className="ds-icon-grad w-10 h-10 rounded-xl flex items-center justify-center"><Sparkles size={20} /></span>
               Tools Management
             </h1>
             <p className="text-genz-muted">Manage your tool library</p>
           </div>
           <button
             onClick={() => navigate('/admin/tools/new')}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all hover:scale-105"
+            className="btn-grad flex items-center gap-2 px-5 py-3 rounded-[14px] text-[15px] font-bold"
             data-testid="create-tool-btn"
           >
-            <Plus size={20} />
-            <span className="font-medium">Create Tool</span>
+            <Plus size={18} />
+            <span>Create Tool</span>
           </button>
         </div>
         
@@ -122,9 +122,9 @@ const AdminToolsEnhanced = () => {
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="category-filter"
             >
-              <option value="" className="bg-[#1a1a22] text-genz-navy">All Categories</option>
+              <option value="">All Categories</option>
               {categories.map(cat => (
-                <option key={cat} value={cat} className="bg-[#1a1a22] text-genz-navy">{cat}</option>
+                <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
             
@@ -137,15 +137,15 @@ const AdminToolsEnhanced = () => {
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="status-filter"
             >
-              <option value="" className="bg-[#1a1a22] text-genz-navy">All Status</option>
-              <option value="active" className="bg-[#1a1a22] text-genz-navy">Active</option>
-              <option value="inactive" className="bg-[#1a1a22] text-genz-navy">Inactive</option>
+              <option value="">All Status</option>
+              <option value="active">Active</option>
+              <option value="inactive">Inactive</option>
             </select>
           </div>
           
           <button
             onClick={handleSearch}
-            className="w-full md:w-auto px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all font-medium"
+            className="btn-grad w-full md:w-auto px-6 py-3 rounded-[14px] text-[15px] font-bold"
           >
             Apply Filters
           </button>
@@ -179,13 +179,13 @@ const AdminToolsEnhanced = () => {
             <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-purple-500/20 to-blue-500/20 rounded-2xl flex items-center justify-center">
               <Package size={40} className="text-genz-muted" />
             </div>
-            <h3 className="text-xl font-semibold text-genz-navy mb-2">No tools found</h3>
+            <h3 className="text-xl font-bold text-genz-navy mb-2">No tools found</h3>
             <p className="text-genz-muted mb-6">Get started by creating your first tool</p>
             <button
               onClick={() => navigate('/admin/tools/new')}
-              className="px-6 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-genz-navy rounded-xl hover:shadow-lg hover:shadow-genz-teal/25 transition-all"
+              className="btn-grad inline-flex items-center gap-2 px-6 py-3 rounded-[14px] text-[15px] font-bold"
             >
-              Create Tool
+              <Plus size={18} /> Create Tool
             </button>
           </div>
         ) : (
@@ -196,22 +196,19 @@ const AdminToolsEnhanced = () => {
                 return (
                   <div
                     key={tool._id}
-                    className={`group relative overflow-hidden rounded-2xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl bg-gradient-to-br ${theme.bg} border ${theme.border}`}
+                    className="ds-card ds-stat group relative overflow-hidden"
                     data-testid={`tool-card-${tool._id}`}
                   >
-                    {/* Glow effect on hover */}
-                    <div className={`absolute top-0 right-0 w-40 h-40 bg-gradient-to-br ${theme.gradient} opacity-0 group-hover:opacity-20 rounded-full blur-3xl transition-opacity duration-500`} />
-                    
+                    <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${theme.gradient}`} />
+
                     <div className="relative p-6">
                       <div className="flex items-start justify-between mb-4">
-                        <div className={`w-12 h-12 bg-gradient-to-br ${theme.gradient} rounded-xl flex items-center justify-center shadow-lg`}>
-                          <Package size={24} className="text-genz-navy" />
+                        <div className={`w-12 h-12 bg-gradient-to-br ${theme.gradient} rounded-xl flex items-center justify-center shadow-md`}>
+                          <Package size={22} className="text-white" />
                         </div>
-                        <div className="flex gap-2">
-                          <span className={`px-3 py-1 ${theme.bg} ${theme.text} rounded-full text-xs font-medium`}>
-                            {tool.category}
-                          </span>
-                        </div>
+                        <span className={`px-3 py-1 ${theme.bg} ${theme.text} rounded-full text-xs font-semibold`}>
+                          {tool.category}
+                        </span>
                       </div>
                       
                       <h3 className="text-lg font-bold text-genz-navy mb-2 group-hover:text-genz-teal transition-colors">
@@ -222,12 +219,8 @@ const AdminToolsEnhanced = () => {
                       </p>
                       
                       <div className="flex items-center gap-3 mb-4">
-                        <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                          tool.status === 'active' 
-                            ? 'bg-green-500/20 text-green-500' 
-                            : 'bg-gray-500/20 text-gray-500'
-                        }`}>
-                          {tool.status}
+                        <span className={`ds-badge ${tool.status === 'active' ? 'ds-badge-success' : 'ds-badge-neutral'}`}>
+                          <span className="dot" /> {tool.status}
                         </span>
                         {tool.assignmentCount !== undefined && (
                           <div className="flex items-center gap-1 text-xs text-genz-muted">

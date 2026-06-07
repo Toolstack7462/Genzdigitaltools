@@ -21,6 +21,17 @@
     radial-gradient(circle at top left, rgba(6, 182, 212, 0.18), transparent 35%),
     radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 35%),
     linear-gradient(180deg, #ffffff 0%, #f6f9fc 100%);
+  /* deep navy -> blue -> teal for sidebars / dark panels */
+  --gradient-navy: linear-gradient(180deg, #071B33 0%, #0B2747 55%, #063A52 100%);
+  /* subtle cyan tint fading down — overlay on white cards so they aren't flat */
+  --gradient-card: linear-gradient(180deg, rgba(6, 182, 212, 0.07), rgba(255, 255, 255, 0) 46%);
+  /* soft brand radial wash for dashboard/app backgrounds */
+  --gradient-app:
+    radial-gradient(circle at top left, rgba(37, 99, 235, 0.07), transparent 30%),
+    radial-gradient(circle at top right, rgba(6, 182, 212, 0.08), transparent 32%),
+    #f6f9fc;
+  /* royal blue -> cyan -> teal CTA */
+  --gradient-cta: linear-gradient(135deg, #2563EB 0%, #06B6D4 55%, #14B8A6 100%);
 
   --shadow-light-card: 0 18px 45px rgba(7, 27, 51, 0.08);
   --shadow-premium-hover: 0 24px 70px rgba(6, 182, 212, 0.16);
@@ -135,7 +146,7 @@
 .gz-card {
   position: relative;
   display: block;
-  background: var(--brand-surface);
+  background: var(--gradient-card), var(--brand-surface);
   border: 1px solid var(--brand-border);
   border-radius: 24px;
   box-shadow: var(--shadow-light-card);
@@ -147,6 +158,12 @@
   transform: translateY(-4px);
   border-color: rgba(6, 182, 212, 0.35);
   box-shadow: var(--shadow-premium-hover);
+}
+/* gradient top accent bar (opt-in) */
+.gz-card-accent { overflow: hidden; }
+.gz-card-accent::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--gradient-brand); opacity: 0.9;
 }
 @media (max-width: 767px) {
   .gz-card { border-radius: 20px; }
