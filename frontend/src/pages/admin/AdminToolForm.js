@@ -2188,7 +2188,7 @@ const AdminToolForm = () => {
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-8 py-3 btn-grad rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="save-tool-btn"
             >
               <Save size={20} />

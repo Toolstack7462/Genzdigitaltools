@@ -305,7 +305,7 @@ const ClientDashboardEnhanced = () => {
   /* ─── Main Render ─ */
   return (
     <ClientLayoutEnhanced>
-      <div className="space-y-6">
+      <div className="space-y-5">
 
         {/* ── Expiry Warning Banner ── */}
         {showExpiryWarning && expiringTools.length > 0 && (
@@ -327,7 +327,7 @@ const ClientDashboardEnhanced = () => {
         )}
 
         {/* ── Welcome / Membership Banner ── */}
-        <div className="gz-panel-dark relative overflow-hidden p-6 sm:p-7">
+        <div className="gz-panel-dark relative overflow-hidden p-5 sm:p-6 rounded-[20px]">
           <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(40rem 20rem at 100% 0%, rgba(6,182,212,0.22), transparent 60%)' }} />
           <div className="relative flex items-start justify-between gap-4 flex-wrap">
             <div>

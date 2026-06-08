@@ -306,7 +306,7 @@ const AdminBulkAssign = () => {
                   onClick={() => handlePresetChange(days)}
                   className={`px-4 py-2 rounded-full text-sm transition-all ${
                     duration.preset === days
-                      ? 'bg-gradient-orange text-genz-navy'
+                      ? 'btn-grad'
                       : 'bg-genz-bg text-genz-muted hover:bg-genz-bg'
                   }`}
                 >
@@ -361,7 +361,7 @@ const AdminBulkAssign = () => {
             <button
               type="submit"
               disabled={saving || !selectedTool || selectedClients.length === 0}
-              className="flex items-center gap-2 px-8 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-8 py-3 btn-grad rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="bulk-assign-btn"
             >
               <Save size={20} />

@@ -120,13 +120,14 @@ const AdminClientForm = () => {
             <ArrowLeft size={20} />
             Back to Clients
           </button>
-          <h1 className="text-3xl font-bold text-genz-navy">
+          <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-genz-navy">
             {isEdit ? 'Edit Client' : 'Create Client'}
           </h1>
+          <p className="text-genz-muted mt-1">{isEdit ? 'Update this client account and access.' : 'Create a new client account and set their access.'}</p>
         </div>
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="bg-white border border-genz-border rounded-xl p-6 sm:p-8">
+        <form onSubmit={handleSubmit} className="ds-form-card p-6 sm:p-8">
           <div className="space-y-6">
             {/* Full Name */}
             <div>
@@ -248,11 +249,11 @@ const AdminClientForm = () => {
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="btn-grad flex items-center gap-2 px-6 py-3 rounded-[14px] text-[15px] font-bold disabled:opacity-50"
               data-testid="save-client-btn"
             >
-              <Save size={20} />
-              {saving ? 'Saving...' : (isEdit ? 'Update Client' : 'Create Client')}
+              <Save size={18} />
+              {saving ? 'Saving…' : (isEdit ? 'Update Client' : 'Create Client')}
             </button>
           </div>
         </form>

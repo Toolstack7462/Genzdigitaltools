@@ -3,6 +3,34 @@
    Lightweight CSS depth (no WebGL). Brand palette: navy / blue / cyan / teal.
    ===================================================================== */
 
+/* ---- Rich hero wash (visible brand glows on light) ------------------ */
+.hero-wash {
+  background:
+    radial-gradient(58rem 40rem at 78% -8%, rgba(6,182,212,0.22), transparent 55%),
+    radial-gradient(48rem 34rem at 8% -4%, rgba(37,99,235,0.18), transparent 52%),
+    radial-gradient(42rem 30rem at 95% 65%, rgba(20,184,166,0.14), transparent 55%),
+    linear-gradient(180deg, #ffffff 0%, #f3f8fc 100%);
+}
+
+/* gradient hairline border (mask technique) */
+.grad-border { position: relative; }
+.grad-border::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.5px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.55), rgba(6,182,212,0.45) 50%, rgba(20,184,166,0.35));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+}
+
+/* bolder glowing brand ribbon */
+.ribbon-bold { filter: drop-shadow(0 10px 30px rgba(6,182,212,0.45)) drop-shadow(0 4px 14px rgba(37,99,235,0.35)); }
+
+/* glass tile on dark band */
+.glass-on-dark {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.12);
+  backdrop-filter: blur(8px);
+}
+
 /* ---- Aurora / mesh background for hero + login ----------------------- */
 .aurora {
   position: absolute;

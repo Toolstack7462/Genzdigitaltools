@@ -126,7 +126,7 @@ const AdminBlog = () => {
           </div>
           <button
             onClick={() => navigate('/admin/blog/new')}
-            className="flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity"
+            className="flex items-center gap-2 px-6 py-3 btn-grad rounded-full font-medium hover:opacity-90 transition-opacity"
             data-testid="create-post-btn"
           >
             <Plus size={20} />
@@ -174,7 +174,7 @@ const AdminBlog = () => {
             {!searchTerm && (
               <button
                 onClick={() => navigate('/admin/blog/new')}
-                className="px-6 py-2 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90"
+                className="px-6 py-2 btn-grad rounded-full font-medium hover:opacity-90"
               >
                 Create Post
               </button>

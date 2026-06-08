@@ -327,7 +327,7 @@ const AdminContacts = () => {
                   <div className="mt-6">
                     <a
                       href={`mailto:${selectedContact.email}?subject=Re: ${selectedContact.subject}`}
-                      className="inline-flex items-center gap-2 px-6 py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity"
+                      className="inline-flex items-center gap-2 px-6 py-3 btn-grad rounded-full font-medium hover:opacity-90 transition-opacity"
                     >
                       <Mail size={18} />
                       Reply via Email

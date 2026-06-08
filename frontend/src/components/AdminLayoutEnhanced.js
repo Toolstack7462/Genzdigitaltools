@@ -175,7 +175,7 @@ const AdminLayoutEnhanced = ({ children }) => {
           <div className="w-6" />
         </div>
 
-        <main className="flex-1 overflow-y-auto p-5 sm:p-6" style={{ background: 'var(--brand-soft)' }}>
+        <main className="app-main flex-1 overflow-y-auto p-5 sm:p-6" style={{ background: 'var(--gradient-app)' }}>
           <div className="max-w-[1200px] mx-auto">{children}</div>
         </main>
       </div>
