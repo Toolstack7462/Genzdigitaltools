@@ -30,7 +30,11 @@ function sanitizeToolForClient(toolObj) {
 
 function daysUntil(date) {
   if (!date) return null;
-  const diff = new Date(date).getTime() - Date.now();
+  // Use the SAME inclusive end-of-day boundary the verification uses, so the
+  // displayed "expires in Nd" never disagrees with backend access checks.
+  const boundary = ToolAssignment.effectiveEndBoundary(date);
+  if (!boundary) return null;
+  const diff = boundary.getTime() - Date.now();
   return Math.ceil(diff / (24 * 60 * 60 * 1000));
 }
 
@@ -59,7 +63,7 @@ function normalizeClientTool(tool, assignment) {
     accessEndDate: endDate,
     daysUntilExpiry: endDate ? daysUntil(endDate) : null,
     durationDays: assignment?.durationDays,
-    status: endDate && new Date(endDate) < new Date() ? 'expired' : raw.status,
+    status: ToolAssignment.isAssignmentExpired({ endDate }) ? 'expired' : raw.status,
   };
 }
 
@@ -79,14 +83,21 @@ router.get('/', async (req, res) => {
     }).populate('toolId');
 
     const now = new Date();
-    let tools = assignments
-      .filter(a => {
-        if (!a.toolId || a.toolId.status !== 'active') return false;
-        if (a.startDate && a.startDate > now) return false;
-        if (a.endDate   && a.endDate   < now) return false;
-        return true;
-      })
-      .map(a => normalizeClientTool(a.toolId, a));
+    // Keep only valid (active, started, not-expired-by-end-of-day) assignments,
+    // then DEDUPE per tool keeping the one with the latest end boundary — so the
+    // card shows the same assignment verify-intent will later select.
+    const bestByTool = new Map();
+    for (const a of assignments) {
+      if (!a.toolId || a.toolId.status !== 'active') continue;
+      if (a.startDate && new Date(a.startDate) > now) continue;
+      if (ToolAssignment.isAssignmentExpired(a, now)) continue;
+      const key = String(a.toolId._id || a.toolId);
+      const prev = bestByTool.get(key);
+      const ab = ToolAssignment.effectiveEndBoundary(a.endDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+      const pb = prev ? (ToolAssignment.effectiveEndBoundary(prev.endDate)?.getTime() ?? Number.POSITIVE_INFINITY) : -1;
+      if (!prev || ab > pb) bestByTool.set(key, a);
+    }
+    let tools = Array.from(bestByTool.values()).map(a => normalizeClientTool(a.toolId, a));
 
     // FIX26: Server-side filters already applied via MySQL/MariaDB above — these are fallbacks
     if (search) {
@@ -134,20 +145,29 @@ router.post('/:toolId/open-intent', async (req, res) => {
       // Trust the authenticated session; do not double-block here.
     }
 
-    const assignment = await ToolAssignment.findOne({
-      clientId: req.userId,
-      toolId,
-      status: 'active'
-    }).populate('toolId');
+    // Pick the LATEST valid assignment (handles duplicates + end-of-day inclusivity).
+    const now = new Date();
+    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.userId, toolId);
 
     if (!assignment || !assignment.toolId) {
-      return res.status(403).json({ error: 'Tool not assigned' });
+      const hadAny = (candidates || []).length > 0;
+      console.log('[open-intent] no valid assignment', {
+        clientId: String(req.userId), toolId: String(toolId),
+        candidateCount: candidates?.length || 0,
+        candidates: (candidates || []).map(c => ({ assignmentId: String(c._id), endDate: c.endDate, status: c.status })),
+        serverNow: now.toISOString(),
+        result: hadAny ? 'expired' : 'not_assigned',
+      });
+      return res.status(403).json({ error: hadAny ? 'Tool access expired' : 'Tool not assigned' });
     }
 
-    const now = new Date();
-    if (assignment.toolId.status !== 'active') return res.status(403).json({ error: 'Tool inactive' });
-    if (assignment.startDate && assignment.startDate > now) return res.status(403).json({ error: 'Tool access not started yet' });
-    if (assignment.endDate && assignment.endDate < now) return res.status(403).json({ error: 'Tool access expired' });
+    console.log('[open-intent] assignment selected', {
+      clientId: String(req.userId), toolId: String(toolId),
+      assignmentId: String(assignment._id),
+      shownEndDate: assignment.endDate,
+      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
+      serverNow: now.toISOString(), result: 'valid',
+    });
 
     // OpenIntent is created by the authenticated dashboard session and consumed
     // by the extension. The dashboard and extension maintain different device

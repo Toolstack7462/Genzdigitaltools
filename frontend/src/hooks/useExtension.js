@@ -100,6 +100,8 @@ function stageMessage(stage, err) {
       return 'This secure access is linked to a different device. Please contact admin.';
     case 'intent_not_found':
       return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
+    case 'tool_access_expired':
+      return 'This tool assignment has expired or was revoked by admin.';
     default:
       return (err && err.message) ? err.message : 'Could not prepare secure access. Please refresh the dashboard and try again.';
   }
@@ -392,14 +394,15 @@ export function useExtension() {
       const msg = err.message || 'Unknown error';
       logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
       // Known background business stages arrive as Error(code) via the bridge.
-      // Map them FIRST — e.g. 'tool_domain_invalid'/'intent_device_mismatch'
-      // contain words ("invalid"/"mismatch") that must not be retried as auth.
-      const BUSINESS_STAGES = ['tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
+      // Map them FIRST and NEVER retry — e.g. 'tool_access_expired' contains
+      // "expired", and 'tool_domain_invalid'/'intent_device_mismatch' contain
+      // "invalid"/"mismatch", which must not be mistaken for a retryable auth error.
+      const BUSINESS_STAGES = ['tool_access_expired', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
       if (BUSINESS_STAGES.includes(msg)) {
         return { success: false, error: msg, message: stageMessage(msg, err) };
       }
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
-        return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
+        return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
       }
       // Intent token problems and auth/token expiry → reconnect with a FRESH
       // activation token AND a FRESH open-intent token, then retry ONCE. We never

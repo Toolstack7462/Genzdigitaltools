@@ -239,11 +239,11 @@ router.get('/tools', verifyExtensionToken, async (req, res) => {
     
     for (const assignment of assignments) {
       if (!assignment.toolId || assignment.toolId.status !== 'active') continue;
-      if (assignment.startDate && assignment.startDate > now) continue;
-      if (assignment.endDate && assignment.endDate < now) continue;
-      
+      if (assignment.startDate && new Date(assignment.startDate) > now) continue;
+      if (ToolAssignment.isAssignmentExpired(assignment, now)) continue; // end-of-day inclusive
+
       const tool = assignment.toolId;
-      
+
       // Build session bundle info (version only, not decrypted data)
       const sessionBundleInfo = tool.sessionBundle ? {
         version: tool.sessionBundle.version || 1,
@@ -344,9 +344,9 @@ router.get('/tools/versions', verifyExtensionToken, async (req, res) => {
     
     for (const assignment of assignments) {
       if (!assignment.toolId) continue;
-      if (assignment.startDate && assignment.startDate > now) continue;
-      if (assignment.endDate && assignment.endDate < now) continue;
-      
+      if (assignment.startDate && new Date(assignment.startDate) > now) continue;
+      if (ToolAssignment.isAssignmentExpired(assignment, now)) continue; // end-of-day inclusive
+
       versions[assignment.toolId._id] = {
         version: assignment.toolId.credentialVersion || 1,
         updatedAt: assignment.toolId.credentialUpdatedAt
@@ -376,13 +376,10 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       return res.status(400).json({ error: 'Invalid tool ID format' });
     }
 
-    // Verify assignment
-    const assignment = await ToolAssignment.findOne({
-      clientId: req.clientId,
-      toolId,
-      status: 'active'
-    }).populate('toolId');
-    
+    // Verify assignment — LATEST valid one (same selector as verify-intent and
+    // the dashboard; end-of-day inclusive; ignores expired duplicate rows).
+    const { assignment } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+
     if (!assignment) {
       await CredentialAccessLog.log({
         clientId: req.clientId,
@@ -390,7 +387,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         extensionTokenId: req.extensionTokenId,
         action: 'CREDENTIALS_FETCHED',
         success: false,
-        errorMessage: 'No assignment found',
+        errorMessage: 'No valid assignment found',
         deviceInfo: {
           userAgent: req.headers['user-agent'],
           ip: req.ip,
@@ -399,11 +396,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       });
       return res.status(403).json({ error: 'Tool not assigned to you' });
     }
-    
-    if (!assignment.isValid()) {
-      return res.status(403).json({ error: 'Assignment is not valid or has expired' });
-    }
-    
+
     const tool = assignment.toolId;
     
     if (!tool || tool.status !== 'active') {
@@ -936,21 +929,39 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
       return res.status(403).json({ error: reason, stage: reason, message: messages[reason] || messages.intent_not_found });
     }
 
-    // 2) Backend assignment check is NEVER skipped — tool must still be assigned,
-    //    active, and within its date window for THIS client.
-    const assignment = await ToolAssignment.findOne({
-      clientId: req.clientId,
-      toolId,
-      status: 'active'
-    }).populate('toolId');
+    // 2) Backend assignment check is NEVER skipped. Use the SAME selector the
+    //    dashboard uses: the LATEST valid active assignment for this client+tool,
+    //    with inclusive end-of-day expiry — so a date-only endDate stays valid all
+    //    day and duplicate rows never let an expired one win.
     const now = new Date();
-    if (!assignment || !assignment.toolId || assignment.toolId.status !== 'active' ||
-        (assignment.startDate && assignment.startDate > now) ||
-        (assignment.endDate && assignment.endDate < now)) {
-      // Do NOT consume the token — the assignment failed, so the still-valid
-      // token can be reused after admin restores access.
+    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+
+    if (!assignment) {
+      const hadAny = (candidates || []).length > 0;
+      // Safe debug — ids, dates, server time, result; NO cookies/tokens/secrets.
+      console.log('[verify-intent] no valid assignment', {
+        clientId: String(req.clientId), toolId: String(toolId),
+        candidateCount: candidates?.length || 0,
+        candidates: (candidates || []).map(c => ({
+          assignmentId: String(c._id), endDate: c.endDate,
+          usedEndBoundary: ToolAssignment.effectiveEndBoundary(c.endDate)?.toISOString() || null,
+          status: c.status,
+        })),
+        serverNow: now.toISOString(),
+        result: hadAny ? 'tool_access_expired' : 'not_assigned',
+      });
+      // Do NOT consume the token — assignment failed; the still-valid token can be
+      // reused once admin restores access.
       return res.status(403).json({ error: 'Tool access expired or revoked', stage: 'tool_access_expired' });
     }
+
+    console.log('[verify-intent] assignment OK', {
+      clientId: String(req.clientId), toolId: String(toolId),
+      assignmentId: String(assignment._id),
+      shownEndDate: assignment.endDate,
+      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
+      serverNow: now.toISOString(), result: 'valid',
+    });
 
     // 3) ONLY now (token valid + assignment valid) mark the one-time intent
     //    consumed — the extension immediately fetches the latest session bundle
