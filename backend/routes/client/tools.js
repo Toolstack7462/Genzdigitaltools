@@ -156,11 +156,11 @@ router.post('/:toolId/open-intent', async (req, res) => {
     // while the extension token validates the extension device separately.
     const issued = await OpenIntent.issue({
       clientId: req.userId,
-      toolId,
+      toolId: String(toolId),
       deviceIdHash: null,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      ttlMs: 2 * 60 * 1000,
+      ttlMs: 5 * 60 * 1000, // 5-minute window — ample for connect + verify
     });
 
     await ActivityLog.log('CLIENT', req.userId, 'TOOL_OPEN_INTENT', {

@@ -92,6 +92,14 @@ function stageMessage(stage, err) {
       return 'The latest session cookies could not be applied for this tool. Please contact admin.';
     case 'tool_domain_invalid':
       return 'This tool has no valid target URL configured. Please contact admin.';
+    case 'intent_expired':
+      return 'Your secure access token expired. Please click Access again.';
+    case 'intent_consumed':
+      return 'That secure access token was already used. Please click Access again.';
+    case 'intent_device_mismatch':
+      return 'This secure access is linked to a different device. Please contact admin.';
+    case 'intent_not_found':
+      return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
     default:
       return (err && err.message) ? err.message : 'Could not prepare secure access. Please refresh the dashboard and try again.';
   }
@@ -299,7 +307,10 @@ export function useExtension() {
     };
   }, [bridgeReady, connectExtension, refreshStatus]);
 
-  const openTool = useCallback(async (toolId) => {
+  const openTool = useCallback(async (rawToolId) => {
+    // Normalize toolId to a string up front (backend + extension compare as string).
+    const toolId = (rawToolId === undefined || rawToolId === null) ? '' : String(rawToolId);
+    if (!toolId) return { success: false, error: 'tool_domain_invalid', message: stageMessage('tool_domain_invalid') };
     if (!bridgeReady && !getBridgeMarker()) {
       return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
     }
@@ -381,28 +392,34 @@ export function useExtension() {
       const msg = err.message || 'Unknown error';
       logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
       // Known background business stages arrive as Error(code) via the bridge.
-      // Map them FIRST — e.g. 'tool_domain_invalid' contains "invalid" and must
-      // not be mistaken for an auth error below.
-      const BUSINESS_STAGES = ['tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed'];
+      // Map them FIRST — e.g. 'tool_domain_invalid'/'intent_device_mismatch'
+      // contain words ("invalid"/"mismatch") that must not be retried as auth.
+      const BUSINESS_STAGES = ['tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
       if (BUSINESS_STAGES.includes(msg)) {
         return { success: false, error: msg, message: stageMessage(msg, err) };
       }
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
       }
-      if (/auth_expired|token|authorization|expired|401|invalid|reauth/i.test(msg)) {
+      // Intent token problems and auth/token expiry → reconnect with a FRESH
+      // activation token AND a FRESH open-intent token, then retry ONCE. We never
+      // reuse the failed/consumed intent token.
+      const intentRetryable = /^intent_(expired|consumed|not_found)$/.test(msg);
+      if (intentRetryable || /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(msg)) {
         try {
           logStage('stale_token_retry', { toolId, trigger: msg });
-          await connectExtension({}, { forceReauth: true });
-          const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
-          const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
+          await connectExtension({}, { forceReauth: true });                       // fresh activation token
+          const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() }); // fresh open-intent token
+          const retryToken = retryIntent.data.openIntentToken || retryIntent.data.intentToken;
+          if (!retryToken) return { success: false, error: 'open_intent_failed', message: stageMessage('open_intent_failed') };
           const retryResult = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
           logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
           return retryResult;
         } catch (retryErr) {
           // Surface the EXACT stage that failed during reconnect, not a generic string.
-          const stage = retryErr.stage || 'extension_reconnect_failed';
-          logStage('stale_token_retry:fail', { toolId, stage, error: retryErr.message });
+          const rmsg = retryErr.message || '';
+          const stage = retryErr.stage || (/^intent_/.test(rmsg) ? rmsg : 'extension_reconnect_failed');
+          logStage('stale_token_retry:fail', { toolId, stage, error: rmsg });
           return { success: false, error: stage, message: stageMessage(stage, retryErr) };
         }
       }

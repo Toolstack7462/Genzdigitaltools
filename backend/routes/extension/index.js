@@ -872,11 +872,11 @@ router.post('/open-intent', verifyExtensionToken, async (req, res) => {
 
     const issued = await OpenIntent.issue({
       clientId: req.clientId,
-      toolId,
+      toolId: String(toolId),
       deviceIdHash: req.extensionDeviceIdHash || null,
       ip: req.ip,
       userAgent: req.headers['user-agent'],
-      ttlMs: 2 * 60 * 1000,
+      ttlMs: 5 * 60 * 1000,
     });
 
     await ActivityLog.log('CLIENT', req.clientId, 'TOOL_OPEN_INTENT', {
@@ -903,26 +903,35 @@ router.post('/open-intent', verifyExtensionToken, async (req, res) => {
 // by an authenticated website session and not forged by a website page.
 router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
   try {
-    const { intentToken, toolId } = req.body;
+    const { intentToken } = req.body;
+    // Normalize toolId to a string on the backend too (it may arrive as a number).
+    const toolId = req.body.toolId != null ? String(req.body.toolId) : null;
     if (!intentToken || !toolId) {
-      return res.status(400).json({ error: 'intentToken and toolId required' });
+      return res.status(400).json({ error: 'intentToken and toolId required', stage: 'intent_not_found' });
     }
 
     // Dashboard-created open intents are intentionally NOT bound to the
-    // extension device id. The dashboard session already validates the client
-    // device when creating the intent; the extension token separately validates
-    // the extension device before this route is reached. Passing the extension
-    // device hash here can falsely reject valid intents when website and
-    // extension have different device ids.
-    const intent = await OpenIntent.consume({
+    // extension device id (soft mode). The dashboard session already validates
+    // the client device when creating the intent; the extension token separately
+    // validates the extension device before this route is reached. Passing the
+    // extension device hash here can falsely reject valid intents when website
+    // and extension have different device ids.
+    const result = await OpenIntent.consume({
       clientId: req.clientId,
       toolId,
       token: intentToken,
       deviceIdHash: null,
     });
 
-    if (!intent) {
-      return res.status(403).json({ error: 'Intent token invalid, expired, consumed, or device-mismatched' });
+    if (!result.intent) {
+      const reason = result.reason || 'intent_not_found';
+      const messages = {
+        intent_expired:        'Secure access token expired. Click Access again.',
+        intent_consumed:       'Secure access token was already used. Click Access again.',
+        intent_device_mismatch:'Secure access is linked to a different device. Contact admin.',
+        intent_not_found:      'Secure access token could not be verified.',
+      };
+      return res.status(403).json({ error: reason, stage: reason, message: messages[reason] || messages.intent_not_found });
     }
 
     // Verify assignment and tool are still valid at the time the extension opens it.
@@ -935,7 +944,7 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
     if (!assignment || !assignment.toolId || assignment.toolId.status !== 'active' ||
         (assignment.startDate && assignment.startDate > now) ||
         (assignment.endDate && assignment.endDate < now)) {
-      return res.status(403).json({ error: 'Tool access expired or revoked' });
+      return res.status(403).json({ error: 'Tool access expired or revoked', stage: 'tool_access_expired' });
     }
 
     return res.json({ success: true, toolId, verified: true });

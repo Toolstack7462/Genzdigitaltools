@@ -954,11 +954,15 @@ async function _handleOpenToolInner(payload) {
       body: JSON.stringify({ intentToken, toolId: toolIdStr }),
     });
     if (!verifyResult.verified) {
-      return { success: false, error: 'Intent verification failed' };
+      logger.warn('Intent not verified', { toolId: toolIdStr, stage: 'intent_not_found' });
+      return { success: false, error: 'intent_not_found', stage: 'intent_not_found', message: 'Secure access token could not be verified.' };
     }
+    logger.info('Intent verified', { toolId: toolIdStr, stage: 'verify_intent_ok' });
   } catch (err) {
-    logger.warn('Intent verification error', { error: err.message });
-    return { success: false, error: 'Intent verification failed: ' + err.message };
+    // apiRequest throws with err.payload = backend JSON ({ error, stage, message }).
+    const stage = err?.payload?.stage || err?.payload?.error || (err?.status === 401 ? 'extension_did_not_respond' : 'intent_not_found');
+    logger.warn('Intent verification failed', { toolId: toolIdStr, stage });
+    return { success: false, error: stage, stage, message: err?.payload?.message || 'Could not verify secure access for this tool.' };
   }
 
   // ── 2. Duplicate-open lock (3-second debounce) ────────────────────────────
