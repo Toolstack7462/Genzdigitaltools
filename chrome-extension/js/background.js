@@ -92,14 +92,28 @@ async function digestSha256(value) {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Normalize a stored API base to the ORIGIN only so we never duplicate the
+// /api/crm path. Accepts any of:
+//   https://api.genzdigitalstore.com
+//   https://api.genzdigitalstore.com/
+//   https://api.genzdigitalstore.com/api/crm
+//   https://api.genzdigitalstore.com/api/crm/extension
+function normalizeApiBase(rawUrl) {
+  let base = String(rawUrl || '').trim().replace(/\/+$/, '');
+  base = base.replace(/\/api\/crm(\/extension)?$/i, '');
+  return base.replace(/\/+$/, '');
+}
+
 async function apiRequest(endpoint, options = {}) {
   const data = await getStorage(['apiUrl', 'extensionToken']);
-  
+
   if (!data.apiUrl || !data.extensionToken) {
     throw new Error('Not authenticated');
   }
-  
-  const url = `${data.apiUrl}/api/crm/extension${endpoint}`;
+
+  // Defensive: an older install may have stored apiUrl WITH /api/crm appended.
+  const base = normalizeApiBase(data.apiUrl);
+  const url = `${base}/api/crm/extension${endpoint}`;
   const deviceId = await getOrCreateDeviceId();
   const headers = {
     'Content-Type': 'application/json',
@@ -920,20 +934,24 @@ async function handleOpenTool(payload) {
 }
 
 async function _handleOpenToolInner(payload) {
-  const { toolId, openIntentToken, forceFreshSession = true } = payload || {};
+  const { toolId, forceFreshSession = true } = payload || {};
+  // Support BOTH intent-token field names the dashboard may send.
+  const intentToken = payload?.openIntentToken || payload?.intentToken;
 
-  if (!toolId || typeof toolId !== 'string') {
+  // toolId may arrive as a number or string — normalize and compare as string.
+  if (toolId === undefined || toolId === null || String(toolId).length === 0) {
     return { success: false, error: 'toolId required' };
   }
+  const toolIdStr = String(toolId);
 
   // ── 1. Verify intent token with backend ──────────────────────────────────
-  if (!openIntentToken || typeof openIntentToken !== 'string') {
+  if (!intentToken || typeof intentToken !== 'string') {
     return { success: false, error: 'openIntentToken required' };
   }
   try {
     const verifyResult = await apiRequest('/verify-intent', {
       method: 'POST',
-      body: JSON.stringify({ intentToken: openIntentToken, toolId }),
+      body: JSON.stringify({ intentToken, toolId: toolIdStr }),
     });
     if (!verifyResult.verified) {
       return { success: false, error: 'Intent verification failed' };
@@ -953,23 +971,26 @@ async function _handleOpenToolInner(payload) {
   // Auto-clear lock after 15 seconds
   setTimeout(() => openIntentLock.delete(toolId), 15000);
 
-  // ── 3. Load tool info ─────────────────────────────────────────────────────
+  // ── 3. Load tool info (compare ids as strings — id may be number or string) ─
   let stored = await getStorage(['tools']);
-  let tool = (stored.tools || []).find(t => t.id === toolId);
+  let tool = (stored.tools || []).find(t => String(t.id) === toolIdStr);
   if (!tool) {
-    logger.info('Tool not found in cache; refreshing tool list', { toolId });
+    logger.info('Tool not found in cache; refreshing tool list', { toolId: toolIdStr });
     await checkForUpdates();
     stored = await getStorage(['tools']);
-    tool = (stored.tools || []).find(t => t.id === toolId);
+    tool = (stored.tools || []).find(t => String(t.id) === toolIdStr);
   }
   if (!tool) {
     openIntentLock.delete(toolId);
     return { success: false, error: 'tool_not_synced', message: 'Tool not found. Please refresh the dashboard and try again.' };
   }
 
-  const targetUrl = tool.targetUrl;
+  // Normalize the tool target URL from any of the supported field names.
+  const targetUrl = tool.targetUrl || tool.target_url || tool.url || tool.toolUrl;
   if (!targetUrl) {
-    return { success: false, error: 'Tool has no targetUrl configured' };
+    logger.warn('Tool has no valid target URL', { toolId: toolIdStr, stage: 'tool_domain_invalid' });
+    openIntentLock.delete(toolId);
+    return { success: false, error: 'tool_domain_invalid', stage: 'tool_domain_invalid', message: 'This tool has no valid target URL configured. Please contact admin.' };
   }
 
   // ── 4. Check host permission ───────────────────────────────────────────────
@@ -1020,30 +1041,56 @@ async function _handleOpenToolInner(payload) {
   const hasCreds         = !!(creds && credType !== 'none');
   const willApplyAuth    = hasCreds || hasBundle;
 
-  logger.info('Opening tool', { toolId, credType, stage: 'prepare', hasBundleCookies, hasBundleStorage, hasCreds });
+  // Safe debug: latest admin session-bundle composition — COUNTS ONLY, never
+  // cookie values, tokens, or any secret.
+  let cookieDomain = tool.domain || '';
+  try { cookieDomain = new URL(targetUrl).hostname; } catch (_) {}
+  const bundleDebug = {
+    stage: 'session_bundle',
+    domain: cookieDomain,
+    cookies: bundle?.cookies?.length || 0,
+    localStorage: bundle?.localStorage ? Object.keys(bundle.localStorage).length : 0,
+    sessionStorage: bundle?.sessionStorage ? Object.keys(bundle.sessionStorage).length : 0,
+    version: bundle?.version || null,
+  };
+  logger.info('Opening tool', { toolId: toolIdStr, credType, hasBundleCookies, hasBundleStorage, hasCreds });
+  logger.info('Latest session bundle received', { toolId: toolIdStr, ...bundleDebug });
 
-  // ── 6. Clear old cookies, then inject the NEW cookies BEFORE navigation ────
-  // Cookies are set at the cookie-store/domain level (no tab needed), so the
-  // first load of the target tab is already authenticated with the latest
-  // session. Old cookies for this domain are cleared first (only when we are
-  // actually applying auth — a direct_open tool is never logged out).
+  // Admin configured a session for this tool (sync metadata says hasCookies),
+  // but the decrypted bundle came back empty → session_bundle_missing.
+  if (tool.sessionBundle?.hasCookies && bundleDebug.cookies === 0 && !hasBundleStorage && !hasCreds) {
+    logger.warn('Expected session bundle missing', { toolId: toolIdStr, stage: 'session_bundle_missing', domain: cookieDomain });
+    openIntentLock.delete(toolId);
+    return { success: false, error: 'session_bundle_missing', stage: 'session_bundle_missing', message: 'The latest session for this tool is not available yet. Please contact admin.' };
+  }
+
+  // ── 6. Clear old (target-domain only) cookies, then inject the NEW cookies ──
+  // BEFORE navigation. Cookies are set at the cookie-store/domain level (no tab
+  // needed), so the first load of the target tab is already authenticated.
+  // A direct_open tool (no creds/bundle) is never cleared/logged out.
   if (forceFreshSession && willApplyAuth) {
     await clearCookiesForDomain(targetUrl);
-    logger.info('Cleared old cookies for domain', { toolId, stage: 'clear_cookies' });
+    logger.info('Cleared old cookies for domain', { toolId: toolIdStr, stage: 'clear_cookies', domain: cookieDomain });
   } else if (tool.extensionSettings?.clearExistingCookies && hasBundleCookies) {
     await clearCookiesForDomain(targetUrl);
   }
   let preInjectedCookies = false;
   if (hasBundleCookies) {
+    let ck = null;
     try {
-      const ck = await injectCookies(targetUrl, bundle.cookies);
-      preInjectedCookies = !!(ck?.success || ck?.set > 0);
-      logger.info('Injected new cookies (pre-navigation)', { toolId, stage: 'inject_cookies', set: ck?.set || 0, failed: ck?.failed || 0 });
-      if (!preInjectedCookies) {
-        logger.warn('Cookie injection set 0 cookies', { toolId, failures: ck?.failures?.length || 0 });
-      }
+      ck = await injectCookies(targetUrl, bundle.cookies);
     } catch (err) {
-      logger.warn('Pre-navigation cookie injection failed', { toolId, stage: 'inject_cookies', error: err.message });
+      logger.warn('Cookie injection threw', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, error: err.message });
+    }
+    const setCount = ck?.set || 0;
+    const failedCount = ck?.failed || 0;
+    preInjectedCookies = setCount > 0;
+    // Safe debug: set/failed counts + domain + stage (no cookie values).
+    logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount });
+    if (setCount === 0) {
+      // Latest session could not be applied — do NOT open a broken session.
+      openIntentLock.delete(toolId);
+      return { success: false, error: 'cookie_injection_failed', stage: 'inject_cookies', domain: cookieDomain, set: 0, failed: failedCount, message: 'The latest session cookies could not be applied for this tool. Please contact admin.' };
     }
   }
 
@@ -1513,7 +1560,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (forceReauth) {
             await clearExtensionAuthSession('dashboard_forced_reauth');
           }
-          const base = apiUrl.replace(/\/$/, '');
+          const base = normalizeApiBase(apiUrl);
           const url = activationToken
             ? `${base}/api/crm/extension/auth/activate`
             : `${base}/api/crm/extension/auth`;

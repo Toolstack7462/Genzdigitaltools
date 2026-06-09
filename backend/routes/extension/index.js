@@ -527,7 +527,19 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         // Continue without session bundle
       }
     }
-    
+
+    // Safe debug: confirm the LATEST admin session bundle is being returned to
+    // the extension — COUNTS ONLY, never cookie values, tokens, or secrets.
+    console.log('[extension/credentials] bundle for tool', String(tool._id), {
+      domain: tool.domain || null,
+      bundleVersion: sessionBundle?.version || null,
+      bundleUpdatedAt: tool.sessionBundle?.bundleUpdatedAt || null,
+      cookies: Array.isArray(sessionBundle?.cookies) ? sessionBundle.cookies.length : 0,
+      localStorage: sessionBundle?.localStorage ? Object.keys(sessionBundle.localStorage).length : 0,
+      sessionStorage: sessionBundle?.sessionStorage ? Object.keys(sessionBundle.sessionStorage).length : 0,
+      credentialType: credentials?.type || 'none',
+    });
+
     // Log successful access
     await CredentialAccessLog.log({
       clientId: req.clientId,

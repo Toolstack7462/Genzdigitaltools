@@ -1,14 +1,14 @@
 {
   "files": {
     "main.css": "/static/css/main.90675e5e.css",
-    "main.js": "/static/js/main.e3d22672.js",
+    "main.js": "/static/js/main.c4fbf931.js",
     "static/media/logo-genz-digital-store.png": "/static/media/logo-genz-digital-store.d40cfbc5b2753a55ffab.png",
     "index.html": "/index.html",
     "main.90675e5e.css.map": "/static/css/main.90675e5e.css.map",
-    "main.e3d22672.js.map": "/static/js/main.e3d22672.js.map"
+    "main.c4fbf931.js.map": "/static/js/main.c4fbf931.js.map"
   },
   "entrypoints": [
     "static/css/main.90675e5e.css",
-    "static/js/main.e3d22672.js"
+    "static/js/main.c4fbf931.js"
   ]
 }

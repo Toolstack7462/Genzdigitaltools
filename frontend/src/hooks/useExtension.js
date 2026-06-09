@@ -84,6 +84,14 @@ function stageMessage(stage, err) {
       return 'Secure access was rejected. Please refresh the dashboard and try again.';
     case 'extension_not_detected':
       return 'Extension not detected. Reload the extension, then refresh the dashboard.';
+    case 'open_intent_failed':
+      return 'Could not authorize this tool. Please refresh the dashboard and try again.';
+    case 'session_bundle_missing':
+      return 'The latest session for this tool is not available yet. Please contact admin.';
+    case 'cookie_injection_failed':
+      return 'The latest session cookies could not be applied for this tool. Please contact admin.';
+    case 'tool_domain_invalid':
+      return 'This tool has no valid target URL configured. Please contact admin.';
     default:
       return (err && err.message) ? err.message : 'Could not prepare secure access. Please refresh the dashboard and try again.';
   }
@@ -372,6 +380,13 @@ export function useExtension() {
     } catch (err) {
       const msg = err.message || 'Unknown error';
       logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
+      // Known background business stages arrive as Error(code) via the bridge.
+      // Map them FIRST — e.g. 'tool_domain_invalid' contains "invalid" and must
+      // not be mistaken for an auth error below.
+      const BUSINESS_STAGES = ['tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed'];
+      if (BUSINESS_STAGES.includes(msg)) {
+        return { success: false, error: msg, message: stageMessage(msg, err) };
+      }
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
       }
