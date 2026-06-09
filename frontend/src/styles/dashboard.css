@@ -130,3 +130,109 @@
 .ds-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
 .ds-scroll::-webkit-scrollbar-thumb { background: var(--brand-border); border-radius: 999px; }
 .ds-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* =====================================================================
+   PREMIUM DEEP-NAVY DASHBOARD CANVAS  (.app-main is the dark console)
+   Strategy: the canvas is a rich navy gradient; content cards stay BRIGHT
+   frosted glass. Bare text on the canvas is lightened, while text inside any
+   light surface is kept navy — so every page converts with zero JS changes.
+   ===================================================================== */
+
+/* faint dotted depth + keep content above it */
+.app-main { position: relative; }
+.app-main::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 28px 28px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, #000, transparent 78%);
+          mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, #000, transparent 78%);
+}
+.app-main > * { position: relative; z-index: 1; }
+
+/* ── 1. Lighten bare text sitting directly on the navy canvas ── */
+.app-main .text-genz-navy { color: #eaf2fb !important; }
+.app-main .text-genz-muted { color: #9fb6cf !important; }
+.app-main .text-genz-blue  { color: #6aa6ff !important; }
+
+/* ── 2. Re-assert dark text inside any LIGHT surface (cards/tints/fields) ──
+   Covers both nested text and text on the surface element itself. */
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-navy,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-navy { color: var(--brand-navy) !important; }
+
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-muted,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-muted { color: var(--brand-muted) !important; }
+
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-blue,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-blue { color: var(--brand-blue) !important; }
+
+/* form fields stay readable (navy text on the white frosted field) */
+.app-main input, .app-main select, .app-main textarea { color: var(--brand-navy) !important; }
+
+/* ── 3. Cards become BRIGHT compact glass that floats on the navy ── */
+.app-main .ds-card,
+.app-main .ds-card-elevated,
+.app-main .ds-form-card,
+.app-main .gz-card {
+  background: var(--ds-card-surface);
+  border: 1px solid var(--ds-card-ring);
+  border-radius: 16px;
+  box-shadow: var(--ds-card-shadow);
+}
+.app-main .ds-card-hover:hover,
+.app-main .ds-stat:hover,
+.app-main .gz-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(6, 182, 212, 0.55);
+  box-shadow: var(--ds-card-glow);
+}
+@media (max-width: 767px) {
+  .app-main .ds-card, .app-main .ds-card-elevated, .app-main .gz-card { border-radius: 14px; }
+}
+
+/* tinted "soft" variant cards get a faint frosted ring so they read on navy */
+.app-main :is(.bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,
+  .bg-yellow-50,.bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50) {
+  box-shadow: 0 18px 40px -26px rgba(2, 10, 25, 0.6);
+}
+
+/* ── 4. Premium dark-glass topbar helper ── */
+.ds-topbar {
+  background: var(--gradient-topbar) !important;
+  border-color: rgba(6, 182, 212, 0.16) !important;
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+/* ── 5. Refined sidebar logo lockup (bigger, "merged", soft glow) ── */
+.ds-logo-tile {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 16px; padding: 7px;
+  background: radial-gradient(circle at 50% 28%, rgba(6,182,212,0.22), rgba(255,255,255,0.04) 70%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 0 1px rgba(6,182,212,0.12) inset, 0 10px 26px -12px rgba(6,182,212,0.55);
+}
+.ds-logo-tile::after {
+  content: ""; position: absolute; inset: -30%; z-index: -1; border-radius: 50%;
+  background: radial-gradient(circle, rgba(6,182,212,0.4), transparent 62%);
+  filter: blur(14px); opacity: 0.7; pointer-events: none;
+}
+.ds-logo-tile img { filter: drop-shadow(0 4px 10px rgba(0,0,0,0.45)); }

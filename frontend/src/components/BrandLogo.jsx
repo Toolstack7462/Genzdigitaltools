@@ -17,19 +17,32 @@ const BrandLogo = ({
   className = '',
   imgClassName = '',
   ariaLabel = 'Gen Z Digital Store',
+  glow = false,   // soft brand halo + drop-shadow so the badge integrates on dark/glass surfaces
 }) => {
   const sizeClass = SIZE_CLASSES[size] || SIZE_CLASSES.md;
 
   return (
     <span
-      className={`inline-flex items-center ${className}`}
+      className={`relative inline-flex items-center justify-center ${className}`}
       role="img"
       aria-label={ariaLabel}
     >
+      {glow && (
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 rounded-full"
+          style={{
+            background: 'radial-gradient(circle, rgba(6,182,212,0.45), transparent 62%)',
+            filter: 'blur(14px)',
+            transform: 'scale(1.6)',
+          }}
+        />
+      )}
       <img
         src={logoPng}
         alt=""
         className={`${sizeClass} block object-contain select-none ${imgClassName}`}
+        style={glow ? { filter: 'drop-shadow(0 6px 16px rgba(7,27,51,0.45))' } : undefined}
         draggable="false"
       />
     </span>

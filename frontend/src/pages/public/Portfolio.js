@@ -29,10 +29,10 @@ const Portfolio = () => {
     <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
-        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(0,175,193,0.1),transparent 70%)' }} />
+        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(6,182,212,0.1),transparent 70%)' }} />
         <div ref={heroRef} className={`max-w-3xl mx-auto text-center reveal ${heroVisible ? 'visible' : ''}`}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-6 uppercase tracking-widest"
-            style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
+            style={{ borderColor: 'rgba(6,182,212,0.3)', background: 'rgba(6,182,212,0.08)' }}>
             <span className="glow-dot" /> Portfolio
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
@@ -53,11 +53,11 @@ const Portfolio = () => {
               onClick={() => setActive(f)}
               className={`px-4 py-2 rounded-full text-xs font-semibold transition-all ${
                 active === f
-                  ? 'text-genz-deep-navy'
+                  ? 'text-white'
                   : 'text-genz-muted hover:text-genz-muted'
               }`}
               style={active === f
-                ? { background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }
+                ? { background: 'var(--gradient-cta)' }
                 : { background: '#ffffff', border: '1px solid var(--brand-border)' }}
             >
               {f}
@@ -83,15 +83,15 @@ const Portfolio = () => {
       {/* Commission note */}
       <section className="py-12 px-4">
         <div className="max-w-2xl mx-auto text-center rounded-3xl p-8"
-          style={{ background: 'rgba(0,175,193,0.06)', border: '1px solid rgba(0,175,193,0.18)' }}>
+          style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.18)' }}>
           <h3 className="text-genz-navy font-bold text-lg mb-3">Want something like this for your brand?</h3>
           <p className="text-genz-muted text-sm mb-6">
             Every concept shown here is available as a commissioned project.
             Contact us to discuss your requirements and get a custom proposal.
           </p>
           <Link to="/contact"
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold text-genz-deep-navy transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-full text-sm font-semibold text-white transition-all hover:opacity-90"
+            style={{ background: 'var(--gradient-cta)' }}>
             Commission a project →
           </Link>
         </div>

@@ -101,9 +101,15 @@ const ClientLayoutEnhanced = ({ children }) => {
     <div className={`flex flex-col h-full ${mobile ? 'w-full' : 'w-64'}`}
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
       {/* Logo */}
-      <div className="h-[68px] flex items-center px-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
-        <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} aria-label="Gen Z Digital Store dashboard">
-          <BrandLogo size="sm" />
+      <div className="h-[78px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+        <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Gen Z Digital Store dashboard">
+          <span className="ds-logo-tile">
+            <BrandLogo size="md" />
+          </span>
+          <span className="flex flex-col leading-tight">
+            <span className="text-white font-bold text-[14px] tracking-tight">Gen Z Digital Store</span>
+            <span className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">Member Portal</span>
+          </span>
         </Link>
       </div>
 
@@ -195,33 +201,31 @@ const ClientLayoutEnhanced = ({ children }) => {
       {/* Main Content */}
       <div className="flex-1 flex flex-col overflow-hidden relative">
         {/* Desktop Topbar */}
-        <header className="hidden lg:flex items-center justify-between h-[68px] px-6 sm:px-8 border-b flex-shrink-0 z-20 bg-white"
-                style={{ borderColor: 'var(--brand-border)' }}>
+        <header className="ds-topbar hidden lg:flex items-center justify-between h-[68px] px-6 sm:px-8 border-b flex-shrink-0 z-20">
           <div>
-            <h1 className="font-heading text-genz-navy font-bold text-[20px] leading-tight">{pageMeta.title}</h1>
-            {pageMeta.sub && <p className="text-genz-muted text-[13px]">{pageMeta.sub}</p>}
+            <h1 className="font-heading text-white font-bold text-[20px] leading-tight">{pageMeta.title}</h1>
+            {pageMeta.sub && <p className="text-white/55 text-[13px]">{pageMeta.sub}</p>}
           </div>
           <div className="flex items-center gap-3">
             <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-               className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-emerald-600 border border-emerald-200 rounded-xl hover:bg-emerald-50 transition-all">
+               className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-emerald-300 border border-emerald-400/30 rounded-xl hover:bg-emerald-400/10 transition-all">
               <MessageCircle size={14} /> Support
             </a>
-            <Link to="/client/profile" className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-genz-bg transition-all" title="My profile">
+            <Link to="/client/profile" className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full hover:bg-white/5 transition-all" title="My profile">
               <span className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs text-white"
                     style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>{initials}</span>
-              <span className="text-genz-navy text-sm font-semibold max-w-[140px] truncate">{user?.fullName || 'Member'}</span>
+              <span className="text-white text-sm font-semibold max-w-[140px] truncate">{user?.fullName || 'Member'}</span>
             </Link>
           </div>
         </header>
 
         {/* Mobile Top Bar */}
-        <div className="lg:hidden flex items-center justify-between h-14 px-4 border-b flex-shrink-0 bg-white"
-             style={{ borderColor: 'var(--brand-border)' }}>
-          <button onClick={() => setSidebarOpen(true)} className="text-genz-navy/70 hover:text-genz-blue transition-colors" aria-label="Open menu">
+        <div className="ds-topbar lg:hidden flex items-center justify-between h-14 px-4 border-b flex-shrink-0">
+          <button onClick={() => setSidebarOpen(true)} className="text-white/70 hover:text-white transition-colors" aria-label="Open menu">
             <Menu size={22} />
           </button>
-          <BrandLogo size="sm" />
-          <Link to="/client/profile" className="text-genz-navy/70 hover:text-genz-blue transition-colors" aria-label="Profile">
+          <BrandLogo size="sm" glow />
+          <Link to="/client/profile" className="text-white/70 hover:text-white transition-colors" aria-label="Profile">
             <User size={20} />
           </Link>
         </div>

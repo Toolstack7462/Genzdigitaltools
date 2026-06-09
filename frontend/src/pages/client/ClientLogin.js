@@ -73,7 +73,7 @@ const ClientLogin = () => {
               <div className="glass-tint layer-back rounded-[28px] absolute inset-0" style={{ transform: 'translateZ(-70px) translate(30px,-16px)' }} />
               <div className="glass layer-mid relative rounded-[28px] p-7">
                 <div className="flex items-center gap-3 mb-6">
-                  <BrandLogo size="md" />
+                  <BrandLogo size="lg" glow />
                   <div>
                     <p className="text-[11px] font-bold uppercase tracking-[0.16em] text-genz-blue">Member Portal</p>
                     <h2 className="text-[17px] font-bold text-genz-navy leading-tight">Your premium workspace</h2>
@@ -107,7 +107,7 @@ const ClientLogin = () => {
         <div className="flex items-center justify-center p-5 sm:p-8">
           <motion.div {...fade(0.12)} className="w-full max-w-md">
             <div className="text-center mb-7">
-              <Link to="/" className="lg:hidden inline-block mb-5" aria-label="Gen Z Digital Store home"><BrandLogo size="xl" /></Link>
+              <Link to="/" className="lg:hidden inline-block mb-5" aria-label="Gen Z Digital Store home"><BrandLogo size="2xl" glow /></Link>
               <h1 className="font-heading text-[32px] sm:text-[36px] font-extrabold text-genz-navy mb-2 tracking-tight">Member Portal</h1>
               <p className="text-genz-muted text-[15px] max-w-sm mx-auto leading-relaxed">Securely access your premium tools, services, and client dashboard.</p>
             </div>

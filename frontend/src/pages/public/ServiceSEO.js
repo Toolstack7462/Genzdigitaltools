@@ -34,7 +34,7 @@ const ServiceSEO = () => {
             and turn visitors into customers — with measurable results.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90"
+            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"
             style={{ background: 'linear-gradient(135deg,#22d3ee,#0891b2)' }}>
             <MessageCircle size={15} /> Get an SEO Audit
           </a>

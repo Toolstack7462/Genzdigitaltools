@@ -23,10 +23,10 @@ const Services = () => {
       {/* Hero */}
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
-        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 70% 50% at 50% 0%,rgba(0,175,193,0.1),transparent 70%)' }} />
+        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 70% 50% at 50% 0%,rgba(6,182,212,0.1),transparent 70%)' }} />
         <div ref={ref} className={`max-w-3xl mx-auto text-center reveal ${visible ? 'visible' : ''}`}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-6 uppercase tracking-widest"
-            style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
+            style={{ borderColor: 'rgba(6,182,212,0.3)', background: 'rgba(6,182,212,0.08)' }}>
             <span className="glow-dot" /> What We Offer
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">

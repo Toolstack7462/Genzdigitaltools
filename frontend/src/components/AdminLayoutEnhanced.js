@@ -63,12 +63,16 @@ const AdminLayoutEnhanced = ({ children }) => {
   const SidebarContent = () => (
     <div className="flex flex-col h-full"
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
-      <div className="h-[68px] flex flex-col justify-center px-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
-        <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-2" aria-label="Admin dashboard">
-          <BrandLogo size="sm" />
-          <span className="flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider text-genz-cyan"
-                style={{ background: 'rgba(6,182,212,0.14)', border: '1px solid rgba(6,182,212,0.3)' }}>
-            <Shield size={9} /> Admin
+      <div className="h-[78px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+        <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Admin dashboard">
+          <span className="ds-logo-tile">
+            <BrandLogo size="md" />
+          </span>
+          <span className="flex flex-col leading-tight">
+            <span className="text-white font-bold text-[14px] tracking-tight">Gen Z Digital Store</span>
+            <span className="flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">
+              <Shield size={10} /> Admin Console
+            </span>
           </span>
         </Link>
       </div>
@@ -154,24 +158,22 @@ const AdminLayoutEnhanced = ({ children }) => {
       {/* Main */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Desktop topbar */}
-        <header className="hidden lg:flex items-center justify-between h-[68px] px-6 border-b flex-shrink-0 bg-white"
-                style={{ borderColor: 'var(--brand-border)' }}>
-          <h1 className="font-heading text-genz-navy font-bold text-[20px]">
+        <header className="ds-topbar hidden lg:flex items-center justify-between h-[68px] px-6 border-b flex-shrink-0">
+          <h1 className="font-heading text-white font-bold text-[20px]">
             {getAdminTitle(location.pathname)}
           </h1>
           <Link to="/" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-genz-muted border border-genz-border rounded-xl hover:text-genz-blue hover:border-genz-blue/40 transition-all">
+                className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-white/70 border border-white/15 rounded-xl hover:text-white hover:border-genz-cyan/50 hover:bg-white/5 transition-all">
             <ExternalLink size={14} /> View Site
           </Link>
         </header>
 
         {/* Mobile topbar */}
-        <div className="lg:hidden flex items-center justify-between px-4 h-14 border-b flex-shrink-0 bg-white"
-             style={{ borderColor: 'var(--brand-border)' }}>
-          <button onClick={() => setSidebarOpen(true)} className="text-genz-navy/70 hover:text-genz-blue" aria-label="Open menu">
+        <div className="ds-topbar lg:hidden flex items-center justify-between px-4 h-14 border-b flex-shrink-0">
+          <button onClick={() => setSidebarOpen(true)} className="text-white/70 hover:text-white" aria-label="Open menu">
             <Menu size={20} />
           </button>
-          <span className="text-genz-navy font-bold text-sm">{getAdminTitle(location.pathname)}</span>
+          <span className="text-white font-bold text-sm">{getAdminTitle(location.pathname)}</span>
           <div className="w-6" />
         </div>
 

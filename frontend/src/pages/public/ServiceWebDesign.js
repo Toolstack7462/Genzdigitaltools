@@ -23,10 +23,10 @@ const ServiceWebDesign = () => {
     <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       <section className="relative pt-32 pb-20 px-4 overflow-hidden">
         <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
-        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(0,175,193,0.13),transparent 70%)' }} />
+        <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(6,182,212,0.13),transparent 70%)' }} />
         <div ref={heroRef} className={`max-w-3xl mx-auto text-center reveal ${heroVisible ? 'visible' : ''}`}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-6 uppercase tracking-widest"
-            style={{ borderColor: 'rgba(0,175,193,0.3)', background: 'rgba(0,175,193,0.08)' }}>
+            style={{ borderColor: 'rgba(6,182,212,0.3)', background: 'rgba(6,182,212,0.08)' }}>
             <span className="glow-dot" /> Web Design & Development
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
@@ -37,8 +37,8 @@ const ServiceWebDesign = () => {
             represent your brand at its absolute best — built to convert.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
+            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"
+            style={{ background: 'var(--gradient-cta)' }}>
             <MessageCircle size={15} /> Discuss Your Website
           </a>
         </div>
@@ -71,7 +71,7 @@ const ServiceWebDesign = () => {
           <div className="flex flex-wrap justify-center gap-3">
             {TECH.map(t => (
               <span key={t} className="px-4 py-2 rounded-full text-sm font-medium text-genz-teal"
-                style={{ background: 'rgba(0,175,193,0.1)', border: '1px solid rgba(0,175,193,0.2)' }}>
+                style={{ background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.2)' }}>
                 {t}
               </span>
             ))}
@@ -81,7 +81,7 @@ const ServiceWebDesign = () => {
 
       {/* Standards */}
       <section className="py-16 px-4">
-        <div className="max-w-3xl mx-auto rounded-3xl p-8" style={{ background: 'rgba(0,175,193,0.06)', border: '1px solid rgba(0,175,193,0.18)' }}>
+        <div className="max-w-3xl mx-auto rounded-3xl p-8" style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.18)' }}>
           <h3 className="text-genz-navy font-bold text-xl mb-6 text-center">Every website we build includes</h3>
           <div className="grid sm:grid-cols-2 gap-3">
             {['Mobile-first responsive design','Smooth CSS/JS animations','SEO-optimised structure','Fast load times','Clean, maintainable code','Cross-browser compatibility','SSL-ready hosting setup','Post-launch support'].map(f=>(

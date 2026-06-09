@@ -35,7 +35,7 @@ const ServiceAppDev = () => {
             we build functional, scalable software tailored exactly to your requirements.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-deep-navy transition-all hover:opacity-90"
+            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"
             style={{ background: 'linear-gradient(135deg,#4ade80,#16a34a)' }}>
             <MessageCircle size={15} /> Discuss Your App Idea
           </a>
