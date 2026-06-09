@@ -371,20 +371,27 @@ export function useExtension() {
       return result;
     } catch (err) {
       const msg = err.message || 'Unknown error';
+      logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
       }
       if (/auth_expired|token|authorization|expired|401|invalid|reauth/i.test(msg)) {
         try {
+          logStage('stale_token_retry', { toolId, trigger: msg });
           await connectExtension({}, { forceReauth: true });
           const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
           const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-          return await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
-        } catch (_retryErr) {
-          return { success: false, error: 'extension_reconnect_failed', message: 'Could not prepare secure access. Please refresh the dashboard and try again.' };
+          const retryResult = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+          logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
+          return retryResult;
+        } catch (retryErr) {
+          // Surface the EXACT stage that failed during reconnect, not a generic string.
+          const stage = retryErr.stage || 'extension_reconnect_failed';
+          logStage('stale_token_retry:fail', { toolId, stage, error: retryErr.message });
+          return { success: false, error: stage, message: stageMessage(stage, retryErr) };
         }
       }
-      return { success: false, error: 'open_failed', message: 'Could not open tool. Please refresh the dashboard and try again.' };
+      return { success: false, error: 'open_failed', message: msg && !/network error|request failed/i.test(msg) ? `Could not open tool: ${msg}` : 'Could not open tool. Please refresh the dashboard and try again.' };
     } finally {
       openingRef.current.delete(toolId);
     }
