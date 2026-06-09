@@ -916,7 +916,9 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
     // validates the extension device before this route is reached. Passing the
     // extension device hash here can falsely reject valid intents when website
     // and extension have different device ids.
-    const result = await OpenIntent.consume({
+    // 1) Validate the one-time intent WITHOUT consuming it yet (soft device mode:
+    //    deviceIdHash null is allowed; mismatch only fails when both sides differ).
+    const result = await OpenIntent.validate({
       clientId: req.clientId,
       toolId,
       token: intentToken,
@@ -934,7 +936,8 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
       return res.status(403).json({ error: reason, stage: reason, message: messages[reason] || messages.intent_not_found });
     }
 
-    // Verify assignment and tool are still valid at the time the extension opens it.
+    // 2) Backend assignment check is NEVER skipped — tool must still be assigned,
+    //    active, and within its date window for THIS client.
     const assignment = await ToolAssignment.findOne({
       clientId: req.clientId,
       toolId,
@@ -944,8 +947,15 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
     if (!assignment || !assignment.toolId || assignment.toolId.status !== 'active' ||
         (assignment.startDate && assignment.startDate > now) ||
         (assignment.endDate && assignment.endDate < now)) {
+      // Do NOT consume the token — the assignment failed, so the still-valid
+      // token can be reused after admin restores access.
       return res.status(403).json({ error: 'Tool access expired or revoked', stage: 'tool_access_expired' });
     }
+
+    // 3) ONLY now (token valid + assignment valid) mark the one-time intent
+    //    consumed — the extension immediately fetches the latest session bundle
+    //    (assignment-gated) and injects target-domain cookies next.
+    await OpenIntent.markConsumed(result.intent);
 
     return res.json({ success: true, toolId, verified: true });
   } catch (err) {

@@ -24,15 +24,14 @@ const OpenIntent = createModel('OpenIntent', {
       });
       return { id: doc._id, token, expiresAt };
     },
-    // Returns { intent } on success, or { reason } with one of:
+    // Validate WITHOUT consuming. Returns { intent } on success, or { reason }:
     //   intent_not_found | intent_consumed | intent_expired | intent_device_mismatch
     // Look up by the UNIQUE token hash first, then validate the rest in JS with
     // string-normalized ids. This avoids any column type/representation mismatch
     // between the dashboard-created row (clientId = client JWT user._id, toolId
-    // from URL params) and the extension's consume query (clientId from the
-    // populated ExtensionToken, toolId from the request body). The intent is
-    // marked consumed ONLY after every check passes.
-    async consume({ clientId, toolId, token, deviceIdHash = null }) {
+    // from URL params) and the extension's query (clientId from the populated
+    // ExtensionToken, toolId from the request body).
+    async validate({ clientId, toolId, token, deviceIdHash = null }) {
       const tokenHash = this.hashToken(token);
       const intent = await this.findOne({ tokenHash }).sort({ createdAt: -1 });
       if (!intent) return { reason: 'intent_not_found' };
@@ -44,10 +43,26 @@ const OpenIntent = createModel('OpenIntent', {
       if (intent.deviceIdHash && deviceIdHash && String(intent.deviceIdHash) !== String(deviceIdHash)) {
         return { reason: 'intent_device_mismatch' };
       }
+      return { intent };
+    },
+
+    // Mark a previously-validated intent as consumed (one-time use). Called ONLY
+    // after the full server-side check chain (token validity + active assignment)
+    // has passed — so a revoked assignment never burns a still-valid token.
+    async markConsumed(intent) {
+      if (!intent) return;
       intent.consumedAt = new Date();
       intent.status = 'consumed';
       await intent.save();
-      return { intent };
+    },
+
+    // Convenience: validate + consume in one step (kept for any caller that
+    // wants atomic single-step semantics).
+    async consume(args) {
+      const res = await this.validate(args);
+      if (!res.intent) return res;
+      await this.markConsumed(res.intent);
+      return res;
     }
   }
 });
