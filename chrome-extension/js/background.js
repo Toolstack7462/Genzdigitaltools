@@ -989,27 +989,10 @@ async function _handleOpenToolInner(payload) {
     };
   }
 
-  // ── 5. Find or reuse existing tab ─────────────────────────────────────────
-  let targetTabId = null;
-  try {
-    const toolHostname = new URL(targetUrl).hostname;
-    const existingTabs = await chrome.tabs.query({ url: `*://${toolHostname}/*` });
-    if (existingTabs.length > 0) {
-      targetTabId = existingTabs[0].id;
-      // Bring the existing tab to focus
-      await chrome.tabs.update(targetTabId, { active: true });
-      await chrome.windows.update(existingTabs[0].windowId, { focused: true });
-      logger.debug('Reusing existing tab', { tabId: targetTabId, toolId });
-    }
-  } catch {}
-
-  if (!targetTabId) {
-    const newTab = await chrome.tabs.create({ url: targetUrl, active: true });
-    targetTabId = newTab.id;
-    logger.debug('Opened new tab', { tabId: targetTabId, toolId });
-  }
-
-  // ── 6. Fetch credentials from backend ─────────────────────────────────────
+  // ── 5. Fetch the LATEST admin-managed credentials / session bundle FIRST ──
+  // Fetched fresh on every open, so the newest admin-updated cookies/session are
+  // always used. We do this BEFORE opening the tab so cookies can be applied
+  // pre-navigation (inject new cookies, THEN open the target domain).
   let credentialData = null;
   try {
     credentialData = await getToolCredentials(toolId);
@@ -1028,15 +1011,64 @@ async function _handleOpenToolInner(payload) {
     }
   }
 
-  // ── 7. Determine and execute strategy ─────────────────────────────────────
-  const creds       = credentialData?.credentials;
-  const bundle      = credentialData?.sessionBundle;
-  const credType    = creds?.type || 'none';
-  const hasBundle   = !!(bundle?.cookies || bundle?.localStorage || bundle?.sessionStorage);
-  const hasCreds    = !!(creds && credType !== 'none');
+  const creds            = credentialData?.credentials;
+  const bundle           = credentialData?.sessionBundle;
+  const credType         = creds?.type || 'none';
+  const hasBundleCookies = !!(bundle?.cookies && bundle.cookies.length);
+  const hasBundleStorage = !!(bundle?.localStorage || bundle?.sessionStorage);
+  const hasBundle        = hasBundleCookies || hasBundleStorage;
+  const hasCreds         = !!(creds && credType !== 'none');
+  const willApplyAuth    = hasCreds || hasBundle;
 
-  logger.info('Opening tool', { toolId, credType, hasBundle, hasCreds });
+  logger.info('Opening tool', { toolId, credType, stage: 'prepare', hasBundleCookies, hasBundleStorage, hasCreds });
 
+  // ── 6. Clear old cookies, then inject the NEW cookies BEFORE navigation ────
+  // Cookies are set at the cookie-store/domain level (no tab needed), so the
+  // first load of the target tab is already authenticated with the latest
+  // session. Old cookies for this domain are cleared first (only when we are
+  // actually applying auth — a direct_open tool is never logged out).
+  if (forceFreshSession && willApplyAuth) {
+    await clearCookiesForDomain(targetUrl);
+    logger.info('Cleared old cookies for domain', { toolId, stage: 'clear_cookies' });
+  } else if (tool.extensionSettings?.clearExistingCookies && hasBundleCookies) {
+    await clearCookiesForDomain(targetUrl);
+  }
+  let preInjectedCookies = false;
+  if (hasBundleCookies) {
+    try {
+      const ck = await injectCookies(targetUrl, bundle.cookies);
+      preInjectedCookies = !!(ck?.success || ck?.set > 0);
+      logger.info('Injected new cookies (pre-navigation)', { toolId, stage: 'inject_cookies', set: ck?.set || 0, failed: ck?.failed || 0 });
+      if (!preInjectedCookies) {
+        logger.warn('Cookie injection set 0 cookies', { toolId, failures: ck?.failures?.length || 0 });
+      }
+    } catch (err) {
+      logger.warn('Pre-navigation cookie injection failed', { toolId, stage: 'inject_cookies', error: err.message });
+    }
+  }
+
+  // ── 7. NOW open (or reuse) the target tab — it loads with the new session ──
+  let targetTabId = null;
+  let reuseExisting = false;
+  try {
+    const toolHostname = new URL(targetUrl).hostname;
+    const existingTabs = await chrome.tabs.query({ url: `*://${toolHostname}/*` });
+    if (existingTabs.length > 0) {
+      targetTabId = existingTabs[0].id;
+      reuseExisting = true;
+      await chrome.tabs.update(targetTabId, { active: true });
+      await chrome.windows.update(existingTabs[0].windowId, { focused: true });
+      logger.debug('Reusing existing tab', { tabId: targetTabId, toolId });
+    }
+  } catch {}
+
+  if (!targetTabId) {
+    const newTab = await chrome.tabs.create({ url: targetUrl, active: true });
+    targetTabId = newTab.id;
+    logger.debug('Opened new tab with fresh session', { tabId: targetTabId, toolId });
+  }
+
+  // ── 8. Determine and execute strategy ─────────────────────────────────────
   // direct_open: no credentials and no session bundle
   if (!hasCreds && !hasBundle) {
     logger.info('Strategy: direct_open', { toolId });
@@ -1045,27 +1077,21 @@ async function _handleOpenToolInner(payload) {
     return { success: true, method: 'direct_open', tabId: targetTabId };
   }
 
-  // sessionBundle only (no form/token credentials)
+  // sessionBundle only (no form/token credentials). Cookies are already applied
+  // pre-navigation; here we only apply page-scoped storage (which needs the tab).
   if (hasBundle && !hasCreds) {
     logger.info('Strategy: sessionBundle_only', { toolId });
     try {
-      await waitForTabLoad(targetTabId, 15000);
-      if (forceFreshSession) {
-        await clearCookiesForDomain(targetUrl);
-        await clearPageStorageForTab(targetTabId);
-      } else if (tool.extensionSettings?.clearExistingCookies) {
-        await clearCookiesForDomain(targetUrl);
+      if (hasBundleStorage) {
+        await waitForTabLoad(targetTabId, 15000);
+        if (forceFreshSession) await clearPageStorageForTab(targetTabId);
+        if (bundle.localStorage) await injectStorage(targetTabId, 'localStorage', bundle.localStorage);
+        if (bundle.sessionStorage) await injectStorage(targetTabId, 'sessionStorage', bundle.sessionStorage);
+        await chrome.tabs.reload(targetTabId);
+      } else if (reuseExisting && preInjectedCookies) {
+        // Existing tab already on the domain — reload so the new cookies apply.
+        await chrome.tabs.reload(targetTabId);
       }
-      if (bundle.cookies) {
-        await injectCookies(targetUrl, bundle.cookies);
-      }
-      if (bundle.localStorage) {
-        await injectStorage(targetTabId, 'localStorage', bundle.localStorage);
-      }
-      if (bundle.sessionStorage) {
-        await injectStorage(targetTabId, 'sessionStorage', bundle.sessionStorage);
-      }
-      await chrome.tabs.reload(targetTabId);
       await logToolOpened(toolId);
     } catch (err) {
       logger.warn('SessionBundle apply failed', { error: err.message });
@@ -1076,11 +1102,11 @@ async function _handleOpenToolInner(payload) {
     return { success: true, method: 'session_bundle', tabId: targetTabId };
   }
 
-  // Full strategy execution via orchestrator
+  // Full strategy execution via orchestrator (form/sso/token). Any bundle
+  // cookies were already injected pre-navigation; the orchestrator drives login.
   try {
     await waitForTabLoad(targetTabId, 20000);
     if (forceFreshSession) {
-      await clearCookiesForDomain(targetUrl);
       await clearPageStorageForTab(targetTabId);
     }
     const result = await orchestrator.executeLogin(tool, creds, {

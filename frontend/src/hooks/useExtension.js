@@ -66,6 +66,29 @@ function sendToBridge(type, payload = {}, timeoutMs = BRIDGE_TIMEOUT_MS) {
   });
 }
 
+// ── Safe, stage-named diagnostics. NEVER logs tokens, cookies, or secrets ──
+// (the bridge already strips credential fields; here we only ever pass booleans,
+//  ids, status codes and error messages).
+function logStage(stage, info = {}) {
+  try { console.info(`[GENZ Access] ${stage}`, info); } catch (_) {}
+}
+
+// Maps an internal failing stage to an exact, user-safe message (no secrets).
+function stageMessage(stage, err) {
+  switch (stage) {
+    case 'activation_token_failed':
+      return 'Could not authorize secure access (activation). Please refresh the dashboard and sign in again.';
+    case 'extension_did_not_respond':
+      return 'The extension did not respond in time. Reload the extension, then refresh the dashboard.';
+    case 'backend_rejected_extension_token':
+      return 'Secure access was rejected. Please refresh the dashboard and try again.';
+    case 'extension_not_detected':
+      return 'Extension not detected. Reload the extension, then refresh the dashboard.';
+    default:
+      return (err && err.message) ? err.message : 'Could not prepare secure access. Please refresh the dashboard and try again.';
+  }
+}
+
 export function useExtension() {
   const [status, setStatus] = useState({ installed: false, connected: false, checking: true });
   const [bridgeReady, setBridgeReady] = useState(false);
@@ -116,17 +139,44 @@ export function useExtension() {
       if (credentials?.email && credentials?.password) {
         payload = { ...payload, email: credentials.email, password: credentials.password };
       } else {
-        const activation = await api.post('/client/extension/activation-token', {
-          deviceId: getWebsiteDeviceId(),
-          forceReauth,
-        });
+        let activation;
+        try {
+          activation = await api.post('/client/extension/activation-token', {
+            deviceId: getWebsiteDeviceId(),
+            forceReauth,
+          });
+        } catch (e) {
+          // Stage: backend would not issue an activation token (auth/session problem).
+          logStage('activation_token_failed', { status: e?.response?.status });
+          const err = new Error('activation_token_failed');
+          err.stage = 'activation_token_failed';
+          throw err;
+        }
         payload = { ...payload, activationToken: activation.data.activationToken };
       }
 
       setStatus(prev => ({ ...(prev || {}), installed: true, connecting: true, reason: null }));
-      const resp = await sendToBridge('GENZ_CONNECT_EXTENSION', payload, 15000);
+      logStage('extension_connect:send', { forceReauth, hasActivationToken: !!payload.activationToken });
+      let resp;
+      try {
+        resp = await sendToBridge('GENZ_CONNECT_EXTENSION', payload, 15000);
+      } catch (e) {
+        // Distinguish "extension never answered" from "backend rejected the token".
+        const stage = /did not respond/i.test(e.message || '')
+          ? 'extension_did_not_respond'
+          : 'backend_rejected_extension_token';
+        logStage(stage, { error: e.message });
+        const err = new Error(e.message || stage);
+        err.stage = stage;
+        throw err;
+      }
 
-      if (resp.success === false) throw new Error(resp.error || 'Extension connection failed');
+      if (resp.success === false) {
+        logStage('backend_rejected_extension_token', { error: resp.error });
+        const err = new Error(resp.error || 'Extension connection failed');
+        err.stage = 'backend_rejected_extension_token';
+        throw err;
+      }
 
       const next = {
         installed: true,
@@ -246,27 +296,50 @@ export function useExtension() {
       return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
     }
 
-    // Always start Access with a fresh extension authorization context.
-    // This mirrors the reliable dashboard-driven pattern: clear stale extension
-    // token/cache first, activate from the current client dashboard session,
-    // then create a fresh open intent and apply the latest admin-managed bundle.
+    // Ensure a LIVE extension session without tearing down a working one.
+    // (A forced reset on every click turned any transient hiccup — a slow
+    // service-worker wake, a concurrent auto-connect consuming the single-use
+    // activation token, a momentary 401 during cookie refresh — into a hard
+    // failure.) Connect only if not already connected; if the stored token is
+    // actually stale the post-open retry below reauthenticates once.
+    // Freshness of the admin session/cookies is independent of this auth step:
+    // credentials are re-fetched per open and old cookies are cleared before
+    // the new ones are injected (forceFreshSession below).
     try {
-      await sendToBridge('GENZ_RESET_EXTENSION_SESSION', { reason: 'access_click_force_fresh' }, 5000).catch(() => null);
-      await connectExtension({}, { forceReauth: true });
-      await refreshStatus();
+      logStage('ensure_connected:start', { toolId });
+      const current = await refreshStatus();
+      if (!current?.connected) {
+        await connectExtension();
+        await refreshStatus();
+      }
+      logStage('ensure_connected:ok', { toolId });
     } catch (err) {
-      return { success: false, error: 'extension_not_connected', message: 'Could not prepare secure access. Please refresh the dashboard and try again.' };
+      const stage = err.stage || 'extension_not_connected';
+      logStage('ensure_connected:fail', { toolId, stage, error: err.message });
+      return { success: false, error: stage, message: stageMessage(stage, err) };
     }
 
     if (openingRef.current.get(toolId)) return { success: false, error: 'already_opening' };
     openingRef.current.set(toolId, true);
 
     try {
-      const intentResp = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
+      let intentResp;
+      try {
+        intentResp = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
+      } catch (e) {
+        logStage('open_intent_failed', { toolId, status: e?.response?.status });
+        const raw = e?.response?.data?.error || '';
+        if (/expired|not assigned|revoked|inactive|not started/i.test(raw)) {
+          return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
+        }
+        return { success: false, error: 'open_intent_failed', message: 'Could not authorize this tool. Please refresh the dashboard and try again.' };
+      }
       const intentToken = intentResp.data.intentToken || intentResp.data.openIntentToken;
-      if (!intentToken) return { success: false, error: 'missing_intent_token' };
+      if (!intentToken) { logStage('missing_intent_token', { toolId }); return { success: false, error: 'missing_intent_token' }; }
 
+      logStage('open_tool:send', { toolId });
       let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: intentToken, forceFreshSession: true }, 20000);
+      logStage('open_tool:result', { toolId, success: result?.success !== false, error: result?.error || null, method: result?.method || null });
 
       // Auto-request missing host permission, then retry. Never tell user to use popup.
       if (result?.error === 'permission_required' && result.originPattern) {
@@ -284,12 +357,15 @@ export function useExtension() {
         }
       }
 
-      // If background signalled auth expiry or needsReauth, silently reconnect once and retry.
+      // If background signalled auth expiry or needsReauth, silently reconnect
+      // ONCE (stale-token retry) and try again with a fresh intent.
       if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(String(result.error)))) {
+        logStage('stale_token_retry', { toolId, trigger: result?.error || 'needsReauth' });
         await connectExtension({}, { forceReauth: true });
         const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
         const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
         result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+        logStage('stale_token_retry:result', { toolId, success: result?.success !== false, error: result?.error || null });
       }
 
       return result;
