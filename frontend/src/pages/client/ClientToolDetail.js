@@ -1,18 +1,49 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
-import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { useExtension } from '../../hooks/useExtension';
 import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
 
 const ClientToolDetail = () => {
   const navigate = useNavigate();
   const { id } = useParams();
   const { showError } = useToast();
-  
+  // Same secure opener as the dashboard: the extension fetches the latest
+  // admin session bundle in the background, injects it, and opens the real
+  // tool URL in a separate tab. The session bundle never reaches this page.
+  const { bridgeReady, openTool } = useExtension();
+  const [openState, setOpenState] = useState({}); // { loading, error }
+
   const [tool, setTool] = useState(null);
   const [loading, setLoading] = useState(true);
+
+  /* ─── Access Now → extension-controlled open (inject session → open tool URL) ─ */
+  const handleAccess = async () => {
+    const toolId = tool?._id || tool?.id;
+    if (!toolId) return;
+    if (!bridgeReady) {
+      setOpenState({ error: 'Install Extension' });
+      return;
+    }
+    setOpenState({ loading: true });
+    let result;
+    try {
+      result = await openTool(toolId);
+    } catch (err) {
+      result = { success: false, error: err?.message || 'open_failed' };
+    }
+    if (result?.success) {
+      setOpenState({});
+    } else if (result?.error === 'already_opening') {
+      setOpenState({});
+    } else {
+      setOpenState({ error: result?.message || 'Could not open tool. Please try again.' });
+      setTimeout(() => setOpenState({}), 8000);
+    }
+  };
 
   useEffect(() => {
     loadTool();
@@ -148,18 +179,29 @@ const ClientToolDetail = () => {
               )}
             </div>
 
-            {/* Action Button */}
+            {/* Action Button — opens the admin-saved tool URL via the extension
+                (latest session injected in the background, separate new tab). */}
             {tool.targetUrl && (
-              <a
-                href={tool.targetUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full flex items-center justify-center gap-3 py-4 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl font-semibold text-lg hover:shadow-2xl hover:shadow-genz-teal/30 transition-all hover:scale-[1.01] active:scale-[0.99]"
-                data-testid="open-tool-website-btn"
-              >
-                <ExternalLink size={22} />
-                Open Tool Website
-              </a>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={handleAccess}
+                  disabled={openState.loading}
+                  className="w-full flex items-center justify-center gap-3 py-4 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl font-semibold text-lg hover:shadow-2xl hover:shadow-genz-teal/30 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+                  data-testid="open-tool-website-btn"
+                >
+                  {openState.loading
+                    ? <Loader2 size={22} className="animate-spin" />
+                    : <ExternalLink size={22} />}
+                  {openState.loading ? 'Opening Tool' : 'Access Now'}
+                </button>
+                {openState.error && (
+                  <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
+                    <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
+                    <span className="text-sm text-red-600">{openState.error}</span>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -175,8 +217,7 @@ const ClientToolDetail = () => {
               <div>
                 <h3 className="text-lg font-semibold text-genz-navy mb-2">How to Use</h3>
                 <p className="text-genz-muted text-sm leading-relaxed">
-                  Click the &quot;Open Tool Website&quot; button above to access your assigned tool. 
-                  Your access is granted by your administrator.
+                  Click &quot;Access Now&quot; above to open your assigned tool in a new tab with your latest session applied automatically.
                 </p>
               </div>
             </div>
