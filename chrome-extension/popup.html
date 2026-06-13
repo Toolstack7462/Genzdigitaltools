@@ -156,7 +156,7 @@
       <div class="header-title">Gen Z Digital Store</div>
       <div class="header-sub">Extension v<span id="ext-version">—</span></div>
     </div>
-    <span id="header-badge" class="badge badge-disconnected">●  Checking…</span>
+    <span id="header-badge" class="badge badge-connected">●  Ready</span>
   </div>
 
   <!-- ── Body ── -->
@@ -164,10 +164,10 @@
 
     <!-- Status Card -->
     <div class="status-card">
-      <div id="status-dot" class="status-dot dot-checking"></div>
+      <div id="status-dot" class="status-dot dot-connected"></div>
       <div class="status-info">
-        <div id="status-label" class="status-label">Checking connection…</div>
-        <div id="status-detail" class="status-detail">Please wait</div>
+        <div id="status-label" class="status-label">Extension Ready</div>
+        <div id="status-detail" class="status-detail">Loading…</div>
       </div>
     </div>
 
@@ -175,7 +175,7 @@
     <div class="notice">
       <span class="notice-icon">💡</span>
       <span>Open tools from your <strong>member dashboard</strong> — not from here.
-      This popup shows connection status only.</span>
+      This popup shows readiness only.</span>
     </div>
 
     <!-- Connection info (shown when connected) -->
@@ -212,16 +212,15 @@
       </button>
     </div>
 
-    <!-- Disconnected status only. Connection is automatic from the dashboard. -->
+    <!-- Get-started guidance (kept hidden; the readiness state never shows a
+         "disconnected" panel or a manual reconnect button). Retained only so
+         legacy element refs don't break. -->
     <div id="disconnected-section" class="section hidden">
-      <div class="section-title">Auto Connection</div>
+      <div class="section-title">Getting Started</div>
       <p style="font-size:11px;color:#8A98A8;text-align:center;margin-top:6px;line-height:1.5;">
-        Open <strong style="color:#00AFC1">app.genzdigitalstore.com/client/dashboard</strong>.<br>
-        The extension pairs automatically from your logged-in dashboard session.
+        Open <strong style="color:#00AFC1">app.genzdigitalstore.com/client/dashboard</strong>
+        and click <strong style="color:#00AFC1">Access</strong> on a tool.
       </p>
-      <button class="btn btn-primary" id="reconnect-btn" style="margin-top:10px;" data-testid="popup-reconnect-btn">
-        🔁 Reconnect Now
-      </button>
     </div>
 
 

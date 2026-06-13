@@ -131,21 +131,10 @@ const ClientDashboardEnhanced = () => {
   const [activeFilter, setActiveFilter] = useState('All');
 
   const user = authService.getCurrentUser();
-  const { status: extConnStatus, bridgeReady, openTool, connectExtension, reconnect, grantScanConsent, getScanStatus } = useExtension();
-  const [reconnecting, setReconnecting] = useState(false);
-
-  const handleReconnect = async () => {
-    if (reconnecting) return;
-    setReconnecting(true);
-    try {
-      const r = await reconnect();
-      if (!r?.success && r?.message) {
-        showError(r.message);
-      }
-    } finally {
-      setReconnecting(false);
-    }
-  };
+  // Readiness model: if the extension bridge is present it is treated as READY.
+  // The secure session is fetched on-demand when Access is clicked, so there is
+  // no manual connect/reconnect step and no "connecting/disconnected" limbo.
+  const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -412,8 +401,11 @@ const ClientDashboardEnhanced = () => {
           })()}
         </div>
 
-        {/* ── Chrome Extension Banner ── hide once extension is ready & dismissed */}
-        {showExtensionBanner && !(bridgeReady && extConnStatus?.connected) && (
+        {/* ── Chrome Extension Banner ── only while the extension is NOT yet
+            detected. Once the bridge is present the extension is READY (the
+            secure session is fetched on-demand when Access is clicked), so we
+            never show a "connecting / disconnected / retry" state. */}
+        {showExtensionBanner && !bridgeReady && (
           <div className="relative p-5 rounded-2xl border overflow-hidden"
                style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(6,182,212,0.07))', borderColor: 'rgba(6,182,212,0.25)' }}>
             <button onClick={() => setShowExtensionBanner(false)}
@@ -427,57 +419,25 @@ const ClientDashboardEnhanced = () => {
               </div>
               <div className="flex-1">
                 <h3 className="font-bold text-genz-navy mb-1" data-testid="ext-banner-title">
-                {bridgeReady
-                  ? (extConnStatus?.attemptCount > 1 && !extConnStatus?.connected
-                      ? 'Connection trouble — Retry'
-                      : 'Extension Ready')
-                  : extConnStatus?.checking
+                  {extConnStatus?.checking
                     ? 'Checking Extension…'
-                    : 'Install the Gen Z Digital Store Chrome Extension'
-                }
-              </h3>
+                    : 'Install the Gen Z Digital Store Chrome Extension'}
+                </h3>
                 <p className="text-sm text-genz-muted mb-3">
-                  {bridgeReady
-                    ? 'Just click Access on any tool — the extension will sign in automatically using the latest admin-managed session.'
-                    : 'Tools open only from this dashboard. Install the extension once — it will then pair automatically with your client session.'}
-                  {bridgeReady && !extConnStatus?.connected && extConnStatus?.attemptCount > 1 && extConnStatus?.reason && (
-                    <span className="block mt-1 text-[12px] text-red-600 font-medium" data-testid="ext-connect-reason">
-                      Reason: {extConnStatus.reason.replace(/_/g, ' ')}
-                    </span>
-                  )}
+                  Tools open only from this dashboard. Install the extension once — it then pairs automatically with your client session and signs you in using the latest admin-managed session when you click Access.
                 </p>
                 <div className="flex flex-wrap gap-3">
-                  {!bridgeReady && !extConnStatus?.checking && (
+                  {!extConnStatus?.checking ? (
                     <Link to="/chrome-extension"
                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:-translate-y-0.5"
                        style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>
                       <Download size={15} />
                       Install Extension
                     </Link>
-                  )}
-                  {!bridgeReady && extConnStatus?.checking && (
+                  ) : (
                     <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
                       <Loader2 size={15} className="animate-spin" /> Detecting extension…
                     </span>
-                  )}
-                  {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) <= 1 && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-200 text-green-600 bg-green-50">
-                      <CheckCircle2 size={15} /> Extension Ready
-                    </span>
-                  )}
-                  {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) > 1 && (
-                    <button
-                      type="button"
-                      onClick={handleReconnect}
-                      disabled={reconnecting}
-                      data-testid="ext-reconnect-btn"
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-60"
-                      style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}
-                    >
-                      {reconnecting
-                        ? (<><Loader2 size={15} className="animate-spin" /> Reconnecting…</>)
-                        : (<><RefreshCw size={15} /> Retry connection</>)}
-                    </button>
                   )}
                 </div>
               </div>
