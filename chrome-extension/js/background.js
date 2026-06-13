@@ -1791,7 +1791,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_OPEN_TOOL':
-      handleOpenTool(message.payload || {})
+    // OceanHub-style message-name aliases. All three route to the same secure
+    // handleOpenTool() flow (intent verification → credential fetch → cookie
+    // inject → chrome.tabs.create). The action hint travels in the payload
+    // so a future content-script can post `processTool` / `openToolDirect` /
+    // `autoLoginNoSave` and get the equivalent behavior.
+    case 'GENZ_PROCESS_TOOL':
+    case 'GENZ_OPEN_TOOL_DIRECT':
+    case 'GENZ_AUTO_LOGIN_NO_SAVE':
+      handleOpenTool({
+        ...(message.payload || {}),
+        actionType: message.type === 'GENZ_OPEN_TOOL_DIRECT' ? 'openToolDirect'
+                  : message.type === 'GENZ_AUTO_LOGIN_NO_SAVE' ? 'autoLoginNoSave'
+                  : message.type === 'GENZ_PROCESS_TOOL'       ? 'processTool'
+                  : (message.payload?.actionType || 'processTool'),
+      })
         .then(r => sendResponse(r))
         .catch(err => sendResponse({ success: false, error: err.message }));
       return true;

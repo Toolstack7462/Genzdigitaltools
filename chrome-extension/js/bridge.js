@@ -35,6 +35,10 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
     'GENZ_GET_EXTENSION_STATUS',
     'GENZ_CONNECT_EXTENSION',
     'GENZ_OPEN_TOOL',
+    // OceanHub-style aliases — same secure handleOpenTool() flow under the hood
+    'GENZ_PROCESS_TOOL',
+    'GENZ_OPEN_TOOL_DIRECT',
+    'GENZ_AUTO_LOGIN_NO_SAVE',
     'GENZ_RESET_EXTENSION_SESSION',
     'GENZ_REQUEST_PERMISSION',
     'GENZ_SCAN_CONSENT',

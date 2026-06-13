@@ -85,6 +85,11 @@ const ToolCard = ({ tool, onOpen, openState }) => {
         <div className="flex gap-2">
           {!isExpired ? (
             <button
+              data-testid="access-tool-btn"
+              data-genz-action="open-tool"
+              data-tool-id={tool._id || tool.toolId}
+              data-tool-url={tool.targetUrl || tool.loginUrl || ''}
+              data-action-type={tool.credentialType === 'cookies' || tool.credentialType === 'token' ? 'processTool' : 'openToolDirect'}
               onClick={() => onOpen && onOpen(tool)}
               disabled={openState?.loading}
               className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0"
