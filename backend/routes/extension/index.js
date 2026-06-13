@@ -1088,11 +1088,13 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
         code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
       });
       // Do NOT consume the token — assignment failed; the still-valid token can be
-      // reused once admin restores access. `stage` kept as tool_access_expired so
-      // the dashboard treats it as a final (non-retry) business stage.
+      // reused once admin restores access. Emit the PRECISE stage (assignment_*),
+      // never the generic tool_access_expired — both are final (non-retry)
+      // business stages on the dashboard. This path is only reached when the tool
+      // is genuinely NOT in the dashboard's visible set (same selector now).
       return res.status(403).json({
         error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned',
-        stage: 'tool_access_expired', code,
+        stage: code, code,
       });
     }
 

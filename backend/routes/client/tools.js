@@ -249,7 +249,7 @@ router.get('/:toolId', async (req, res) => {
           status: c.status,
         })),
         serverNow: now.toISOString(),
-        result: hadAny ? 'tool_access_expired' : 'not_assigned',
+        result: hadAny ? 'assignment_expired' : 'assignment_not_found',
       });
       return res.status(403).json({
         error: hadAny ? 'Tool access has expired' : 'Access denied. Tool not assigned.',
