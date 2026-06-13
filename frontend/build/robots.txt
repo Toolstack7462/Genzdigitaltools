@@ -1,0 +1,9 @@
+# Gen Z Digital Store - robots.txt
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /client/
+Disallow: /api/
+
+# Sitemap
+Sitemap: https://genzdigitalstore.com/sitemap.xml

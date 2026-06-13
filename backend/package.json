@@ -1,0 +1,31 @@
+{
+  "name": "genz-digital-store-backend",
+  "version": "1.0.0",
+  "description": "Gen Z Digital Store CRM Backend",
+  "main": "server-crm.js",
+  "scripts": {
+    "start": "node server-crm.js",
+    "dev": "nodemon server-crm.js",
+    "seed:admin": "node scripts/seed-admin.js",
+    "test": "jest",
+    "test:access": "jest tests/access-flow.test.js",
+    "db:seed": "node scripts/seed-admin.js",
+    "check": "node --check server-crm.js && node --check db/mysqlAdapter.js && node --check routes/extension/index.js && node --check routes/authEnhanced.js && node --check scripts/seed-admin.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.1.5",
+    "helmet": "^8.0.0",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.15.3"
+  },
+  "devDependencies": {
+    "jest": "^30.4.2",
+    "nodemon": "^3.0.2"
+  }
+}

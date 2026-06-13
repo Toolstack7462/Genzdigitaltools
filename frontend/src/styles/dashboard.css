@@ -1,0 +1,257 @@
+/* =====================================================================
+   PREMIUM DASHBOARD PRIMITIVES — admin + client consoles
+   Clean white cards, soft borders/shadows, real tables, status badges.
+   ===================================================================== */
+
+/* ---- Premium card surfaces (not flat white) ------------------------ */
+.ds-card {
+  position: relative;
+  background: var(--gradient-card), #ffffff;
+  border: 1px solid var(--brand-border);
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(7, 27, 51, 0.05);
+  transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s, border-color 0.25s;
+}
+.ds-card-elevated {
+  position: relative;
+  background: var(--gradient-card), #ffffff;
+  border: 1px solid var(--brand-border);
+  border-radius: 22px;
+  box-shadow: 0 18px 45px rgba(7, 27, 51, 0.09);
+}
+.ds-card-hover:hover { transform: translateY(-3px); box-shadow: 0 20px 44px -18px rgba(7,27,51,0.22); border-color: rgba(6,182,212,0.32); }
+
+/* tinted panel header (for table/section cards) */
+.ds-panel-head {
+  background: linear-gradient(180deg, rgba(6,182,212,0.06), rgba(255,255,255,0));
+  border-bottom: 1px solid var(--brand-border);
+}
+
+/* gradient icon container */
+.ds-icon-grad {
+  background: var(--gradient-cta);
+  color: #fff;
+  box-shadow: 0 8px 18px -8px rgba(37,99,235,0.6);
+}
+
+/* ---- Status badges -------------------------------------------------- */
+.ds-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; line-height: 1.45; white-space: nowrap;
+}
+.ds-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.ds-badge-success { background: #dcfce7; color: #15803d; }
+.ds-badge-danger  { background: #fee2e2; color: #b91c1c; }
+.ds-badge-warn    { background: #fef3c7; color: #b45309; }
+.ds-badge-info    { background: #dbeafe; color: #1d4ed8; }
+.ds-badge-teal    { background: #cffafe; color: #0e7490; }
+.ds-badge-neutral { background: #eef2f6; color: #5b6b7c; }
+
+/* ---- Clean data table ---------------------------------------------- */
+.ds-table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.ds-table thead th {
+  text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+  text-transform: uppercase; color: #8a98a8;
+  padding: 11px 18px; border-bottom: 1px solid var(--brand-border); white-space: nowrap;
+}
+.ds-table tbody td {
+  padding: 13px 18px; border-bottom: 1px solid var(--brand-border);
+  font-size: 14px; color: var(--brand-text); vertical-align: middle;
+}
+.ds-table tbody tr:last-child td { border-bottom: 0; }
+.ds-table tbody tr { transition: background 0.15s ease; }
+.ds-table tbody tr:hover { background: var(--brand-surface-soft); }
+
+/* ---- Compact data table (denser rows for admin lists) -------------- */
+/* Use alongside `.ds-table` => `<table class="ds-table ds-table-compact">`.
+   Reduces padding, font size, and adds zebra striping + a sticky header
+   so very long admin tables stay scannable without horizontal sprawl. */
+.ds-table-compact thead th {
+  font-size: 10.5px; padding: 8px 12px;
+  background: var(--brand-surface-soft);
+  position: sticky; top: 0; z-index: 1;
+}
+.ds-table-compact tbody td {
+  padding: 7px 12px; font-size: 12.5px; line-height: 1.35;
+}
+.ds-table-compact tbody tr:nth-child(odd) td {
+  background: rgba(244, 250, 253, 0.55);
+}
+.ds-table-compact tbody tr:hover td {
+  background: var(--brand-surface-soft);
+}
+
+/* ---- Sidebar nav item (navy sidebar) ------------------------------- */
+.ds-navitem {
+  position: relative; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 12px;
+  font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.62);
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.ds-navitem:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.ds-navitem.active { color: #fff; background: rgba(255,255,255,0.10); }
+.ds-navitem.active::before {
+  content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  width: 3px; height: 20px; border-radius: 0 3px 3px 0;
+  background: linear-gradient(180deg, #2563EB, #06B6D4);
+}
+.ds-navitem.active .ds-navicon { color: #06B6D4; }
+
+/* ---- Stat card hover ----------------------------------------------- */
+.ds-stat { transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s, border-color 0.25s; }
+.ds-stat:hover { transform: translateY(-3px); box-shadow: 0 18px 40px -18px rgba(7,27,51,0.22); border-color: rgba(6,182,212,0.3); }
+
+/* ---- Scoped premium form fields (admin + client consoles) ---------- */
+/* Upgrades every native field inside the app shell to white + blue focus ring
+   without touching individual form markup. Padding/size from utilities is kept. */
+.app-main input[type="text"],
+.app-main input[type="email"],
+.app-main input[type="password"],
+.app-main input[type="url"],
+.app-main input[type="number"],
+.app-main input[type="date"],
+.app-main input[type="search"],
+.app-main input:not([type]),
+.app-main select,
+.app-main textarea {
+  background-color: #ffffff;
+  border-color: var(--brand-border);
+  border-radius: 14px;
+  color: var(--brand-text);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background-color 0.18s ease;
+}
+.app-main input[type="text"]:focus,
+.app-main input[type="email"]:focus,
+.app-main input[type="password"]:focus,
+.app-main input[type="url"]:focus,
+.app-main input[type="number"]:focus,
+.app-main input[type="date"]:focus,
+.app-main input[type="search"]:focus,
+.app-main input:not([type]):focus,
+.app-main select:focus,
+.app-main textarea:focus {
+  outline: none;
+  border-color: #2563EB;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+.app-main label { color: var(--brand-navy); }
+
+/* premium form section card */
+.ds-form-card {
+  background: var(--gradient-card), #ffffff;
+  border: 1px solid var(--brand-border);
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(7, 27, 51, 0.05);
+}
+
+/* thin scrollbar for feeds */
+.ds-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.ds-scroll::-webkit-scrollbar-thumb { background: var(--brand-border); border-radius: 999px; }
+.ds-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* =====================================================================
+   PREMIUM DEEP-NAVY DASHBOARD CANVAS  (.app-main is the dark console)
+   Strategy: the canvas is a rich navy gradient; content cards stay BRIGHT
+   frosted glass. Bare text on the canvas is lightened, while text inside any
+   light surface is kept navy — so every page converts with zero JS changes.
+   ===================================================================== */
+
+/* faint dotted depth + keep content above it */
+.app-main { position: relative; }
+.app-main::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+  background-size: 28px 28px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, #000, transparent 78%);
+          mask-image: radial-gradient(ellipse 85% 55% at 50% 0%, #000, transparent 78%);
+}
+.app-main > * { position: relative; z-index: 1; }
+
+/* ── 1. Lighten bare text sitting directly on the navy canvas ── */
+.app-main .text-genz-navy { color: #eaf2fb !important; }
+.app-main .text-genz-muted { color: #9fb6cf !important; }
+.app-main .text-genz-blue  { color: #6aa6ff !important; }
+
+/* ── 2. Re-assert dark text inside any LIGHT surface (cards/tints/fields) ──
+   Covers both nested text and text on the surface element itself. */
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-navy,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-navy { color: var(--brand-navy) !important; }
+
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-muted,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-muted { color: var(--brand-muted) !important; }
+
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg) .text-genz-blue,
+.app-main :is(.ds-card,.ds-card-elevated,.ds-form-card,.gz-card,.bg-white,
+  .bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,.bg-yellow-50,
+  .bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50,
+  .bg-genz-bg).text-genz-blue { color: var(--brand-blue) !important; }
+
+/* form fields stay readable (navy text on the white frosted field) */
+.app-main input, .app-main select, .app-main textarea { color: var(--brand-navy) !important; }
+
+/* ── 3. Cards become BRIGHT compact glass that floats on the navy ── */
+.app-main .ds-card,
+.app-main .ds-card-elevated,
+.app-main .ds-form-card,
+.app-main .gz-card {
+  background: var(--ds-card-surface);
+  border: 1px solid var(--ds-card-ring);
+  border-radius: 16px;
+  box-shadow: var(--ds-card-shadow);
+}
+.app-main .ds-card-hover:hover,
+.app-main .ds-stat:hover,
+.app-main .gz-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(6, 182, 212, 0.55);
+  box-shadow: var(--ds-card-glow);
+}
+@media (max-width: 767px) {
+  .app-main .ds-card, .app-main .ds-card-elevated, .app-main .gz-card { border-radius: 14px; }
+}
+
+/* tinted "soft" variant cards get a faint frosted ring so they read on navy */
+.app-main :is(.bg-cyan-50,.bg-blue-50,.bg-green-50,.bg-emerald-50,.bg-amber-50,
+  .bg-yellow-50,.bg-purple-50,.bg-red-50,.bg-orange-50,.bg-pink-50,.bg-indigo-50,.bg-slate-50) {
+  box-shadow: 0 18px 40px -26px rgba(2, 10, 25, 0.6);
+}
+
+/* ── 4. Premium dark-glass topbar helper ── */
+.ds-topbar {
+  background: var(--gradient-topbar) !important;
+  border-color: rgba(6, 182, 212, 0.16) !important;
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+/* ── 5. Refined sidebar logo lockup (bigger, "merged", soft glow) ── */
+.ds-logo-tile {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 16px; padding: 7px;
+  background: radial-gradient(circle at 50% 28%, rgba(6,182,212,0.22), rgba(255,255,255,0.04) 70%);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 0 0 1px rgba(6,182,212,0.12) inset, 0 10px 26px -12px rgba(6,182,212,0.55);
+}
+.ds-logo-tile::after {
+  content: ""; position: absolute; inset: -30%; z-index: -1; border-radius: 50%;
+  background: radial-gradient(circle, rgba(6,182,212,0.4), transparent 62%);
+  filter: blur(14px); opacity: 0.7; pointer-events: none;
+}
+.ds-logo-tile img { filter: drop-shadow(0 4px 10px rgba(0,0,0,0.45)); }

@@ -9,7 +9,7 @@
 /coverage
 
 # production
-/build
+# /build — committed for Hostinger Git deploy (static hosting has no build step)
 
 # misc
 .DS_Store

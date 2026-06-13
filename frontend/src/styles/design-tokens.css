@@ -1,0 +1,240 @@
+:root {
+  --brand-white: #ffffff;
+  --brand-soft: #f6f9fc;
+  --brand-soft-2: #eef5fa;
+  --brand-navy: #071b33;
+  --brand-navy-2: #0b2747;
+  --brand-blue: #2563eb;
+  --brand-cyan: #06b6d4;
+  --brand-teal: #14b8a6;
+  --brand-text: #0b1f33;
+  --brand-muted: #5b6b7c;
+  --brand-border: #d9e7f0;
+  --brand-border-strong: #b9d6e5;
+  --brand-surface: #ffffff;
+  --brand-surface-soft: #f8fbfd;
+  --brand-dark-surface: #071b33;
+
+  --gradient-brand: linear-gradient(135deg, #2563eb 0%, #06b6d4 45%, #14b8a6 100%);
+  --gradient-soft: linear-gradient(135deg, #ffffff 0%, #f6f9fc 50%, #eaf7fa 100%);
+  --gradient-hero:
+    radial-gradient(circle at top left, rgba(6, 182, 212, 0.18), transparent 35%),
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.16), transparent 35%),
+    linear-gradient(180deg, #ffffff 0%, #f6f9fc 100%);
+  /* deep navy -> blue -> teal for sidebars / dark panels */
+  --gradient-navy: linear-gradient(180deg, #071B33 0%, #0B2747 55%, #063A52 100%);
+  /* subtle cyan tint fading down — overlay on white cards so they aren't flat */
+  --gradient-card: linear-gradient(180deg, rgba(6, 182, 212, 0.07), rgba(255, 255, 255, 0) 46%);
+  /* ─── Premium DEEP-NAVY dashboard canvas (SaaS console look) ───────────
+     Rich navy gradient with brand glows. Light glass cards float on top. */
+  --gradient-app:
+    radial-gradient(58rem 40rem at 10% -10%, rgba(37, 99, 235, 0.22), transparent 55%),
+    radial-gradient(54rem 38rem at 94% 2%, rgba(6, 182, 212, 0.18), transparent 55%),
+    radial-gradient(52rem 46rem at 78% 116%, rgba(20, 184, 166, 0.14), transparent 55%),
+    linear-gradient(158deg, #061528 0%, #071b33 46%, #0a2440 100%);
+  /* royal blue -> cyan -> teal CTA */
+  --gradient-cta: linear-gradient(135deg, #2563EB 0%, #06B6D4 55%, #14B8A6 100%);
+  /* premium dark glass topbar that sits on the navy canvas */
+  --gradient-topbar: linear-gradient(180deg, rgba(9, 28, 51, 0.92), rgba(7, 22, 42, 0.86));
+
+  /* ─── Dashboard glass-card surfaces (bright cards on navy) ──────────── */
+  --ds-card-surface: linear-gradient(165deg, rgba(255, 255, 255, 0.99) 0%, rgba(244, 250, 253, 0.96) 100%);
+  --ds-card-ring: rgba(255, 255, 255, 0.85);
+  --ds-card-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 24px 50px -26px rgba(2, 10, 25, 0.7), 0 8px 22px -14px rgba(2, 10, 25, 0.55);
+  --ds-card-glow: 0 0 0 1px rgba(6, 182, 212, 0.35), 0 30px 60px -28px rgba(6, 182, 212, 0.4);
+
+  --shadow-light-card: 0 18px 45px rgba(7, 27, 51, 0.08);
+  --shadow-premium-hover: 0 24px 70px rgba(6, 182, 212, 0.16);
+  --shadow-dark-panel: 0 24px 80px rgba(7, 27, 51, 0.35);
+
+  --space-section-desktop: 96px;
+  --space-section-tablet: 72px;
+  --space-section-mobile: 56px;
+  --container-max: 1200px;
+}
+
+.brand-container {
+  width: min(100% - 40px, var(--container-max));
+  margin-inline: auto;
+}
+
+.brand-section {
+  padding-block: var(--space-section-mobile);
+}
+
+.brand-card {
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-light-card);
+}
+
+.brand-gradient-text {
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.brand-public {
+  background: var(--gradient-soft);
+  color: var(--brand-text);
+}
+
+.brand-public > section:not(.brand-hero) {
+  background:
+    radial-gradient(circle at top right, rgba(6, 182, 212, 0.08), transparent 28%),
+    var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.brand-public h1,
+.brand-public h2,
+.brand-public h3,
+.brand-public h4 {
+  color: var(--brand-text);
+}
+
+.brand-public p {
+  color: var(--brand-muted);
+}
+
+.brand-public .brand-hero {
+  background: var(--gradient-hero);
+}
+
+.brand-public .brand-hero h1 {
+  color: var(--brand-navy);
+}
+
+.brand-public .brand-hero p {
+  color: var(--brand-muted);
+}
+
+.brand-public .brand-command-center,
+.brand-public .brand-command-center h2,
+.brand-public .brand-command-center h3,
+.brand-public .brand-command-center p,
+.brand-public footer,
+.brand-public footer h3,
+.brand-public footer h4,
+.brand-public footer p {
+  color: var(--brand-white);
+}
+
+.brand-public .card-premium {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--brand-border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-light-card);
+  backdrop-filter: blur(10px);
+}
+
+.brand-public .card-premium:hover {
+  transform: translateY(-4px);
+  border-color: rgba(6, 182, 212, 0.32);
+  box-shadow: var(--shadow-premium-hover);
+}
+
+.brand-public .card-premium h3,
+.brand-public .card-premium h4 {
+  color: var(--brand-navy);
+}
+
+.brand-public .card-premium p {
+  color: var(--brand-muted);
+}
+
+.brand-public .section-divider {
+  background: linear-gradient(90deg, transparent, rgba(6, 182, 212, 0.28), transparent);
+}
+
+/* =====================================================================
+   UNIFIED CARD SYSTEM  — consistent radius / border / shadow / hover
+   Used by service, tool, pricing, portfolio, feature and dashboard cards.
+   ===================================================================== */
+.gz-card {
+  position: relative;
+  display: block;
+  background: var(--gradient-card), var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: 24px;
+  box-shadow: var(--shadow-light-card);
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1),
+              border-color 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.gz-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(6, 182, 212, 0.35);
+  box-shadow: var(--shadow-premium-hover);
+}
+/* gradient top accent bar (opt-in) */
+.gz-card-accent { overflow: hidden; }
+.gz-card-accent::before {
+  content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: var(--gradient-brand); opacity: 0.9;
+}
+@media (max-width: 767px) {
+  .gz-card { border-radius: 20px; }
+}
+
+/* Soft brand chip / eyebrow pill */
+.gz-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brand-blue);
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.16);
+}
+.gz-eyebrow .glow-dot { background: var(--brand-cyan); box-shadow: 0 0 10px rgba(6,182,212,0.7); }
+.gz-eyebrow-light { color: #67E8F9; background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.18); }
+
+/* Deep-navy accent panel (intentional dark in the light+dark hybrid) */
+.gz-panel-dark {
+  background: linear-gradient(160deg, #071b33 0%, #0b2747 100%);
+  border: 1px solid rgba(6, 182, 212, 0.18);
+  border-radius: 28px;
+  box-shadow: var(--shadow-dark-panel);
+  color: #fff;
+}
+
+/* Section vertical rhythm (8px system: 56 / 72 / 96) */
+.gz-section { padding-block: var(--space-section-mobile); }
+@media (min-width: 768px) { .gz-section { padding-block: var(--space-section-tablet); } }
+@media (min-width: 1024px) { .gz-section { padding-block: var(--space-section-desktop); } }
+
+.gz-container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-inline: auto;
+  padding-inline: 20px;
+}
+@media (min-width: 1024px) { .gz-container { padding-inline: 32px; } }
+
+@media (min-width: 768px) {
+  .brand-container {
+    width: min(100% - 48px, var(--container-max));
+  }
+
+  .brand-section {
+    padding-block: var(--space-section-tablet);
+  }
+}
+
+@media (min-width: 1024px) {
+  .brand-container {
+    width: min(100% - 64px, var(--container-max));
+  }
+
+  .brand-section {
+    padding-block: var(--space-section-desktop);
+  }
+}
