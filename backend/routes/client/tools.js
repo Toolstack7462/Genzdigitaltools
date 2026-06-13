@@ -6,6 +6,7 @@ const ToolAssignment = require('../../models/ToolAssignment');
 const ActivityLog = require('../../models/ActivityLog');
 const OpenIntent = require('../../models/OpenIntent');
 const DeviceBinding = require('../../models/DeviceBinding');
+const { getClientAccessibleTool, listClientAccessibleTools } = require('../../utils/getClientAccessibleTool');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
 
 router.use(requireAuth);
@@ -72,32 +73,15 @@ function sha256(value) {
 }
 
 // ─── GET / — assigned tools for client ────────────────────────────────────────
+// Uses the SAME shared helper (`listClientAccessibleTools`) that the
+// open-intent / verify-intent / credentials endpoints consult, so whatever is
+// visible here is guaranteed to be openable via the extension.
 router.get('/', async (req, res) => {
   try {
     const { search, category } = req.query;
 
-    await ToolAssignment.updateExpiredAssignments();
-
-    const assignments = await ToolAssignment.find({
-      clientId: req.userId, status: 'active'
-    }).populate('toolId');
-
-    const now = new Date();
-    // Keep only valid (active, started, not-expired-by-end-of-day) assignments,
-    // then DEDUPE per tool keeping the one with the latest end boundary — so the
-    // card shows the same assignment verify-intent will later select.
-    const bestByTool = new Map();
-    for (const a of assignments) {
-      if (!a.toolId || a.toolId.status !== 'active') continue;
-      if (a.startDate && new Date(a.startDate) > now) continue;
-      if (ToolAssignment.isAssignmentExpired(a, now)) continue;
-      const key = String(a.toolId._id || a.toolId);
-      const prev = bestByTool.get(key);
-      const ab = ToolAssignment.effectiveEndBoundary(a.endDate)?.getTime() ?? Number.POSITIVE_INFINITY;
-      const pb = prev ? (ToolAssignment.effectiveEndBoundary(prev.endDate)?.getTime() ?? Number.POSITIVE_INFINITY) : -1;
-      if (!prev || ab > pb) bestByTool.set(key, a);
-    }
-    let tools = Array.from(bestByTool.values()).map(a => normalizeClientTool(a.toolId, a));
+    const pairs = await listClientAccessibleTools(req.userId);
+    let tools = pairs.map(({ tool, assignment }) => normalizeClientTool(tool, assignment));
 
     // FIX26: Server-side filters already applied via MySQL/MariaDB above — these are fallbacks
     if (search) {
@@ -149,13 +133,17 @@ router.post('/:toolId/open-intent', async (req, res) => {
       // Trust the authenticated session; do not double-block here.
     }
 
-    // Pick the LATEST valid assignment (handles duplicates + end-of-day inclusivity).
+    // Pick the LATEST valid assignment using the shared dashboard-aligned helper
+    // — if the dashboard shows the tool, this returns ok:true; if it returns
+    // ok:false, the tool is also hidden from the dashboard.
     const now = new Date();
-    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.userId, toolId);
+    const decision = await getClientAccessibleTool(req.userId, toolId);
+    const candidates = decision.candidates || [];
+    const assignment = decision.ok ? decision.assignment : null;
 
     if (!assignment || !assignment.toolId) {
-      const hadAny = (candidates || []).length > 0;
-      const code = hadAny ? 'assignment_expired' : 'assignment_not_found';
+      const code = decision.code; // 'assignment_not_found' | 'assignment_expired'
+      const hadAny = candidates.length > 0;
       console.log('[open-intent] no valid assignment', {
         clientId: String(req.userId), toolId: String(toolId),
         assignmentId: hadAny ? String(candidates[0]._id) : null,
@@ -235,25 +223,26 @@ router.get('/:toolId', async (req, res) => {
     // (which uses effectiveEndBoundary) still showed it as valid — the exact
     // "dashboard says valid but access expired" mismatch.
     const now = new Date();
-    const { assignment, candidates } =
-      await ToolAssignment.findActiveForClientTool(req.userId, req.params.toolId);
+    const decision = await getClientAccessibleTool(req.userId, req.params.toolId);
+    const candidates = decision.candidates || [];
+    const assignment = decision.ok ? decision.assignment : null;
 
     if (!assignment || !assignment.toolId) {
-      const hadAny = (candidates || []).length > 0;
+      const hadAny = candidates.length > 0;
       console.log('[tool-detail] no valid assignment', {
         clientId: String(req.userId), toolId: String(req.params.toolId),
-        candidateCount: candidates?.length || 0,
-        candidates: (candidates || []).map(c => ({
+        candidateCount: candidates.length,
+        candidates: candidates.map(c => ({
           assignmentId: String(c._id), endDate: c.endDate,
           usedEndBoundary: ToolAssignment.effectiveEndBoundary(c.endDate)?.toISOString() || null,
           status: c.status,
         })),
         serverNow: now.toISOString(),
-        result: hadAny ? 'assignment_expired' : 'assignment_not_found',
+        result: decision.code,
       });
       return res.status(403).json({
         error: hadAny ? 'Tool access has expired' : 'Access denied. Tool not assigned.',
-        code: hadAny ? 'assignment_expired' : 'assignment_not_found',
+        code: decision.code,
       });
     }
 

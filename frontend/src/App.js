@@ -140,6 +140,8 @@ function App() {
             <Route path="/tools"         element={<PublicPage><Tools /></PublicPage>} />
             <Route path="/login"         element={<PublicPage><Login /></PublicPage>} />
             <Route path="/join"          element={<PublicPage><Join /></PublicPage>} />
+            <Route path="/client/signup"   element={<PublicPage><Join /></PublicPage>} />
+            <Route path="/client/register" element={<PublicPage><Join /></PublicPage>} />
             <Route path="/extension"     element={<PublicPage><ExtensionSetup /></PublicPage>} />
             <Route path="/chrome-extension" element={<PublicPage><ChromeExtensionPage /></PublicPage>} />
 

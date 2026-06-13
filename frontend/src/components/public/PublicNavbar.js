@@ -78,8 +78,8 @@ const PublicNavbar = () => {
         <div className="flex items-center justify-between h-[72px]">
 
           {/* Logo */}
-          <Link to="/" className="flex items-center flex-shrink-0" aria-label="Gen Z Digital Store — home">
-            <BrandLogo size="md" />
+          <Link to="/" className="flex items-center flex-shrink-0" aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">
+            <BrandLogo size="lg" />
           </Link>
 
           {/* Desktop Nav */}
@@ -175,7 +175,8 @@ const PublicNavbar = () => {
               Member Login
             </a>
             <Link
-              to="/contact"
+              to="/client/signup"
+              data-testid="public-nav-get-started-desktop"
               className="flex items-center gap-1.5 px-5 py-2.5 text-[15px] font-bold text-white rounded-[14px] transition-all duration-200 hover:-translate-y-0.5"
               style={{
                 background: 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)',
@@ -264,7 +265,8 @@ const PublicNavbar = () => {
                 Member Login
               </a>
               <Link
-                to="/contact"
+                to="/client/signup"
+                data-testid="public-nav-get-started-mobile"
                 className="text-center py-3 text-[15px] font-bold text-white rounded-[14px]"
                 style={{ background: 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)' }}
               >

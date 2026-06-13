@@ -10,6 +10,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const OpenIntent = require('../../models/OpenIntent');
 const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
+const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
 const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, checkNewDevice, checkRepeatedAuthFailures } = require('../../middleware/riskEngine');
@@ -426,14 +427,16 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       return res.status(400).json({ error: 'Invalid tool ID format' });
     }
 
-    // Verify assignment — LATEST valid one (same selector as verify-intent and
-    // the dashboard; end-of-day inclusive; ignores expired duplicate rows).
-    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+    // Verify assignment via the SHARED helper — same source of truth used by
+    // the dashboard list / open-intent / verify-intent paths.
+    const decision = await getClientAccessibleTool(req.clientId, toolId);
+    const candidates = decision.candidates || [];
+    const assignment = decision.ok ? decision.assignment : null;
     const nowTs = new Date();
 
     if (!assignment) {
-      const hadAny = (candidates || []).length > 0;
-      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      const hadAny = candidates.length > 0;
+      const code = decision.code === 'assignment_expired' ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
       accessDebug('credentials', {
         clientId: req.clientId, toolId,
         assignmentId: hadAny ? candidates[0]._id : null,
@@ -977,12 +980,13 @@ router.post('/open-intent', verifyExtensionToken, async (req, res) => {
       return res.status(400).json({ error: 'Valid toolId required' });
     }
 
-    // Verify assignment — LATEST valid one (end-of-day inclusive; ignores expired
-    // duplicate rows), same selector as verify-intent and the dashboard.
-    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+    // Verify assignment via the SHARED helper — same source of truth.
+    const decision = await getClientAccessibleTool(req.clientId, toolId);
+    const candidates = decision.candidates || [];
+    const assignment = decision.ok ? decision.assignment : null;
     if (!assignment) {
-      const hadAny = (candidates || []).length > 0;
-      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      const hadAny = candidates.length > 0;
+      const code = decision.code === 'assignment_expired' ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
       accessDebug('open_intent_legacy', {
         clientId: req.clientId, toolId,
         assignmentId: hadAny ? candidates[0]._id : null,
@@ -1066,18 +1070,19 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
       return res.status(403).json({ error: reason, stage: reason, code, message: messages[reason] || messages.intent_not_found });
     }
 
-    // 2) Backend assignment check is NEVER skipped. Use the SAME selector the
-    //    dashboard uses: the LATEST valid active assignment for this client+tool,
-    //    with inclusive end-of-day expiry — so a date-only endDate stays valid all
-    //    day and duplicate rows never let an expired one win.
+    // 2) Backend assignment check is NEVER skipped. Use the SHARED helper —
+    //    same source of truth as the dashboard list / single-tool / open-intent
+    //    / credentials endpoints, with inclusive end-of-day expiry and string-
+    //    normalized toolId. If the dashboard shows the tool, this returns
+    //    ok:true.
     const now = new Date();
-    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+    const decision = await getClientAccessibleTool(req.clientId, toolId);
+    const candidates = decision.candidates || [];
+    const assignment = decision.ok ? decision.assignment : null;
 
     if (!assignment) {
-      // Distinguish "never assigned" from "assigned but expired/revoked" — a row
-      // existed (hadAny) means it expired; none means it was never assigned.
-      const hadAny = (candidates || []).length > 0;
-      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      const hadAny = candidates.length > 0;
+      const code = decision.code === 'assignment_expired' ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
       accessDebug('verify_intent', {
         clientId: req.clientId, toolId,
         assignmentId: hadAny ? candidates[0]._id : null,
