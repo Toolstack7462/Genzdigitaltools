@@ -101,13 +101,13 @@ const ClientLayoutEnhanced = ({ children }) => {
     <div className={`flex flex-col h-full ${mobile ? 'w-full' : 'w-64'}`}
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
       {/* Logo */}
-      <div className="h-[78px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+      <div className="h-[84px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
         <Link to="/client/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Gen Z Digital Store dashboard">
           <span className="ds-logo-tile">
-            <BrandLogo size="md" />
+            <BrandLogo size="lg" glow />
           </span>
           <span className="flex flex-col leading-tight">
-            <span className="text-white font-bold text-[14px] tracking-tight">Gen Z Digital Store</span>
+            <span className="text-white font-bold text-[15px] tracking-tight">Gen Z Digital Store</span>
             <span className="mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">Member Portal</span>
           </span>
         </Link>

@@ -209,7 +209,7 @@ const AdminDashboardEnhanced = () => {
   /* ── Main render ── */
   return (
     <AdminLayoutEnhanced>
-      <div className="max-w-7xl mx-auto space-y-8">
+      <div className="max-w-7xl mx-auto space-y-6">
 
         <SecurityBanner />
 

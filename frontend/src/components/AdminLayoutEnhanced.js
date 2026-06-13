@@ -63,13 +63,13 @@ const AdminLayoutEnhanced = ({ children }) => {
   const SidebarContent = () => (
     <div className="flex flex-col h-full"
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
-      <div className="h-[78px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+      <div className="h-[84px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
         <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Admin dashboard">
           <span className="ds-logo-tile">
-            <BrandLogo size="md" />
+            <BrandLogo size="lg" glow />
           </span>
           <span className="flex flex-col leading-tight">
-            <span className="text-white font-bold text-[14px] tracking-tight">Gen Z Digital Store</span>
+            <span className="text-white font-bold text-[15px] tracking-tight">Gen Z Digital Store</span>
             <span className="flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">
               <Shield size={10} /> Admin Console
             </span>
