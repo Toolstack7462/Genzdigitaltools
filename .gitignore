@@ -110,3 +110,5 @@ TESTING_RESULTS.md
 # local preview artifacts
 .chrome-preview-profile/
 homepage-preview.png
+credentials.json
+.credentials
