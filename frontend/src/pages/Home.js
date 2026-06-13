@@ -8,6 +8,8 @@ import {
 import { useReveal } from '../hooks/useReveal';
 import FAQItem from '../components/public/FAQItem';
 import CTASection from '../components/public/CTASection';
+import ShowcaseCard from '../components/public/showcase/ShowcaseCard';
+import SHOWCASE_ITEMS from '../components/public/showcase/showcaseItems';
 import { WHATSAPP_URL, APP_LOGIN_URL } from '../components/public/PublicNavbar';
 
 const Eyebrow = ({ label, light }) => (
@@ -184,69 +186,6 @@ const FAQS = [
   { q: 'Is the Chrome extension required?', a: 'The extension is required for secure tool access. It communicates with your session to open assigned tools safely. For our other digital services, no extension is needed.' },
   { q: 'Can you build a website or app?', a: 'Absolutely. We build animated landing pages, business websites, web apps, mobile apps, admin dashboards, CRM systems, client portals, and custom automation tools.' },
   { q: 'How do I order a service?', a: 'Contact us on WhatsApp or fill out our contact form. We will understand your requirements, send a proposal, and get started after confirmation.' },
-];
-
-/* ───────────────────────── REALISTIC MOCKUPS ───────────────────────── */
-const BrowserMock = ({ accent }) => (
-  <div className="w-full h-full p-4">
-    <div className="rounded-xl overflow-hidden h-full border border-genz-border bg-white shadow-sm">
-      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-genz-border bg-genz-bg">
-        {['#ef4444', '#f59e0b', '#22c55e'].map(c => <span key={c} className="w-2 h-2 rounded-full" style={{ background: c }} />)}
-        <span className="ml-2 h-3 flex-1 rounded-full bg-white border border-genz-border" />
-      </div>
-      <div className="p-3.5 space-y-2.5">
-        <div className="h-16 rounded-lg" style={{ background: `linear-gradient(135deg, ${accent}2e, ${accent}0d)` }} />
-        <div className="grid grid-cols-3 gap-2">
-          {[0,1,2].map(i => <div key={i} className="h-9 rounded-md bg-genz-bg border border-genz-border" />)}
-        </div>
-        <div className="h-2.5 w-3/4 rounded-full bg-genz-border" />
-        <div className="h-2.5 w-1/2 rounded-full bg-genz-border" />
-      </div>
-    </div>
-  </div>
-);
-const PhoneMock = ({ accent }) => (
-  <div className="w-full h-full flex items-center justify-center">
-    <div className="w-28 rounded-[20px] border-[3px] border-genz-navy/80 bg-white overflow-hidden shadow-md">
-      <div className="h-5 flex items-center justify-center"><span className="w-9 h-1 rounded-full bg-genz-navy/30" /></div>
-      <div className="px-2.5 pb-2.5 space-y-2">
-        <div className="h-14 rounded-lg" style={{ background: `linear-gradient(135deg, ${accent}33, ${accent}0d)` }} />
-        <div className="grid grid-cols-2 gap-2">{[0,1,2,3].map(i => <div key={i} className="h-7 rounded-md bg-genz-bg border border-genz-border" />)}</div>
-        <div className="h-6 rounded-md" style={{ background: accent, opacity: 0.85 }} />
-      </div>
-    </div>
-  </div>
-);
-const DashMock = ({ accent }) => (
-  <div className="w-full h-full p-4">
-    <div className="flex gap-2.5 h-full">
-      <div className="w-9 rounded-lg bg-genz-navy/90 flex flex-col items-center gap-2 py-2.5">
-        {[0,1,2].map(i => <span key={i} className="w-3.5 h-3.5 rounded-md" style={{ background: i===0 ? accent : 'rgba(255,255,255,0.25)' }} />)}
-      </div>
-      <div className="flex-1 space-y-2.5">
-        <div className="grid grid-cols-3 gap-2">{[0,1,2].map(i => <div key={i} className="h-10 rounded-lg bg-white border border-genz-border" />)}</div>
-        <div className="h-20 rounded-lg bg-white border border-genz-border p-2.5 flex items-end gap-1.5">
-          {[5,8,4,9,6,7].map((h,i) => <span key={i} className="flex-1 rounded-sm" style={{ height: `${h*9}%`, background: accent, opacity: 0.7 }} />)}
-        </div>
-      </div>
-    </div>
-  </div>
-);
-const SocialMock = ({ accent }) => (
-  <div className="w-full h-full p-4 grid grid-cols-3 grid-rows-2 gap-2.5">
-    {[0,1,2,3,4,5].map(i => (
-      <div key={i} className="rounded-lg border border-genz-border" style={{ background: `linear-gradient(135deg, ${accent}${i%2?'2e':'14'}, #ffffff)` }} />
-    ))}
-  </div>
-);
-
-const PORTFOLIO = [
-  { label: 'Animated SaaS Landing Page', cat: 'Web Design', accent: '#06B6D4', Mock: BrowserMock },
-  { label: 'Member Dashboard UI', cat: 'Web App', accent: '#4F46E5', Mock: DashMock },
-  { label: 'Mobile App Concept', cat: 'App Dev', accent: '#2563EB', Mock: PhoneMock },
-  { label: 'Social Media Brand Kit', cat: 'Branding', accent: '#DB2777', Mock: SocialMock },
-  { label: 'Business Website', cat: 'Web Design', accent: '#0EA5E9', Mock: BrowserMock },
-  { label: 'Admin Analytics Panel', cat: 'Web App', accent: '#16A34A', Mock: DashMock },
 ];
 
 /* small reusable service-card (bento grid) */
@@ -452,31 +391,30 @@ const Home = () => {
         </div>
       </section>
 
-      {/* ── PORTFOLIO ── */}
+      {/* ── FEATURED WORK SHOWCASE ── */}
       <section className="gz-section px-5" style={{ background: 'var(--brand-surface-soft)' }}>
         <div ref={portRef} className={`gz-container reveal ${portV ? 'visible' : ''}`}>
-          <div className="text-center max-w-xl mx-auto mb-14">
-            <Eyebrow label="Portfolio" />
-            <h2 className="type-section-title text-genz-navy mb-4">Work that looks the part</h2>
-            <p className="text-genz-muted text-[16px]">A snapshot of what we design and build — from websites to dashboards and brand kits.</p>
+          <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-12">
+            <div className="max-w-xl">
+              <Eyebrow label="Featured Work" />
+              <h2 className="type-section-title text-genz-navy mb-4">Premium digital case studies</h2>
+              <p className="text-genz-muted text-[16px]">
+                A look at the dashboards, platforms, brand kits and SaaS experiences we build —
+                each piece crafted with the same attention you&apos;d expect from a world-class product team.
+              </p>
+            </div>
+            <Link to="/portfolio" className="inline-flex items-center gap-2 text-[14px] font-semibold text-genz-blue hover:gap-3 transition-all whitespace-nowrap">
+              View full showcase <ArrowRight size={15} />
+            </Link>
           </div>
-          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {PORTFOLIO.map(({ label, cat, accent, Mock }) => (
-              <div key={label} className="gz-card group overflow-hidden">
-                <div className="relative h-52" style={{ background: `linear-gradient(135deg, ${accent}12, #ffffff)` }}>
-                  <Mock accent={accent} />
-                  <span className="absolute top-3 right-3 px-2.5 py-1 rounded-full text-[11px] font-semibold" style={{ background: `${accent}18`, color: accent, border: `1px solid ${accent}38` }}>{cat}</span>
-                </div>
-                <div className="p-5 border-t border-genz-border">
-                  <h3 className="text-genz-navy font-bold text-[16px] group-hover:text-genz-blue transition-colors">{label}</h3>
-                  <p className="text-genz-muted text-[13px] mt-1">Concept — available as a service</p>
-                </div>
-              </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-2 gap-7">
+            {SHOWCASE_ITEMS.slice(0, 4).map((item) => (
+              <ShowcaseCard key={item.id} {...item} ctaTo="/portfolio" />
             ))}
           </div>
-          <div className="text-center mt-10">
-            <Link to="/portfolio" className="inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-semibold text-genz-blue border border-genz-blue/30 hover:bg-genz-blue/[0.06] transition-all">
-              View Full Portfolio <ArrowRight size={15} />
+          <div className="text-center mt-12">
+            <Link to="/portfolio" className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+              Explore Full Portfolio <ArrowRight size={15} />
             </Link>
           </div>
         </div>

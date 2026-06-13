@@ -210,3 +210,37 @@ See `/app/memory/test_credentials.md` (no auth credentials created in this sessi
 - Self-tested via screenshots (`/tmp/h1.png`, `/tmp/pricing_new.png`, `/tmp/contact_form.png`, `/tmp/about_new.png`, `/tmp/portfolio_new.png`, `/tmp/sdt.png`, `/tmp/sbd.png`, `/tmp/home_mobile.png`, `/tmp/pricing_mobile.png`).
 - ESLint clean on all touched files (pre-existing warnings in untouched Blog/Admin/NotFound files left as-is).
 - All public pages render without console errors; layouts responsive at 1920px and 390px viewports.
+
+---
+
+## Premium Portfolio Showcase (Feb 2026 — same session)
+
+**Ask:** Make the portfolio feel premium / trustworthy / world-class with high-fidelity SaaS-style mockups (not colored placeholders) for 8 specific case studies.
+
+### What was delivered
+- **New showcase system** under `frontend/src/components/public/showcase/`:
+  - `ShowcaseMocks.js` — 8 high-fidelity, brand-aligned SaaS mockup components built entirely with CSS / lucide-react:
+    1. `DashboardMock` (browser + navy sidebar + KPI cards + chart + tool tiles)
+    2. `SaaSLandingMock` (browser + nav + eyebrow + headline + CTA buttons + feature cards + glow blob)
+    3. `ToolsPlatformMock` (dark navy 4×2 glassy tool grid + "Extension live" badge)
+    4. `BrandKitMock` (realistic phone with branded gradient feed + colour swatches + type pair)
+    5. `ExtensionMock` (browser background + floating navy popup with connected status + tool rows)
+    6. `PricingMock` (browser + 3 plan cards, middle highlighted with shadow + "POP" badge)
+    7. `AdminPanelMock` (sidebar + KPI strip + recent activity table with status pills)
+    8. `WhatsAppPortalMock` (phone with WhatsApp UI + bubbles + side process cards)
+  - `ShowcaseCard.js` — premium wrapper card with gradient hairline, category chip, glass-blur, subtle 3D mock perspective, hover lift + glow + scale, gradient CTA button.
+  - `showcaseItems.js` — single canonical data source (id, title, tag, description, accent, tags, Mock, ctaLabel).
+- **`styles/showcase.css`** — dedicated stylesheet with CSS `color-mix` for per-accent themes, hairline, glow, grid texture mask, 3D mock tilt, edge-glow on hover, mobile-safe flatten at <1024 px.
+- **Wired into pages**:
+  - `pages/public/Portfolio.js` — full 8-card showcase grid with filter pills derived from the data; new commission CTA card.
+  - `pages/Home.js` — "Featured Work" preview block showing the first 4 showcase items in a 2-col grid, with "View full showcase" inline link and "Explore Full Portfolio" gradient button below.
+- **Mobile verified** at 390×844 — cards stack with mockups scaling gracefully; phone mockups stay readable; chips and CTAs remain touch-friendly.
+
+### Files of reference (this iteration)
+- `frontend/src/components/public/showcase/ShowcaseMocks.js` (NEW)
+- `frontend/src/components/public/showcase/ShowcaseCard.js` (NEW)
+- `frontend/src/components/public/showcase/showcaseItems.js` (NEW)
+- `frontend/src/styles/showcase.css` (NEW)
+- `frontend/src/index.css` (import added)
+- `frontend/src/pages/Home.js` (Featured Work section)
+- `frontend/src/pages/public/Portfolio.js` (full showcase grid)
