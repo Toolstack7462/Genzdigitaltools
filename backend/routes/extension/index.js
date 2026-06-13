@@ -493,11 +493,15 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
     
     // Build unified credential response
     let credentials = null;
+    // Track which field is being decrypted so the catch can name it precisely.
+    let currentField = null;
 
     try {
       // Check for new unified credentials first
       if (tool.credentials && tool.credentials.type && tool.credentials.payloadEncrypted) {
+        currentField = 'credentials.payloadEncrypted';
         const payloadJson = decryptCookies(tool.credentials.payloadEncrypted);
+        currentField = 'credentials.payloadEncrypted:json';
         const payload = JSON.parse(payloadJson);
 
         credentials = {
@@ -520,7 +524,9 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         const credentialType = tool.credentialType || 'cookies';
 
         if (credentialType === 'cookies' && tool.cookiesEncrypted) {
+          currentField = 'cookiesEncrypted';
           const cookiesJson = decryptCookies(tool.cookiesEncrypted);
+          currentField = 'cookiesEncrypted:json';
           credentials = {
             type: 'cookies',
             payload: JSON.parse(cookiesJson),
@@ -529,6 +535,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
             domain: tool.domain
           };
         } else if (credentialType === 'token' && tool.tokenEncrypted) {
+          currentField = 'tokenEncrypted';
           const tokenValue = decryptCookies(tool.tokenEncrypted);
           credentials = {
             type: 'token',
@@ -544,7 +551,9 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
             tokenPrefix: tool.tokenPrefix || 'Bearer '
           };
         } else if ((credentialType === 'localStorage' || credentialType === 'sessionStorage') && tool.localStorageEncrypted) {
+          currentField = 'localStorageEncrypted';
           const storageJson = decryptCookies(tool.localStorageEncrypted);
+          currentField = 'localStorageEncrypted:json';
           credentials = {
             type: credentialType,
             payload: JSON.parse(storageJson),
@@ -575,13 +584,79 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         }
       }
     } catch (decryptError) {
-      console.error('Credential decryption error:', decryptError);
-      return res.status(500).json({ error: 'Failed to decrypt credentials' });
+      // ── Safe diagnostic: name the failing field + classify the crypto error
+      // WITHOUT logging ciphertext, key, or any decrypted value.
+      // Most common root causes:
+      //   • COOKIES_ENCRYPTION_KEY rotated between save-time and read-time
+      //     → "Unable to authenticate data" (GCM tag mismatch)
+      //   • stored payload not in iv:tag:ct format → "Invalid encrypted data format"
+      //   • SyntaxError → JSON.parse() of decrypted plaintext failed
+      const msg = String(decryptError?.message || '');
+      let cause = 'unknown';
+      if (/authenticate data|unsupported state/i.test(msg)) cause = 'auth_tag_mismatch_or_key_rotated';
+      else if (/Invalid encrypted data format/i.test(msg))  cause = 'bad_payload_format';
+      else if (/Invalid (key|iv) length/i.test(msg))        cause = 'bad_key_or_iv_length';
+      else if (decryptError instanceof SyntaxError)         cause = 'json_parse_failed';
+      else if (/hex/i.test(msg))                            cause = 'non_hex_payload';
+
+      // Non-secret sample (first 6 chars of iv hex) to confirm payload shape.
+      const sample = (() => {
+        try {
+          const v = tool?.credentials?.payloadEncrypted
+                 || tool?.cookiesEncrypted
+                 || tool?.tokenEncrypted
+                 || tool?.localStorageEncrypted
+                 || '';
+          if (typeof v !== 'string' || !v) return { length: 0, parts: 0, ivPrefix: null };
+          const parts = v.split(':');
+          return {
+            length: v.length,
+            parts: parts.length,
+            ivPrefix: parts[0] ? parts[0].slice(0, 6) : null,
+          };
+        } catch { return { length: 0, parts: 0, ivPrefix: null }; }
+      })();
+
+      console.error('[extension/credentials] decrypt failed', {
+        endpoint: req.originalUrl,
+        method: req.method,
+        status: 500,
+        toolId: String(tool._id),
+        clientId: String(req.clientId),
+        toolDomain: tool.domain || null,
+        toolSlug: tool.slug || tool.name || null,
+        credentialType: tool.credentialType || tool?.credentials?.type || null,
+        field: currentField,
+        cause,
+        errorName: decryptError?.name || null,
+        errorMsg: msg.slice(0, 200),
+        payloadSample: sample,
+      });
+      await CredentialAccessLog.log({
+        clientId: req.clientId,
+        toolId: tool._id,
+        extensionTokenId: req.extensionTokenId,
+        action: 'CREDENTIALS_FETCHED',
+        success: false,
+        errorMessage: `decrypt_failed:${cause}:${currentField}`,
+        deviceInfo: {
+          userAgent: req.headers['user-agent'],
+          ip: req.ip,
+          extensionVersion: req.headers['x-extension-version']
+        }
+      });
+      return res.status(500).json({
+        error: 'Failed to decrypt credentials',
+        code: 'credential_decrypt_failed',
+        cause,
+        field: currentField,
+      });
     }
     
     // Decrypt session bundle if available
     let sessionBundle = null;
     if (tool.sessionBundle) {
+      let bundleField = null;
       try {
         sessionBundle = {
           version: tool.sessionBundle.version || 1,
@@ -590,22 +665,64 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
           localStorage: null,
           sessionStorage: null
         };
-        
+
         if (tool.sessionBundle.cookiesEncrypted) {
+          bundleField = 'sessionBundle.cookiesEncrypted';
           const cookiesJson = decryptCookies(tool.sessionBundle.cookiesEncrypted);
           sessionBundle.cookies = JSON.parse(cookiesJson);
         }
         if (tool.sessionBundle.localStorageEncrypted) {
+          bundleField = 'sessionBundle.localStorageEncrypted';
           const localStorageJson = decryptCookies(tool.sessionBundle.localStorageEncrypted);
           sessionBundle.localStorage = JSON.parse(localStorageJson);
         }
         if (tool.sessionBundle.sessionStorageEncrypted) {
+          bundleField = 'sessionBundle.sessionStorageEncrypted';
           const sessionStorageJson = decryptCookies(tool.sessionBundle.sessionStorageEncrypted);
           sessionBundle.sessionStorage = JSON.parse(sessionStorageJson);
         }
       } catch (bundleError) {
-        console.error('Session bundle decryption error:', bundleError);
-        // Continue without session bundle
+        // Same classification + safe sample as the credentials catch above.
+        const bmsg = String(bundleError?.message || '');
+        let bcause = 'unknown';
+        if (/authenticate data|unsupported state/i.test(bmsg)) bcause = 'auth_tag_mismatch_or_key_rotated';
+        else if (/Invalid encrypted data format/i.test(bmsg))  bcause = 'bad_payload_format';
+        else if (/Invalid (key|iv) length/i.test(bmsg))        bcause = 'bad_key_or_iv_length';
+        else if (bundleError instanceof SyntaxError)           bcause = 'json_parse_failed';
+        else if (/hex/i.test(bmsg))                            bcause = 'non_hex_payload';
+        const bsample = (() => {
+          try {
+            const v = tool?.sessionBundle?.cookiesEncrypted
+                   || tool?.sessionBundle?.localStorageEncrypted
+                   || tool?.sessionBundle?.sessionStorageEncrypted
+                   || '';
+            if (typeof v !== 'string' || !v) return { length: 0, parts: 0, ivPrefix: null };
+            const parts = v.split(':');
+            return {
+              length: v.length,
+              parts: parts.length,
+              ivPrefix: parts[0] ? parts[0].slice(0, 6) : null,
+            };
+          } catch { return { length: 0, parts: 0, ivPrefix: null }; }
+        })();
+        console.error('[extension/credentials] session bundle decrypt failed', {
+          endpoint: req.originalUrl,
+          method: req.method,
+          toolId: String(tool._id),
+          clientId: String(req.clientId),
+          toolDomain: tool.domain || null,
+          toolSlug: tool.slug || tool.name || null,
+          field: bundleField,
+          cause: bcause,
+          errorName: bundleError?.name || null,
+          errorMsg: bmsg.slice(0, 200),
+          payloadSample: bsample,
+        });
+        // Discard the partial bundle so downstream `hasAnyInjectable` flips to
+        // false. This is critical: without this, a partially-failed decrypt
+        // leaves an empty bundle in place and the extension falls back to
+        // `direct_open` — exactly the HIX AI symptom in the report.
+        sessionBundle = null;
       }
     }
 
@@ -910,6 +1027,85 @@ router.post('/debug-log', verifyExtensionToken, async (req, res) => {
     res.status(500).json({ error: 'Failed to process debug logs' });
   }
 });
+
+// GET /api/crm/extension/tools/:toolId/_diagnose — non-secret tool diagnosis
+// Returns ONLY metadata + a 1-byte trial-decrypt result so admin can confirm:
+//   • the tool's configured credentialType / credentials.type
+//   • which encrypted fields exist (booleans)
+//   • whether each encrypted field decrypts with the CURRENT COOKIES_ENCRYPTION_KEY
+//   • a cause classification if decrypt fails
+// NEVER returns cookie values, decrypted plaintext, or the encryption key.
+router.get('/tools/:toolId/_diagnose', verifyExtensionToken, async (req, res) => {
+  try {
+    const { toolId } = req.params;
+    if (!toolId || !/^[a-f\d]{24}$/i.test(toolId)) {
+      return res.status(400).json({ error: 'Invalid tool ID format' });
+    }
+    const decision = await getClientAccessibleTool(req.clientId, toolId);
+    if (!decision.ok) {
+      return res.status(403).json({ error: 'Tool not assigned or expired', code: decision.code || null });
+    }
+    const tool = decision.assignment.toolId;
+    if (!tool) return res.status(404).json({ error: 'Tool not found' });
+
+    const classify = (err) => {
+      const m = String(err?.message || '');
+      if (/authenticate data|unsupported state/i.test(m)) return 'auth_tag_mismatch_or_key_rotated';
+      if (/Invalid encrypted data format/i.test(m))       return 'bad_payload_format';
+      if (/Invalid (key|iv) length/i.test(m))             return 'bad_key_or_iv_length';
+      if (err instanceof SyntaxError)                     return 'json_parse_failed';
+      if (/hex/i.test(m))                                 return 'non_hex_payload';
+      return 'unknown';
+    };
+    const tryDecrypt = (label, val) => {
+      if (typeof val !== 'string' || !val) return { present: false };
+      const parts = val.split(':');
+      const shape = { present: true, length: val.length, parts: parts.length, ivPrefix: parts[0]?.slice(0, 6) || null };
+      try {
+        const out = decryptCookies(val);
+        let jsonOk = null;
+        try { JSON.parse(out); jsonOk = true; } catch { jsonOk = false; }
+        return { ...shape, decryptsOk: true, looksLikeJson: jsonOk, plaintextLength: out.length };
+      } catch (e) {
+        return { ...shape, decryptsOk: false, cause: classify(e), errorName: e?.name || null };
+      }
+    };
+
+    return res.json({
+      success: true,
+      toolId: String(tool._id),
+      slug: tool.slug || null,
+      name: tool.name || null,
+      domain: tool.domain || null,
+      targetUrl: tool.targetUrl || tool.loginUrl || null,
+      status: tool.status || null,
+      credentialType: tool.credentialType || null,
+      credentialsTypeNew: tool?.credentials?.type || null,
+      credentialVersion: tool.credentialVersion || null,
+      sessionBundleVersion: tool?.sessionBundle?.version || null,
+      sessionBundleUpdatedAt: tool?.sessionBundle?.bundleUpdatedAt || null,
+      fields: {
+        'credentials.payloadEncrypted':         tryDecrypt('credentials.payloadEncrypted', tool?.credentials?.payloadEncrypted),
+        'cookiesEncrypted':                     tryDecrypt('cookiesEncrypted', tool?.cookiesEncrypted),
+        'tokenEncrypted':                       tryDecrypt('tokenEncrypted', tool?.tokenEncrypted),
+        'localStorageEncrypted':                tryDecrypt('localStorageEncrypted', tool?.localStorageEncrypted),
+        'sessionBundle.cookiesEncrypted':       tryDecrypt('sessionBundle.cookiesEncrypted', tool?.sessionBundle?.cookiesEncrypted),
+        'sessionBundle.localStorageEncrypted':  tryDecrypt('sessionBundle.localStorageEncrypted', tool?.sessionBundle?.localStorageEncrypted),
+        'sessionBundle.sessionStorageEncrypted':tryDecrypt('sessionBundle.sessionStorageEncrypted', tool?.sessionBundle?.sessionStorageEncrypted),
+      },
+      assignment: {
+        id: String(decision.assignment._id),
+        status: decision.assignment.status,
+        endDate: decision.assignment.endDate,
+      },
+    });
+  } catch (err) {
+    console.error('[extension/diagnose] error', err.message);
+    res.status(500).json({ error: 'Diagnose failed' });
+  }
+});
+
+
 
 // GET /api/crm/extension/domains - Get list of all tool domains for permissions
 router.get('/domains', verifyExtensionToken, async (req, res) => {
