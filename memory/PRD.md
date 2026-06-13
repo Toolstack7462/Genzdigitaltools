@@ -42,6 +42,30 @@ extension injects session → extension opens/reloads tool in separate tab.
 
 ## Implemented (Feb 2026 fork session)
 
+### P0.5 — Extension auto-connect resilience (Feb 2026)
+**Broken:** Dashboard's "Auto connecting…" gave up silently after 8 × 1.5s = 12s
+with no visible reason, no retry button. Popup showed "Disconnected" even when
+the dashboard tab was open — no way to trigger reconnect from the popup. Access
+button could not open tools because the underlying extension session was never
+established.
+
+**Fixed:**
+- `useExtension.js`: exponential backoff retry (1.5s → cap 30s) that runs as
+  long as the dashboard tab is open. Auto-escalates to `forceReauth:true` after
+  3 consecutive failures. Exposes `reason`, `attemptCount`, `lastError`, and
+  a `reconnect()` callback. Listens for `GENZ_FORCE_RECONNECT` push.
+- `ClientDashboardEnhanced.js`: after the 1st failure the banner shows the
+  reason + a "Retry connection" button wired to `reconnect()`.
+- `popup.html` / `popup.js`: added **Reconnect Now** button in the disconnected
+  section that focuses the dashboard tab and sends `GENZ_FORCE_RECONNECT` (or
+  opens the dashboard if none).
+- `bridge.js`: `GENZ_FORCE_RECONNECT` added to SAFE_PUSH_TYPES so the SW can
+  route it into the dashboard page.
+- `background.js`: `GENZ_CONNECT_EXTENSION` clears stale extension storage on
+  401/403/invalid-token rejections and returns status+code so the UI displays
+  precise reasons.
+- Manifest bumped 3.8.4 → 3.8.5; extension zip rebuilt.
+
 ### P0 — Shared `getClientAccessibleTool` helper
 - **New: `backend/utils/getClientAccessibleTool.js`** — single source of truth:
   - `getClientAccessibleTool(clientId, toolId)` → `{ ok, tool, assignment, candidates, code }`
