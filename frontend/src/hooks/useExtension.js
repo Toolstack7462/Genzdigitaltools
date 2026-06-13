@@ -101,7 +101,11 @@ function stageMessage(stage, err) {
     case 'intent_not_found':
       return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
     case 'tool_access_expired':
+    case 'assignment_expired':
+    case 'assignment_not_found':
       return 'This tool assignment has expired or was revoked by admin.';
+    case 'device_blocked':
+      return 'Access from this device is blocked. Please contact admin.';
     default:
       return (err && err.message) ? err.message : 'Could not prepare secure access. Please refresh the dashboard and try again.';
   }
@@ -348,7 +352,15 @@ export function useExtension() {
       try {
         intentResp = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
       } catch (e) {
-        logStage('open_intent_failed', { toolId, status: e?.response?.status });
+        const code = e?.response?.data?.code || '';
+        logStage('open_intent_failed', { toolId, status: e?.response?.status, code: code || null });
+        // Prefer the backend's EXACT code when present.
+        if (code === 'assignment_expired' || code === 'assignment_not_found') {
+          return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
+        }
+        if (code === 'tool_domain_invalid' || code === 'device_blocked') {
+          return { success: false, error: code, message: stageMessage(code, e) };
+        }
         const raw = e?.response?.data?.error || '';
         if (/expired|not assigned|revoked|inactive|not started/i.test(raw)) {
           return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
@@ -378,6 +390,16 @@ export function useExtension() {
         }
       }
 
+      // Business stages are FINAL — never reconnect/retry on them. (The auth regex
+      // below contains "expired"/"invalid", which would otherwise wrongly match
+      // 'tool_access_expired' / 'tool_domain_invalid' and trigger a pointless
+      // reconnect loop on an assignment that admin must fix.)
+      const BUSINESS_RESULT_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
+      if (result?.error && BUSINESS_RESULT_STAGES.includes(String(result.error))) {
+        logStage('business_stage_final', { toolId, stage: result.error });
+        return { success: false, error: String(result.error), message: stageMessage(String(result.error), result) };
+      }
+
       // If background signalled auth expiry or needsReauth, silently reconnect
       // ONCE (stale-token retry) and try again with a fresh intent.
       if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(String(result.error)))) {
@@ -397,7 +419,7 @@ export function useExtension() {
       // Map them FIRST and NEVER retry — e.g. 'tool_access_expired' contains
       // "expired", and 'tool_domain_invalid'/'intent_device_mismatch' contain
       // "invalid"/"mismatch", which must not be mistaken for a retryable auth error.
-      const BUSINESS_STAGES = ['tool_access_expired', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
+      const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
       if (BUSINESS_STAGES.includes(msg)) {
         return { success: false, error: msg, message: stageMessage(msg, err) };
       }

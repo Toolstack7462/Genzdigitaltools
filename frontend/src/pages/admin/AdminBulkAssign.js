@@ -9,7 +9,7 @@ const AdminBulkAssign = () => {
   const navigate = useNavigate();
   const { clientId } = useParams(); // If editing a specific client's assignments
   const { showSuccess, showError } = useToast();
-  
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tools, setTools] = useState([]);
@@ -90,7 +90,7 @@ const AdminBulkAssign = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
+
     if (!selectedTool) {
       showError('Please select a tool');
       return;
@@ -108,14 +108,14 @@ const AdminBulkAssign = () => {
 
     try {
       setSaving(true);
-      
+
       await api.post('/admin/assignments/bulk', {
         toolId: selectedTool._id,
         clientIds: selectedClients.map(c => c._id),
         startDate: duration.startDate,
         endDate: duration.endDate
       });
-      
+
       showSuccess(`Tool assigned to ${selectedClients.length} client(s) successfully`);
       navigate('/admin/clients');
     } catch (error) {
@@ -125,13 +125,23 @@ const AdminBulkAssign = () => {
     }
   };
 
-  const filteredTools = tools.filter(t => 
+  const filteredTools = tools.filter(t =>
     t.name.toLowerCase().includes(toolSearch.toLowerCase())
   );
 
   const filteredClients = clients.filter(c =>
     c.fullName?.toLowerCase().includes(clientSearch.toLowerCase()) ||
     c.email?.toLowerCase().includes(clientSearch.toLowerCase())
+  );
+
+  // Compact step header
+  const StepHead = ({ n, title, children }) => (
+    <div className="flex items-center gap-2.5 mb-3">
+      <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+           style={{ background: 'var(--gradient-cta)' }}>{n}</div>
+      <h2 className="text-base font-bold text-genz-navy">{title}</h2>
+      {children}
+    </div>
   );
 
   if (loading) {
@@ -146,119 +156,110 @@ const AdminBulkAssign = () => {
 
   return (
     <AdminLayout>
-      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-5">
           <button
             onClick={() => navigate('/admin/clients')}
-            className="flex items-center gap-2 text-genz-muted hover:text-genz-navy transition-colors mb-4"
+            className="flex items-center gap-1.5 text-sm text-genz-muted hover:text-genz-navy transition-colors mb-3"
           >
-            <ArrowLeft size={20} />
+            <ArrowLeft size={16} />
             Back to Clients
           </button>
-          <h1 className="text-3xl font-bold text-genz-navy">Bulk Assign Tool</h1>
-          <p className="text-genz-muted mt-2">Assign one tool to multiple clients at once</p>
+          <h1 className="text-2xl font-extrabold text-genz-navy">Bulk Assign Tool</h1>
+          <p className="text-sm text-genz-muted mt-1">Assign one tool to multiple clients at once</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Step 1: Select Tool */}
-          <div className="bg-white border border-genz-border rounded-xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">1</div>
-              <h2 className="text-lg font-semibold text-genz-navy">Select Tool</h2>
-            </div>
+          <div className="ds-card p-4">
+            <StepHead n={1} title="Select Tool">
+              {selectedTool && (
+                <span className="ds-badge ds-badge-teal ml-auto"><CheckCircle2 size={12} /> {selectedTool.name}</span>
+              )}
+            </StepHead>
 
-            <div className="relative mb-4">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
+            <div className="relative mb-3">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-genz-muted" size={16} />
               <input
                 type="text"
                 placeholder="Search tools..."
                 value={toolSearch}
                 onChange={(e) => setToolSearch(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
               />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-60 overflow-y-auto">
-              {filteredTools.map(tool => (
-                <button
-                  key={tool._id}
-                  type="button"
-                  onClick={() => setSelectedTool(tool)}
-                  className={`p-4 rounded-xl border text-left transition-all ${
-                    selectedTool?._id === tool._id
-                      ? 'border-genz-teal bg-genz-teal/10'
-                      : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
-                  }`}
-                  data-testid={`select-tool-${tool._id}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Package size={20} className={selectedTool?._id === tool._id ? 'text-genz-teal' : 'text-genz-muted'} />
-                    <div>
-                      <p className="font-medium text-genz-navy">{tool.name}</p>
-                      <p className="text-xs text-genz-muted truncate">{tool.description}</p>
-                    </div>
-                    {selectedTool?._id === tool._id && (
-                      <CheckCircle2 size={20} className="ml-auto text-genz-teal" />
-                    )}
-                  </div>
-                </button>
-              ))}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1">
+              {filteredTools.map(tool => {
+                const isSelected = selectedTool?._id === tool._id;
+                return (
+                  <button
+                    key={tool._id}
+                    type="button"
+                    onClick={() => setSelectedTool(tool)}
+                    className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all ${
+                      isSelected
+                        ? 'border-genz-teal bg-genz-teal/10'
+                        : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
+                    }`}
+                    data-testid={`select-tool-${tool._id}`}
+                  >
+                    <Package size={16} className={`flex-shrink-0 ${isSelected ? 'text-genz-teal' : 'text-genz-muted'}`} />
+                    <span className="text-sm font-medium text-genz-navy truncate flex-1">{tool.name}</span>
+                    {isSelected && <CheckCircle2 size={14} className="text-genz-teal flex-shrink-0" />}
+                  </button>
+                );
+              })}
             </div>
-            
+
             {filteredTools.length === 0 && (
-              <p className="text-center text-genz-muted py-4">No active tools found</p>
+              <p className="text-center text-sm text-genz-muted py-3">No active tools found</p>
             )}
           </div>
 
           {/* Step 2: Select Clients */}
-          <div className="bg-white border border-genz-border rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">2</div>
-                <h2 className="text-lg font-semibold text-genz-navy">Select Clients</h2>
-                <span className="px-2 py-1 bg-genz-teal/20 text-genz-teal text-sm rounded-full">
-                  {selectedClients.length} selected
-                </span>
-              </div>
+          <div className="ds-card p-4">
+            <StepHead n={2} title="Select Clients">
+              <span className="ds-badge ds-badge-teal">{selectedClients.length} selected</span>
               <button
                 type="button"
                 onClick={selectAllClients}
-                className="text-sm text-genz-teal hover:underline"
+                className="ml-auto text-sm font-medium text-genz-teal hover:underline"
               >
-                {filteredClients.every(c => selectedClients.some(s => s._id === c._id)) ? 'Deselect All' : 'Select All'}
+                {filteredClients.length > 0 && filteredClients.every(c => selectedClients.some(s => s._id === c._id)) ? 'Deselect All' : 'Select All'}
               </button>
-            </div>
+            </StepHead>
 
-            <div className="relative mb-4">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
+            <div className="relative mb-3">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-genz-muted" size={16} />
               <input
                 type="text"
                 placeholder="Search clients..."
                 value={clientSearch}
                 onChange={(e) => setClientSearch(e.target.value)}
-                className="w-full pl-12 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full pl-10 pr-4 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
               />
             </div>
 
             {/* Selected Clients Tags */}
             {selectedClients.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-4 p-3 bg-genz-bg rounded-xl">
+              <div className="flex flex-wrap gap-1.5 mb-3 p-2.5 bg-genz-bg rounded-xl">
                 {selectedClients.map(client => (
                   <span
                     key={client._id}
-                    className="inline-flex items-center gap-1 px-3 py-1 bg-genz-teal/20 text-genz-teal text-sm rounded-full"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-genz-teal/20 text-genz-teal text-xs font-medium rounded-full"
                   >
                     {client.fullName}
-                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-genz-navy">
-                      <X size={14} />
+                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-genz-navy" aria-label={`Remove ${client.fullName}`}>
+                      <X size={12} />
                     </button>
                   </span>
                 ))}
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
               {filteredClients.map(client => {
                 const isSelected = selectedClients.some(c => c._id === client._id);
                 return (
@@ -266,48 +267,46 @@ const AdminBulkAssign = () => {
                     key={client._id}
                     type="button"
                     onClick={() => toggleClient(client)}
-                    className={`p-4 rounded-xl border text-left transition-all ${
+                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all ${
                       isSelected
                         ? 'border-genz-teal bg-genz-teal/10'
                         : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
                     }`}
                     data-testid={`select-client-${client._id}`}
                   >
-                    <div className="flex items-center gap-3">
-                      <Users size={20} className={isSelected ? 'text-genz-teal' : 'text-genz-muted'} />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-genz-navy">{client.fullName}</p>
-                        <p className="text-xs text-genz-muted truncate">{client.email}</p>
-                      </div>
-                      {isSelected && <CheckCircle2 size={20} className="text-genz-teal flex-shrink-0" />}
+                    <span className={`w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${isSelected ? '' : 'opacity-80'}`}
+                          style={{ background: 'var(--gradient-cta)' }}>
+                      {client.fullName?.charAt(0) || '?'}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-genz-navy truncate">{client.fullName}</p>
+                      <p className="text-xs text-genz-muted truncate">{client.email}</p>
                     </div>
+                    {isSelected && <CheckCircle2 size={16} className="text-genz-teal flex-shrink-0" />}
                   </button>
                 );
               })}
             </div>
-            
+
             {filteredClients.length === 0 && (
-              <p className="text-center text-genz-muted py-4">No active clients found</p>
+              <p className="text-center text-sm text-genz-muted py-3">No active clients found</p>
             )}
           </div>
 
           {/* Step 3: Set Duration */}
-          <div className="bg-white border border-genz-border rounded-xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-8 h-8 bg-gradient-orange rounded-full flex items-center justify-center text-genz-navy font-bold">3</div>
-              <h2 className="text-lg font-semibold text-genz-navy">Set Access Duration</h2>
-            </div>
+          <div className="ds-card p-4">
+            <StepHead n={3} title="Set Access Duration" />
 
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap gap-2 mb-3">
               {['7', '30', '90', '365'].map(days => (
                 <button
                   key={days}
                   type="button"
                   onClick={() => handlePresetChange(days)}
-                  className={`px-4 py-2 rounded-full text-sm transition-all ${
+                  className={`px-3.5 py-1.5 rounded-full text-sm font-medium transition-all ${
                     duration.preset === days
                       ? 'btn-grad'
-                      : 'bg-genz-bg text-genz-muted hover:bg-genz-bg'
+                      : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'
                   }`}
                 >
                   {days === '7' && '1 Week'}
@@ -318,23 +317,23 @@ const AdminBulkAssign = () => {
               ))}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
-                  <Calendar size={16} className="text-genz-teal" />
+                <label className="flex items-center gap-1.5 text-sm font-medium text-genz-navy mb-1.5">
+                  <Calendar size={14} className="text-genz-teal" />
                   Start Date
                 </label>
                 <input
                   type="date"
                   value={duration.startDate}
                   onChange={(e) => setDuration(prev => ({ ...prev, startDate: e.target.value }))}
-                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   data-testid="start-date-input"
                 />
               </div>
               <div>
-                <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
-                  <Calendar size={16} className="text-genz-teal" />
+                <label className="flex items-center gap-1.5 text-sm font-medium text-genz-navy mb-1.5">
+                  <Calendar size={14} className="text-genz-teal" />
                   End Date
                 </label>
                 <input
@@ -342,7 +341,7 @@ const AdminBulkAssign = () => {
                   value={duration.endDate}
                   onChange={(e) => setDuration(prev => ({ ...prev, endDate: e.target.value, preset: '' }))}
                   min={duration.startDate}
-                  className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
+                  className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
                   data-testid="end-date-input"
                 />
               </div>
@@ -350,21 +349,21 @@ const AdminBulkAssign = () => {
           </div>
 
           {/* Submit */}
-          <div className="flex justify-end gap-4">
+          <div className="flex items-center justify-end gap-3 pt-1">
             <button
               type="button"
               onClick={() => navigate('/admin/clients')}
-              className="px-6 py-3 text-genz-muted hover:text-genz-navy transition-colors"
+              className="px-4 py-2.5 text-sm font-medium text-genz-muted hover:text-genz-navy transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={saving || !selectedTool || selectedClients.length === 0}
-              className="flex items-center gap-2 px-8 py-3 btn-grad rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2.5 btn-grad rounded-xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="bulk-assign-btn"
             >
-              <Save size={20} />
+              <Save size={16} />
               {saving ? 'Assigning...' : `Assign to ${selectedClients.length} Client(s)`}
             </button>
           </div>

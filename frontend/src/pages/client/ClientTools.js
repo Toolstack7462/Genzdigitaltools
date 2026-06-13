@@ -4,6 +4,7 @@ import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../com
 import { Package, Search, Clock, ExternalLink, AlertTriangle, Sparkles } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
 
 const ClientTools = () => {
   const navigate = useNavigate();
@@ -29,13 +30,9 @@ const ClientTools = () => {
     }
   };
 
-  const daysUntilExpiry = (endDate) => {
-    if (!endDate) return null;
-    const end = new Date(endDate);
-    const now = new Date();
-    const diff = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
-    return diff;
-  };
+  // Mirror the backend's inclusive end-of-day boundary; prefer the value the
+  // backend already computed so the card never disagrees with access checks.
+  const daysUntilExpiry = (endDate, backendDays) => expiryDays(endDate, backendDays);
 
   // Get unique categories
   const categories = ['all', ...new Set(tools.map(t => t.category).filter(Boolean))];
@@ -131,7 +128,7 @@ const ClientTools = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredTools.map((tool) => {
-              const days = daysUntilExpiry(tool.accessEndDate);
+              const days = daysUntilExpiry(tool.accessEndDate, tool.daysUntilExpiry);
               const isExpiringSoon = days !== null && days <= 3 && days > 0;
               const isExpired = days !== null && days <= 0;
               const theme = getCategoryTheme(tool.category);

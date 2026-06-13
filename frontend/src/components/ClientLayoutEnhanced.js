@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, User, LogOut, Menu, X,
-  HelpCircle, ChevronRight, MessageCircle
+  HelpCircle, ChevronRight, MessageCircle, ExternalLink
 } from 'lucide-react';
 import { authService } from '../services/authService';
 import { useToast } from './Toast';
@@ -150,6 +150,11 @@ const ClientLayoutEnhanced = ({ children }) => {
 
       {/* Bottom actions */}
       <div className="p-4 border-t space-y-1" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
+        <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
+           className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all">
+          <ExternalLink size={17} />
+          View Website
+        </a>
         <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
            className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all">
           <HelpCircle size={17} />

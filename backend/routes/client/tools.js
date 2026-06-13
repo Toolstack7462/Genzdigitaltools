@@ -139,7 +139,11 @@ router.post('/:toolId/open-intent', async (req, res) => {
         await binding.save();
       } else if (BINDING_MODE === 'hard') {
         // Hard mode: must match a registered binding exactly.
-        return res.status(403).json({ error: 'Device binding mismatch', code: 'DEVICE_MISMATCH' });
+        console.log('[open-intent] device blocked', {
+          clientId: String(req.userId), toolId: String(toolId),
+          serverTime: new Date().toISOString(), code: 'device_blocked', reason: 'device_binding_mismatch',
+        });
+        return res.status(403).json({ error: 'Device binding mismatch', code: 'device_blocked' });
       }
       // Soft mode: if no exact match, the login flow already created a new binding.
       // Trust the authenticated session; do not double-block here.
@@ -151,22 +155,39 @@ router.post('/:toolId/open-intent', async (req, res) => {
 
     if (!assignment || !assignment.toolId) {
       const hadAny = (candidates || []).length > 0;
+      const code = hadAny ? 'assignment_expired' : 'assignment_not_found';
       console.log('[open-intent] no valid assignment', {
         clientId: String(req.userId), toolId: String(toolId),
-        candidateCount: candidates?.length || 0,
-        candidates: (candidates || []).map(c => ({ assignmentId: String(c._id), endDate: c.endDate, status: c.status })),
-        serverNow: now.toISOString(),
-        result: hadAny ? 'expired' : 'not_assigned',
+        assignmentId: hadAny ? String(candidates[0]._id) : null,
+        assignmentStatus: hadAny ? candidates[0].status : null,
+        endDate: hadAny ? candidates[0].endDate : null,
+        usedEndBoundary: hadAny ? (ToolAssignment.effectiveEndBoundary(candidates[0].endDate)?.toISOString() || null) : null,
+        serverTime: now.toISOString(),
+        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
       });
-      return res.status(403).json({ error: hadAny ? 'Tool access expired' : 'Tool not assigned' });
+      // Keep the "expired"/"not assigned" wording so the dashboard's existing
+      // error→tool_access_expired mapping still matches; add the exact code too.
+      return res.status(403).json({ error: hadAny ? 'Tool access expired' : 'Tool not assigned', code });
+    }
+
+    // The tool must resolve to a real target domain or the extension cannot open it.
+    if (!(assignment.toolId.targetUrl || assignment.toolId.loginUrl) || !assignment.toolId.domain) {
+      console.log('[open-intent] tool domain invalid', {
+        clientId: String(req.userId), toolId: String(toolId),
+        assignmentId: String(assignment._id), toolDomain: assignment.toolId.domain || null,
+        serverTime: now.toISOString(), code: 'tool_domain_invalid', reason: 'missing_target_url_or_domain',
+      });
+      return res.status(422).json({ error: 'Tool has no valid target URL', code: 'tool_domain_invalid' });
     }
 
     console.log('[open-intent] assignment selected', {
       clientId: String(req.userId), toolId: String(toolId),
       assignmentId: String(assignment._id),
-      shownEndDate: assignment.endDate,
+      assignmentStatus: assignment.status,
+      endDate: assignment.endDate,
       usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
-      serverNow: now.toISOString(), result: 'valid',
+      toolDomain: assignment.toolId.domain || null,
+      serverTime: now.toISOString(), reason: 'valid',
     });
 
     // OpenIntent is created by the authenticated dashboard session and consumed
@@ -207,16 +228,42 @@ router.post('/:toolId/open-intent', async (req, res) => {
 // ─── GET /:toolId — single tool detail ────────────────────────────────────────
 router.get('/:toolId', async (req, res) => {
   try {
-    const assignment = await ToolAssignment.findOne({
-      clientId: req.userId, toolId: req.params.toolId, status: 'active'
-    }).populate('toolId');
-
-    if (!assignment) return res.status(403).json({ error: 'Access denied. Tool not assigned.' });
-    if (!assignment.toolId || assignment.toolId.status !== 'active') return res.status(403).json({ error: 'Tool not available' });
-
+    // Use the SAME selector + inclusive end-of-day rule as the tools list and the
+    // open-intent / verify-intent access checks. A raw `endDate < now` here was
+    // treating a date-only endDate (stored midnight-UTC) as start-of-day, so a
+    // same-day assignment 403'd on the detail page even though the dashboard list
+    // (which uses effectiveEndBoundary) still showed it as valid — the exact
+    // "dashboard says valid but access expired" mismatch.
     const now = new Date();
-    if (assignment.startDate && assignment.startDate > now) return res.status(403).json({ error: 'Tool access not started yet' });
-    if (assignment.endDate   && assignment.endDate   < now) return res.status(403).json({ error: 'Tool access has expired' });
+    const { assignment, candidates } =
+      await ToolAssignment.findActiveForClientTool(req.userId, req.params.toolId);
+
+    if (!assignment || !assignment.toolId) {
+      const hadAny = (candidates || []).length > 0;
+      console.log('[tool-detail] no valid assignment', {
+        clientId: String(req.userId), toolId: String(req.params.toolId),
+        candidateCount: candidates?.length || 0,
+        candidates: (candidates || []).map(c => ({
+          assignmentId: String(c._id), endDate: c.endDate,
+          usedEndBoundary: ToolAssignment.effectiveEndBoundary(c.endDate)?.toISOString() || null,
+          status: c.status,
+        })),
+        serverNow: now.toISOString(),
+        result: hadAny ? 'tool_access_expired' : 'not_assigned',
+      });
+      return res.status(403).json({
+        error: hadAny ? 'Tool access has expired' : 'Access denied. Tool not assigned.',
+        code: hadAny ? 'assignment_expired' : 'assignment_not_found',
+      });
+    }
+
+    console.log('[tool-detail] assignment selected', {
+      clientId: String(req.userId), toolId: String(req.params.toolId),
+      assignmentId: String(assignment._id),
+      shownEndDate: assignment.endDate,
+      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
+      serverNow: now.toISOString(), result: 'valid',
+    });
 
     return res.json({
       success: true,

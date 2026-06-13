@@ -21,24 +21,60 @@ function getExtensionTokenDays() {
   return Number.isFinite(days) && days > 0 ? days : 365;
 }
 
+// ─── Exact access-decision error codes (never a generic 403) ────────────────
+// Every access gate in the open flow returns ONE of these in `code` so the
+// extension/dashboard can act precisely instead of guessing from a 403.
+const ACCESS_CODES = {
+  ASSIGNMENT_NOT_FOUND:   'assignment_not_found',
+  ASSIGNMENT_EXPIRED:     'assignment_expired',
+  SESSION_BUNDLE_MISSING: 'session_bundle_missing',
+  TOOL_DOMAIN_INVALID:    'tool_domain_invalid',
+  EXTENSION_TOKEN_INVALID:'extension_token_invalid',
+  INTENT_INVALID:         'intent_invalid',
+  DEVICE_BLOCKED:         'device_blocked',
+};
+
+// Safe access-stage logger. ONLY ids/dates/booleans/reasons — never cookies,
+// tokens, credential payloads, or any secret value.
+function accessDebug(stage, fields = {}) {
+  const safe = {
+    stage,
+    clientId:        fields.clientId != null ? String(fields.clientId) : null,
+    toolId:          fields.toolId != null ? String(fields.toolId) : null,
+    assignmentId:    fields.assignmentId != null ? String(fields.assignmentId) : null,
+    assignmentStatus:fields.assignmentStatus ?? null,
+    endDate:         fields.endDate ?? null,
+    usedEndBoundary: fields.usedEndBoundary ?? null,
+    serverTime:      fields.serverTime || new Date().toISOString(),
+    hasSessionBundle:fields.hasSessionBundle ?? null,
+    toolDomain:      fields.toolDomain ?? null,
+    code:            fields.code ?? null,
+    reason:          fields.reason ?? null,
+  };
+  console.log(`[access:${stage}]`, safe);
+}
+
 // Middleware to verify extension token
 const verifyExtensionToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('ExtToken ')) {
-      return res.status(401).json({ error: 'Extension token required' });
+      accessDebug('extension_token', { reason: 'missing_header', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
+      return res.status(401).json({ error: 'Extension token required', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
     }
-    
+
     const token = authHeader.substring(9); // Remove 'ExtToken '
     const requestDeviceIdHash = req.headers['x-device-id-hash'] || null;
     const tokenData = await ExtensionToken.verifyToken(token, requestDeviceIdHash);
-    
+
     if (!tokenData) {
-      return res.status(401).json({ error: 'Invalid or expired extension token' });
+      accessDebug('extension_token', { reason: 'invalid_or_expired_token', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
+      return res.status(401).json({ error: 'Invalid or expired extension token', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
     }
-    
+
     if (tokenData.client.status === 'disabled') {
-      return res.status(403).json({ error: 'Account is disabled' });
+      accessDebug('extension_token', { clientId: tokenData.clientId, reason: 'account_disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
+      return res.status(403).json({ error: 'Account is disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
     }
     
     req.clientId = tokenData.clientId;
@@ -77,9 +113,10 @@ router.post('/auth', authLimiter, async (req, res) => {
     }
     
     if (user.status === 'disabled') {
-      return res.status(403).json({ error: 'Account is disabled' });
+      accessDebug('extension_auth', { clientId: user._id, reason: 'account_disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
+      return res.status(403).json({ error: 'Account is disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
     }
-    
+
     // Check if user has a password set
     if (!user.passwordHash) {
       return res.status(401).json({ error: 'Password not set. Please reset your password.' });
@@ -153,12 +190,19 @@ router.post('/auth/activate', authLimiter, async (req, res) => {
     const activation = await ActivationToken.consume(activationToken);
 
     if (!activation || !activation.clientId) {
-      return res.status(403).json({ error: 'Activation token invalid, expired, or already used' });
+      accessDebug('extension_activate', { reason: 'activation_token_invalid_expired_or_used', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
+      return res.status(403).json({ error: 'Activation token invalid, expired, or already used', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
     }
 
     const user = await User.findById(activation.clientId);
-    if (!user || user.role !== 'CLIENT') return res.status(403).json({ error: 'Invalid activation client' });
-    if (user.status === 'disabled') return res.status(403).json({ error: 'Account is disabled' });
+    if (!user || user.role !== 'CLIENT') {
+      accessDebug('extension_activate', { clientId: activation.clientId, reason: 'invalid_activation_client', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
+      return res.status(403).json({ error: 'Invalid activation client', code: ACCESS_CODES.EXTENSION_TOKEN_INVALID });
+    }
+    if (user.status === 'disabled') {
+      accessDebug('extension_activate', { clientId: user._id, reason: 'account_disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
+      return res.status(403).json({ error: 'Account is disabled', code: ACCESS_CODES.DEVICE_BLOCKED });
+    }
 
     const dashboardDeviceIdHash = activation.deviceIdHash || null;
     const extensionDeviceIdHash = req.headers['x-device-id-hash'] || null;
@@ -169,9 +213,15 @@ router.post('/auth/activate', authLimiter, async (req, res) => {
     // then attach the extension device hash to that same binding for future
     // extension-token verification.
     if (user.devicePolicy?.enabled) {
-      if (!dashboardDeviceIdHash) return res.status(403).json({ error: 'Device binding required', code: 'DEVICE_MISMATCH' });
+      if (!dashboardDeviceIdHash) {
+        accessDebug('extension_activate', { clientId: user._id, reason: 'device_binding_required', code: ACCESS_CODES.DEVICE_BLOCKED });
+        return res.status(403).json({ error: 'Device binding required', code: ACCESS_CODES.DEVICE_BLOCKED });
+      }
       const binding = await DeviceBinding.findOne({ clientId: user._id, deviceIdHash: dashboardDeviceIdHash });
-      if (!binding) return res.status(403).json({ error: 'Device binding mismatch', code: 'DEVICE_MISMATCH' });
+      if (!binding) {
+        accessDebug('extension_activate', { clientId: user._id, reason: 'device_binding_mismatch', code: ACCESS_CODES.DEVICE_BLOCKED });
+        return res.status(403).json({ error: 'Device binding mismatch', code: ACCESS_CODES.DEVICE_BLOCKED });
+      }
       if (extensionDeviceIdHash) binding.extensionDeviceIdHash = extensionDeviceIdHash;
       binding.lastSeenAt = new Date();
       await binding.save();
@@ -378,29 +428,64 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
 
     // Verify assignment — LATEST valid one (same selector as verify-intent and
     // the dashboard; end-of-day inclusive; ignores expired duplicate rows).
-    const { assignment } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
+    const nowTs = new Date();
 
     if (!assignment) {
+      const hadAny = (candidates || []).length > 0;
+      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      accessDebug('credentials', {
+        clientId: req.clientId, toolId,
+        assignmentId: hadAny ? candidates[0]._id : null,
+        assignmentStatus: hadAny ? candidates[0].status : null,
+        endDate: hadAny ? candidates[0].endDate : null,
+        usedEndBoundary: hadAny ? (ToolAssignment.effectiveEndBoundary(candidates[0].endDate)?.toISOString() || null) : null,
+        serverTime: nowTs.toISOString(),
+        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
+      });
       await CredentialAccessLog.log({
         clientId: req.clientId,
         toolId,
         extensionTokenId: req.extensionTokenId,
         action: 'CREDENTIALS_FETCHED',
         success: false,
-        errorMessage: 'No valid assignment found',
+        errorMessage: code,
         deviceInfo: {
           userAgent: req.headers['user-agent'],
           ip: req.ip,
           extensionVersion: req.headers['x-extension-version']
         }
       });
-      return res.status(403).json({ error: 'Tool not assigned to you' });
+      return res.status(403).json({
+        error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned to you',
+        code,
+      });
     }
 
     const tool = assignment.toolId;
-    
+
     if (!tool || tool.status !== 'active') {
-      return res.status(404).json({ error: 'Tool not found or inactive' });
+      accessDebug('credentials', {
+        clientId: req.clientId, toolId, assignmentId: assignment._id,
+        assignmentStatus: assignment.status, endDate: assignment.endDate,
+        serverTime: nowTs.toISOString(), code: ACCESS_CODES.ASSIGNMENT_EXPIRED,
+        reason: 'tool_inactive_or_deleted',
+      });
+      // Tool turned off/deleted by admin → access is effectively revoked.
+      return res.status(403).json({ error: 'Tool not available', code: ACCESS_CODES.ASSIGNMENT_EXPIRED });
+    }
+
+    // The tool must resolve to a real target domain or the extension cannot open
+    // or scope cookies to it.
+    const resolvedTargetUrl = tool.targetUrl || tool.loginUrl || null;
+    if (!resolvedTargetUrl || !tool.domain) {
+      accessDebug('credentials', {
+        clientId: req.clientId, toolId, assignmentId: assignment._id,
+        assignmentStatus: assignment.status, toolDomain: tool.domain || null,
+        serverTime: nowTs.toISOString(), code: ACCESS_CODES.TOOL_DOMAIN_INVALID,
+        reason: 'missing_target_url_or_domain',
+      });
+      return res.status(422).json({ error: 'Tool has no valid target URL', code: ACCESS_CODES.TOOL_DOMAIN_INVALID });
     }
     
     // Build unified credential response
@@ -521,17 +606,56 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       }
     }
 
+    // Does this tool actually carry usable session data to inject? Auth can come
+    // from EITHER the decrypted session bundle OR the unified credentials payload
+    // (a cookies/token/storage tool may store its data in either place).
+    const bundleHasData = !!(sessionBundle && (
+      (Array.isArray(sessionBundle.cookies) && sessionBundle.cookies.length) ||
+      (sessionBundle.localStorage && Object.keys(sessionBundle.localStorage).length) ||
+      (sessionBundle.sessionStorage && Object.keys(sessionBundle.sessionStorage).length)
+    ));
+    const p = credentials?.payload;
+    const credHasPayload = !!(p && (
+      (Array.isArray(p) && p.length) ||
+      (typeof p === 'string' && p.length) ||
+      (typeof p === 'object' && !Array.isArray(p) && Object.keys(p).length)
+    ));
+    const credType = credentials?.type || 'none';
+    // Tools whose login is driven by injected session state (cookies/token/storage)
+    // CANNOT open without SOME data to inject. form/sso/none auto-fill or
+    // direct-open, so they are allowed through even with an empty bundle.
+    const requiresInjectedSession = ['cookies', 'token', 'localStorage', 'sessionStorage'].includes(credType);
+    const hasAnyInjectable = bundleHasData || credHasPayload;
+
     // Safe debug: confirm the LATEST admin session bundle is being returned to
     // the extension — COUNTS ONLY, never cookie values, tokens, or secrets.
-    console.log('[extension/credentials] bundle for tool', String(tool._id), {
-      domain: tool.domain || null,
+    accessDebug('credentials', {
+      clientId: req.clientId, toolId: tool._id, assignmentId: assignment._id,
+      assignmentStatus: assignment.status, endDate: assignment.endDate,
+      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
+      serverTime: nowTs.toISOString(),
+      hasSessionBundle: bundleHasData,
+      toolDomain: tool.domain || null,
+      reason: requiresInjectedSession && !hasAnyInjectable ? 'bundle_required_but_empty' : 'serving_latest_bundle',
+    });
+    console.log('[extension/credentials] bundle detail', String(tool._id), {
       bundleVersion: sessionBundle?.version || null,
       bundleUpdatedAt: tool.sessionBundle?.bundleUpdatedAt || null,
       cookies: Array.isArray(sessionBundle?.cookies) ? sessionBundle.cookies.length : 0,
       localStorage: sessionBundle?.localStorage ? Object.keys(sessionBundle.localStorage).length : 0,
       sessionStorage: sessionBundle?.sessionStorage ? Object.keys(sessionBundle.sessionStorage).length : 0,
-      credentialType: credentials?.type || 'none',
+      credentialType: credType,
     });
+
+    if (requiresInjectedSession && !hasAnyInjectable) {
+      // Assignment is valid but admin has not (yet) saved any usable session data
+      // (neither bundle nor credentials payload) for this auth-by-session tool —
+      // report it precisely instead of opening a tab that would land logged-out.
+      return res.status(409).json({
+        error: 'Latest session for this tool is not available yet',
+        code: ACCESS_CODES.SESSION_BUNDLE_MISSING,
+      });
+    }
 
     // Log successful access
     await CredentialAccessLog.log({
@@ -853,14 +977,20 @@ router.post('/open-intent', verifyExtensionToken, async (req, res) => {
       return res.status(400).json({ error: 'Valid toolId required' });
     }
 
-    // Verify the client is actually assigned this tool
-    const assignment = await ToolAssignment.findOne({
-      clientId: req.clientId,
-      toolId,
-      status: 'active'
-    });
+    // Verify assignment — LATEST valid one (end-of-day inclusive; ignores expired
+    // duplicate rows), same selector as verify-intent and the dashboard.
+    const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
     if (!assignment) {
-      return res.status(403).json({ error: 'Tool not assigned or expired' });
+      const hadAny = (candidates || []).length > 0;
+      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      accessDebug('open_intent_legacy', {
+        clientId: req.clientId, toolId,
+        assignmentId: hadAny ? candidates[0]._id : null,
+        assignmentStatus: hadAny ? candidates[0].status : null,
+        endDate: hadAny ? candidates[0].endDate : null,
+        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
+      });
+      return res.status(403).json({ error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned', code });
     }
 
     const issued = await OpenIntent.issue({
@@ -900,7 +1030,8 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
     // Normalize toolId to a string on the backend too (it may arrive as a number).
     const toolId = req.body.toolId != null ? String(req.body.toolId) : null;
     if (!intentToken || !toolId) {
-      return res.status(400).json({ error: 'intentToken and toolId required', stage: 'intent_not_found' });
+      accessDebug('verify_intent', { clientId: req.clientId, toolId, reason: 'missing_intent_or_tool', code: ACCESS_CODES.INTENT_INVALID });
+      return res.status(400).json({ error: 'intentToken and toolId required', stage: 'intent_not_found', code: ACCESS_CODES.INTENT_INVALID });
     }
 
     // Dashboard-created open intents are intentionally NOT bound to the
@@ -926,7 +1057,13 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
         intent_device_mismatch:'Secure access is linked to a different device. Contact admin.',
         intent_not_found:      'Secure access token could not be verified.',
       };
-      return res.status(403).json({ error: reason, stage: reason, message: messages[reason] || messages.intent_not_found });
+      // device_mismatch is a device problem; all other intent failures are the
+      // one-time token itself being invalid/expired/consumed.
+      const code = reason === 'intent_device_mismatch' ? ACCESS_CODES.DEVICE_BLOCKED : ACCESS_CODES.INTENT_INVALID;
+      accessDebug('verify_intent', { clientId: req.clientId, toolId, reason, code });
+      // `stage` kept (intent_expired/consumed/…) so the dashboard message mapping
+      // and its non-retry business-stage guard keep matching exactly.
+      return res.status(403).json({ error: reason, stage: reason, code, message: messages[reason] || messages.intent_not_found });
     }
 
     // 2) Backend assignment check is NEVER skipped. Use the SAME selector the
@@ -937,30 +1074,38 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
     const { assignment, candidates } = await ToolAssignment.findActiveForClientTool(req.clientId, toolId);
 
     if (!assignment) {
+      // Distinguish "never assigned" from "assigned but expired/revoked" — a row
+      // existed (hadAny) means it expired; none means it was never assigned.
       const hadAny = (candidates || []).length > 0;
-      // Safe debug — ids, dates, server time, result; NO cookies/tokens/secrets.
-      console.log('[verify-intent] no valid assignment', {
-        clientId: String(req.clientId), toolId: String(toolId),
-        candidateCount: candidates?.length || 0,
-        candidates: (candidates || []).map(c => ({
-          assignmentId: String(c._id), endDate: c.endDate,
-          usedEndBoundary: ToolAssignment.effectiveEndBoundary(c.endDate)?.toISOString() || null,
-          status: c.status,
-        })),
-        serverNow: now.toISOString(),
-        result: hadAny ? 'tool_access_expired' : 'not_assigned',
+      const code = hadAny ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
+      accessDebug('verify_intent', {
+        clientId: req.clientId, toolId,
+        assignmentId: hadAny ? candidates[0]._id : null,
+        assignmentStatus: hadAny ? candidates[0].status : null,
+        endDate: hadAny ? candidates[0].endDate : null,
+        usedEndBoundary: hadAny ? (ToolAssignment.effectiveEndBoundary(candidates[0].endDate)?.toISOString() || null) : null,
+        serverTime: now.toISOString(),
+        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
       });
       // Do NOT consume the token — assignment failed; the still-valid token can be
-      // reused once admin restores access.
-      return res.status(403).json({ error: 'Tool access expired or revoked', stage: 'tool_access_expired' });
+      // reused once admin restores access. `stage` kept as tool_access_expired so
+      // the dashboard treats it as a final (non-retry) business stage.
+      return res.status(403).json({
+        error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned',
+        stage: 'tool_access_expired', code,
+      });
     }
 
-    console.log('[verify-intent] assignment OK', {
-      clientId: String(req.clientId), toolId: String(toolId),
-      assignmentId: String(assignment._id),
-      shownEndDate: assignment.endDate,
+    accessDebug('verify_intent', {
+      clientId: req.clientId, toolId,
+      assignmentId: assignment._id,
+      assignmentStatus: assignment.status,
+      endDate: assignment.endDate,
       usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
-      serverNow: now.toISOString(), result: 'valid',
+      hasSessionBundle: !!(assignment.toolId && assignment.toolId.sessionBundle &&
+        (assignment.toolId.sessionBundle.cookiesEncrypted || assignment.toolId.sessionBundle.localStorageEncrypted || assignment.toolId.sessionBundle.sessionStorageEncrypted)),
+      toolDomain: assignment.toolId?.domain || null,
+      serverTime: now.toISOString(), reason: 'valid',
     });
 
     // 3) ONLY now (token valid + assignment valid) mark the one-time intent

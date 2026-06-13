@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
 
 const ClientToolsEnhanced = () => {
   const navigate = useNavigate();
@@ -57,13 +58,8 @@ const ClientToolsEnhanced = () => {
     return date.toLocaleDateString('en-GB', options);
   };
   
-  const getDaysLeft = (endDate) => {
-    if (!endDate) return null;
-    const now = new Date();
-    const end = new Date(endDate);
-    const daysLeft = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
-    return daysLeft;
-  };
+  // Inclusive end-of-day boundary, matching the backend (see utils/expiry.js).
+  const getDaysLeft = (endDate, backendDays) => expiryDays(endDate, backendDays);
   
   const getStatusColor = (daysLeft) => {
     if (daysLeft === null) return 'bg-green-100 text-green-700';
@@ -156,7 +152,7 @@ const ClientToolsEnhanced = () => {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredTools.map(tool => {
-              const daysLeft = getDaysLeft(tool.endDate);
+              const daysLeft = getDaysLeft(tool.endDate, tool.daysUntilExpiry);
               const statusColor = getStatusColor(daysLeft);
               
               return (

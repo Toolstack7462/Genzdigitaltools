@@ -510,7 +510,19 @@ async function getToolCredentials(toolId) {
       timestamp: Date.now()
     };
   } catch (error) {
-    logger.error('Failed to fetch credentials', { error: error.message });
+    // Surface EXACT backend business codes (session_bundle_missing,
+    // tool_domain_invalid, assignment_expired/not_found, device_blocked,
+    // extension_token_invalid) so the caller can report them precisely instead
+    // of silently opening a logged-out tab. Network/unknown failures still
+    // resolve to null so transient hiccups don't hard-fail direct-open tools.
+    const code = error?.payload?.code || null;
+    logger.error('Failed to fetch credentials', { error: error.message, code, status: error?.status });
+    if (code) {
+      const tagged = new Error(code);
+      tagged.code = code;
+      tagged.status = error.status;
+      throw tagged;
+    }
     return null;
   }
 }
@@ -1022,7 +1034,23 @@ async function _handleOpenToolInner(payload) {
   try {
     credentialData = await getToolCredentials(toolId);
   } catch (err) {
-    logger.warn('Credential fetch failed', { error: err.message });
+    // Exact backend business code (session_bundle_missing, tool_domain_invalid,
+    // assignment_expired/not_found, device_blocked, extension_token_invalid).
+    const code = err?.code || err?.payload?.code || null;
+    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: err?.status });
+    if (code) {
+      openIntentLock.delete(toolId);
+      const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
+      if (FINAL_BUSINESS.includes(code)) {
+        // Map assignment_* to the dashboard's existing tool_access_expired stage
+        // (final, non-retry); pass other codes through verbatim.
+        const stage = (code === 'assignment_expired' || code === 'assignment_not_found') ? 'tool_access_expired' : code;
+        return { success: false, error: stage, stage, code };
+      }
+      if (code === 'extension_token_invalid') {
+        return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
+      }
+    }
   }
 
   // If credential fetch failed and the extension session was cleared (401),

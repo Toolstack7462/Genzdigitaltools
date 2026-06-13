@@ -4,6 +4,7 @@ import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../com
 import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
 
 const ClientToolDetail = () => {
   const navigate = useNavigate();
@@ -30,12 +31,8 @@ const ClientToolDetail = () => {
     }
   };
 
-  const daysUntilExpiry = (endDate) => {
-    if (!endDate) return null;
-    const end = new Date(endDate);
-    const now = new Date();
-    return Math.ceil((end - now) / (1000 * 60 * 60 * 24));
-  };
+  // Inclusive end-of-day boundary, matching the backend (see utils/expiry.js).
+  const daysUntilExpiry = (endDate, backendDays) => expiryDays(endDate, backendDays);
 
   if (loading) {
     return (
@@ -70,7 +67,7 @@ const ClientToolDetail = () => {
   }
 
   const theme = getCategoryTheme(tool.category);
-  const days = daysUntilExpiry(tool.accessEndDate);
+  const days = daysUntilExpiry(tool.accessEndDate, tool.daysUntilExpiry);
   const isExpiringSoon = days !== null && days <= 7 && days > 0;
 
   return (

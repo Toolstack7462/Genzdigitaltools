@@ -353,6 +353,12 @@ const ClientDashboardEnhanced = () => {
                     : <span className="text-emerald-300">Active</span>}
                 </p>
               </div>
+              <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
+                 className="hidden sm:inline-flex items-center gap-1.5 h-11 px-3.5 rounded-xl text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5"
+                 style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
+                 title="View Website">
+                <ExternalLink size={16} /> View Website
+              </a>
               <Link to="/client/profile"
                     className="w-11 h-11 rounded-xl flex items-center justify-center text-white transition-all hover:-translate-y-0.5"
                     style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}

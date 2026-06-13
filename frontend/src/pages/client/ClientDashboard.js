@@ -5,6 +5,7 @@ import { Package, Clock, AlertTriangle, CheckCircle2, X } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { authService } from '../../services/authService';
+import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
 
 const ClientDashboard = () => {
   const navigate = useNavigate();
@@ -54,12 +55,8 @@ const ClientDashboard = () => {
     localStorage.setItem('expiry_warning_dismissed', new Date().toISOString());
   };
 
-  const daysUntilExpiry = (endDate) => {
-    const end = new Date(endDate);
-    const now = new Date();
-    const diff = Math.ceil((end - now) / (1000 * 60 * 60 * 24));
-    return diff;
-  };
+  // Inclusive end-of-day boundary, matching the backend (see utils/expiry.js).
+  const daysUntilExpiry = (endDate, backendDays) => expiryDays(endDate, backendDays);
 
   if (loading) {
     return (
@@ -101,7 +98,7 @@ const ClientDashboard = () => {
                 <div key={idx} className="flex items-center justify-between p-3 bg-yellow-500/10 rounded-lg">
                   <span className="text-white font-medium">{item.tool?.name || 'Unknown Tool'}</span>
                   <span className="text-yellow-400 text-sm">
-                    {daysUntilExpiry(item.endDate)} days left
+                    {daysUntilExpiry(item.endDate, item.daysUntilExpiry)} days left
                   </span>
                 </div>
               ))}

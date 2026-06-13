@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, Users, Activity, LogOut, FileText, Mail,
-  Menu, X, Shield, Settings, TrendingUp, ShieldAlert, ExternalLink
+  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import api from '../services/api';
@@ -115,10 +115,11 @@ const AdminLayoutEnhanced = ({ children }) => {
       </nav>
 
       <div className="p-3 border-t space-y-1" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
-        <Link to="/" className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all">
-          <Settings size={16} />
+        <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
+           className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all">
+          <ExternalLink size={16} />
           View Website
-        </Link>
+        </a>
         <button onClick={handleLogout}
                 className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-all">
           <LogOut size={16} />
@@ -162,10 +163,10 @@ const AdminLayoutEnhanced = ({ children }) => {
           <h1 className="font-heading text-white font-bold text-[20px]">
             {getAdminTitle(location.pathname)}
           </h1>
-          <Link to="/" target="_blank" rel="noopener noreferrer"
+          <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
                 className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-white/70 border border-white/15 rounded-xl hover:text-white hover:border-genz-cyan/50 hover:bg-white/5 transition-all">
             <ExternalLink size={14} /> View Site
-          </Link>
+          </a>
         </header>
 
         {/* Mobile topbar */}
