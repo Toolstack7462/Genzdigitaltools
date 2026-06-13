@@ -27,9 +27,21 @@ const ExtensionToken = createModel('ExtensionToken', {
     },
     async verifyToken(token, requestDeviceIdHash = null) {
       const tokenHash = this.hashToken(token);
-      const extensionToken = await this.findOne({ tokenHash, isRevoked: false, expiresAt: { $gt: new Date() } })
-        .populate('clientId', 'email fullName status devicePolicy');
+      const extensionToken = await this.findOne({ tokenHash, isRevoked: false, expiresAt: { $gt: new Date() } });
       if (!extensionToken) return null;
+
+      // Resolve the client id from the RAW foreign key on the token row. We do
+      // NOT rely on a projected .populate() here: after the MySQL migration a
+      // projected populate can return the client object WITHOUT its _id, which
+      // made the returned clientId (and therefore req.clientId) null on EVERY
+      // extension request → getClientAccessibleTool(null, ...) → false
+      // "Tool not assigned" even though the dashboard showed the tool.
+      const clientId = (extensionToken.clientId && extensionToken.clientId._id) || extensionToken.clientId;
+      if (!clientId) return null;
+
+      const User = require('./User');
+      const client = await User.findById(clientId).select('email fullName status devicePolicy');
+      if (!client) return null;
 
       if (extensionToken.deviceIdHash) {
         if (!requestDeviceIdHash || requestDeviceIdHash !== extensionToken.deviceIdHash) {
@@ -38,9 +50,9 @@ const ExtensionToken = createModel('ExtensionToken', {
           return null;
         }
         const DeviceBinding = require('./DeviceBinding');
-        let binding = await DeviceBinding.findOne({ clientId: extensionToken.clientId._id, deviceIdHash: extensionToken.deviceIdHash });
+        let binding = await DeviceBinding.findOne({ clientId, deviceIdHash: extensionToken.deviceIdHash });
         if (!binding) {
-          binding = await DeviceBinding.findOne({ clientId: extensionToken.clientId._id, extensionDeviceIdHash: extensionToken.deviceIdHash });
+          binding = await DeviceBinding.findOne({ clientId, extensionDeviceIdHash: extensionToken.deviceIdHash });
         }
         if (!binding) {
           extensionToken.isRevoked = true;
@@ -55,8 +67,8 @@ const ExtensionToken = createModel('ExtensionToken', {
       await extensionToken.save();
       return {
         tokenId: extensionToken._id,
-        clientId: extensionToken.clientId._id,
-        client: extensionToken.clientId,
+        clientId,
+        client,
         expiresAt: extensionToken.expiresAt,
         deviceIdHash: extensionToken.deviceIdHash,
       };
