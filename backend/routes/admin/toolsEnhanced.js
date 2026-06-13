@@ -135,6 +135,16 @@ router.post('/', normalizeStringInputs, validate(schemas.createTool), async (req
   try {
     const toolData = { ...req.body, createdBy: req.userId };
 
+    // Block "Custom Headers" — MV3 cannot inject request headers reliably.
+    // The extension's HeadersStrategy silently falls back to localStorage,
+    // which is misleading. Admin must pick a supported type.
+    const HEADERS_BLOCKED = 'Custom Headers auth is not supported in this build (Chrome MV3 limitation). Use Cookies, Bearer Token, Local Storage, Session Storage, Form Login, or SSO instead.';
+    if (toolData.credentialType === 'headers') return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    if (toolData.credentials?.type === 'headers') return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    if (toolData.comboAuth?.enabled && (toolData.comboAuth.primaryType === 'headers' || toolData.comboAuth.secondaryType === 'headers')) {
+      return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    }
+
     // Encrypt credentials if provided in plaintext
     if (toolData.cookiesEncrypted && !toolData.cookiesEncrypted.includes(':')) {
       toolData.cookiesEncrypted = encryptCookies(toolData.cookiesEncrypted);
@@ -161,6 +171,13 @@ router.put('/:id', normalizeStringInputs, validate(schemas.updateTool), async (r
     if (!tool) return res.status(404).json({ error: 'Tool not found' });
 
     const updates = { ...req.body };
+
+    const HEADERS_BLOCKED = 'Custom Headers auth is not supported in this build (Chrome MV3 limitation). Use Cookies, Bearer Token, Local Storage, Session Storage, Form Login, or SSO instead.';
+    if (updates.credentialType === 'headers') return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    if (updates.credentials?.type === 'headers') return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    if (updates.comboAuth?.enabled && (updates.comboAuth.primaryType === 'headers' || updates.comboAuth.secondaryType === 'headers')) {
+      return res.status(400).json({ error: HEADERS_BLOCKED, code: 'auth_type_unsupported' });
+    }
 
     if (updates.cookiesEncrypted && !updates.cookiesEncrypted.includes(':')) {
       updates.cookiesEncrypted = encryptCookies(updates.cookiesEncrypted);
@@ -205,6 +222,30 @@ router.put('/:id/session-bundle', express.json({ limit: '10mb' }), async (req, r
     if (!tool) return res.status(404).json({ error: 'Tool not found' });
 
     const { cookies, localStorage: ls, sessionStorage: ss } = req.body;
+
+    // Validate shape before encrypting. Saving garbage here would later fail in
+    // the extension as cookie_injection_failed / session_bundle_missing with no
+    // clear hint to the admin.
+    if (cookies !== undefined && cookies !== null) {
+      if (!Array.isArray(cookies)) {
+        return res.status(400).json({ error: 'cookies must be a JSON array' });
+      }
+      for (const c of cookies) {
+        if (!c || typeof c !== 'object' || !c.name || typeof c.name !== 'string') {
+          return res.status(400).json({ error: 'each cookie must be an object with a "name" string' });
+        }
+      }
+    }
+    if (ls !== undefined && ls !== null) {
+      if (typeof ls !== 'object' || Array.isArray(ls)) {
+        return res.status(400).json({ error: 'localStorage must be a JSON object of key/value pairs' });
+      }
+    }
+    if (ss !== undefined && ss !== null) {
+      if (typeof ss !== 'object' || Array.isArray(ss)) {
+        return res.status(400).json({ error: 'sessionStorage must be a JSON object of key/value pairs' });
+      }
+    }
 
     if (!tool.sessionBundle) tool.sessionBundle = {};
 

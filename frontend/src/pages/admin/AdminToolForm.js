@@ -127,13 +127,14 @@ const AdminToolForm = () => {
   // Combo auth tab state - dynamically set based on selected types
   const [comboAuthTab, setComboAuthTab] = useState('primary');
 
-  // Available combo types
+  // Available combo types — Custom Headers excluded: Manifest V3 cannot
+  // intercept/modify request headers, so a Combo using "headers" would silently
+  // fall back to localStorage injection. Hidden from combo to prevent confusion.
   const COMBO_AUTH_TYPES = [
     { value: 'sso', label: 'SSO / OAuth', icon: '🔐' },
     { value: 'form', label: 'Form Login', icon: '📝' },
     { value: 'cookies', label: 'Cookies', icon: '🍪' },
     { value: 'token', label: 'Bearer Token', icon: '🔑' },
-    { value: 'headers', label: 'Custom Headers', icon: '📋' },
     { value: 'localStorage', label: 'Local Storage', icon: '💾' },
     { value: 'sessionStorage', label: 'Session Storage', icon: '📦' }
   ];
@@ -182,8 +183,9 @@ const AdminToolForm = () => {
       value: 'headers', 
       label: 'Custom Headers', 
       icon: '📋', 
-      description: 'Multiple header auth (MV3 limited)',
-      hint: 'Prefer cookies for MV3'
+      description: 'Coming soon — MV3 cannot inject headers',
+      hint: 'Use Cookies or Bearer Token instead',
+      comingSoon: true
     },
     { 
       value: 'localStorage', 
@@ -405,6 +407,44 @@ const AdminToolForm = () => {
     if (!formData.targetUrl.trim()) {
       showError('Target URL is required');
       return;
+    }
+
+    // Block "Custom Headers" — MV3 cannot inject headers reliably, so saving it
+    // would create a fake/broken auth configuration.
+    if (formData.credentialType === 'headers') {
+      showError('"Custom Headers" is not fully supported yet (MV3 limitation). Please choose Cookies, Bearer Token, Local Storage, Session Storage, Form Login, or SSO.');
+      return;
+    }
+
+    // Validate JSON for credential types that store JSON payloads. Saving
+    // invalid JSON would later fail in the extension as cookie_injection_failed
+    // / session_bundle_missing with no clear hint to the admin.
+    const isCombo = formData.credentialType === 'combo';
+    const tryParseJson = (raw, label) => {
+      if (!raw || !raw.trim()) return true;
+      try { JSON.parse(raw); return true; }
+      catch (err) {
+        showError(`${label} is not valid JSON: ${err.message}`);
+        return false;
+      }
+    };
+    if (!isCombo) {
+      if (formData.credentialType === 'cookies' && !tryParseJson(formData.cookiesEncrypted, 'Cookies JSON')) return;
+      if ((formData.credentialType === 'localStorage' || formData.credentialType === 'sessionStorage')
+          && !tryParseJson(formData.localStorageEncrypted, 'Storage JSON')) return;
+    } else {
+      const c = comboAuth.cookiesConfig?.cookies;
+      const ls = comboAuth.localStorageConfig?.data;
+      const ss = comboAuth.sessionStorageConfig?.data;
+      if (comboAuth.primaryType === 'cookies' || comboAuth.secondaryType === 'cookies') {
+        if (!tryParseJson(c, 'Combo Cookies JSON')) return;
+      }
+      if (comboAuth.primaryType === 'localStorage' || comboAuth.secondaryType === 'localStorage') {
+        if (!tryParseJson(ls, 'Combo Local Storage JSON')) return;
+      }
+      if (comboAuth.primaryType === 'sessionStorage' || comboAuth.secondaryType === 'sessionStorage') {
+        if (!tryParseJson(ss, 'Combo Session Storage JSON')) return;
+      }
     }
 
     try {
@@ -1079,16 +1119,25 @@ const AdminToolForm = () => {
                 <button
                   key={type.value}
                   type="button"
-                  onClick={() => setFormData(prev => ({ ...prev, credentialType: type.value }))}
-                  className={`p-3 rounded-xl border text-left transition-all ${
-                    formData.credentialType === type.value
-                      ? type.isCombo 
-                        ? 'border-purple-500 bg-purple-500/20 ring-2 ring-purple-500/50'
-                        : 'border-genz-teal bg-genz-teal/10'
-                      : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
+                  disabled={type.comingSoon}
+                  onClick={() => !type.comingSoon && setFormData(prev => ({ ...prev, credentialType: type.value }))}
+                  title={type.comingSoon ? 'Coming Soon — MV3 cannot intercept network headers' : ''}
+                  className={`p-3 rounded-xl border text-left transition-all relative ${
+                    type.comingSoon
+                      ? 'border-genz-border bg-genz-bg/50 opacity-60 cursor-not-allowed'
+                      : formData.credentialType === type.value
+                        ? type.isCombo 
+                          ? 'border-purple-500 bg-purple-500/20 ring-2 ring-purple-500/50'
+                          : 'border-genz-teal bg-genz-teal/10'
+                        : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
                   }`}
                   data-testid={`credential-type-${type.value}`}
                 >
+                  {type.comingSoon && (
+                    <span className="absolute top-1 right-1 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-600 border border-amber-500/30">
+                      Coming Soon
+                    </span>
+                  )}
                   <div className="text-2xl mb-1">{type.icon}</div>
                   <div className="font-medium text-genz-navy text-xs">{type.label}</div>
                   <div className="text-xs text-genz-muted mt-0.5 line-clamp-2">{type.hint}</div>
@@ -1729,8 +1778,33 @@ const AdminToolForm = () => {
               </div>
             )}
 
-            {/* Custom Headers Fields */}
+            {/* Custom Headers Fields — disabled (Coming Soon, MV3 limitation) */}
             {formData.credentialType === 'headers' && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-4">
+                  <Database size={18} className="text-amber-500" />
+                  <span className="font-medium text-genz-navy">Custom Headers</span>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-600 border border-amber-500/30">
+                    Coming Soon
+                  </span>
+                </div>
+
+                <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-lg mb-4">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle size={16} className="text-amber-600 mt-0.5" />
+                    <div className="text-sm text-amber-700">
+                      <strong>Not fully supported yet.</strong> Chrome Manifest V3 extensions
+                      cannot intercept or modify network request headers, so this auth type
+                      will silently fail in the browser. Please pick one of the supported
+                      types instead — <strong>Cookies</strong>, <strong>Bearer Token</strong>,
+                      <strong> Local Storage</strong>, <strong>Session Storage</strong>,
+                      <strong> Form Login</strong>, or <strong>SSO</strong>.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {false && formData.credentialType === 'headers' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between mb-4">
                   <div className="flex items-center gap-2">

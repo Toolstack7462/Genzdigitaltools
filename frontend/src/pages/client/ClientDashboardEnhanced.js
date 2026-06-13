@@ -412,7 +412,7 @@ const ClientDashboardEnhanced = () => {
           })()}
         </div>
 
-        {/* ── Chrome Extension Banner ── hide after connected and dismissed */}
+        {/* ── Chrome Extension Banner ── hide once extension is ready & dismissed */}
         {showExtensionBanner && !(bridgeReady && extConnStatus?.connected) && (
           <div className="relative p-5 rounded-2xl border overflow-hidden"
                style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(6,182,212,0.07))', borderColor: 'rgba(6,182,212,0.25)' }}>
@@ -426,20 +426,20 @@ const ClientDashboardEnhanced = () => {
                 <Chrome size={24} className="text-white" />
               </div>
               <div className="flex-1">
-                <h3 className="font-bold text-genz-navy mb-1">
+                <h3 className="font-bold text-genz-navy mb-1" data-testid="ext-banner-title">
                 {bridgeReady
-                  ? extConnStatus?.connected
-                    ? `Extension Connected${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
-                    : (extConnStatus?.attemptCount > 1
-                        ? 'Connection trouble — Retry'
-                        : 'Extension Installed — Auto Connecting')
+                  ? (extConnStatus?.attemptCount > 1 && !extConnStatus?.connected
+                      ? 'Connection trouble — Retry'
+                      : 'Extension Ready')
                   : extConnStatus?.checking
                     ? 'Checking Extension…'
                     : 'Install the Gen Z Digital Store Chrome Extension'
                 }
               </h3>
                 <p className="text-sm text-genz-muted mb-3">
-                  Tools open only from this dashboard. The extension connects automatically using your logged-in client session and then applies admin-provided session cookies securely in the browser tab.
+                  {bridgeReady
+                    ? 'Just click Access on any tool — the extension will sign in automatically using the latest admin-managed session.'
+                    : 'Tools open only from this dashboard. Install the extension once — it will then pair automatically with your client session.'}
                   {bridgeReady && !extConnStatus?.connected && extConnStatus?.attemptCount > 1 && extConnStatus?.reason && (
                     <span className="block mt-1 text-[12px] text-red-600 font-medium" data-testid="ext-connect-reason">
                       Reason: {extConnStatus.reason.replace(/_/g, ' ')}
@@ -461,8 +461,8 @@ const ClientDashboardEnhanced = () => {
                     </span>
                   )}
                   {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) <= 1 && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
-                      <Loader2 size={15} className="animate-spin" /> Auto connecting…
+                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-200 text-green-600 bg-green-50">
+                      <CheckCircle2 size={15} /> Extension Ready
                     </span>
                   )}
                   {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) > 1 && (
@@ -478,11 +478,6 @@ const ClientDashboardEnhanced = () => {
                         ? (<><Loader2 size={15} className="animate-spin" /> Reconnecting…</>)
                         : (<><RefreshCw size={15} /> Retry connection</>)}
                     </button>
-                  )}
-                  {bridgeReady && extConnStatus?.connected && (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-200 text-green-600 bg-green-50">
-                      <CheckCircle2 size={15} /> Ready
-                    </span>
                   )}
                 </div>
               </div>

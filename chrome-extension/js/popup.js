@@ -43,13 +43,13 @@ const reconnectBtn     = $('reconnect-btn');
 // ── Connected state ──────────────────────────────────────────────────────────
 function showConnected(data) {
   // Header badge
-  headerBadge.textContent = '● Connected';
+  headerBadge.textContent = '● Ready';
   headerBadge.className = 'badge badge-connected';
 
   // Status dot + label
   statusDot.className = 'status-dot dot-connected';
-  statusLabel.textContent = 'Connected';
-  statusDetail.textContent = 'Extension is active and ready';
+  statusLabel.textContent = 'Extension Ready';
+  statusDetail.textContent = 'Open tools from your member dashboard';
 
   // Session info
   userEmail.textContent = data.userEmail || '—';
@@ -64,12 +64,12 @@ function showConnected(data) {
 }
 
 // ── Disconnected state ───────────────────────────────────────────────────────
-function showDisconnected(detail = 'Not connected.') {
-  headerBadge.textContent = '● Disconnected';
+function showDisconnected(detail = 'Open the dashboard to pair this extension.') {
+  headerBadge.textContent = '● Pairing';
   headerBadge.className = 'badge badge-disconnected';
 
   statusDot.className = 'status-dot dot-disconnected';
-  statusLabel.textContent = 'Disconnected';
+  statusLabel.textContent = 'Waiting for dashboard';
   statusDetail.textContent = detail;
 
   connectedSection.classList.add('hidden');
