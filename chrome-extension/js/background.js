@@ -124,7 +124,7 @@ async function apiRequest(endpoint, options = {}) {
   };
   
   logger.debug('API Request', { endpoint, method: options.method || 'GET' });
-  
+
   const response = await fetch(url, { ...options, headers });
   let result = {};
   try {
@@ -132,6 +132,35 @@ async function apiRequest(endpoint, options = {}) {
   } catch (_) {
     result = { error: response.statusText || 'Non-JSON API response' };
   }
+
+  // ── Safe per-request log: HTTP status + success + counts ONLY (never values).
+  // For the /credentials endpoint also include login_type (credentials.type),
+  // cookies count, and final tool URL — exactly what the PRD requires.
+  try {
+    const safe = {
+      endpoint,
+      method: options.method || 'GET',
+      status: response.status,
+      ok: response.ok,
+      success: result?.success === true,
+    };
+    if (/^\/tools\/[a-f0-9]+\/credentials$/i.test(endpoint)) {
+      safe.login_type = result?.credentials?.type || 'none';
+      safe.cookies = Array.isArray(result?.sessionBundle?.cookies)
+        ? result.sessionBundle.cookies.length
+        : (Array.isArray(result?.credentials?.payload) ? result.credentials.payload.length : 0);
+      safe.localStorage = result?.sessionBundle?.localStorage
+        ? Object.keys(result.sessionBundle.localStorage).length : 0;
+      safe.sessionStorage = result?.sessionBundle?.sessionStorage
+        ? Object.keys(result.sessionBundle.sessionStorage).length : 0;
+      safe.toolUrl = result?.tool?.targetUrl || result?.tool?.loginUrl || null;
+      safe.domain = result?.tool?.domain || null;
+      safe.credentialVersion = result?.tool?.credentialVersion || null;
+      safe.bundleVersion = result?.sessionBundle?.version || null;
+    }
+    if (!response.ok && result?.code) safe.code = result.code;
+    logger.info('[extension/api] fetch', safe);
+  } catch (_) {}
 
   if (response.status === 401) {
     // Only 401 means the extension token itself is invalid. Do not clear the
@@ -656,7 +685,11 @@ async function injectCookies(targetUrl, cookies) {
       
       // Skip __Host- prefixed cookies — they enforce strict origin binding and
       // cannot be set externally via chrome.cookies.set (OceanHub safe pattern)
-      if (cookie.name && cookie.name.startsWith('__Host-')) continue;
+      if (cookie.name && cookie.name.startsWith('__Host-')) {
+        failedCount++;
+        failures.push({ name: cookie.name, reason: 'host_prefix_unsettable' });
+        continue;
+      }
 
       // Normalize sameSite; treat 'unspecified' as no_restriction (OceanHub pattern)
       let sameSite = (cookie.sameSite || 'lax').toLowerCase();
@@ -702,19 +735,68 @@ async function injectCookies(targetUrl, cookies) {
         cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
       }
       
+      // ── Pre-flight rejection classification (so logs show a precise reason,
+      // not just "Cookie set returned null"). NEVER log the cookie value.
+      let preReason = null;
+      if (!cookie.name) preReason = 'missing_name';
+      else if (cookie.value === undefined || cookie.value === null) preReason = 'missing_value';
+      else if (sameSite === 'no_restriction' && !finalSecure) preReason = 'samesite_none_requires_secure';
+      else if (cookie.name.startsWith('__Secure-') && !finalSecure) preReason = 'secure_prefix_requires_secure';
+      else if (cookieDetails.expirationDate && cookieDetails.expirationDate * 1000 < Date.now()) preReason = 'already_expired';
+      else if (cookieDetails.domain && !cleanDomain.endsWith(targetDomain) && !targetDomain.endsWith(cleanDomain)) {
+        // domain attribute does not match the target host family
+        preReason = 'domain_mismatch';
+      }
+      if (preReason) {
+        failedCount++;
+        failures.push({ name: cookie.name || '(unnamed)', reason: preReason });
+        continue;
+      }
+
       const result = await chrome.cookies.set(cookieDetails);
+      // chrome.runtime.lastError is the MV3 way Chrome reports cookie rejections.
+      // Capture it WITHOUT logging the cookie value.
+      const lastErr = chrome.runtime.lastError?.message || null;
       if (result) {
         setCount++;
       } else {
-        throw new Error('Cookie set returned null');
+        throw new Error(lastErr || 'Cookie set returned null');
       }
     } catch (error) {
       failedCount++;
-      failures.push({ name: cookie.name, error: error.message });
+      // Classify common Chrome rejection messages into stable reason codes so
+      // ops can grep without parsing free-text. Never include the value.
+      const msg = String(error.message || '').toLowerCase();
+      let reason = 'unknown';
+      if (/samesite/.test(msg)) reason = 'samesite_invalid';
+      else if (/secure/.test(msg)) reason = 'secure_required';
+      else if (/domain/.test(msg)) reason = 'invalid_domain';
+      else if (/path/.test(msg))   reason = 'invalid_path';
+      else if (/expir/.test(msg))  reason = 'invalid_expiry';
+      else if (/url/.test(msg))    reason = 'invalid_url';
+      else if (/null/.test(msg))   reason = 'set_returned_null';
+      failures.push({ name: cookie.name, reason, error: error.message });
     }
   }
   
   logger.debug('Cookie injection complete', { set: setCount, failed: failedCount });
+
+  // ── Safe per-domain summary log (counts + reason histogram, never values).
+  // Helps quickly spot e.g. "10 cookies all rejected with samesite_none_requires_secure".
+  if (failedCount > 0) {
+    const reasonCounts = {};
+    for (const f of failures) {
+      const k = f.reason || 'unknown';
+      reasonCounts[k] = (reasonCounts[k] || 0) + 1;
+    }
+    logger.warn('[extension/cookies] inject failures', {
+      domain: targetDomain,
+      total: cookies.length,
+      set: setCount,
+      failed: failedCount,
+      reasonCounts,
+    });
+  }
   
   return {
     success: failedCount === 0,
