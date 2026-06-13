@@ -71,7 +71,7 @@ for i in 1 2 3 4 5 6; do
   echo "  attempt ${i}: ${BODY}"
   if echo "${BODY}" | grep -q 'extension_token_invalid'; then
     echo "==> SUCCESS: backend deployed (exact 'code' field present)."
-    echo "==> Extension zip live at https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.8.6)"
+    echo "==> Extension zip live at https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.8.7)"
     echo "    Reminder: installed users must RELOAD the extension to pick up popup/background changes."
     exit 0
   fi

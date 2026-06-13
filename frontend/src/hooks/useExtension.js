@@ -402,7 +402,15 @@ export function useExtension() {
       logStage('ensure_connected:start', { toolId });
       const current = await refreshStatus();
       if (!current?.connected) {
-        await connectExtension();
+        try {
+          await connectExtension();
+        } catch (firstErr) {
+          // "Secure access was rejected" is almost always stale activation /
+          // device-binding state in the extension storage. Re-pair ONCE with a
+          // clean slate (forceReauth) before surfacing the error to the user.
+          logStage('ensure_connected:retry_force_reauth', { toolId, stage: firstErr.stage || null });
+          await connectExtension({}, { forceReauth: true });
+        }
         await refreshStatus();
       }
       logStage('ensure_connected:ok', { toolId });

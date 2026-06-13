@@ -93,7 +93,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
                 ? <Loader2 size={13} className="animate-spin" />
                 : <ExternalLink size={13} />
               }
-              {openState?.loading ? 'Preparing…' : 'Access'}
+              {openState?.loading ? 'Opening Tool' : 'Access'}
             </button>
           ) : (
             <Link to="/contact"
@@ -134,7 +134,7 @@ const ClientDashboardEnhanced = () => {
   // Readiness model: if the extension bridge is present it is treated as READY.
   // The secure session is fetched on-demand when Access is clicked, so there is
   // no manual connect/reconnect step and no "connecting/disconnected" limbo.
-  const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
+  const { status: extConnStatus, bridgeReady, openTool, grantScanConsent, getScanStatus } = useExtension();
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -234,15 +234,14 @@ const ClientDashboardEnhanced = () => {
     if (!bridgeReady) {
       setToolOpenStates(prev => ({
         ...prev,
-        [toolId]: { error: 'Extension not detected yet. Reload the extension, refresh this dashboard, then click Access again.' }
+        [toolId]: { error: 'Install Extension' }
       }));
       return;
     }
 
+    // openTool() wakes the extension and ensures a live session on its own —
+    // no separate connect step needed here.
     setToolOpenStates(prev => ({ ...prev, [toolId]: { loading: true } }));
-    if (!extConnStatus?.connected) {
-      try { await connectExtension(); } catch (_) {}
-    }
     let result;
     try {
       result = await openTool(toolId);
@@ -424,7 +423,7 @@ const ClientDashboardEnhanced = () => {
                     : 'Install the Gen Z Digital Store Chrome Extension'}
                 </h3>
                 <p className="text-sm text-genz-muted mb-3">
-                  Tools open only from this dashboard. Install the extension once — it then pairs automatically with your client session and signs you in using the latest admin-managed session when you click Access.
+                  Install the extension once to open your tools.
                 </p>
                 <div className="flex flex-wrap gap-3">
                   {!extConnStatus?.checking ? (
@@ -543,9 +542,7 @@ const ClientDashboardEnhanced = () => {
             <div className="flex-1">
               <p className="text-genz-navy text-sm font-semibold mb-1">Optional Security Scanner</p>
               <p className="text-genz-muted text-xs leading-relaxed mb-3">
-                Allow Gen Z Digital Store to check installed browser extensions for session-access
-                risks. Only extension names and permissions are shared — no cookies, browsing history,
-                or personal data. You can opt out any time from the extension popup.
+                Checks installed extensions for session-access risks. No cookies or personal data are shared.
               </p>
               <div className="flex gap-3">
                 <button onClick={() => grantScanConsent().then(() => setScanConsent(true)).catch(() => {})}
