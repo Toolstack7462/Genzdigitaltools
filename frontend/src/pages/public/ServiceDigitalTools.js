@@ -37,8 +37,9 @@ const ServiceDigitalTools = () => {
   return (
     <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       {/* Hero */}
-      <section className="relative pt-32 pb-20 px-4 overflow-hidden">
-        <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
+      <section className="page-hero pt-32 pb-20 lg:pt-32 lg:pb-24 px-5">
+        <span className="brand-blob brand-blob-a" aria-hidden="true" />
+        <span className="brand-blob brand-blob-b" aria-hidden="true" />
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(6,182,212,0.13),transparent 70%)' }} />
         <div ref={heroRef} className={`max-w-3xl mx-auto text-center reveal ${heroVisible ? 'visible' : ''}`}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold text-genz-teal mb-6 uppercase tracking-widest"

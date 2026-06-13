@@ -92,8 +92,8 @@ const ServiceHub = () => (
         </div>
       </div>
 
-      {/* floating front chips (desktop only) */}
-      <div className="glass pop-3 float-a absolute -left-10 top-20 hidden lg:flex items-center gap-2.5 rounded-2xl px-4 py-3 depth-cyan">
+      {/* floating front chips (desktop only) — positioned outside hub header area to avoid clipping */}
+      <div className="glass pop-3 float-a absolute -left-12 top-44 hidden lg:flex items-center gap-2.5 rounded-2xl px-4 py-3 depth-cyan">
         <span className="flex h-9 w-9 items-center justify-center rounded-xl text-white" style={{ background: 'var(--gradient-cta)' }}>
           <Rocket size={16} />
         </span>
@@ -102,7 +102,7 @@ const ServiceHub = () => (
           <div className="text-[11px] text-genz-muted mt-0.5">on time, every time</div>
         </div>
       </div>
-      <div className="glass pop-2 float-b absolute -right-8 bottom-20 hidden lg:flex items-center gap-2.5 rounded-2xl px-4 py-3 depth">
+      <div className="glass pop-2 float-b absolute -right-8 bottom-12 hidden lg:flex items-center gap-2.5 rounded-2xl px-4 py-3 depth">
         <span className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ background: 'rgba(6,182,212,0.12)', color: '#0891B2' }}>
           <Shield size={16} />
         </span>

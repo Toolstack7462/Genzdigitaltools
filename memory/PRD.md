@@ -165,3 +165,48 @@ sections compact, theme cohesive with dark navy app canvas.
 
 ## Test Credentials
 See `/app/memory/test_credentials.md` (no auth credentials created in this session).
+
+---
+
+## Public Site Premium UI/UX Redesign (Feb 2026 — current session)
+
+**Original ask:** Redesign homepage and improve all public/client-facing pages so the whole website looks premium, classy, modern, smooth, and professionally aligned. Navy/teal/white gradients, subtle 3D effects, glassmorphism, glow effects, floating elements, premium cards, soft shadows, smooth hover animations. **Strict constraint:** Do NOT change backend APIs, auth, routing, dashboard logic, tool access logic, payment logic, or data fetching. Frontend UI/UX only.
+
+### What was delivered
+- **New design tokens & utilities** added to `frontend/src/styles/premium.css`:
+  - `.page-hero` — premium aurora hero background pattern reusable across inner pages
+  - `.brand-blob` (`brand-blob-a/b/c`) — animated decorative brand-color blobs
+  - `.gz-eyebrow-grad` — premium gradient-bordered eyebrow chip
+  - `.text-grad-brand`, `.text-grad-cyan-teal` — gradient headline word variants
+  - `.gz-card-soft`, `.gz-tint-card`, `.pricing-glow` — softer premium card styles
+  - `.brand-hairline`, `.brand-divider` — subtle brand-accent dividers
+  - `.hover-glow`, `.ring-grad`, `.heading-underline`, `.gz-section-tinted` helpers
+- **New component:** `frontend/src/components/public/PageHero.js` — reusable premium hero (aurora + animated brand blobs + dot grid + gradient eyebrow + animated headline).
+- **Pages overhauled with premium hero + polished sections:**
+  - `pages/Home.js` — fixed clipping of hub mockup (floating chips repositioned so the "DIGITAL SERVICE HUB" header is visible)
+  - `pages/About.js` — Mission/Vision use new `gz-tint-card`, Six core service lines section, redesigned values grid
+  - `pages/Pricing.js` — premium hero, polished plan grid with glowing highlighted card, individual service add-ons grid with hover glow
+  - `pages/Contact.js` — two-column premium layout: glass-bordered form on the left, WhatsApp + Response Time + Privacy info cards on the right
+  - `pages/public/Services.js` — gz-card-accent + sheen + bullets per service, badges
+  - `pages/public/Portfolio.js` — premium hero, gradient-active filter pills, premium commission CTA card with grad border
+  - All 7 service sub-pages (`ServiceDigitalTools / ServiceBranding / ServiceAppDev / ServiceSEO / ServiceSocialMedia / ServiceWebDesign / ServiceWriting`) — heroes upgraded to use the new `.page-hero` pattern with animated brand blobs (keeping per-service color tints intact)
+- **Components polished:**
+  - `components/public/PricingCard.js` — new highlighted state with brand hairline top, gradient "Most Popular" badge, soft glow ring (`pricing-glow`), refined checkmark chips
+  - `components/public/PublicFooter.js` — brand-gradient hairline accent line at top edge
+- **Responsiveness verified** on desktop (1920×900) and mobile (390×844) for hero, navbar, pricing, and home — premium look retained on all breakpoints.
+
+### What was NOT touched (per constraint)
+- Backend APIs, routing, auth, dashboard, payment, data fetching, Chrome extension logic, admin pages, client dashboard pages.
+
+### Files of reference (this session)
+- `frontend/src/styles/premium.css` (added ~150 lines of premium utility classes)
+- `frontend/src/components/public/PageHero.js` (NEW)
+- `frontend/src/components/public/PricingCard.js` (rewritten)
+- `frontend/src/components/public/PublicFooter.js` (hairline accent added)
+- `frontend/src/pages/{Home,About,Pricing,Contact}.js`
+- `frontend/src/pages/public/{Services,Portfolio,Service*.js}`
+
+### Verification
+- Self-tested via screenshots (`/tmp/h1.png`, `/tmp/pricing_new.png`, `/tmp/contact_form.png`, `/tmp/about_new.png`, `/tmp/portfolio_new.png`, `/tmp/sdt.png`, `/tmp/sbd.png`, `/tmp/home_mobile.png`, `/tmp/pricing_mobile.png`).
+- ESLint clean on all touched files (pre-existing warnings in untouched Blog/Admin/NotFound files left as-is).
+- All public pages render without console errors; layouts responsive at 1920px and 390px viewports.

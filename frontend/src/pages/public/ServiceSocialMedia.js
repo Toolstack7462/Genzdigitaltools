@@ -23,8 +23,9 @@ const ServiceSocialMedia = () => {
   return (
     <div style={{ background: 'var(--brand-soft)' }} className="overflow-x-hidden">
       {/* Hero */}
-      <section className="relative pt-32 pb-20 px-4 overflow-hidden">
-        <div className="absolute inset-0 hero-grid opacity-40 pointer-events-none" />
+      <section className="page-hero pt-32 pb-20 lg:pt-32 lg:pb-24 px-5">
+        <span className="brand-blob brand-blob-a" aria-hidden="true" />
+        <span className="brand-blob brand-blob-b" aria-hidden="true" />
         <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(ellipse 60% 50% at 50% 0%,rgba(225,48,108,0.12),transparent 70%)' }} />
         <div ref={heroRef} className={`max-w-3xl mx-auto text-center reveal ${heroVisible ? 'visible' : ''}`}>
           <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border text-xs font-bold mb-6 uppercase tracking-widest"
@@ -49,7 +50,7 @@ const ServiceSocialMedia = () => {
       {/* Deliverables */}
       <section className="py-20 px-4">
         <div ref={delRef} className={`max-w-6xl mx-auto reveal ${delVisible ? 'visible' : ''}`}>
-          <h2 className="text-2xl sm:text-3xl font-bold text-genz-navy text-center mb-4">What's included</h2>
+          <h2 className="text-2xl sm:text-3xl font-bold text-genz-navy text-center mb-4">What&apos;s included</h2>
           <p className="text-genz-muted text-center text-sm mb-12">Every social media management package includes:</p>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {DELIVERABLES.map(({ icon: Icon, label, desc }) => (

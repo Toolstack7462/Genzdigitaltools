@@ -165,3 +165,166 @@
   .rise, .rise-2, .rise-3 { animation: none !important; }
   .deck-3d { transform: rotateX(6deg) rotateY(-12deg); }
 }
+
+/* =====================================================================
+   PAGE HERO  — premium reusable hero pattern for inner public pages
+   Soft brand wash + animated mesh + subtle dot grid + decorative ring.
+   ===================================================================== */
+.page-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  background:
+    radial-gradient(60rem 38rem at 18% -8%, rgba(37,99,235,0.18), transparent 55%),
+    radial-gradient(64rem 42rem at 88% -2%, rgba(6,182,212,0.20), transparent 55%),
+    radial-gradient(56rem 38rem at 50% 110%, rgba(20,184,166,0.14), transparent 55%),
+    linear-gradient(180deg, #ffffff 0%, #f3f8fc 100%);
+}
+.page-hero::before {
+  /* fine dotted grid that softly fades — same vibe as .dot-grid */
+  content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image: radial-gradient(rgba(7,27,51,0.06) 1px, transparent 1px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 65% at 50% 35%, #000 0%, transparent 75%);
+          mask-image: radial-gradient(ellipse 80% 65% at 50% 35%, #000 0%, transparent 75%);
+}
+.page-hero > * { position: relative; z-index: 1; }
+
+/* Animated decorative brand blobs (used inside page-hero) */
+.brand-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.55;
+  pointer-events: none;
+  will-change: transform;
+}
+.brand-blob-a {
+  width: 32rem; height: 32rem;
+  top: -10rem; left: -8rem;
+  background: radial-gradient(circle, rgba(37,99,235,0.45) 0%, transparent 65%);
+  animation: blob-a 22s ease-in-out infinite;
+}
+.brand-blob-b {
+  width: 30rem; height: 30rem;
+  bottom: -12rem; right: -6rem;
+  background: radial-gradient(circle, rgba(6,182,212,0.45) 0%, transparent 65%);
+  animation: blob-b 26s ease-in-out infinite;
+}
+.brand-blob-c {
+  width: 26rem; height: 26rem;
+  top: 30%; right: 20%;
+  background: radial-gradient(circle, rgba(20,184,166,0.30) 0%, transparent 65%);
+  animation: blob-c 30s ease-in-out infinite;
+}
+@keyframes blob-a { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(3rem,2rem) scale(1.08)} }
+@keyframes blob-b { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(-3rem,-2rem) scale(1.06)} }
+@keyframes blob-c { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(2rem,-3rem) scale(1.1)} }
+
+/* Soft glowing outer ring on hover for cards / chips */
+.hover-glow { transition: transform .35s cubic-bezier(.16,1,.3,1), box-shadow .35s, border-color .35s; }
+.hover-glow:hover { transform: translateY(-4px); box-shadow: 0 26px 60px -22px rgba(6,182,212,0.32), 0 10px 24px -14px rgba(37,99,235,0.18); }
+
+/* Gradient ring (brand) for special chips/buttons */
+.ring-grad { position: relative; }
+.ring-grad::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1.2px;
+  background: linear-gradient(135deg, rgba(37,99,235,0.7), rgba(6,182,212,0.5) 55%, rgba(20,184,166,0.45));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none;
+}
+
+/* Decorative top brand accent line — used at the top of dark panels/footer */
+.brand-hairline {
+  height: 2px;
+  background: linear-gradient(90deg, transparent 0%, rgba(37,99,235,0.6) 25%, rgba(6,182,212,0.85) 50%, rgba(20,184,166,0.6) 75%, transparent 100%);
+}
+
+/* Soft section divider gradient */
+.brand-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(6,182,212,0.35), transparent);
+}
+
+/* Eyebrow chip with subtle gradient border (light pages) */
+.gz-eyebrow-grad {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-radius: 999px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+  color: #0E7C95;
+  background: linear-gradient(135deg, rgba(37,99,235,0.06), rgba(6,182,212,0.08), rgba(20,184,166,0.06));
+  border: 1px solid rgba(6,182,212,0.22);
+  box-shadow: 0 6px 18px -8px rgba(6,182,212,0.25);
+}
+.gz-eyebrow-grad .glow-dot { background: #06B6D4; box-shadow: 0 0 10px rgba(6,182,212,0.7); }
+
+/* Gradient text variants (extend brand-gradient-text) */
+.text-grad-brand {
+  background: linear-gradient(135deg, #2563EB 0%, #06B6D4 50%, #14B8A6 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+.text-grad-cyan-teal {
+  background: linear-gradient(135deg, #06B6D4 0%, #14B8A6 100%);
+  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+}
+
+/* Premium card variants — used on inner pages */
+.gz-card-soft {
+  background: linear-gradient(165deg, #ffffff 0%, rgba(238,247,252,0.7) 100%);
+  border: 1px solid var(--brand-border);
+  border-radius: 24px;
+  box-shadow: 0 14px 40px rgba(7,27,51,0.06);
+  transition: transform .35s cubic-bezier(.16,1,.3,1), box-shadow .35s, border-color .35s;
+}
+.gz-card-soft:hover {
+  transform: translateY(-4px);
+  border-color: rgba(6,182,212,0.35);
+  box-shadow: 0 26px 60px -22px rgba(6,182,212,0.28), 0 10px 24px -14px rgba(37,99,235,0.18);
+}
+
+/* Tinted glass card (used for Mission / Vision style blocks) */
+.gz-tint-card {
+  position: relative;
+  border-radius: 26px;
+  padding: 28px;
+  background:
+    linear-gradient(165deg, rgba(255,255,255,0.85), rgba(255,255,255,0.55)),
+    var(--tint, linear-gradient(135deg, rgba(6,182,212,0.12), rgba(37,99,235,0.08)));
+  border: 1px solid rgba(6,182,212,0.20);
+  box-shadow: 0 24px 60px -28px rgba(7,27,51,0.25), 0 8px 22px -14px rgba(6,182,212,0.18);
+  backdrop-filter: blur(10px);
+  transition: transform .35s cubic-bezier(.16,1,.3,1), box-shadow .35s;
+}
+.gz-tint-card:hover { transform: translateY(-3px); box-shadow: 0 30px 70px -26px rgba(6,182,212,0.32), 0 10px 24px -14px rgba(37,99,235,0.2); }
+
+/* Pricing highlighted glow */
+.pricing-glow {
+  position: relative;
+  box-shadow:
+    0 0 0 1px rgba(37,99,235,0.45) inset,
+    0 30px 70px -26px rgba(37,99,235,0.32),
+    0 0 80px -10px rgba(6,182,212,0.25);
+}
+.pricing-glow::after {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit;
+  background: linear-gradient(135deg, rgba(37,99,235,0.18), rgba(6,182,212,0.12) 50%, rgba(20,184,166,0.10));
+  z-index: -1; filter: blur(18px); opacity: 0.7;
+}
+
+/* Underline grow for headings */
+.heading-underline {
+  position: relative; display: inline-block;
+}
+.heading-underline::after {
+  content: ""; position: absolute; left: 12%; right: 12%; bottom: -10px; height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(37,99,235,0.5), rgba(6,182,212,0.9), rgba(20,184,166,0.5));
+}
+
+/* Subtle gradient background section (alternating rhythm) */
+.gz-section-tinted {
+  background:
+    radial-gradient(60rem 30rem at 100% 0%, rgba(6,182,212,0.05), transparent 55%),
+    radial-gradient(50rem 24rem at 0% 100%, rgba(37,99,235,0.04), transparent 55%),
+    var(--brand-surface-soft);
+}

@@ -27,6 +27,9 @@ const PublicFooter = () => {
 
   return (
     <footer style={{ background: 'linear-gradient(180deg,#071B33 0%,#000820 100%)', borderTop: '1px solid rgba(6,182,212,0.15)' }}>
+      {/* Brand hairline accent */}
+      <div className="brand-hairline" />
+
       {/* Top CTA band */}
       <div
         className="border-b"
