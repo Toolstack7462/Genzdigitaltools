@@ -58,8 +58,9 @@ curl --fail-with-body --ftp-create-dirs \
 rm -f "${RESTART_TMP}"
 echo "    backend upload complete; Passenger restart triggered."
 
-# ── 2) FRONTEND: upload the whole build/ tree to BOTH website roots in ONE
-#       curl call. CRITICAL .htaccess handling:
+# ── 2) FRONTEND: upload the build/ tree (minus *.map source maps, which we do
+#       not publish publicly) to BOTH website roots in ONE curl call.
+#       CRITICAL .htaccess handling:
 #         - MAIN root: include build/.htaccess (it IS the redirect version that
 #           sends /login, /client/*, /admin/* to the app subdomain).
 #         - APP  root: NEVER overwrite .htaccess — the app subdomain keeps its
@@ -73,7 +74,7 @@ while IFS= read -r rel; do
   if [[ "${rel}" != ".htaccess" ]]; then
     FRONT_ARGS+=( -T "${BUILD_DIR}/${rel}" "sftp://${HOST}:${PORT}${APP_WEB}/${rel}" )
   fi
-done < <(cd "${BUILD_DIR}" && find . -type f)
+done < <(cd "${BUILD_DIR}" && find . -type f ! -name '*.map')
 
 echo "==> [2/3] Uploading frontend build to main + app roots"
 curl --fail-with-body --ftp-create-dirs \
