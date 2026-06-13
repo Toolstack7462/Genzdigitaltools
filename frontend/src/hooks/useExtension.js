@@ -11,7 +11,13 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '../services/api';
 
 const BRIDGE_TIMEOUT_MS = 15000;
-const AUTO_CONNECT_MAX_ATTEMPTS = 8;
+// Auto-connect uses exponential backoff and runs as long as the dashboard tab
+// is open — we never "give up" silently. After this many consecutive failures
+// we also automatically escalate to `forceReauth: true` to defeat any stale
+// activation-token / device-binding state in the extension storage.
+const AUTO_CONNECT_FORCE_REAUTH_AFTER = 3;
+const AUTO_CONNECT_INITIAL_DELAY_MS = 1500;
+const AUTO_CONNECT_MAX_DELAY_MS = 30000;
 
 function getBackendOrigin() {
   const envUrl = process.env.REACT_APP_BACKEND_URL;
@@ -280,11 +286,12 @@ export function useExtension() {
     };
   }, [refreshStatus]);
 
-  // Auto-connect from the client dashboard session. Retry a few times because
-  // extension service workers and content scripts can wake up slightly later.
+  // Auto-connect from the client dashboard session. Retries forever with
+  // exponential backoff while the dashboard tab is open — the UI surfaces the
+  // last failure reason and a manual "Retry" button so the user is never stuck
+  // staring at a silent spinner.
   useEffect(() => {
     if (!bridgeReady) return;
-    // Reset attempt counter each time the bridge becomes ready (e.g. extension reloaded).
     autoConnectAttemptsRef.current = 0;
     let cancelled = false;
     let retryTimer = null;
@@ -292,17 +299,38 @@ export function useExtension() {
     const attempt = async () => {
       if (cancelled) return;
       const current = await refreshStatus();
-      if (current?.connected) return;
-      if (autoConnectAttemptsRef.current >= AUTO_CONNECT_MAX_ATTEMPTS) return;
-      autoConnectAttemptsRef.current += 1;
+      if (current?.connected) {
+        autoConnectAttemptsRef.current = 0;
+        return;
+      }
+      const attemptNo = autoConnectAttemptsRef.current + 1;
+      autoConnectAttemptsRef.current = attemptNo;
+      const forceReauth = attemptNo > AUTO_CONNECT_FORCE_REAUTH_AFTER;
       try {
-        await connectExtension();
+        await connectExtension({}, { forceReauth });
         await refreshStatus();
+        autoConnectAttemptsRef.current = 0;
       } catch (err) {
-        if (!cancelled) {
-          setStatus(prev => ({ ...(prev || {}), installed: true, connected: false, checking: false, reason: err.message }));
-          retryTimer = setTimeout(attempt, 1500);
-        }
+        if (cancelled) return;
+        const stage = err.stage || 'auto_connect_failed';
+        logStage('auto_connect:fail', { attempt: attemptNo, stage, error: err.message });
+        setStatus(prev => ({
+          ...(prev || {}),
+          installed: true,
+          connected: false,
+          connecting: false,
+          checking: false,
+          reason: stage,
+          lastError: err.message || stage,
+          attemptCount: attemptNo,
+        }));
+        // Exponential backoff (1.5s → 3 → 6 → 12 → 24 → cap 30s) — keeps
+        // trying as long as the tab is open without flooding the network.
+        const delay = Math.min(
+          AUTO_CONNECT_INITIAL_DELAY_MS * Math.pow(2, attemptNo - 1),
+          AUTO_CONNECT_MAX_DELAY_MS
+        );
+        retryTimer = setTimeout(attempt, delay);
       }
     };
 
@@ -312,6 +340,46 @@ export function useExtension() {
       if (retryTimer) clearTimeout(retryTimer);
     };
   }, [bridgeReady, connectExtension, refreshStatus]);
+
+  // User-triggered immediate reconnect — used by the dashboard's Retry button
+  // and by the popup's "Reconnect now" path (via GENZ_FORCE_RECONNECT bridge
+  // event). Always force-reauths so stale activation-token / device-binding
+  // state in the extension storage cannot block recovery.
+  const reconnect = useCallback(async () => {
+    autoConnectAttemptsRef.current = 0;
+    setStatus(prev => ({ ...(prev || {}), connecting: true, reason: null, lastError: null }));
+    try {
+      await connectExtension({}, { forceReauth: true });
+      await refreshStatus();
+      return { success: true };
+    } catch (err) {
+      const stage = err.stage || 'auto_connect_failed';
+      setStatus(prev => ({
+        ...(prev || {}),
+        installed: true,
+        connected: false,
+        connecting: false,
+        checking: false,
+        reason: stage,
+        lastError: err.message || stage,
+      }));
+      return { success: false, error: stage, message: stageMessage(stage, err) };
+    }
+  }, [connectExtension, refreshStatus]);
+
+  // Listen for the popup-triggered "force reconnect" push. The bridge content
+  // script forwards the SW message into the page as a window postMessage.
+  useEffect(() => {
+    const handler = (event) => {
+      if (event.source !== window) return;
+      const data = event.data || {};
+      if (data?.type === 'GENZ_FORCE_RECONNECT') {
+        reconnect().catch(() => {});
+      }
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [reconnect]);
 
   const openTool = useCallback(async (rawToolId) => {
     // Normalize toolId to a string up front (backend + extension compare as string).
@@ -469,5 +537,5 @@ export function useExtension() {
     return sendToBridge('GENZ_GET_SCAN_STATUS');
   }, [bridgeReady]);
 
-  return { status, bridgeReady, openTool, connectExtension, grantScanConsent, revokeScanConsent, getScanStatus };
+  return { status, bridgeReady, openTool, connectExtension, reconnect, grantScanConsent, revokeScanConsent, getScanStatus };
 }

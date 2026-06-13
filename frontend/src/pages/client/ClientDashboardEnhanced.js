@@ -131,7 +131,21 @@ const ClientDashboardEnhanced = () => {
   const [activeFilter, setActiveFilter] = useState('All');
 
   const user = authService.getCurrentUser();
-  const { status: extConnStatus, bridgeReady, openTool, connectExtension, grantScanConsent, getScanStatus } = useExtension();
+  const { status: extConnStatus, bridgeReady, openTool, connectExtension, reconnect, grantScanConsent, getScanStatus } = useExtension();
+  const [reconnecting, setReconnecting] = useState(false);
+
+  const handleReconnect = async () => {
+    if (reconnecting) return;
+    setReconnecting(true);
+    try {
+      const r = await reconnect();
+      if (!r?.success && r?.message) {
+        showError(r.message);
+      }
+    } finally {
+      setReconnecting(false);
+    }
+  };
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -416,7 +430,9 @@ const ClientDashboardEnhanced = () => {
                 {bridgeReady
                   ? extConnStatus?.connected
                     ? `Extension Connected${extConnStatus?.version ? ` (v${extConnStatus.version})` : ''}`
-                    : 'Extension Installed — Auto Connecting'
+                    : (extConnStatus?.attemptCount > 1
+                        ? 'Connection trouble — Retry'
+                        : 'Extension Installed — Auto Connecting')
                   : extConnStatus?.checking
                     ? 'Checking Extension…'
                     : 'Install the Gen Z Digital Store Chrome Extension'
@@ -424,6 +440,11 @@ const ClientDashboardEnhanced = () => {
               </h3>
                 <p className="text-sm text-genz-muted mb-3">
                   Tools open only from this dashboard. The extension connects automatically using your logged-in client session and then applies admin-provided session cookies securely in the browser tab.
+                  {bridgeReady && !extConnStatus?.connected && extConnStatus?.attemptCount > 1 && extConnStatus?.reason && (
+                    <span className="block mt-1 text-[12px] text-red-600 font-medium" data-testid="ext-connect-reason">
+                      Reason: {extConnStatus.reason.replace(/_/g, ' ')}
+                    </span>
+                  )}
                 </p>
                 <div className="flex flex-wrap gap-3">
                   {!bridgeReady && !extConnStatus?.checking && (
@@ -439,10 +460,24 @@ const ClientDashboardEnhanced = () => {
                       <Loader2 size={15} className="animate-spin" /> Detecting extension…
                     </span>
                   )}
-                  {bridgeReady && !extConnStatus?.connected && (
+                  {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) <= 1 && (
                     <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
                       <Loader2 size={15} className="animate-spin" /> Auto connecting…
                     </span>
+                  )}
+                  {bridgeReady && !extConnStatus?.connected && (extConnStatus?.attemptCount || 0) > 1 && (
+                    <button
+                      type="button"
+                      onClick={handleReconnect}
+                      disabled={reconnecting}
+                      data-testid="ext-reconnect-btn"
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-60"
+                      style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}
+                    >
+                      {reconnecting
+                        ? (<><Loader2 size={15} className="animate-spin" /> Reconnecting…</>)
+                        : (<><RefreshCw size={15} /> Retry connection</>)}
+                    </button>
                   )}
                   {bridgeReady && extConnStatus?.connected && (
                     <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-green-200 text-green-600 bg-green-50">

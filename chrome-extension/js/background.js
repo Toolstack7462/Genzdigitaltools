@@ -1609,7 +1609,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           });
           const d = await r.json();
           if (!r.ok || !d.token) {
-            sendResponse({ success: false, error: d.error || 'Authentication failed' });
+            // Server-side rejection. If the activation flow says the token is
+            // invalid/expired/used, also wipe any stale extension session — the
+            // next dashboard attempt will start completely clean.
+            const code = d.code || '';
+            if (r.status === 401 || r.status === 403 || /extension_token_invalid|activation/i.test(code)) {
+              await clearExtensionAuthSession('auth_rejected_' + (code || r.status));
+            }
+            sendResponse({
+              success: false,
+              error: d.error || 'Authentication failed',
+              code: code || null,
+              status: r.status,
+            });
             return;
           }
           await setStorage({
