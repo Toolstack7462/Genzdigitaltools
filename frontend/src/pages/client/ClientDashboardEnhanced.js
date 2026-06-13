@@ -307,47 +307,47 @@ const ClientDashboardEnhanced = () => {
   /* ─── Main Render ─ */
   return (
     <ClientLayoutEnhanced>
-      <div className="space-y-5">
+      <div className="space-y-4">
 
         {/* ── Expiry Warning Banner ── */}
         {showExpiryWarning && expiringTools.length > 0 && (
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-amber-200 bg-amber-50">
-            <AlertTriangle size={18} className="text-amber-500 flex-shrink-0 mt-0.5" />
+          <div className="flex items-start gap-3 p-3.5 rounded-2xl border border-amber-200 bg-amber-50">
+            <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1">
-              <p className="text-amber-700 font-semibold text-sm mb-1">
+              <p className="text-amber-700 font-semibold text-[13px] mb-0.5">
                 {expiringTools.length} tool{expiringTools.length > 1 ? 's' : ''} expiring soon
               </p>
-              <p className="text-amber-600/80 text-xs">
+              <p className="text-amber-600/80 text-[11.5px]">
                 {expiringTools.slice(0, 3).map(t => t.toolName).join(', ')}
                 {expiringTools.length > 3 && ` +${expiringTools.length - 3} more`}
               </p>
             </div>
             <button onClick={dismissExpiryWarning} className="text-amber-500/70 hover:text-amber-700 transition-colors">
-              <X size={16} />
+              <X size={15} />
             </button>
           </div>
         )}
 
-        {/* ── Welcome / Membership Banner ── */}
-        <div className="gz-panel-dark relative overflow-hidden p-5 sm:p-6 rounded-[20px]">
-          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(40rem 20rem at 100% 0%, rgba(6,182,212,0.22), transparent 60%)' }} />
-          <div className="relative flex items-start justify-between gap-4 flex-wrap">
-            <div>
-              <div className="flex items-center gap-2 mb-1.5">
-                <Sparkles size={15} className="text-genz-cyan" />
-                <span className="text-genz-cyan text-[13px] font-semibold uppercase tracking-wider">Welcome back</span>
+        {/* ── Welcome / Membership Banner (compact) ── */}
+        <div className="gz-panel-dark relative overflow-hidden p-4 sm:p-5 rounded-2xl">
+          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(34rem 16rem at 100% 0%, rgba(6,182,212,0.20), transparent 60%)' }} />
+          <div className="relative flex items-center justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 mb-1">
+                <Sparkles size={12} className="text-genz-cyan" />
+                <span className="text-genz-cyan text-[10.5px] font-semibold uppercase tracking-wider">Welcome back</span>
               </div>
-              <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-white leading-tight">
+              <h1 className="font-heading text-[20px] sm:text-[24px] font-extrabold text-white leading-tight truncate">
                 {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
               </h1>
-              <p className="text-white/65 text-sm mt-1.5">
+              <p className="text-white/65 text-[12.5px] mt-1">
                 You have access to <span className="text-white font-bold">{activeTools.length}</span> premium tools.
               </p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="rounded-2xl px-4 py-3" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
-                <p className="text-[11px] text-white/55 uppercase tracking-wider">Membership</p>
-                <p className="text-sm font-bold mt-0.5">
+            <div className="flex items-center gap-2">
+              <div className="rounded-xl px-3 py-2" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                <p className="text-[9.5px] text-white/55 uppercase tracking-wider leading-none">Membership</p>
+                <p className="text-[12.5px] font-bold mt-1">
                   {user?.expiryDate
                     ? (new Date(user.expiryDate) > new Date()
                         ? <span className="text-emerald-300">Active · until {new Date(user.expiryDate).toLocaleDateString()}</span>
@@ -356,23 +356,23 @@ const ClientDashboardEnhanced = () => {
                 </p>
               </div>
               <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
-                 className="hidden sm:inline-flex items-center gap-1.5 h-11 px-3.5 rounded-xl text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5"
+                 className="hidden sm:inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-white text-[12px] font-semibold transition-all hover:-translate-y-0.5"
                  style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
                  title="View Website">
-                <ExternalLink size={16} /> View Website
+                <ExternalLink size={14} /> View Website
               </a>
               <Link to="/client/profile"
-                    className="w-11 h-11 rounded-xl flex items-center justify-center text-white transition-all hover:-translate-y-0.5"
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-white transition-all hover:-translate-y-0.5"
                     style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
                     title="My Profile">
-                <User size={18} />
+                <User size={15} />
               </Link>
             </div>
           </div>
         </div>
 
-        {/* ── Stats Row ── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* ── Stats Row (compact) ── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
@@ -382,19 +382,19 @@ const ClientDashboardEnhanced = () => {
               { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', sub: 'Encrypted bridge', color: '#06B6D4' },
             ];
             return cards.map(({ icon: Icon, kind, value, label, sub, color, badge }) => (
-              <div key={label} className="ds-card ds-stat relative overflow-hidden p-5">
-                <div className="absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, ${color}, ${color}55)` }} />
-                <div className="flex items-center justify-between mb-3.5">
-                  <span className="w-11 h-11 rounded-xl flex items-center justify-center"
+              <div key={label} className="ds-card ds-stat relative overflow-hidden p-3.5">
+                <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: `linear-gradient(90deg, ${color}, ${color}55)` }} />
+                <div className="flex items-center justify-between mb-2">
+                  <span className="w-9 h-9 rounded-lg flex items-center justify-center"
                         style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>
-                    <Icon size={19} />
+                    <Icon size={16} />
                   </span>
                 </div>
                 {kind === 'num'
-                  ? <div className="font-heading text-[30px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
+                  ? <div className="font-heading text-[22px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
                   : <div className="mt-0.5"><span className={`ds-badge ${badge}`}><span className="dot" /> {value}</span></div>}
-                <div className="text-[13.5px] font-semibold text-genz-navy mt-2">{label}</div>
-                <div className="text-[12px] text-genz-muted mt-0.5">{sub}</div>
+                <div className="text-[12.5px] font-semibold text-genz-navy mt-1.5">{label}</div>
+                <div className="text-[11px] text-genz-muted mt-0.5">{sub}</div>
               </div>
             ));
           })()}
@@ -447,16 +447,16 @@ const ClientDashboardEnhanced = () => {
         {/* ── Featured Tools ── */}
         {featuredTools.length > 0 && (
           <div>
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Star size={16} className="text-amber-500" />
-                <h2 className="font-bold text-genz-navy text-[18px]">Featured Tools</h2>
+                <Star size={15} className="text-amber-500" />
+                <h2 className="font-bold text-genz-navy text-[16px]">Featured Tools</h2>
               </div>
-              <button onClick={() => setActiveFilter('All')} className="text-[13px] font-semibold text-genz-blue hover:underline">
+              <button onClick={() => setActiveFilter('All')} className="text-[12.5px] font-semibold text-genz-blue hover:underline">
                 View All
               </button>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
               {featuredTools.map(tool => <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />)}
             </div>
           </div>
@@ -464,9 +464,9 @@ const ClientDashboardEnhanced = () => {
 
         {/* ── All Tools with Search/Filter ── */}
         <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-bold text-genz-navy text-[18px] flex items-center gap-2">
-              <Package size={17} className="text-genz-blue" />
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-bold text-genz-navy text-[16px] flex items-center gap-2">
+              <Package size={16} className="text-genz-blue" />
               All Your Tools
             </h2>
           </div>
