@@ -307,94 +307,174 @@ const ClientDashboardEnhanced = () => {
   /* ─── Main Render ─ */
   return (
     <ClientLayoutEnhanced>
-      <div className="space-y-4">
+      <div className="space-y-3">
 
-        {/* ── Expiry Warning Banner ── */}
+        {/* ── Expiry Warning Banner (slim, dark-glass amber) ── */}
         {showExpiryWarning && expiringTools.length > 0 && (
-          <div className="flex items-start gap-3 p-3.5 rounded-2xl border border-amber-200 bg-amber-50">
-            <AlertTriangle size={16} className="text-amber-500 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <p className="text-amber-700 font-semibold text-[13px] mb-0.5">
+          <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl"
+               style={{
+                 background: 'linear-gradient(120deg, rgba(120,53,15,0.32), rgba(120,53,15,0.18))',
+                 border: '1px solid rgba(251,191,36,0.30)',
+                 boxShadow: '0 6px 18px -12px rgba(245,158,11,0.5), inset 0 1px 0 rgba(255,255,255,0.05)',
+               }}>
+            <AlertTriangle size={13} className="text-amber-300 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <span className="text-amber-200 font-semibold text-[12px]">
                 {expiringTools.length} tool{expiringTools.length > 1 ? 's' : ''} expiring soon
-              </p>
-              <p className="text-amber-600/80 text-[11.5px]">
-                {expiringTools.slice(0, 3).map(t => t.toolName).join(', ')}
-                {expiringTools.length > 3 && ` +${expiringTools.length - 3} more`}
-              </p>
+              </span>
+              <span className="text-amber-200/70 text-[11px] ml-2 truncate">
+                · {expiringTools.slice(0, 3).map(t => t.toolName).join(', ')}
+                {expiringTools.length > 3 && ` +${expiringTools.length - 3}`}
+              </span>
             </div>
-            <button onClick={dismissExpiryWarning} className="text-amber-500/70 hover:text-amber-700 transition-colors">
-              <X size={15} />
+            <button onClick={dismissExpiryWarning} className="text-amber-200/60 hover:text-amber-100 transition-colors">
+              <X size={13} />
             </button>
           </div>
         )}
 
-        {/* ── Welcome / Membership Banner (compact) ── */}
-        <div className="gz-panel-dark relative overflow-hidden p-4 sm:p-5 rounded-2xl">
-          <div className="absolute inset-0 pointer-events-none" style={{ background: 'radial-gradient(34rem 16rem at 100% 0%, rgba(6,182,212,0.20), transparent 60%)' }} />
+        {/* ── Welcome / Membership Banner — slim strip, glass + gradient ── */}
+        <div
+          className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-3 sm:py-3.5"
+          style={{
+            background:
+              'linear-gradient(120deg, rgba(7,27,51,0.95) 0%, rgba(15,42,73,0.95) 55%, rgba(6,78,89,0.92) 100%)',
+            border: '1px solid rgba(6,182,212,0.18)',
+            boxShadow:
+              '0 10px 30px -18px rgba(6,182,212,0.35), inset 0 1px 0 rgba(255,255,255,0.06)',
+          }}
+        >
+          {/* glow accents */}
+          <div
+            className="absolute -top-16 -right-10 w-72 h-40 pointer-events-none opacity-70"
+            style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.28), transparent 70%)' }}
+          />
+          <div
+            className="absolute -bottom-20 left-1/3 w-72 h-40 pointer-events-none opacity-50"
+            style={{ background: 'radial-gradient(closest-side, rgba(37,99,235,0.22), transparent 70%)' }}
+          />
           <div className="relative flex items-center justify-between gap-3 flex-wrap">
-            <div className="min-w-0">
-              <div className="flex items-center gap-1.5 mb-1">
-                <Sparkles size={12} className="text-genz-cyan" />
-                <span className="text-genz-cyan text-[10.5px] font-semibold uppercase tracking-wider">Welcome back</span>
+            {/* Left: greeting (inline single row) */}
+            <div className="flex items-center gap-3 min-w-0">
+              <span
+                className="hidden sm:flex w-9 h-9 rounded-xl items-center justify-center flex-shrink-0"
+                style={{
+                  background: 'linear-gradient(135deg, #2563EB, #06B6D4)',
+                  boxShadow: '0 6px 18px -6px rgba(6,182,212,0.6)',
+                }}
+              >
+                <Sparkles size={15} className="text-white" />
+              </span>
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 leading-none">
+                  <span className="text-genz-cyan text-[10px] font-bold uppercase tracking-[0.14em]">
+                    Welcome back
+                  </span>
+                  <span className="hidden sm:inline text-white/25 text-[10px]">•</span>
+                  <span className="hidden sm:inline text-white/60 text-[11px] font-medium">
+                    {new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </span>
+                </div>
+                <h1 className="font-heading text-[17px] sm:text-[19px] font-extrabold text-white leading-tight mt-1 truncate">
+                  {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
+                  <span className="ml-2 inline-flex items-center gap-1 align-middle px-2 py-[3px] rounded-md text-[10.5px] font-bold text-genz-cyan"
+                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
+                    <Package size={10} /> {activeTools.length} tools
+                  </span>
+                </h1>
               </div>
-              <h1 className="font-heading text-[20px] sm:text-[24px] font-extrabold text-white leading-tight truncate">
-                {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
-              </h1>
-              <p className="text-white/65 text-[12.5px] mt-1">
-                You have access to <span className="text-white font-bold">{activeTools.length}</span> premium tools.
-              </p>
             </div>
-            <div className="flex items-center gap-2">
-              <div className="rounded-xl px-3 py-2" style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}>
-                <p className="text-[9.5px] text-white/55 uppercase tracking-wider leading-none">Membership</p>
-                <p className="text-[12.5px] font-bold mt-1">
+
+            {/* Right: membership + actions */}
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <div
+                className="hidden sm:flex items-center gap-2 h-9 px-3 rounded-lg backdrop-blur-md"
+                style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.10)' }}
+              >
+                <span className="text-[9.5px] text-white/50 uppercase tracking-wider font-semibold">Plan</span>
+                <span className="text-[11.5px] font-bold">
                   {user?.expiryDate
                     ? (new Date(user.expiryDate) > new Date()
-                        ? <span className="text-emerald-300">Active · until {new Date(user.expiryDate).toLocaleDateString()}</span>
+                        ? <span className="text-emerald-300">Active · {new Date(user.expiryDate).toLocaleDateString()}</span>
                         : <span className="text-red-300">Expired</span>)
                     : <span className="text-emerald-300">Active</span>}
-                </p>
+                </span>
               </div>
-              <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
-                 className="hidden sm:inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-white text-[12px] font-semibold transition-all hover:-translate-y-0.5"
-                 style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
-                 title="View Website">
-                <ExternalLink size={14} /> View Website
+              <a
+                href="https://genzdigitalstore.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hidden md:inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-white text-[11.5px] font-semibold transition-all hover:-translate-y-0.5 hover:bg-white/[0.12]"
+                style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}
+                title="View Website"
+              >
+                <ExternalLink size={13} /> Website
               </a>
-              <Link to="/client/profile"
-                    className="w-9 h-9 rounded-lg flex items-center justify-center text-white transition-all hover:-translate-y-0.5"
-                    style={{ background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.14)' }}
-                    title="My Profile">
-                <User size={15} />
+              <Link
+                to="/client/profile"
+                className="w-9 h-9 rounded-lg flex items-center justify-center text-white transition-all hover:-translate-y-0.5 hover:bg-white/[0.12]"
+                style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}
+                title="My Profile"
+              >
+                <User size={14} />
               </Link>
             </div>
           </div>
         </div>
 
-        {/* ── Stats Row (compact) ── */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* ── Stats Row — horizontal premium glass cards ── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3">
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
               { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
               { icon: Clock,        kind: 'num',    value: expiringTools.length, label: 'Expiring Soon',   sub: 'Within 7 days',     color: '#D97706' },
-              { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership', color: accountActive ? '#16A34A' : '#EF4444' },
-              { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal', label: 'Device Security', sub: 'Encrypted bridge', color: '#06B6D4' },
+              { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership',        color: accountActive ? '#16A34A' : '#EF4444' },
+              { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal',     label: 'Device Security', sub: 'Encrypted bridge',  color: '#06B6D4' },
             ];
             return cards.map(({ icon: Icon, kind, value, label, sub, color, badge }) => (
-              <div key={label} className="ds-card ds-stat relative overflow-hidden p-3.5">
-                <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: `linear-gradient(90deg, ${color}, ${color}55)` }} />
-                <div className="flex items-center justify-between mb-2">
-                  <span className="w-9 h-9 rounded-lg flex items-center justify-center"
-                        style={{ background: `${color}14`, color, border: `1px solid ${color}26` }}>
-                    <Icon size={16} />
+              <div
+                key={label}
+                className="group relative overflow-hidden rounded-xl px-3.5 py-3 transition-all duration-300 hover:-translate-y-0.5"
+                style={{
+                  background: 'linear-gradient(165deg, rgba(255,255,255,0.99) 0%, rgba(244,250,253,0.96) 100%)',
+                  border: `1px solid ${color}33`,
+                  boxShadow: `0 1px 0 rgba(255,255,255,0.9) inset, 0 10px 24px -16px rgba(2,10,25,0.55), 0 4px 12px -10px ${color}55`,
+                }}
+              >
+                {/* left color rail */}
+                <div className="absolute inset-y-0 left-0 w-[3px]" style={{ background: `linear-gradient(180deg, ${color}, ${color}66)` }} />
+                {/* soft top wash */}
+                <div className="absolute inset-x-0 top-0 h-8 pointer-events-none" style={{ background: `linear-gradient(180deg, ${color}10, transparent)` }} />
+                {/* hover glow */}
+                <div
+                  className="absolute -inset-px rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                  style={{ boxShadow: `0 14px 30px -14px ${color}66, 0 0 0 1px ${color}44 inset` }}
+                />
+                <div className="relative flex items-center gap-3 pl-1.5">
+                  <span
+                    className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform duration-300 group-hover:scale-105"
+                    style={{
+                      background: `linear-gradient(135deg, ${color}26, ${color}10)`,
+                      color,
+                      border: `1px solid ${color}40`,
+                      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.55), 0 4px 10px -6px ${color}55`,
+                    }}
+                  >
+                    <Icon size={15} strokeWidth={2.4} />
                   </span>
+                  <div className="min-w-0 flex-1">
+                    {kind === 'num' ? (
+                      <div className="font-heading text-[22px] font-extrabold tabular-nums leading-none" style={{ color: '#071B33' }}>
+                        {value}
+                      </div>
+                    ) : (
+                      <span className={`ds-badge ${badge} !text-[10.5px] !py-[2px] !px-1.5`}><span className="dot" /> {value}</span>
+                    )}
+                    <div className="text-[11.5px] font-bold mt-1.5 truncate tracking-tight" style={{ color: '#071B33' }}>{label}</div>
+                    <div className="text-[10.5px] leading-tight truncate mt-0.5" style={{ color: '#5B6B7C' }}>{sub}</div>
+                  </div>
                 </div>
-                {kind === 'num'
-                  ? <div className="font-heading text-[22px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
-                  : <div className="mt-0.5"><span className={`ds-badge ${badge}`}><span className="dot" /> {value}</span></div>}
-                <div className="text-[12.5px] font-semibold text-genz-navy mt-1.5">{label}</div>
-                <div className="text-[11px] text-genz-muted mt-0.5">{sub}</div>
               </div>
             ));
           })()}
@@ -405,40 +485,44 @@ const ClientDashboardEnhanced = () => {
             secure session is fetched on-demand when Access is clicked), so we
             never show a "connecting / disconnected / retry" state. */}
         {showExtensionBanner && !bridgeReady && (
-          <div className="relative p-5 rounded-2xl border overflow-hidden"
-               style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.07), rgba(6,182,212,0.07))', borderColor: 'rgba(6,182,212,0.25)' }}>
+          <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-3.5"
+               style={{
+                 background: 'linear-gradient(120deg, rgba(7,27,51,0.92) 0%, rgba(15,42,73,0.92) 60%, rgba(6,78,89,0.88) 100%)',
+                 border: '1px solid rgba(6,182,212,0.22)',
+                 boxShadow: '0 10px 26px -16px rgba(6,182,212,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
+               }}>
+            <div className="absolute -top-12 -right-8 w-56 h-32 pointer-events-none opacity-60"
+                 style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.32), transparent 70%)' }} />
             <button onClick={() => setShowExtensionBanner(false)}
-                    className="absolute top-3 right-3 text-genz-muted hover:text-genz-navy transition-colors z-10">
-              <X size={16} />
+                    className="absolute top-2.5 right-2.5 text-white/40 hover:text-white transition-colors z-10">
+              <X size={14} />
             </button>
-            <div className="flex items-start gap-4 relative z-10">
-              <div className="w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0"
-                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>
-                <Chrome size={24} className="text-white" />
+            <div className="flex items-center gap-3 relative z-10">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 6px 18px -8px rgba(6,182,212,0.7)' }}>
+                <Chrome size={18} className="text-white" />
               </div>
-              <div className="flex-1">
-                <h3 className="font-bold text-genz-navy mb-1" data-testid="ext-banner-title">
-                  {extConnStatus?.checking
-                    ? 'Checking Extension…'
-                    : 'Install the Gen Z Digital Store Chrome Extension'}
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-white text-[13.5px] leading-tight" data-testid="ext-banner-title">
+                  {extConnStatus?.checking ? 'Checking Extension…' : 'Install the Chrome Extension'}
                 </h3>
-                <p className="text-sm text-genz-muted mb-3">
-                  Install the extension once to open your tools.
+                <p className="text-[11.5px] text-white/60 mt-0.5 leading-snug">
+                  One-click access to all your tools. Install once and you're set.
                 </p>
-                <div className="flex flex-wrap gap-3">
-                  {!extConnStatus?.checking ? (
-                    <Link to="/chrome-extension"
-                       className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:-translate-y-0.5"
-                       style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }}>
-                      <Download size={15} />
-                      Install Extension
-                    </Link>
-                  ) : (
-                    <span className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold border border-genz-blue/30 text-genz-blue">
-                      <Loader2 size={15} className="animate-spin" /> Detecting extension…
-                    </span>
-                  )}
-                </div>
+              </div>
+              <div className="flex-shrink-0">
+                {!extConnStatus?.checking ? (
+                  <Link to="/chrome-extension"
+                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-bold text-white transition-all hover:-translate-y-0.5"
+                     style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 6px 16px -8px rgba(37,99,235,0.65)' }}>
+                    <Download size={13} /> Install
+                  </Link>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-semibold text-genz-cyan"
+                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
+                    <Loader2 size={13} className="animate-spin" /> Detecting…
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -449,14 +533,14 @@ const ClientDashboardEnhanced = () => {
           <div>
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
-                <Star size={15} className="text-amber-500" />
-                <h2 className="font-bold text-genz-navy text-[16px]">Featured Tools</h2>
+                <Star size={15} className="text-amber-400" />
+                <h2 className="font-bold text-white text-[15px] tracking-tight">Featured Tools</h2>
               </div>
-              <button onClick={() => setActiveFilter('All')} className="text-[12.5px] font-semibold text-genz-blue hover:underline">
-                View All
+              <button onClick={() => setActiveFilter('All')} className="text-[12px] font-semibold text-genz-cyan hover:text-white transition-colors">
+                View All →
               </button>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {featuredTools.map(tool => <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />)}
             </div>
           </div>
@@ -465,37 +549,46 @@ const ClientDashboardEnhanced = () => {
         {/* ── All Tools with Search/Filter ── */}
         <div>
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-bold text-genz-navy text-[16px] flex items-center gap-2">
-              <Package size={16} className="text-genz-blue" />
+            <h2 className="font-bold text-white text-[15px] flex items-center gap-2 tracking-tight">
+              <Package size={15} className="text-genz-cyan" />
               All Your Tools
+              <span className="ml-1 text-[10.5px] font-bold text-genz-cyan px-1.5 py-0.5 rounded"
+                    style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.25)' }}>
+                {tools.length}
+              </span>
             </h2>
           </div>
 
           {/* Search + Filter */}
-          <div className="flex flex-col sm:flex-row gap-3 mb-5">
+          <div className="flex flex-col sm:flex-row gap-2.5 mb-4">
             <div className="relative flex-1">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" />
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
               <input
                 type="text"
                 placeholder="Search tools..."
                 value={searchQuery}
                 onChange={e => setSearchQuery(e.target.value)}
                 aria-label="Search tools"
-                className="w-full rounded-[14px] border border-genz-border bg-white pl-9 pr-4 py-2.5 text-sm text-genz-navy placeholder:text-genz-muted/70 outline-none transition-all focus:border-genz-blue focus:ring-4 focus:ring-genz-blue/12"
+                className="w-full rounded-xl pl-9 pr-4 py-2 text-[13px] text-white placeholder:text-white/35 outline-none transition-all"
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.10)',
+                  backdropFilter: 'blur(8px)',
+                }}
               />
             </div>
-            <div className="flex gap-2 overflow-x-auto pb-1">
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
               {categories.slice(0, 8).map(cat => (
                 <button key={cat}
                         onClick={() => setActiveFilter(cat)}
-                        className={`flex-shrink-0 px-3.5 py-2 rounded-xl text-[13px] font-semibold transition-all ${
+                        className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all ${
                           activeFilter === cat
-                            ? 'text-white'
-                            : 'border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue'
+                            ? 'text-white shadow-md'
+                            : 'text-white/55 hover:text-white'
                         }`}
                         style={activeFilter === cat
-                          ? { background: 'linear-gradient(135deg, #2563EB, #06B6D4)' }
-                          : {}}>
+                          ? { background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 4px 14px -6px rgba(6,182,212,0.55)' }
+                          : { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)' }}>
                   {cat}
                 </button>
               ))}

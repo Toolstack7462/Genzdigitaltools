@@ -107,6 +107,38 @@ established.
   - duplicate active+expired rows → latest valid wins
   - date-only endDate same day → valid through 23:59:59
   - `assignment_not_found` vs `assignment_expired` distinction
+
+### Client Dashboard — Premium Compact UI (Feb 2026)
+**Goal:** Make `/client/dashboard` look compact, premium, "world-class SaaS"
+without breaking any logic.
+
+**Done:**
+- Slim welcome/membership banner: navy→teal gradient + radial glow accents,
+  one-row layout (greeting + tools badge + Plan + Website + Profile), inline date.
+- Stat cards: compact glass cards (px-3.5 py-3) with left color rail, soft
+  inset, color-tinted icon container, fixed contrast (forced `#071B33` / `#5B6B7C`
+  inline so `.app-main .text-genz-navy { color:#eaf2fb !important }` doesn't
+  wash them out on the dark canvas), tabular-nums big number, bold label,
+  muted sub-text. Hover: -translate-y-0.5 + color glow shadow.
+- Expiry warning: slim dark amber glass strip (was light amber card).
+- Chrome Extension banner: slim dark glass strip with cyan glow + "Install"
+  pill button (was full-height light card).
+- Section headings (Featured Tools, All Your Tools) switched to `text-white`
+  + cyan accent count badge for readability on navy canvas.
+- Search input + category filter pills: dark glass with white text and
+  cyan-gradient active pill (was white inputs).
+- Reduced vertical spacing throughout (`space-y-3`, gap-3, smaller paddings)
+  so more content appears above the fold.
+
+**Files touched:**
+- `frontend/src/pages/client/ClientDashboardEnhanced.js` — entire dashboard
+  surface restyled; logic, routes, data fetching, openTool flow untouched.
+
+**Verification:** Visual screenshot with mocked tools/expiring data on
+`/client/dashboard` confirmed: stat-card text now crisp, banners slim,
+sections compact, theme cohesive with dark navy app canvas.
+
+
 - Further UI compaction of admin members/assignments tables (cosmetic).
 
 ---
