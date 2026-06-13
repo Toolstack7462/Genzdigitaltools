@@ -1,190 +1,111 @@
-# Gen Z Digital Store CRM - Product Requirements Document
+# Gen Z Digital Store — PRD
 
-## Project Overview
-Full-stack CRM application for managing tools, clients, and assignments with role-based access control and Chrome Extension support for credential sync.
+## Original Problem Statement
+Repo: https://github.com/Toolstack7462/Genzdigitaltools (Node/Express + React + Chrome MV3 + MySQL)
 
-## Tech Stack
-- **Frontend:** React, Tailwind CSS, React Router, Axios
-- **Backend:** FastAPI (Python gateway) + Node.js/Express (CRM service)
-- **Database:** MongoDB
-- **Authentication:** JWT with Access/Refresh tokens
-- **Chrome Extension:** Manifest V3
+Main issue: Client dashboard shows assigned tools, but Access button says
+expired / 403 / "could not prepare secure access". Goal — make Access reliable
+using a SharePass-style extension-controlled flow (extension fetches latest
+session, injects cookies, opens tool). The frontend must never receive the
+session bundle.
 
-## Architecture
-```
-Frontend (React) :3000
-    ↓
-FastAPI Gateway :8001 → /api/crm/*
-    ↓
-Node.js CRM Service :8002
-    ↓
-MongoDB
+### Required Flow
+Client clicks Access → frontend sends toolId to extension → extension asks
+backend for latest allowed session → backend uses SAME access logic as the
+client dashboard → backend returns tool URL + session bundle ONLY to extension
+→ frontend NEVER receives it → extension clears target cookies/storage →
+extension injects session → extension opens/reloads tool in separate tab.
 
-Chrome Extension ←→ /api/crm/extension/*
-```
+### Bugs Addressed
+- no tool_access_expired if dashboard still shows the tool
+- no old expired duplicate assignment overriding new active assignment
+- always pick the latest active assignment for (clientId, toolId)
+- date-only endDate must be valid until 23:59:59
+- admin assignment updates take effect immediately
+- extension must not use stale cached assignment
+- no reused consumed open-intent token
+- normalize toolId as string everywhere
+- support `openIntentToken || intentToken`
+- retry only token errors, not business errors
 
-## Credentials
-- **Admin:** `<set-via-INITIAL_ADMIN_EMAIL-env-var>` / `<set-via-INITIAL_ADMIN_PASSWORD-env-var>`
-- **Client:** `we2@gmail.com` / `Client123!`
-
----
-
-## ✅ Completed Features (Jan 24, 2026)
-
-### Chrome Extension Feature Complete ✅
-- [x] **Admin Tool Form** - Added credential type selector (cookies/token/localStorage/none)
-- [x] **Token Config** - Token header name, prefix, and value fields for bearer auth
-- [x] **Extension Settings** - Checkboxes for auto-inject, inject on page load, clear existing cookies
-- [x] **Client Portal Banner** - Chrome Extension download banner with link to /chrome-extension.zip
-- [x] **Permanent Fixes** - Server.py now auto-starts CRM backend, validation updated for all credential fields
-
-### Bug Fixes
-- [x] **Tool Creation/Editing Fixed** - Fixed `next is not a function` error in Tool.js pre-save hook by converting to async/await
-- [x] **Filter Dropdowns Styling** - Added global CSS to remove browser default focus rings and ensure consistent dark theme styling
-- [x] **Tools Page Layout** - Improved to use 3-column professional card grid with hover effects
-- [x] **Cookies Textarea** - Added spellCheck="false" to prevent red underlines on JSON content
-- [x] **CRM Backend Auto-Start** - FastAPI gateway now auto-starts Node.js CRM server on port 8002
+### Other Requested Changes
+- Public CTA "Get Started" must open client signup, not Contact Us.
+- Create `/client/signup` and/or `/client/register`.
+- Admin/Client "View Website" opens https://genzdigitalstore.com in new tab.
+- Tool Access opens/reuses a separate tab, never replaces the dashboard tab.
+- Internal links stay in same tab. Logout redirects same tab.
+- UI quick polish only: compact dashboard cards, larger aligned logo.
+- Safe debug logs (clientId, toolId, assignmentId, endDate, serverTime,
+  hasSessionBundle, cookieSetCount, failedCount, stage, reason).
 
 ---
 
-## ✅ Completed Features (Jan 2026)
+## Implemented (Feb 2026 fork session)
 
-### Authentication System
-- [x] Admin login with SUPER_ADMIN/ADMIN/SUPPORT role support
-- [x] Client login with device binding security
-- [x] JWT access + refresh token flow
-- [x] Protected routes (AdminRoute, ClientRoute)
-- [x] Extension token authentication
+### P0 — Shared `getClientAccessibleTool` helper
+- **New: `backend/utils/getClientAccessibleTool.js`** — single source of truth:
+  - `getClientAccessibleTool(clientId, toolId)` → `{ ok, tool, assignment, candidates, code }`
+  - `listClientAccessibleTools(clientId)` → `[{ tool, assignment }, ...]`
+- Routes now consult ONE helper:
+  - `routes/client/tools.js` — `GET /` (list), `GET /:toolId` (detail), `POST /:toolId/open-intent`
+  - `routes/extension/index.js` — `GET /tools/:toolId/credentials`, `POST /verify-intent`
+- Behaviour preserved from prior fixes: inclusive end-of-day expiry via
+  `ToolAssignment.effectiveEndBoundary`, latest assignment wins, string-
+  normalised toolId, exact access codes (`assignment_not_found`,
+  `assignment_expired`, `session_bundle_missing`, `tool_domain_invalid`),
+  one-time open-intent only consumed after assignment validates.
+- Extension `background.js` clears target cookies, re-fetches credentials
+  per click, injects pre-navigation, opens in a separate tab, never persists
+  decrypted credentials in cache (only safe metadata).
+- `useExtension.openTool` enforces BUSINESS_RESULT_STAGES → no retry;
+  token errors trigger ONE retry with FRESH activation + FRESH intent token.
 
-### Tool Management
-- [x] Tool CRUD operations
-- [x] Category support (AI, Academic, SEO, Productivity, etc.)
-- [x] Status toggle (active/inactive)
-- [x] Credential versioning for extension sync
-- [x] Multiple credential types: cookies, tokens, localStorage
+### P1 — Signup CTA
+- Added routes: `/client/signup`, `/client/register` (alias `Join.js`).
+- `PublicNavbar` Get Started CTA (desktop + mobile) → `/client/signup`.
 
-### Client Management
-- [x] Client CRUD operations
-- [x] Device binding feature
-- [x] Bulk tool assignment
-- [x] Individual tool assignment
+### P2 — Navigation / UI
+- Existing target="_blank" "View Website" verified (Admin + Client layouts).
+- Tool Access opens via `chrome.tabs.create()` → separate tab (verified).
+- Public navbar logo enlarged (`size="md"` → `size="lg"`).
 
-### Activity Log
-- [x] Comprehensive activity tracking
-- [x] User email display in descriptions
-- [x] 24-hour auto-deletion (TTL index)
-- [x] Role and action filtering
-
-### Chrome Extension (NEW)
-- [x] Manifest V3 extension
-- [x] Client authentication via extension token
-- [x] Auto-sync credentials (15-minute interval)
-- [x] Credential versioning detection
-- [x] Optional host permissions per domain
-- [x] Cookie injection via chrome.cookies API
-- [x] Audit logging for credential access
-
----
-
-## Chrome Extension API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/crm/extension/auth` | POST | Authenticate client, get extension token |
-| `/api/crm/extension/logout` | POST | Revoke extension token |
-| `/api/crm/extension/tools` | GET | Get assigned tools with versions |
-| `/api/crm/extension/tools/versions` | GET | Lightweight version check |
-| `/api/crm/extension/tools/:id/credentials` | GET | Get decrypted credentials |
-| `/api/crm/extension/tools/:id/opened` | POST | Log tool opened event |
-| `/api/crm/extension/profile` | GET | Get client profile |
-| `/api/crm/extension/domains` | GET | Get list of tool domains |
-
----
-
-## Database Models
-
-### Tool (Updated)
-```javascript
-{
-  name: String,
-  description: String,
-  targetUrl: String,
-  domain: String, // Auto-extracted
-  category: String,
-  status: String,
-  credentialType: 'cookies' | 'token' | 'localStorage' | 'none',
-  cookiesEncrypted: String,
-  tokenEncrypted: String,
-  tokenHeader: String,
-  tokenPrefix: String,
-  localStorageEncrypted: String,
-  credentialVersion: Number, // Auto-incremented on credential change
-  credentialUpdatedAt: Date,
-  extensionSettings: Object
-}
-```
-
-### ExtensionToken (New)
-```javascript
-{
-  clientId: ObjectId,
-  tokenHash: String,
-  expiresAt: Date,
-  lastUsedAt: Date,
-  isRevoked: Boolean,
-  deviceInfo: Object
-}
-```
-
-### CredentialAccessLog (New)
-```javascript
-{
-  clientId: ObjectId,
-  toolId: ObjectId,
-  extensionTokenId: ObjectId,
-  action: String,
-  credentialVersion: Number,
-  deviceInfo: Object,
-  success: Boolean
-}
-```
-
----
-
-## Key Files
-
-### Backend - Extension Routes
-- `/app/backend/routes/extension/index.js` - Extension API endpoints
-- `/app/backend/models/ExtensionToken.js` - Extension token model
-- `/app/backend/models/CredentialAccessLog.js` - Audit log model
-- `/app/backend/models/Tool.js` - Updated with credential versioning
-
-### Chrome Extension
-- `/app/chrome-extension/manifest.json` - Manifest V3 config
-- `/app/chrome-extension/popup.html` - Extension popup UI
-- `/app/chrome-extension/js/popup.js` - Popup logic
-- `/app/chrome-extension/js/background.js` - Auto-sync service worker
-- `/app/chrome-extension/js/api.js` - API client
-- `/app/chrome-extension/README.md` - Documentation
-
----
-
-## Testing
-
-### Test Credentials
-- Extension auth: `we2@gmail.com` / `Client123!`
-- Admin: `<set-via-INITIAL_ADMIN_EMAIL-env-var>` / `<set-via-INITIAL_ADMIN_PASSWORD-env-var>`
-
-### Verified
-- Backend: 100% (16/16 tests)
-- Frontend: 100% (6/6 UI tests)
-- Extension API: Manually verified
+### Verification
+- `node --check` ✅ on `getClientAccessibleTool.js`, `routes/client/tools.js`, `routes/extension/index.js`
+- `yarn install --legacy-peer-deps` ✅
+- `yarn build` ✅ (CI=false; pre-existing eslint warnings unchanged)
+- Commit `565204a` staged locally — push requires user to use **Save to GitHub**.
 
 ---
 
 ## Backlog
+- E2E manual validation in a real Chrome browser with the unpacked extension.
+- Jest/supertest unit tests for `getClientAccessibleTool` covering:
+  - duplicate active+expired rows → latest valid wins
+  - date-only endDate same day → valid through 23:59:59
+  - `assignment_not_found` vs `assignment_expired` distinction
+- Further UI compaction of admin members/assignments tables (cosmetic).
 
-1. **Admin UI for Credential Management** - Add form fields for credential type, token config
-2. **Client Portal Extension Download** - Link to install extension
-3. **Production Packaging** - Build Chrome Web Store package
-4. **Token Header Injection** - Complete webRequest listener for token injection
+---
+
+## Files of Reference
+- `backend/utils/getClientAccessibleTool.js` — shared helper (NEW)
+- `backend/models/ToolAssignment.js` — `effectiveEndBoundary`, `findActiveForClientTool`
+- `backend/routes/client/tools.js` — dashboard list, single tool, open-intent
+- `backend/routes/extension/index.js` — credentials, open-intent, verify-intent
+- `chrome-extension/js/background.js` — `handleOpenTool`, cookie clear/inject
+- `frontend/src/hooks/useExtension.js` — business-vs-token retry policy
+- `frontend/src/App.js` — `/client/signup`, `/client/register` routes
+- `frontend/src/components/public/PublicNavbar.js` — Get Started CTA
+- `frontend/src/pages/Join.js` — signup page (aliased by /client/signup)
+
+## Access Codes (single vocabulary across the codebase)
+- `assignment_not_found` — no assignment row exists for (clientId, toolId)
+- `assignment_expired`   — row(s) exist but all are expired/inactive/not-started
+- `session_bundle_missing` — assignment valid but admin hasn't saved usable session
+- `tool_domain_invalid`  — tool has no targetUrl/domain
+- `extension_token_invalid` — extension token bad/missing/expired
+- `intent_invalid`       — open-intent token bad/expired/consumed
+- `device_blocked`       — device-binding mismatch in hard mode
+
+## Test Credentials
+See `/app/memory/test_credentials.md` (no auth credentials created in this session).
