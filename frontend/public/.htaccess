@@ -1,5 +1,14 @@
 DirectoryIndex index.html
 
+# Always revalidate the HTML shell so new deploys appear immediately and a stale
+# cached index.html can never produce an old/blank page. Hashed JS/CSS keep their
+# own long-lived caching via their unique per-build filenames.
+<IfModule mod_headers.c>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>
+
 RewriteEngine On
 RewriteBase /
 
