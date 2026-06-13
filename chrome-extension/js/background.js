@@ -1042,9 +1042,12 @@ async function _handleOpenToolInner(payload) {
       openIntentLock.delete(toolId);
       const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
       if (FINAL_BUSINESS.includes(code)) {
-        // Map assignment_* to the dashboard's existing tool_access_expired stage
-        // (final, non-retry); pass other codes through verbatim.
-        const stage = (code === 'assignment_expired' || code === 'assignment_not_found') ? 'tool_access_expired' : code;
+        // Map ONLY a genuine expiry to the dashboard's tool_access_expired stage
+        // (final, non-retry). assignment_not_found must stay DISTINCT so the
+        // dashboard shows "Tool not assigned" — never the false "Access expired"
+        // for a tool that simply has no assignment row (req #8/#9). All other
+        // business codes pass through verbatim.
+        const stage = (code === 'assignment_expired') ? 'tool_access_expired' : code;
         return { success: false, error: stage, stage, code };
       }
       if (code === 'extension_token_invalid') {
