@@ -493,13 +493,13 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
     
     // Build unified credential response
     let credentials = null;
-    
+
     try {
       // Check for new unified credentials first
       if (tool.credentials && tool.credentials.type && tool.credentials.payloadEncrypted) {
         const payloadJson = decryptCookies(tool.credentials.payloadEncrypted);
         const payload = JSON.parse(payloadJson);
-        
+
         credentials = {
           type: tool.credentials.type,
           payload: payload,
@@ -508,7 +508,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
           domain: tool.domain,
           loginUrl: tool.loginUrl || tool.targetUrl
         };
-        
+
         // Add legacy header info if it's a headers/token type
         if (tool.credentials.type === 'headers' || tool.credentials.type === 'token') {
           credentials.tokenHeader = tool.credentials.tokenHeader || tool.tokenHeader || 'Authorization';
@@ -518,7 +518,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       // Fallback to legacy credentials
       else {
         const credentialType = tool.credentialType || 'cookies';
-        
+
         if (credentialType === 'cookies' && tool.cookiesEncrypted) {
           const cookiesJson = decryptCookies(tool.cookiesEncrypted);
           credentials = {
