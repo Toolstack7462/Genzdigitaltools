@@ -93,7 +93,7 @@ function stageMessage(stage, err) {
     case 'open_intent_failed':
       return 'Could not authorize this tool. Please refresh the dashboard and try again.';
     case 'session_bundle_missing':
-      return 'The latest session for this tool is not available yet. Please contact admin.';
+      return 'Session missing for this tool. Please contact admin.';
     case 'cookie_injection_failed':
       return 'The latest session cookies could not be applied for this tool. Please contact admin.';
     case 'tool_domain_invalid':
@@ -106,9 +106,10 @@ function stageMessage(stage, err) {
       return 'This secure access is linked to a different device. Please contact admin.';
     case 'intent_not_found':
       return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
+    case 'assignment_not_found':
+      return 'This tool is not assigned to your account.';
     case 'tool_access_expired':
     case 'assignment_expired':
-    case 'assignment_not_found':
       return 'This tool assignment has expired or was revoked by admin.';
     case 'device_blocked':
       return 'Access from this device is blocked. Please contact admin.';
@@ -430,16 +431,24 @@ export function useExtension() {
       } catch (e) {
         const code = e?.response?.data?.code || '';
         logStage('open_intent_failed', { toolId, status: e?.response?.status, code: code || null });
-        // Prefer the backend's EXACT code when present.
-        if (code === 'assignment_expired' || code === 'assignment_not_found') {
+        // Prefer the backend's EXACT code — keep "not assigned" / "session missing"
+        // / "expired" DISTINCT. Never collapse not-found or session-missing into
+        // "expired" (that produced false "Access expired" for assigned tools).
+        if (code === 'assignment_expired') {
           return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
         }
-        if (code === 'tool_domain_invalid' || code === 'device_blocked') {
+        if (code === 'assignment_not_found') {
+          return { success: false, error: 'assignment_not_found', message: stageMessage('assignment_not_found') };
+        }
+        if (code === 'tool_domain_invalid' || code === 'device_blocked' || code === 'session_bundle_missing') {
           return { success: false, error: code, message: stageMessage(code, e) };
         }
         const raw = e?.response?.data?.error || '';
-        if (/expired|not assigned|revoked|inactive|not started/i.test(raw)) {
-          return { success: false, error: 'tool_access_expired', message: 'This tool assignment has expired or was revoked by admin.' };
+        if (/not assigned|no assignment/i.test(raw)) {
+          return { success: false, error: 'assignment_not_found', message: stageMessage('assignment_not_found') };
+        }
+        if (/expired|revoked|inactive|not started/i.test(raw)) {
+          return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
         }
         return { success: false, error: 'open_intent_failed', message: 'Could not authorize this tool. Please refresh the dashboard and try again.' };
       }

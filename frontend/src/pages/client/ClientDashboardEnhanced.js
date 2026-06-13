@@ -196,12 +196,18 @@ const ClientDashboardEnhanced = () => {
   /* ─── sanitizeError — maps raw extension/backend errors to user-safe messages ─ */
   const sanitizeError = (result) => {
     const raw = result?.actionableError || result?.message || result?.error || '';
-    // Assignment-level errors — show "Contact admin", not internal details.
-    if (result?.error === 'tool_access_expired' || /access expired|assignment.*expired|Tool access expired|revoked/i.test(raw)) {
-      return 'Access expired. Contact admin.';
+    // Missing session bundle is NOT an expiry — show it distinctly (req #7).
+    if (result?.error === 'session_bundle_missing' || /session missing|session for this tool is not available/i.test(raw)) {
+      return 'Session missing. Contact admin.';
     }
-    if (/not assigned|no assignment/i.test(raw)) {
+    // Tool not assigned is NOT an expiry — show it distinctly (req #8).
+    if (result?.error === 'assignment_not_found' || /not assigned|no assignment/i.test(raw)) {
       return 'Tool not assigned. Contact admin.';
+    }
+    // Genuine expiry/revoke only.
+    if (result?.error === 'tool_access_expired' || result?.error === 'assignment_expired'
+        || /access expired|assignment has expired|Tool access expired|revoked/i.test(raw)) {
+      return 'Access expired. Contact admin.';
     }
     // Never surface popup references to the user.
     if (/popup|reconnect from/i.test(raw)) {
@@ -249,22 +255,45 @@ const ClientDashboardEnhanced = () => {
       // openTool should never throw (it returns {success:false}), but guard anyway.
       result = { success: false, error: err.message || 'unknown_error' };
     }
+    const clearState = () => setToolOpenStates(prev => {
+      const copy = { ...prev }; delete copy[toolId]; return copy;
+    });
+    const showToolError = (msg) => {
+      if (!msg) { clearState(); return; }
+      setToolOpenStates(prev => ({ ...prev, [toolId]: { error: msg } }));
+      setTimeout(clearState, 8000);
+    };
+
     if (result?.success) {
-      setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
-    } else {
-      const msg = sanitizeError(result);
-      if (msg) {
-        setToolOpenStates(prev => ({ ...prev, [toolId]: { error: msg } }));
-        // Auto-clear error after 8s
-        setTimeout(() => setToolOpenStates(prev => {
-          const copy = { ...prev };
-          delete copy[toolId];
-          return copy;
-        }), 8000);
-      } else {
-        setToolOpenStates(prev => ({ ...prev, [toolId]: {} }));
-      }
+      clearState();
+      return;
     }
+
+    // ── #9 guarantee: never show "expired"/"not assigned" for a tool the
+    // dashboard's OWN (shared-helper) list still returns. Re-verify against a
+    // FRESH list; if the tool is still visible it's a transient mismatch, not an
+    // expiry — retry the open once, then show a soft retry message. Only if the
+    // tool is ALSO gone from the fresh list do we surface expired/not-assigned.
+    const ACCESS_DENY = ['tool_access_expired', 'assignment_expired', 'assignment_not_found'];
+    if (ACCESS_DENY.includes(result?.error)) {
+      let stillVisible = false;
+      try {
+        const fresh = await api.get('/client/tools');
+        const freshTools = fresh.data.tools || [];
+        setTools(freshTools);
+        stillVisible = freshTools.some(t => String(t._id || t.toolId) === String(toolId));
+      } catch (_) { /* keep stillVisible=false → fall through to precise message */ }
+
+      if (stillVisible) {
+        const retry = await openTool(toolId).catch(() => ({ success: false }));
+        if (retry?.success) { clearState(); return; }
+        showToolError('Could not open this tool right now. Please try again in a moment.');
+        return;
+      }
+      // Tool genuinely removed from the dashboard list → message is now consistent.
+    }
+
+    showToolError(sanitizeError(result));
   };
 
   /* ─── Loading State — skeleton screens ─ */
