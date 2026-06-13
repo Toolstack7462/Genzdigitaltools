@@ -109,8 +109,8 @@ const AdminLoginEnhanced = () => {
         <div className="mt-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl">
           <p className="text-sm text-blue-400 text-center">
             <strong>Demo Credentials:</strong><br />
-            Email: <set-via-INITIAL_ADMIN_EMAIL-env-var><br />
-            Password: <set-via-INITIAL_ADMIN_PASSWORD-env-var>
+            Email: {'<set-via-INITIAL_ADMIN_EMAIL-env-var>'}<br />
+            Password: {'<set-via-INITIAL_ADMIN_PASSWORD-env-var>'}
           </p>
         </div>
       </div>
