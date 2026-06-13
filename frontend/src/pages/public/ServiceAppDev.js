@@ -29,16 +29,15 @@ const ServiceAppDev = () => {
             <span className="glow-dot" style={{ background: '#4ade80' }} /> App Development
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Custom apps, built <span style={{ WebkitTextFillColor: 'transparent', background: 'linear-gradient(135deg,#4ade80,#16a34a)', WebkitBackgroundClip: 'text', backgroundClip: 'text' }}>to scale</span>
+            Custom apps, built <span className="text-grad-brand">to scale</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Whether you need a web app, mobile app, admin system, or automation tool —
             we build functional, scalable software tailored exactly to your requirements.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#4ade80,#16a34a)' }}>
-            <MessageCircle size={15} /> Discuss Your App Idea
+            className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+            <MessageCircle size={16} /> Discuss Your App Idea
           </a>
         </div>
       </section>

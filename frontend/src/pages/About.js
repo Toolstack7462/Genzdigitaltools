@@ -48,9 +48,9 @@ const About = () => {
                 entrepreneur, and business — through a secure, well-designed, and reliable platform.
               </p>
             </div>
-            <div className="gz-tint-card" style={{ '--tint': 'linear-gradient(135deg, rgba(124,58,237,0.14), rgba(37,99,235,0.10))' }}>
+            <div className="gz-tint-card" style={{ '--tint': 'linear-gradient(135deg, rgba(37,99,235,0.14), rgba(20,184,166,0.10))' }}>
               <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5 text-white"
-                style={{ background: 'linear-gradient(135deg,#7C3AED,#2563EB)', boxShadow: '0 12px 26px -10px rgba(124,58,237,0.45)' }}>
+                style={{ background: 'linear-gradient(135deg,#2563EB,#0891B2)', boxShadow: '0 12px 26px -10px rgba(37,99,235,0.45)' }}>
                 <Star size={22} />
               </div>
               <h3 className="text-genz-navy font-bold text-[22px] mb-3">Our Vision</h3>

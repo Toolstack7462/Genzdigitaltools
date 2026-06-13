@@ -28,16 +28,15 @@ const ServiceBranding = () => {
             <span className="glow-dot" style={{ background: '#fb923c' }} /> Branding & Design
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            A brand identity that <span style={{ WebkitTextFillColor: 'transparent', background: 'linear-gradient(135deg,#fb923c,#f472b6)', WebkitBackgroundClip: 'text', backgroundClip: 'text' }}>stands out</span>
+            A brand identity that <span className="text-grad-brand">stands out</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             From logo design and brand guidelines to social media creatives and print materials —
             we create visual identities that make your brand impossible to ignore.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-navy transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#fb923c,#ea580c)' }}>
-            <MessageCircle size={15} /> Start Your Brand Project
+            className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+            <MessageCircle size={16} /> Start Your Brand Project
           </a>
         </div>
       </section>

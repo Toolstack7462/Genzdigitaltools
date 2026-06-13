@@ -28,16 +28,15 @@ const ServiceSEO = () => {
             <span className="glow-dot" style={{ background: '#22d3ee' }} /> SEO & Digital Growth
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Rank higher. <span style={{ WebkitTextFillColor:'transparent', background:'linear-gradient(135deg,#22d3ee,#0891b2)', WebkitBackgroundClip:'text', backgroundClip:'text' }}>Grow faster.</span>
+            Rank higher. <span className="text-grad-brand">Grow faster.</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Data-driven SEO strategies that improve your search rankings, increase organic traffic,
             and turn visitors into customers — with measurable results.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#22d3ee,#0891b2)' }}>
-            <MessageCircle size={15} /> Get an SEO Audit
+            className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+            <MessageCircle size={16} /> Get an SEO Audit
           </a>
         </div>
       </section>

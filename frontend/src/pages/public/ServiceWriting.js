@@ -29,16 +29,15 @@ const ServiceWriting = () => {
             <span className="glow-dot" style={{ background: '#a78bfa' }} /> Writing Services
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Words that convert, inform, <span style={{ WebkitTextFillColor: 'transparent', background: 'linear-gradient(135deg,#a78bfa,#7c3aed)', WebkitBackgroundClip: 'text', backgroundClip: 'text' }}>and build authority</span>
+            Words that convert, inform, <span className="text-grad-brand">and build authority</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Professional writing services across every format — from persuasive website copy to
             detailed research articles, business documents, and academic support.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-navy transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#a78bfa,#7c3aed)' }}>
-            <MessageCircle size={15} /> Discuss Your Project
+            className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+            <MessageCircle size={16} /> Discuss Your Project
           </a>
         </div>
       </section>

@@ -47,7 +47,7 @@ const ServiceDigitalTools = () => {
             <span className="glow-dot" /> Digital Tools Access
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Premium <span className="text-gradient-teal">Digital Tools</span>, Securely Accessed
+            Premium <span className="text-grad-brand">Digital Tools</span>, Securely Accessed
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Get admin-managed access to 50+ professional AI, SEO, design, and productivity tools —

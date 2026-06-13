@@ -31,7 +31,7 @@ const ServiceWebDesign = () => {
             <span className="glow-dot" /> Web Design & Development
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Websites that look <span className="text-gradient-teal">premium</span> and perform
+            Websites that look <span className="text-grad-brand">premium</span> and perform
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             We design and develop animated, responsive, high-performance websites that

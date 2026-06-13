@@ -33,16 +33,15 @@ const ServiceSocialMedia = () => {
             <span className="glow-dot" style={{ background: '#e1306c' }} /> Social Media Management
           </div>
           <h1 className="text-4xl sm:text-5xl font-extrabold text-genz-navy mb-5 leading-tight">
-            Your brand, consistently <span style={{ WebkitTextFillColor: 'transparent', background: 'linear-gradient(135deg,#e1306c,#f77737)', WebkitBackgroundClip: 'text', backgroundClip: 'text' }}>showing up</span>
+            Your brand, consistently <span className="text-grad-brand">showing up</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             We manage your entire social media presence — strategy, content, design, scheduling, and reporting —
             so you can focus on growing your business.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-genz-navy transition-all hover:opacity-90"
-            style={{ background: 'linear-gradient(135deg,#e1306c,#c13584)' }}>
-            <MessageCircle size={15} /> Get Started on WhatsApp
+            className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">
+            <MessageCircle size={16} /> Get Started on WhatsApp
           </a>
         </div>
       </section>
