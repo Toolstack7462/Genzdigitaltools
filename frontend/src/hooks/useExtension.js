@@ -92,6 +92,8 @@ function stageMessage(stage, err) {
       return 'Extension not detected. Reload the extension, then refresh the dashboard.';
     case 'session_bundle_missing':
       return 'Session missing for this tool. Please contact admin.';
+    case 'no_active_session':
+      return 'No active session assigned for this tool. Please refresh or assign account from admin.';
     case 'tool_domain_invalid':
       return 'This tool has no valid target URL configured. Please contact admin.';
     case 'assignment_not_found':
@@ -370,10 +372,24 @@ export function useExtension() {
     return () => window.removeEventListener('message', handler);
   }, [reconnect]);
 
-  const openTool = useCallback(async (rawToolId) => {
+  const openTool = useCallback(async (rawToolId, meta = {}) => {
     // Normalize toolId to a string up front (backend + extension compare as string).
     const toolId = (rawToolId === undefined || rawToolId === null) ? '' : String(rawToolId);
     if (!toolId) return { success: false, error: 'tool_domain_invalid', message: stageMessage('tool_domain_invalid') };
+
+    // OceanHub req #1: the Access click sends a proper tool request — toolId, the
+    // current Genz backend API URL, the requested tool URL, and the assigned
+    // session id. (No secret token here; the extension holds its own session
+    // token. These extra fields drive the background's "Processing tool request"
+    // log and let it prefer the dashboard-sent URL.)
+    const openPayload = {
+      toolId,
+      forceFreshSession: true,
+      apiUrl: getBackendOrigin(),
+      requestedToolUrl: meta.requestedToolUrl || null,
+      assignmentId: meta.assignmentId || null,
+      sessionId: meta.assignmentId || null,
+    };
     if (!bridgeReady && !getBridgeMarker()) {
       return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
     }
@@ -422,7 +438,7 @@ export function useExtension() {
       // weaken access control — it just removes the gate that was blocking the
       // tab from ever opening.
       logStage('open_tool:send', { toolId });
-      let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, forceFreshSession: true }, 20000);
+      let result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
       logStage('open_tool:result', { toolId, success: result?.success !== false, error: result?.error || null, method: result?.method || null });
 
       // Auto-request missing host permission, then retry. Never tell user to use popup.
@@ -430,7 +446,7 @@ export function useExtension() {
         try {
           const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
           if (permission?.success || permission?.granted) {
-            result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, forceFreshSession: true }, 20000);
+            result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
           } else {
             return { success: false, error: 'permission_denied', message: 'Domain access could not be granted automatically. Contact admin.' };
           }
@@ -442,7 +458,7 @@ export function useExtension() {
       // Business stages are FINAL — never reconnect/retry on them. (The auth regex
       // below contains "token", which must not be mistaken for a retryable auth
       // error on an assignment that admin must fix.)
-      const BUSINESS_RESULT_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing'];
+      const BUSINESS_RESULT_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing', 'no_active_session'];
       if (result?.error && BUSINESS_RESULT_STAGES.includes(String(result.error))) {
         logStage('business_stage_final', { toolId, stage: result.error });
         return { success: false, error: String(result.error), message: stageMessage(String(result.error), result) };
@@ -453,7 +469,7 @@ export function useExtension() {
       if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|401|reauth/i.test(String(result.error)))) {
         logStage('stale_token_retry', { toolId, trigger: result?.error || 'needsReauth' });
         await connectExtension({}, { forceReauth: true });
-        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, forceFreshSession: true }, 20000);
+        result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
         logStage('stale_token_retry:result', { toolId, success: result?.success !== false, error: result?.error || null });
       }
 
@@ -465,7 +481,7 @@ export function useExtension() {
       // Map them FIRST and NEVER retry — e.g. 'tool_access_expired' contains
       // "expired" and 'tool_domain_invalid' contains "invalid", which must not be
       // mistaken for a retryable auth error.
-      const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing'];
+      const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing', 'no_active_session'];
       if (BUSINESS_STAGES.includes(msg)) {
         return { success: false, error: msg, message: stageMessage(msg, err) };
       }
@@ -477,7 +493,7 @@ export function useExtension() {
         try {
           logStage('stale_token_retry', { toolId, trigger: msg });
           await connectExtension({}, { forceReauth: true });                       // fresh activation token
-          const retryResult = await sendToBridge('GENZ_OPEN_TOOL', { toolId, forceFreshSession: true }, 20000);
+          const retryResult = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
           logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
           return retryResult;
         } catch (retryErr) {

@@ -472,9 +472,16 @@ async function handleLoginRequired(data, sender) {
 }
 
 /**
- * Get credentials for a tool (with caching)
+ * Get credentials for a tool (with caching).
+ * @param {string} toolId
+ * @param {{throwOnFailure?: boolean}} opts - when throwOnFailure is set, a
+ *   non-business fetch failure (404/500/network) is surfaced as a tagged
+ *   'credentials_unavailable' error instead of resolving to null. This lets the
+ *   open-tool flow distinguish "admin assigned a session but it couldn't be
+ *   fetched" from "this tool genuinely has no session" — so it never opens a
+ *   session-required tool logged-out (OceanHub processTool behaviour).
  */
-async function getToolCredentials(toolId) {
+async function getToolCredentials(toolId, opts = {}) {
   // Check metadata cache (safe — no decrypted credentials stored)
   if (toolCredentialsCache.has(toolId)) {
     const cached = toolCredentialsCache.get(toolId);
@@ -516,11 +523,20 @@ async function getToolCredentials(toolId) {
     // of silently opening a logged-out tab. Network/unknown failures still
     // resolve to null so transient hiccups don't hard-fail direct-open tools.
     const code = error?.payload?.code || null;
-    logger.error('Failed to fetch credentials', { error: error.message, code, status: error?.status });
+    logger.error('Failed to fetch credentials', { toolId, error: error.message, code, status: error?.status || null });
     if (code) {
       const tagged = new Error(code);
       tagged.code = code;
       tagged.status = error.status;
+      throw tagged;
+    }
+    // No business code → infrastructure failure (404/500/network/decrypt).
+    // When the caller needs to apply a session, surface this so it does NOT
+    // fall through to a logged-out direct_open.
+    if (opts.throwOnFailure) {
+      const tagged = new Error('credentials_unavailable');
+      tagged.code = 'credentials_unavailable';
+      tagged.status = error?.status || null;
       throw tagged;
     }
     return null;
@@ -829,6 +845,12 @@ function getOriginPattern(url) {
   }
 }
 
+// Hostname/origin only — used in safe logs so we never print full URLs that may
+// carry query tokens.
+function safeHost(url) {
+  try { return new URL(url).hostname; } catch (_) { return null; }
+}
+
 function getBaseDomain(hostname) {
   // NOTE: This duplicates DomainUtils.getBaseDomain() in api.js.
   // Both are kept for now since background.js is a service worker module
@@ -989,12 +1011,32 @@ async function _handleOpenToolInner(payload) {
   }
 
   // Normalize the tool target URL from any of the supported field names.
-  const targetUrl = tool.targetUrl || tool.target_url || tool.url || tool.toolUrl;
+  // Prefer the dashboard-sent requestedToolUrl (OceanHub req #1) but fall back to
+  // the synced tool's targetUrl. Either way the URL stays inside the extension.
+  const targetUrl = payload?.requestedToolUrl || tool.targetUrl || tool.target_url || tool.url || tool.toolUrl;
   if (!targetUrl) {
     logger.warn('Tool has no valid target URL', { toolId: toolIdStr, stage: 'tool_domain_invalid' });
     openIntentLock.delete(toolId);
     return { success: false, error: 'tool_domain_invalid', stage: 'tool_domain_invalid', message: 'This tool has no valid target URL configured. Please contact admin.' };
   }
+
+  // Does admin require an injected/authorized session for this tool? Derived from
+  // the SYNCED tool metadata (never trusts the page). If true, we must apply the
+  // session and must NEVER fall back to a logged-out direct_open.
+  const toolRequiresSession =
+    !!tool.hasCredentials ||
+    !!(tool.sessionBundle && (tool.sessionBundle.hasCookies || tool.sessionBundle.hasLocalStorage || tool.sessionBundle.hasSessionStorage));
+
+  // ── OceanHub-style request log (safe metadata only — no secrets) ──────────
+  const apiState = await getStorage(['apiUrl']);
+  const sessionId = tool.assignment?.id ? String(tool.assignment.id) : (payload?.sessionId ? String(payload.sessionId) : null);
+  logger.info('Processing tool request', {
+    apiUrl: normalizeApiBase(apiState.apiUrl || payload?.apiUrl || ''),
+    toolId: toolIdStr,
+    sessionId,
+    requestedToolUrl: safeHost(targetUrl),
+    requiresSession: toolRequiresSession,
+  });
 
   // ── 4. Check host permission ───────────────────────────────────────────────
   const originPattern = getOriginPattern(targetUrl);
@@ -1018,14 +1060,19 @@ async function _handleOpenToolInner(payload) {
   // always used. We do this BEFORE opening the tab so cookies can be applied
   // pre-navigation (inject new cookies, THEN open the target domain).
   let credentialData = null;
+  let credFetchStatus = null;
   try {
-    credentialData = await getToolCredentials(toolId);
+    // throwOnFailure: a non-business fetch failure must NOT silently degrade to a
+    // logged-out direct_open for a session-required tool.
+    credentialData = await getToolCredentials(toolId, { throwOnFailure: true });
   } catch (err) {
     // Exact backend business code (session_bundle_missing, tool_domain_invalid,
-    // assignment_expired/not_found, device_blocked, extension_token_invalid).
+    // assignment_expired/not_found, device_blocked, extension_token_invalid) OR
+    // 'credentials_unavailable' for an infrastructure failure.
     const code = err?.code || err?.payload?.code || null;
-    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: err?.status });
-    if (code) {
+    credFetchStatus = err?.status || null;
+    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: credFetchStatus });
+    if (code && code !== 'credentials_unavailable') {
       openIntentLock.delete(toolId);
       const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
       if (FINAL_BUSINESS.includes(code)) {
@@ -1041,6 +1088,8 @@ async function _handleOpenToolInner(payload) {
         return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
       }
     }
+    // 'credentials_unavailable' falls through with credentialData=null; handled
+    // by the session-required guard below.
   }
 
   // If credential fetch failed and the extension session was cleared (401),
@@ -1052,6 +1101,24 @@ async function _handleOpenToolInner(payload) {
       openIntentLock.delete(toolId);
       return { success: false, error: 'auth_expired', needsReauth: true, message: 'Refreshing secure access. Please wait...' };
     }
+  }
+
+  // ── Session-required guard (OceanHub req #3, #4, #10) ──────────────────────
+  // Admin assigned a session/account for this tool but we have NO usable session
+  // data (fetch failed, or returned empty). Do NOT open HIX AI / any such tool
+  // logged-out via direct_open. Surface the exact, user-safe message instead.
+  if (!credentialData && toolRequiresSession) {
+    openIntentLock.delete(toolId);
+    logger.warn('No authorized session available for session-required tool', {
+      toolId: toolIdStr, sessionId, status: credFetchStatus, requiresSession: true,
+    });
+    return {
+      success: false,
+      error: 'no_active_session',
+      stage: 'no_active_session',
+      status: credFetchStatus,
+      message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+    };
   }
 
   const creds            = credentialData?.credentials;
@@ -1075,7 +1142,7 @@ async function _handleOpenToolInner(payload) {
     sessionStorage: bundle?.sessionStorage ? Object.keys(bundle.sessionStorage).length : 0,
     version: bundle?.version || null,
   };
-  logger.info('Opening tool', { toolId: toolIdStr, credType, hasBundleCookies, hasBundleStorage, hasCreds });
+  logger.info('Opening tool', { toolId: toolIdStr, login_type: credType, sessionId, hasBundleCookies, hasBundleStorage, hasCreds });
   logger.info('Latest session bundle received', { toolId: toolIdStr, ...bundleDebug });
 
   // Admin configured a session for this tool (sync metadata says hasCookies),
@@ -1109,11 +1176,22 @@ async function _handleOpenToolInner(payload) {
     preInjectedCookies = setCount > 0;
     // Safe debug: set/failed counts + domain + stage (no cookie values).
     logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount });
-    // OceanHub model: cookie injection is best-effort. Even if no cookies could
-    // be applied, we still open the tab (OceanHub's processTool always falls back
-    // to chrome.tabs.create). We never block the tab from opening.
+    // OceanHub req #9: a few failed (e.g. analytics) cookies must NOT block login
+    // as long as the main session cookies were applied (setCount > 0). But if NONE
+    // applied, the session genuinely could not be installed — do NOT open the tool
+    // logged-out.
     if (setCount === 0) {
-      logger.warn('No cookies applied — opening tool anyway (OceanHub best-effort)', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
+      logger.warn('All session cookies failed to apply — refusing logged-out open', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
+      openIntentLock.delete(toolId);
+      return {
+        success: false,
+        error: 'no_active_session',
+        stage: 'inject_cookies',
+        domain: cookieDomain,
+        set: 0,
+        failed: failedCount,
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      };
     }
   }
 
@@ -1139,9 +1217,20 @@ async function _handleOpenToolInner(payload) {
   }
 
   // ── 8. Determine and execute strategy ─────────────────────────────────────
-  // direct_open: no credentials and no session bundle
+  // direct_open: no credentials and no session bundle. OceanHub req #3/#4: a tool
+  // that admin configured WITH a session must never silently direct_open.
   if (!hasCreds && !hasBundle) {
-    logger.info('Strategy: direct_open', { toolId });
+    if (toolRequiresSession) {
+      logger.warn('Session-required tool resolved to no session — refusing direct_open', { toolId: toolIdStr, sessionId, login_type: 'none' });
+      openIntentLock.delete(toolId);
+      return {
+        success: false,
+        error: 'no_active_session',
+        stage: 'no_active_session',
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      };
+    }
+    logger.info('Strategy: direct_open', { toolId, login_type: 'direct' });
     await logToolOpened(toolId);
     openIntentLock.delete(toolId);
     return { success: true, method: 'direct_open', tabId: targetTabId };

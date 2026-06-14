@@ -204,6 +204,10 @@ const ClientDashboardEnhanced = () => {
     if (result?.error === 'assignment_not_found' || /not assigned|no assignment/i.test(raw)) {
       return 'Tool not assigned. Contact admin.';
     }
+    // Assigned, but no usable authorized session could be applied (OceanHub req #10).
+    if (result?.error === 'no_active_session' || /no active session/i.test(raw)) {
+      return 'No active session assigned for this tool. Please refresh or assign account from admin.';
+    }
     // Genuine expiry/revoke only.
     if (result?.error === 'tool_access_expired' || result?.error === 'assignment_expired'
         || /access expired|assignment has expired|Tool access expired|revoked/i.test(raw)) {
@@ -250,7 +254,12 @@ const ClientDashboardEnhanced = () => {
     setToolOpenStates(prev => ({ ...prev, [toolId]: { loading: true } }));
     let result;
     try {
-      result = await openTool(toolId);
+      // OceanHub req #1: send a proper tool request (toolId + requested tool URL
+      // + assigned session id). The extension supplies its own session token.
+      result = await openTool(toolId, {
+        requestedToolUrl: tool.targetUrl || tool.target_url || tool.url || null,
+        assignmentId: tool.assignmentId || null,
+      });
     } catch (err) {
       // openTool should never throw (it returns {success:false}), but guard anyway.
       result = { success: false, error: err.message || 'unknown_error' };
