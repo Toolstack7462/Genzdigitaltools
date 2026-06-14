@@ -4,7 +4,6 @@ const router = express.Router();
 const Tool = require('../../models/Tool');
 const ToolAssignment = require('../../models/ToolAssignment');
 const ActivityLog = require('../../models/ActivityLog');
-const OpenIntent = require('../../models/OpenIntent');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool, listClientAccessibleTools } = require('../../utils/getClientAccessibleTool');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
@@ -99,119 +98,6 @@ router.get('/', async (req, res) => {
   }
 });
 
-
-// ─── POST /:toolId/open-intent — dashboard → extension open token ──────────
-router.post('/:toolId/open-intent', async (req, res) => {
-  try {
-    const { toolId } = req.params;
-    const { deviceId } = req.body || {};
-
-    if (!toolId || !/^[a-f\d]{24}$/i.test(toolId)) {
-      return res.status(400).json({ error: 'Invalid tool ID format' });
-    }
-
-    // Re-check device binding for extension access trigger.
-    // In soft mode: verify the deviceId is bound (exact hash match) OR allow if the
-    // client has any active binding (same-browser history-clear scenario). The new
-    // binding was already created during login, so we look for exact match first.
-    if (req.user?.devicePolicy?.enabled && deviceId) {
-      const BINDING_MODE = (process.env.DEVICE_BINDING_MODE || 'soft').toLowerCase();
-      const deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
-      let binding = await DeviceBinding.findOne({ clientId: req.userId, deviceIdHash });
-      if (binding) {
-        binding.lastSeenAt = new Date();
-        await binding.save();
-      } else if (BINDING_MODE === 'hard') {
-        // Hard mode: must match a registered binding exactly.
-        console.log('[open-intent] device blocked', {
-          clientId: String(req.userId), toolId: String(toolId),
-          serverTime: new Date().toISOString(), code: 'device_blocked', reason: 'device_binding_mismatch',
-        });
-        return res.status(403).json({ error: 'Device binding mismatch', code: 'device_blocked' });
-      }
-      // Soft mode: if no exact match, the login flow already created a new binding.
-      // Trust the authenticated session; do not double-block here.
-    }
-
-    // Pick the LATEST valid assignment using the shared dashboard-aligned helper
-    // — if the dashboard shows the tool, this returns ok:true; if it returns
-    // ok:false, the tool is also hidden from the dashboard.
-    const now = new Date();
-    const decision = await getClientAccessibleTool(req.userId, toolId);
-    const candidates = decision.candidates || [];
-    const assignment = decision.ok ? decision.assignment : null;
-
-    if (!assignment || !assignment.toolId) {
-      const code = decision.code; // 'assignment_not_found' | 'assignment_expired'
-      const hadAny = candidates.length > 0;
-      console.log('[open-intent] no valid assignment', {
-        clientId: String(req.userId), toolId: String(toolId),
-        assignmentId: hadAny ? String(candidates[0]._id) : null,
-        assignmentStatus: hadAny ? candidates[0].status : null,
-        endDate: hadAny ? candidates[0].endDate : null,
-        usedEndBoundary: hadAny ? (ToolAssignment.effectiveEndBoundary(candidates[0].endDate)?.toISOString() || null) : null,
-        serverTime: now.toISOString(),
-        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
-      });
-      // Keep the "expired"/"not assigned" wording so the dashboard's existing
-      // error→tool_access_expired mapping still matches; add the exact code too.
-      return res.status(403).json({ error: hadAny ? 'Tool access expired' : 'Tool not assigned', code });
-    }
-
-    // The tool must resolve to a real target domain or the extension cannot open it.
-    if (!(assignment.toolId.targetUrl || assignment.toolId.loginUrl) || !assignment.toolId.domain) {
-      console.log('[open-intent] tool domain invalid', {
-        clientId: String(req.userId), toolId: String(toolId),
-        assignmentId: String(assignment._id), toolDomain: assignment.toolId.domain || null,
-        serverTime: now.toISOString(), code: 'tool_domain_invalid', reason: 'missing_target_url_or_domain',
-      });
-      return res.status(422).json({ error: 'Tool has no valid target URL', code: 'tool_domain_invalid' });
-    }
-
-    console.log('[open-intent] assignment selected', {
-      clientId: String(req.userId), toolId: String(toolId),
-      assignmentId: String(assignment._id),
-      assignmentStatus: assignment.status,
-      endDate: assignment.endDate,
-      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
-      toolDomain: assignment.toolId.domain || null,
-      serverTime: now.toISOString(), reason: 'valid',
-    });
-
-    // OpenIntent is created by the authenticated dashboard session and consumed
-    // by the extension. The dashboard and extension maintain different device
-    // identifiers, so do NOT bind this short-lived intent to the website device
-    // hash. Device binding is already validated above for the dashboard session,
-    // while the extension token validates the extension device separately.
-    const issued = await OpenIntent.issue({
-      clientId: req.userId,
-      toolId: String(toolId),
-      deviceIdHash: null,
-      ip: req.ip,
-      userAgent: req.headers['user-agent'],
-      ttlMs: 5 * 60 * 1000, // 5-minute window — ample for connect + verify
-    });
-
-    await ActivityLog.log('CLIENT', req.userId, 'TOOL_OPEN_INTENT', {
-      toolId,
-      intentId: issued.id,
-      expiresAt: issued.expiresAt.toISOString(),
-      ip: req.ip,
-      userAgent: req.headers['user-agent']
-    });
-
-    return res.json({
-      success: true,
-      intentToken: issued.token,
-      openIntentToken: issued.token,
-      toolId,
-      expiresAt: issued.expiresAt.toISOString()
-    });
-  } catch (err) {
-    console.error('Create tool open intent error:', err);
-    return res.status(500).json({ error: 'Failed to create open intent' });
-  }
-});
 
 // ─── GET /:toolId — single tool detail ────────────────────────────────────────
 router.get('/:toolId', async (req, res) => {

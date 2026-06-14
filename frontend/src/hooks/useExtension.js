@@ -90,22 +90,10 @@ function stageMessage(stage, err) {
       return 'Secure access was rejected. Please refresh the dashboard and try again.';
     case 'extension_not_detected':
       return 'Extension not detected. Reload the extension, then refresh the dashboard.';
-    case 'open_intent_failed':
-      return 'Could not authorize this tool. Please refresh the dashboard and try again.';
     case 'session_bundle_missing':
       return 'Session missing for this tool. Please contact admin.';
-    case 'cookie_injection_failed':
-      return 'The latest session cookies could not be applied for this tool. Please contact admin.';
     case 'tool_domain_invalid':
       return 'This tool has no valid target URL configured. Please contact admin.';
-    case 'intent_expired':
-      return 'Your secure access token expired. Please click Access again.';
-    case 'intent_consumed':
-      return 'That secure access token was already used. Please click Access again.';
-    case 'intent_device_mismatch':
-      return 'This secure access is linked to a different device. Please contact admin.';
-    case 'intent_not_found':
-      return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
     case 'assignment_not_found':
       return 'This tool is not assigned to your account.';
     case 'tool_access_expired':
