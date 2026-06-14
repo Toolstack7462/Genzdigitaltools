@@ -1445,17 +1445,21 @@ const RISKY_KEYWORDS = [
   'steal', 'harvest', 'scraper', 'extractor',
 ];
 
-function scoreExtension(ext) {
-  if (ext.id === chrome.runtime.id) return null; // Skip ourselves
+// Describe ONE installed extension with safe metadata only. Returns null for our
+// own extension. Computes a riskLevel for EVERY extension ('none' when no risk
+// indicators), so admin can see the full installed list — not only risky ones.
+// NEVER returns cookie values, history, tab content, or any secret.
+function describeExtension(ext) {
+  if (!ext || ext.id === chrome.runtime.id) return null; // Skip ourselves
 
-  const perms   = ext.permissions || [];
+  const perms    = ext.permissions || [];
   const hostPerm = (ext.hostPermissions || []).join(' ');
-  const hasCookies  = perms.includes('cookies');
-  const hasAllUrls  = hostPerm.includes('<all_urls>') || hostPerm.includes('https://*/*') || hostPerm.includes('http://*/*');
-  const hasTabs     = perms.includes('tabs') || perms.includes('activeTab');
-  const nameMatch   = RISKY_KEYWORDS.some(k => ext.name?.toLowerCase().includes(k));
+  const hasCookies = perms.includes('cookies');
+  const hasAllUrls = hostPerm.includes('<all_urls>') || hostPerm.includes('https://*/*') || hostPerm.includes('http://*/*');
+  const hasTabs    = perms.includes('tabs') || perms.includes('activeTab');
+  const nameMatch  = RISKY_KEYWORDS.some(k => ext.name?.toLowerCase().includes(k));
 
-  let riskLevel = null;
+  let riskLevel = 'none';
   if (hasCookies && hasAllUrls) {
     riskLevel = 'high';
   } else if (hasCookies || (hasAllUrls && hasTabs)) {
@@ -1466,75 +1470,116 @@ function scoreExtension(ext) {
     riskLevel = 'low';
   }
 
-  if (!riskLevel) return null;
-
   const permParts = [];
-  if (hasCookies)  permParts.push('cookies');
-  if (hasTabs)     permParts.push('tabs');
-  if (hasAllUrls)  permParts.push('<all_urls>');
+  if (hasCookies) permParts.push('cookies');
+  if (hasTabs)    permParts.push('tabs');
+  if (hasAllUrls) permParts.push('<all_urls>');
 
   return {
     extId:              ext.id,
     extName:            ext.name || 'Unknown',
+    version:            ext.version || null,
+    enabled:            ext.enabled !== false,
+    type:               ext.type || 'extension',
+    permissionsSummary: permParts.join(', ') || 'standard',
     riskLevel,
-    permissionsSummary: permParts.join(', ') || 'other',
   };
+}
+
+// Back-compat wrapper: only RISKY extensions (used by the high-risk alert path).
+function scoreExtension(ext) {
+  const d = describeExtension(ext);
+  if (!d || d.riskLevel === 'none') return null;
+  return d;
 }
 
 async function runExtensionScan() {
   // 1. Scanner is active by default after extension connection.
   // It sends only safe extension metadata, never cookie values or browsing history.
-  const stored = await getStorage(['scannerEnabled', 'extensionToken']);
+  const stored = await getStorage(['scannerEnabled', 'extensionToken', 'userEmail', 'userName', 'lastSync', 'tools']);
   if (!stored.extensionToken) return;
-  if (stored.scannerEnabled === false) return;
+  if (stored.scannerEnabled === false) {
+    await setStorage({ scannerStatus: 'disabled' });
+    return;
+  }
 
-  // 2. Check if chrome.management is available
+  const extensionVersion = chrome.runtime.getManifest().version;
+  const scannedAt = new Date().toISOString();
+  let deviceIdHash = null;
+  try { deviceIdHash = await digestSha256(await getOrCreateDeviceId()); } catch (_) {}
+
+  // Common client/report fields (safe metadata only — never secrets).
+  const baseReport = {
+    clientEmail:      stored.userEmail || null,
+    clientName:       stored.userName || null,
+    deviceIdHash,
+    extensionVersion,
+    lastSync:         stored.lastSync || null,
+    toolCount:        Array.isArray(stored.tools) ? stored.tools.length : 0,
+    scannedAt,
+    scannerEnabled:   true,
+    userConsentGiven: true,
+  };
+
+  // 2. chrome.management required to enumerate installed extensions.
   if (!chrome.management?.getAll) {
-    logger.debug('Extension scan skipped — chrome.management not available');
+    logger.warn('Extension scan — management permission missing');
+    await setStorage({ scannerStatus: 'permission_missing', lastScanAt: scannedAt });
+    // Still report status so admin can see the device needs an updated extension.
+    try {
+      await apiRequest('/security-scan', {
+        method: 'POST',
+        body: JSON.stringify({ ...baseReport, scannerStatus: 'permission_missing', extensions: [], riskyExtensions: [] }),
+      });
+    } catch (err) {
+      logger.warn('Scanner status report failed', { error: err.message });
+    }
     return;
   }
 
   try {
     const allExtensions = await new Promise(res => chrome.management.getAll(res));
-    const riskyExtensions = allExtensions
-      .map(scoreExtension)
-      .filter(Boolean);
+    // Full installed list (safe metadata), plus the risky subset for alerting.
+    const extensions = allExtensions.map(describeExtension).filter(Boolean);
+    const riskyExtensions = extensions.filter(e => e.riskLevel !== 'none');
+    const counts = {
+      total:  extensions.length,
+      risky:  riskyExtensions.length,
+      high:   extensions.filter(e => e.riskLevel === 'high').length,
+      medium: extensions.filter(e => e.riskLevel === 'medium').length,
+      low:    extensions.filter(e => e.riskLevel === 'low').length,
+    };
 
-    logger.info('Extension scan complete', {
-      total: allExtensions.length,
-      risky: riskyExtensions.length,
-      high: riskyExtensions.filter(e => e.riskLevel === 'high').length,
-    });
+    logger.info('Extension scan complete', { total: counts.total, risky: counts.risky, high: counts.high });
 
-    if (riskyExtensions.length > 0) {
-      // Notify popup/badge
-      const highCount = riskyExtensions.filter(e => e.riskLevel === 'high').length;
-      if (highCount > 0) {
-        chrome.action.setBadgeText({ text: '⚠' });
-        chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
-        // Show a notification — transparent wording, no claim of data theft
-        chrome.notifications.create('risk-scan-' + Date.now(), {
-          type: 'basic',
-          iconUrl: 'icons/icon48.png',
-          title: 'Security Notice — Gen Z Digital Store',
-          message: `${highCount} browser extension(s) with broad data access detected on this device. Your admin has been notified. No action needed unless support contacts you.`,
-          priority: 1,
-        });
-      }
+    if (counts.high > 0) {
+      chrome.action.setBadgeText({ text: '⚠' });
+      chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+      chrome.notifications.create('risk-scan-' + Date.now(), {
+        type: 'basic',
+        iconUrl: 'icons/icon48.png',
+        title: 'Security Notice — Gen Z Digital Store',
+        message: `${counts.high} browser extension(s) with broad data access detected on this device. Your admin has been notified. No action needed unless support contacts you.`,
+        priority: 1,
+      });
     }
 
-    // 3. Report to backend (safe metadata only)
+    // 3. Report to backend (safe metadata only — no cookie values/tokens/history).
     await apiRequest('/security-scan', {
       method: 'POST',
       body: JSON.stringify({
+        ...baseReport,
+        scannerStatus: 'enabled',
+        extensions,
         riskyExtensions,
-        userConsentGiven: true,
-        scannerEnabled: true,
+        counts,
       }),
     });
+    await setStorage({ scannerStatus: 'enabled', lastScanStatus: 'success', lastScanAt: scannedAt });
 
   } catch (err) {
     logger.warn('Extension scan failed', { error: err.message });
+    await setStorage({ scannerStatus: 'enabled', lastScanStatus: 'failed', lastScanAt: scannedAt });
   }
 }
 
@@ -1850,11 +1895,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_SCAN_STATUS':
-      getStorage(['scanConsentGivenAt', 'scannerEnabled']).then(d => {
+      getStorage(['scanConsentGivenAt', 'scannerEnabled', 'scannerStatus', 'lastScanStatus', 'lastScanAt']).then(d => {
+        const managementAvailable = !!(chrome.management && chrome.management.getAll);
+        const enabled = d.scannerEnabled !== false;
+        // Derive a single status: permission missing > disabled > last scan result.
+        let status = 'enabled';
+        if (!managementAvailable) status = 'permission_missing';
+        else if (!enabled) status = 'disabled';
+        else if (d.lastScanStatus === 'failed') status = 'last_scan_failed';
+        else if (d.lastScanStatus === 'success') status = 'last_scan_successful';
         sendResponse({
-          consentGiven: d.scannerEnabled !== false,
-          scannerEnabled: d.scannerEnabled !== false,
+          consentGiven: enabled,
+          scannerEnabled: enabled,
           consentDate: d.scanConsentGivenAt || null,
+          managementAvailable,
+          status,
+          lastScanStatus: d.lastScanStatus || null,
+          lastScanAt: d.lastScanAt || null,
         });
       });
       return true;

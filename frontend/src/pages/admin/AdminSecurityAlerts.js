@@ -3,7 +3,8 @@ import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/Admin
 import {
   ShieldAlert, AlertTriangle, CheckCircle2, Eye, RefreshCw, Filter,
   User, Clock, Monitor, Globe, Zap, ChevronDown, X,
-  Lock, LogOut, Smartphone, UserX, Flag, Info
+  Lock, LogOut, Smartphone, UserX, Flag, Info,
+  Mail, Hash, Puzzle, ChevronRight, ShieldOff, Search
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
@@ -229,6 +230,204 @@ const AlertDetailModal = ({ alert, onClose, onAction }) => {
   );
 };
 
+// ── Extension scanner: status + per-extension risk styling ───────────────────
+const SCAN_STATUS = {
+  enabled:            { text: 'Scanner Enabled',     cls: 'bg-green-500/15 text-green-500' },
+  disabled:           { text: 'Scanner Disabled',    cls: 'bg-gray-500/15 text-gray-500'  },
+  permission_missing: { text: 'Permission Missing',  cls: 'bg-red-500/15 text-red-500'    },
+};
+const EXT_RISK = {
+  high:   'bg-red-500/15 text-red-500',
+  medium: 'bg-yellow-500/15 text-yellow-600',
+  low:    'bg-blue-500/15 text-blue-500',
+  none:   'bg-gray-500/10 text-genz-muted',
+};
+
+// ── Extension Scans panel (additive — shows client + installed extensions) ────
+const ExtensionScansPanel = () => {
+  const { showError } = useToast();
+  const [scans, setScans]     = useState([]);
+  const [stats, setStats]     = useState({});
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(null);
+  const [q, setQ]             = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const params = new URLSearchParams({ limit: 100 });
+      if (q) params.set('q', q);
+      const res = await api.get(`/admin/security-alerts/scans?${params}`);
+      setScans(res.data.scans || []);
+      setStats(res.data.stats || {});
+    } catch (e) {
+      showError('Failed to load extension scans');
+    } finally {
+      setLoading(false);
+    }
+  }, [q, showError]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fmt = (d) => d ? new Date(d).toLocaleString() : '—';
+
+  return (
+    <div className="space-y-6">
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {[
+          { label: 'Clients Scanned',  value: stats.clients ?? '—',           color: 'text-genz-teal',  icon: User },
+          { label: 'With Risky Ext',   value: stats.withRisky ?? '—',         color: 'text-yellow-500', icon: AlertTriangle },
+          { label: 'With High Risk',   value: stats.withHigh ?? '—',          color: 'text-red-500',    icon: ShieldAlert },
+          { label: 'Permission Missing',value: stats.permissionMissing ?? '—',color: 'text-orange-500', icon: ShieldOff },
+        ].map(({ label, value, color, icon: Icon }) => (
+          <div key={label} className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-2xl`}>
+            <Icon size={16} className={`${color} mb-2`} />
+            <div className={`text-2xl font-black ${color}`}>{value}</div>
+            <div className="text-xs text-genz-muted mt-0.5">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="relative max-w-sm">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" />
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Search by client email or name…"
+          className="w-full pl-9 pr-3 py-2 rounded-xl text-sm text-genz-navy placeholder-genz-muted focus:outline-none"
+          style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}
+        />
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <div className="w-8 h-8 rounded-full border-2 border-genz-teal border-t-transparent animate-spin" />
+        </div>
+      ) : scans.length === 0 ? (
+        <div className={`${ADMIN_CARD_VARIANTS.default} p-12 rounded-2xl text-center`}>
+          <Puzzle size={40} className="text-genz-muted mx-auto mb-3" />
+          <p className="text-genz-navy font-semibold">No extension scans reported yet</p>
+          <p className="text-genz-muted text-sm mt-1">
+            Scans arrive automatically from connected member extensions (management permission required).
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {scans.map((s) => {
+            const id = s._id || s.clientId?._id || s.clientId;
+            const isOpen = expanded === id;
+            const status = SCAN_STATUS[s.scannerStatus] || SCAN_STATUS.enabled;
+            const c = s.counts || {};
+            const email = s.clientEmail || s.clientId?.email || '—';
+            const name  = s.clientName  || s.clientId?.fullName || '—';
+            return (
+              <div key={id} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl overflow-hidden`}>
+                {/* Row header */}
+                <button
+                  onClick={() => setExpanded(isOpen ? null : id)}
+                  className="w-full flex items-center gap-4 p-4 text-left hover:bg-genz-teal/5 transition-colors">
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold text-genz-deep-navy flex-shrink-0"
+                       style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
+                    {(name || 'U').charAt(0).toUpperCase()}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-genz-navy font-semibold text-sm truncate">{name}</p>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full ${status.cls}`}>{status.text}</span>
+                    </div>
+                    <p className="text-genz-muted text-xs flex items-center gap-1 truncate">
+                      <Mail size={10} /> {email}
+                    </p>
+                  </div>
+                  <div className="hidden sm:flex items-center gap-2 flex-shrink-0">
+                    {c.high   > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-500">{c.high} high</span>}
+                    {c.medium > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-yellow-500/15 text-yellow-600">{c.medium} med</span>}
+                    {c.low    > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-500">{c.low} low</span>}
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-genz-teal/10 text-genz-teal">{c.total ?? 0} total</span>
+                  </div>
+                  <ChevronRight size={16} className={`text-genz-muted transition-transform flex-shrink-0 ${isOpen ? 'rotate-90' : ''}`} />
+                </button>
+
+                {/* Expanded detail */}
+                {isOpen && (
+                  <div className="px-4 pb-4 space-y-4 border-t border-genz-border">
+                    {/* Meta grid */}
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm pt-4">
+                      {[
+                        ['Client Email', email, Mail],
+                        ['Client Name',  name, User],
+                        ['Last Scan',    fmt(s.scannedAt), Clock],
+                        ['Last Sync',    fmt(s.lastSync), RefreshCw],
+                        ['Ext Version',  s.extensionVersion || '—', Puzzle],
+                        ['Device Hash',  s.deviceIdHash ? s.deviceIdHash.slice(0, 16) + '…' : '—', Hash],
+                      ].map(([label, value, Icon]) => (
+                        <div key={label}>
+                          <p className="text-genz-muted text-xs flex items-center gap-1"><Icon size={10} /> {label}</p>
+                          <p className="text-genz-navy font-mono text-xs mt-0.5 break-all">{value}</p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Permission-missing notice */}
+                    {s.scannerStatus === 'permission_missing' && (
+                      <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 flex items-start gap-2">
+                        <ShieldOff size={14} className="text-red-500 flex-shrink-0 mt-0.5" />
+                        <p className="text-xs text-red-500 leading-relaxed">
+                          Scanner permission missing. Reinstall/update extension with management permission.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Extensions table */}
+                    {Array.isArray(s.extensions) && s.extensions.length > 0 ? (
+                      <div className="rounded-xl border border-genz-border overflow-hidden">
+                        <div className="grid grid-cols-12 gap-2 px-3 py-2 bg-genz-teal/5 text-[10px] font-semibold uppercase tracking-wider text-genz-muted">
+                          <div className="col-span-4">Extension</div>
+                          <div className="col-span-3">ID</div>
+                          <div className="col-span-1 text-center">State</div>
+                          <div className="col-span-2">Permissions</div>
+                          <div className="col-span-2 text-right">Risk</div>
+                        </div>
+                        <div className="max-h-72 overflow-y-auto">
+                          {s.extensions.map((ext, i) => (
+                            <div key={ext.extId || i}
+                                 className="grid grid-cols-12 gap-2 px-3 py-2 text-xs border-t border-genz-border items-center">
+                              <div className="col-span-4 min-w-0">
+                                <p className="text-genz-navy font-medium truncate">{ext.extName}</p>
+                                {ext.version && <p className="text-genz-muted text-[10px]">v{ext.version}</p>}
+                              </div>
+                              <div className="col-span-3 text-genz-muted font-mono text-[10px] truncate">{ext.extId}</div>
+                              <div className="col-span-1 text-center">
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${ext.enabled ? 'bg-green-500/15 text-green-500' : 'bg-gray-500/15 text-gray-500'}`}>
+                                  {ext.enabled ? 'on' : 'off'}
+                                </span>
+                              </div>
+                              <div className="col-span-2 text-genz-muted text-[10px] truncate">{ext.permissionsSummary || '—'}</div>
+                              <div className="col-span-2 text-right">
+                                <span className={`text-[10px] px-2 py-0.5 rounded-full ${EXT_RISK[ext.riskLevel] || EXT_RISK.none}`}>
+                                  {ext.riskLevel}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="text-genz-muted text-xs">No installed extensions reported.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Main Admin Security Alerts page ──────────────────────────────────────────
 const AdminSecurityAlerts = () => {
   const { showError } = useToast();
@@ -239,6 +438,7 @@ const AdminSecurityAlerts = () => {
   const [filters, setFilters]     = useState({ status: 'open', riskLevel: '', riskType: '' });
   const [page, setPage]           = useState(1);
   const [total, setTotal]         = useState(0);
+  const [view, setView]           = useState('alerts'); // 'alerts' | 'scans'
 
   const load = useCallback(async () => {
     try {
@@ -282,6 +482,27 @@ const AdminSecurityAlerts = () => {
           </button>
         </div>
 
+        {/* View tabs: Alerts | Extension Scans */}
+        <div className="flex gap-2">
+          {[
+            { id: 'alerts', label: 'Security Alerts', icon: ShieldAlert },
+            { id: 'scans',  label: 'Extension Scans', icon: Puzzle },
+          ].map(({ id, label, icon: Icon }) => (
+            <button key={id} onClick={() => setView(id)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                view === id
+                  ? 'text-genz-deep-navy'
+                  : 'text-genz-muted border border-genz-border hover:text-genz-navy'
+              }`}
+              style={view === id ? { background: 'linear-gradient(135deg,#06B6D4,#0891B2)' } : undefined}>
+              <Icon size={15} /> {label}
+            </button>
+          ))}
+        </div>
+
+        {view === 'scans' && <ExtensionScansPanel />}
+
+        {view === 'alerts' && (<>
         {/* Stat cards */}
         <div className="grid grid-cols-3 gap-4">
           {[
@@ -399,6 +620,7 @@ const AdminSecurityAlerts = () => {
             </button>
           </div>
         )}
+        </>)}
 
         {/* Enterprise mode notice */}
         <div className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-2xl`}>

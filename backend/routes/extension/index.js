@@ -12,6 +12,7 @@ const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
+const ExtensionScan         = require('../../models/ExtensionScan');
 const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, checkNewDevice, checkRepeatedAuthFailures } = require('../../middleware/riskEngine');
 const bcrypt = require('bcryptjs');
 const { authLimiter } = require('../../middleware/rateLimiter');
@@ -976,7 +977,16 @@ module.exports = router;
 // Privacy: disclosed in privacy policy. Scanner can be disabled by admin.
 router.post('/security-scan', verifyExtensionToken, async (req, res) => {
   try {
-    const { riskyExtensions = [], userConsentGiven, scannerEnabled } = req.body;
+    const {
+      extensions = [],
+      riskyExtensions = [],
+      userConsentGiven,
+      scannerEnabled,
+      scannerStatus,
+      deviceIdHash,
+      lastSync,
+      scannedAt,
+    } = req.body;
 
     // Respect scanner-disabled flag
     if (scannerEnabled === false) {
@@ -988,30 +998,78 @@ router.post('/security-scan', verifyExtensionToken, async (req, res) => {
       return res.json({ success: true, skipped: true, reason: 'consent_not_given' });
     }
 
-    // Validate input — only accept safe metadata fields
-    const sanitized = (Array.isArray(riskyExtensions) ? riskyExtensions : [])
-      .slice(0, 50) // max 50 extensions
-      .map(e => ({
-        extId:             String(e.extId  || '').slice(0, 64),
-        extName:           String(e.extName || 'Unknown').slice(0, 128),
-        riskLevel:         ['low','medium','high'].includes(e.riskLevel) ? e.riskLevel : 'low',
-        permissionsSummary: String(e.permissionsSummary || '').slice(0, 256),
-      }));
+    // Sanitize the FULL installed list — only safe metadata fields, never secrets.
+    const cleanExt = (e) => ({
+      extId:              String(e.extId  || '').slice(0, 64),
+      extName:            String(e.extName || 'Unknown').slice(0, 128),
+      version:            e.version ? String(e.version).slice(0, 32) : null,
+      enabled:            e.enabled !== false,
+      type:               String(e.type || 'extension').slice(0, 32),
+      permissionsSummary: String(e.permissionsSummary || '').slice(0, 256),
+      riskLevel:          ['none','low','medium','high'].includes(e.riskLevel) ? e.riskLevel : 'none',
+    });
+    const sanitizedAll = (Array.isArray(extensions) ? extensions : []).slice(0, 100).map(cleanExt);
+    // Prefer the full list to derive the risky subset; fall back to riskyExtensions.
+    const sanitizedRisky = (sanitizedAll.length
+      ? sanitizedAll.filter(e => e.riskLevel !== 'none')
+      : (Array.isArray(riskyExtensions) ? riskyExtensions : []).slice(0, 100).map(cleanExt)
+    );
 
+    const counts = {
+      total:  sanitizedAll.length,
+      risky:  sanitizedRisky.length,
+      high:   sanitizedRisky.filter(e => e.riskLevel === 'high').length,
+      medium: sanitizedRisky.filter(e => e.riskLevel === 'medium').length,
+      low:    sanitizedRisky.filter(e => e.riskLevel === 'low').length,
+    };
+
+    const extensionVersion = req.headers['x-extension-version'] || req.body.extensionVersion || null;
+    const status = ['enabled', 'disabled', 'permission_missing'].includes(scannerStatus) ? scannerStatus : 'enabled';
+
+    // Authoritative client identity from the user record (token-bound) — fall back
+    // to body values only if the record lacks them.
+    let clientEmail = req.body.clientEmail || null;
+    let clientName  = req.body.clientName  || null;
+    try {
+      const user = await User.findById(req.clientId).lean?.() || await User.findById(req.clientId);
+      if (user) {
+        clientEmail = user.email || clientEmail;
+        clientName  = user.fullName || user.name || clientName;
+      }
+    } catch (_) {}
+
+    // Persist the latest scan for this client (one row per client).
+    await ExtensionScan.recordScan(req.clientId, {
+      clientEmail,
+      clientName,
+      deviceIdHash:     deviceIdHash || req.headers['x-device-id-hash'] || null,
+      extensionVersion,
+      lastSync:         lastSync || null,
+      scannedAt:        scannedAt || new Date().toISOString(),
+      scannerStatus:    status,
+      counts,
+      extensions:       sanitizedAll,
+    });
+
+    // Still raise a high-risk SecurityAlert (existing behaviour).
     const context = {
       ipAddress:        req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
       userAgent:        req.headers['user-agent'],
-      extensionVersion: req.headers['x-extension-version'],
+      extensionVersion,
+      deviceIdHash:     deviceIdHash || req.headers['x-device-id-hash'] || null,
     };
-
-    await processExtensionScanReport(req.clientId, sanitized, context);
+    if (sanitizedRisky.length) {
+      await processExtensionScanReport(req.clientId, sanitizedRisky, context);
+    }
 
     await ActivityLog.log('CLIENT', req.clientId, 'EXTENSION_SCAN_SUBMITTED', {
-      totalScanned: sanitized.length,
-      highRiskCount: sanitized.filter(e => e.riskLevel === 'high').length,
+      totalScanned: counts.total,
+      riskyCount:   counts.risky,
+      highRiskCount: counts.high,
+      scannerStatus: status,
     });
 
-    res.json({ success: true, processed: sanitized.length });
+    res.json({ success: true, processed: counts.total, risky: counts.risky });
   } catch (err) {
     console.error('Security scan error:', err);
     res.status(500).json({ error: 'Scan submission failed' });

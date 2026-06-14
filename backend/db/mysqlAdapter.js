@@ -33,6 +33,7 @@ const tableNames = {
   SecurityAlert: 'security_alerts',
   OpenIntent: 'open_intents',
   ActivationToken: 'activation_tokens',
+  ExtensionScan: 'extension_scans',
 };
 
 const populateModelByPath = {

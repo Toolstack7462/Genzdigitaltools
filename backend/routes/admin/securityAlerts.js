@@ -9,6 +9,7 @@
 const express       = require('express');
 const router        = express.Router();
 const SecurityAlert = require('../../models/SecurityAlert');
+const ExtensionScan = require('../../models/ExtensionScan');
 const User          = require('../../models/User');
 const ExtensionToken = require('../../models/ExtensionToken');
 const RefreshToken  = require('../../models/RefreshToken');
@@ -60,6 +61,49 @@ router.get('/', async (req, res) => {
   } catch (err) {
     console.error('[securityAlerts GET /]', err);
     res.status(500).json({ error: 'Failed to fetch alerts' });
+  }
+});
+
+// ── GET /api/crm/admin/security-alerts/scans — extension scanner reports ──────
+// One row per client (latest scan). Registered BEFORE /:id so "scans" is not
+// captured as an :id param.
+router.get('/scans', async (req, res) => {
+  try {
+    const { page, limit, skip } = safePagination(req.query);
+    const { riskLevel, q } = req.query;
+
+    let scans = await ExtensionScan.find({})
+      .sort({ scannedAt: -1 })
+      .populate('clientId', 'fullName email status')
+      .lean();
+    scans = Array.isArray(scans) ? scans : [];
+
+    // Optional filters (applied in-memory — scan set is one-per-client, small).
+    if (riskLevel) {
+      scans = scans.filter(s => (s.counts?.[riskLevel] || 0) > 0);
+    }
+    if (q) {
+      const needle = String(q).toLowerCase();
+      scans = scans.filter(s =>
+        (s.clientEmail || s.clientId?.email || '').toLowerCase().includes(needle) ||
+        (s.clientName  || s.clientId?.fullName || '').toLowerCase().includes(needle)
+      );
+    }
+
+    const total = scans.length;
+    const paged = scans.slice(skip, skip + limit);
+
+    const stats = {
+      clients:        total,
+      withRisky:      scans.filter(s => (s.counts?.risky || 0) > 0).length,
+      withHigh:       scans.filter(s => (s.counts?.high  || 0) > 0).length,
+      permissionMissing: scans.filter(s => s.scannerStatus === 'permission_missing').length,
+    };
+
+    res.json({ scans: paged, total, page, limit, stats });
+  } catch (err) {
+    console.error('[securityAlerts GET /scans]', err);
+    res.status(500).json({ error: 'Failed to fetch extension scans' });
   }
 });
 
