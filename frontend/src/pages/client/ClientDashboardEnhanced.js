@@ -33,7 +33,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
   };
 
   return (
-    <div className={`relative group rounded-2xl p-5 flex flex-col transition-all duration-200 hover:-translate-y-1 ${
+    <div className={`relative group rounded-xl p-4 flex flex-col transition-all duration-200 hover:-translate-y-1 ${
       isExpired
         ? 'opacity-70 border border-red-200 bg-red-50'
         : 'gz-card'
@@ -44,8 +44,8 @@ const ToolCard = ({ tool, onOpen, openState }) => {
       )}
 
       {/* Tool header */}
-      <div className="flex items-start justify-between mb-3">
-        <div className={`w-11 h-11 rounded-xl flex items-center justify-center text-white font-black text-base bg-gradient-to-br ${theme.gradient}`}>
+      <div className="flex items-start justify-between mb-2.5">
+        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-white font-black text-[15px] bg-gradient-to-br ${theme.gradient}`}>
           {tool.name?.charAt(0) || '?'}
         </div>
         <div className="flex flex-wrap gap-1 justify-end">
@@ -92,7 +92,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
               data-action-type={tool.credentialType === 'cookies' || tool.credentialType === 'token' ? 'processTool' : 'openToolDirect'}
               onClick={() => onOpen && onOpen(tool)}
               disabled={openState?.loading}
-              className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0"
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:translate-y-0"
               style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 8px 18px rgba(37,99,235,0.22)' }}>
               {openState?.loading
                 ? <Loader2 size={13} className="animate-spin" />
@@ -102,13 +102,13 @@ const ToolCard = ({ tool, onOpen, openState }) => {
             </button>
           ) : (
             <Link to="/contact"
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-[13px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[12.5px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
               <RefreshCw size={13} />
               Renew
             </Link>
           )}
           <Link to={`/client/tools/${tool._id}`}
-                className="px-3 py-2.5 rounded-xl text-[13px] font-medium border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue transition-all">
+                className="px-3 py-2 rounded-lg text-[12.5px] font-medium border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue transition-all">
             Info
           </Link>
         </div>
@@ -664,7 +664,7 @@ const ClientDashboardEnhanced = () => {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
               {filteredTools.map(tool => (
                 <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />
               ))}
@@ -699,38 +699,38 @@ const ClientDashboardEnhanced = () => {
 
         {/* ── WhatsApp Support banner ── */}
         <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
-           className="ds-card ds-stat group relative overflow-hidden flex items-center gap-4 p-5">
-          <div className="absolute inset-x-0 top-0 h-1" style={{ background: 'linear-gradient(90deg,#22c55e,#06B6D4)' }} />
-          <span className="w-12 h-12 rounded-xl flex items-center justify-center text-white flex-shrink-0"
-                style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 8px 18px -8px rgba(34,197,94,0.6)' }}>
-            <MessageCircle size={22} />
+           className="ds-card ds-stat group relative overflow-hidden flex items-center gap-3 p-3.5">
+          <div className="absolute inset-x-0 top-0 h-0.5" style={{ background: 'linear-gradient(90deg,#22c55e,#06B6D4)' }} />
+          <span className="w-10 h-10 rounded-lg flex items-center justify-center text-white flex-shrink-0"
+                style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)', boxShadow: '0 6px 14px -8px rgba(34,197,94,0.6)' }}>
+            <MessageCircle size={18} />
           </span>
           <div className="flex-1 min-w-0">
-            <h4 className="text-[15px] font-bold text-genz-navy flex items-center gap-2">
-              WhatsApp Support <span className="ds-badge ds-badge-success"><span className="dot" /> Online</span>
+            <h4 className="text-[13.5px] font-bold text-genz-navy flex items-center gap-2">
+              WhatsApp Support <span className="ds-badge ds-badge-success !text-[10.5px] !py-[2px] !px-2"><span className="dot" /> Online</span>
             </h4>
-            <p className="text-[13px] text-genz-muted mt-0.5">Chat with our team for help, tool requests, or a new order — fast replies.</p>
+            <p className="text-[12px] text-genz-muted mt-0.5 leading-snug">Chat with our team for help, tool requests, or a new order — fast replies.</p>
           </div>
-          <span className="hidden sm:inline-flex items-center gap-1.5 px-4 py-2.5 rounded-[12px] text-[14px] font-bold text-white"
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] text-[12.5px] font-bold text-white"
                 style={{ background: 'linear-gradient(135deg,#22c55e,#16a34a)' }}>
-            Chat now <ArrowRight size={15} />
+            Chat now <ArrowRight size={14} />
           </span>
         </a>
 
         {/* ── Quick actions ── */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
             { icon: Chrome, title: 'Extension Setup',  desc: 'Install the Chrome extension for one-click tool access.', to: '/chrome-extension', cta: 'Install', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)' },
             { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',        to: '/client/profile',   cta: 'Manage',  grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
             { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',         to: '/pricing',          cta: 'Upgrade', grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
           ].map(({ icon: Icon, title, desc, to, cta, grad }) => (
-            <Link key={title} to={to} className="ds-card ds-stat p-5 flex flex-col group">
-              <span className="w-11 h-11 rounded-xl flex items-center justify-center text-white mb-3.5" style={{ background: grad, boxShadow: '0 8px 16px -8px rgba(37,99,235,0.5)' }}>
-                <Icon size={19} />
+            <Link key={title} to={to} className="ds-card ds-stat p-4 flex flex-col group">
+              <span className="w-9 h-9 rounded-lg flex items-center justify-center text-white mb-2.5" style={{ background: grad, boxShadow: '0 6px 14px -8px rgba(37,99,235,0.5)' }}>
+                <Icon size={17} />
               </span>
-              <h4 className="text-[15px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
-              <p className="text-[13px] text-genz-muted mt-1 leading-relaxed flex-1">{desc}</p>
-              <span className="inline-flex items-center gap-1.5 mt-3 text-[13px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
+              <h4 className="text-[13.5px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
+              <p className="text-[12px] text-genz-muted mt-0.5 leading-snug flex-1">{desc}</p>
+              <span className="inline-flex items-center gap-1.5 mt-2.5 text-[12.5px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
                 {cta} <ArrowRight size={13} />
               </span>
             </Link>
