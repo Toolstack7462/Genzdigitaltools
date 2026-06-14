@@ -18,12 +18,108 @@ const Storage = {
     });
   },
   
+  // ⚠️ MANUAL-ONLY. Wipes the extension's stored session/token/tools. This must
+  // NEVER run automatically during the access flow — doing so logs the member out
+  // and breaks tool opening. Only the popup "Sign out" button and explicit debug
+  // reset may call this.
   async clear() {
     return new Promise((resolve) => {
       chrome.storage.local.clear(resolve);
     });
   }
 };
+
+/**
+ * Normalize a Genz backend credentials/session response (and OceanHub-style
+ * shapes) into ONE unified object the open-tool flow understands:
+ *
+ *   { success, login_type, toolUrl, sessionBundle: { cookies, localStorage,
+ *     sessionStorage }, credentials, tool }
+ *
+ * Rules:
+ *  - Accept session data from EITHER `sessionBundle.*`, top-level
+ *    `cookies`/`localStorage`/`sessionStorage`, OR a `credentials.payload` whose
+ *    type is cookies/localStorage/sessionStorage.
+ *  - A pure cookies/storage credential IS session data: it is folded into
+ *    `sessionBundle` and the interactive `credentials` is cleared, so the session
+ *    is applied BEFORE the tool opens (OceanHub processTool) — never a
+ *    logged-out direct_open.
+ *  - form/sso/token credentials are preserved for the interactive login flow.
+ */
+function normalizeCredentialResponse(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { success: false, login_type: 'none', toolUrl: null, sessionBundle: null, credentials: null, tool: null };
+  }
+
+  const tool = raw.tool || null;
+  const toolUrl = raw.toolUrl || raw.url || tool?.targetUrl || tool?.loginUrl || raw.credentials?.loginUrl || null;
+
+  // Cookies may arrive as an array, a JSON string, or a "a=b; c=d" cookie string.
+  // Normalize to a non-empty array, else null.
+  const toCookieArray = (input) => {
+    const arr = CookieUtils.parseCookies(input);
+    return (Array.isArray(arr) && arr.length) ? arr : null;
+  };
+  // localStorage/sessionStorage may arrive as an object OR a JSON string. Normalize
+  // to a plain object, else null. (Used with Object.keys().length for emptiness.)
+  const toStorageMap = (input) => {
+    if (!input) return null;
+    if (typeof input === 'string') {
+      try { const p = JSON.parse(input); return (p && typeof p === 'object' && !Array.isArray(p)) ? p : null; }
+      catch (_) { return null; }
+    }
+    if (typeof input === 'object' && !Array.isArray(input)) return input;
+    return null;
+  };
+
+  const bundle = {
+    version: raw.sessionBundle?.version || null,
+    updatedAt: raw.sessionBundle?.updatedAt || null,
+    cookies: toCookieArray(raw.sessionBundle?.cookies),
+    localStorage: toStorageMap(raw.sessionBundle?.localStorage),
+    sessionStorage: toStorageMap(raw.sessionBundle?.sessionStorage),
+  };
+
+  // OceanHub-style top-level fields.
+  if (!bundle.cookies && raw.cookies) bundle.cookies = toCookieArray(raw.cookies);
+  if (!bundle.localStorage && raw.localStorage) bundle.localStorage = toStorageMap(raw.localStorage);
+  if (!bundle.sessionStorage && raw.sessionStorage) bundle.sessionStorage = toStorageMap(raw.sessionStorage);
+
+  // Fold a pure cookies/storage credential into the bundle (session-only tool).
+  let credentials = raw.credentials || null;
+  const ctype = credentials?.type;
+  if (ctype === 'cookies' && !bundle.cookies) {
+    bundle.cookies = toCookieArray(credentials.payload);
+    credentials = null;
+  } else if (ctype === 'localStorage' && !bundle.localStorage) {
+    bundle.localStorage = toStorageMap(credentials.payload);
+    credentials = null;
+  } else if (ctype === 'sessionStorage' && !bundle.sessionStorage) {
+    bundle.sessionStorage = toStorageMap(credentials.payload);
+    credentials = null;
+  }
+
+  const hasBundleData = !!(
+    (Array.isArray(bundle.cookies) && bundle.cookies.length) ||
+    (bundle.localStorage && Object.keys(bundle.localStorage).length) ||
+    (bundle.sessionStorage && Object.keys(bundle.sessionStorage).length)
+  );
+  const sessionBundle = hasBundleData ? bundle : (raw.sessionBundle || null);
+
+  const login_type = raw.login_type
+    || (hasBundleData ? 'session' : null)
+    || credentials?.type
+    || 'none';
+
+  return {
+    success: raw.success !== false,
+    login_type,
+    toolUrl,
+    sessionBundle,
+    credentials,
+    tool,
+  };
+}
 
 // API client for extension
 class ApiClient {
@@ -344,4 +440,4 @@ const DomainUtils = {
 };
 
 // Export for use in other files
-export { Storage, ApiClient, CookieUtils, DomainUtils };
+export { Storage, ApiClient, CookieUtils, DomainUtils, normalizeCredentialResponse };

@@ -7,12 +7,12 @@ const ToolAssignment = require('../../models/ToolAssignment');
 const ExtensionToken = require('../../models/ExtensionToken');
 const CredentialAccessLog = require('../../models/CredentialAccessLog');
 const ActivityLog = require('../../models/ActivityLog');
-const OpenIntent = require('../../models/OpenIntent');
 const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
+const ExtensionScan         = require('../../models/ExtensionScan');
 const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, checkNewDevice, checkRepeatedAuthFailures } = require('../../middleware/riskEngine');
 const bcrypt = require('bcryptjs');
 const { authLimiter } = require('../../middleware/rateLimiter');
@@ -1165,164 +1165,6 @@ router.get('/profile', verifyExtensionToken, async (req, res) => {
 
 module.exports = router;
 
-// ─── POST /api/crm/extension/open-intent ────────────────────────────────────
-// Legacy extension-authenticated intent endpoint. The dashboard should use
-// POST /api/crm/client/tools/:toolId/open-intent instead.
-
-router.post('/open-intent', verifyExtensionToken, async (req, res) => {
-  try {
-    const { toolId } = req.body;
-    if (!toolId || typeof toolId !== 'string' || toolId.length > 64) {
-      return res.status(400).json({ error: 'Valid toolId required' });
-    }
-
-    // Verify assignment via the SHARED helper — same source of truth.
-    const decision = await getClientAccessibleTool(req.clientId, toolId);
-    const candidates = decision.candidates || [];
-    const assignment = decision.ok ? decision.assignment : null;
-    if (!assignment) {
-      const hadAny = candidates.length > 0;
-      const code = decision.code === 'assignment_expired' ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
-      accessDebug('open_intent_legacy', {
-        clientId: req.clientId, toolId,
-        assignmentId: hadAny ? candidates[0]._id : null,
-        assignmentStatus: hadAny ? candidates[0].status : null,
-        endDate: hadAny ? candidates[0].endDate : null,
-        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
-      });
-      return res.status(403).json({ error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned', code });
-    }
-
-    const issued = await OpenIntent.issue({
-      clientId: req.clientId,
-      toolId: String(toolId),
-      deviceIdHash: req.extensionDeviceIdHash || null,
-      ip: req.ip,
-      userAgent: req.headers['user-agent'],
-      ttlMs: 5 * 60 * 1000,
-    });
-
-    await ActivityLog.log('CLIENT', req.clientId, 'TOOL_OPEN_INTENT', {
-      toolId,
-      intentId: issued.id,
-      expiresAt: issued.expiresAt.toISOString()
-    });
-
-    return res.json({
-      success: true,
-      intentToken: issued.token,
-      toolId,
-      expiresAt: issued.expiresAt.toISOString()
-    });
-  } catch (err) {
-    console.error('Open intent error:', err);
-    return res.status(500).json({ error: 'Failed to create open intent' });
-  }
-});
-
-// ─── POST /api/crm/extension/verify-intent ──────────────────────────────────
-// Called by the background service worker to verify an intent token issued
-// by /open-intent before fetching credentials. Ensures the open was initiated
-// by an authenticated website session and not forged by a website page.
-router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
-  try {
-    const { intentToken } = req.body;
-    // Normalize toolId to a string on the backend too (it may arrive as a number).
-    const toolId = req.body.toolId != null ? String(req.body.toolId) : null;
-    if (!intentToken || !toolId) {
-      accessDebug('verify_intent', { clientId: req.clientId, toolId, reason: 'missing_intent_or_tool', code: ACCESS_CODES.INTENT_INVALID });
-      return res.status(400).json({ error: 'intentToken and toolId required', stage: 'intent_not_found', code: ACCESS_CODES.INTENT_INVALID });
-    }
-
-    // Dashboard-created open intents are intentionally NOT bound to the
-    // extension device id (soft mode). The dashboard session already validates
-    // the client device when creating the intent; the extension token separately
-    // validates the extension device before this route is reached. Passing the
-    // extension device hash here can falsely reject valid intents when website
-    // and extension have different device ids.
-    // 1) Validate the one-time intent WITHOUT consuming it yet (soft device mode:
-    //    deviceIdHash null is allowed; mismatch only fails when both sides differ).
-    const result = await OpenIntent.validate({
-      clientId: req.clientId,
-      toolId,
-      token: intentToken,
-      deviceIdHash: null,
-    });
-
-    if (!result.intent) {
-      const reason = result.reason || 'intent_not_found';
-      const messages = {
-        intent_expired:        'Secure access token expired. Click Access again.',
-        intent_consumed:       'Secure access token was already used. Click Access again.',
-        intent_device_mismatch:'Secure access is linked to a different device. Contact admin.',
-        intent_not_found:      'Secure access token could not be verified.',
-      };
-      // device_mismatch is a device problem; all other intent failures are the
-      // one-time token itself being invalid/expired/consumed.
-      const code = reason === 'intent_device_mismatch' ? ACCESS_CODES.DEVICE_BLOCKED : ACCESS_CODES.INTENT_INVALID;
-      accessDebug('verify_intent', { clientId: req.clientId, toolId, reason, code });
-      // `stage` kept (intent_expired/consumed/…) so the dashboard message mapping
-      // and its non-retry business-stage guard keep matching exactly.
-      return res.status(403).json({ error: reason, stage: reason, code, message: messages[reason] || messages.intent_not_found });
-    }
-
-    // 2) Backend assignment check is NEVER skipped. Use the SHARED helper —
-    //    same source of truth as the dashboard list / single-tool / open-intent
-    //    / credentials endpoints, with inclusive end-of-day expiry and string-
-    //    normalized toolId. If the dashboard shows the tool, this returns
-    //    ok:true.
-    const now = new Date();
-    const decision = await getClientAccessibleTool(req.clientId, toolId);
-    const candidates = decision.candidates || [];
-    const assignment = decision.ok ? decision.assignment : null;
-
-    if (!assignment) {
-      const hadAny = candidates.length > 0;
-      const code = decision.code === 'assignment_expired' ? ACCESS_CODES.ASSIGNMENT_EXPIRED : ACCESS_CODES.ASSIGNMENT_NOT_FOUND;
-      accessDebug('verify_intent', {
-        clientId: req.clientId, toolId,
-        assignmentId: hadAny ? candidates[0]._id : null,
-        assignmentStatus: hadAny ? candidates[0].status : null,
-        endDate: hadAny ? candidates[0].endDate : null,
-        usedEndBoundary: hadAny ? (ToolAssignment.effectiveEndBoundary(candidates[0].endDate)?.toISOString() || null) : null,
-        serverTime: now.toISOString(),
-        code, reason: hadAny ? 'all_candidates_expired_or_inactive' : 'no_assignment_row',
-      });
-      // Do NOT consume the token — assignment failed; the still-valid token can be
-      // reused once admin restores access. Emit the PRECISE stage (assignment_*),
-      // never the generic tool_access_expired — both are final (non-retry)
-      // business stages on the dashboard. This path is only reached when the tool
-      // is genuinely NOT in the dashboard's visible set (same selector now).
-      return res.status(403).json({
-        error: hadAny ? 'Tool access expired or revoked' : 'Tool not assigned',
-        stage: code, code,
-      });
-    }
-
-    accessDebug('verify_intent', {
-      clientId: req.clientId, toolId,
-      assignmentId: assignment._id,
-      assignmentStatus: assignment.status,
-      endDate: assignment.endDate,
-      usedEndBoundary: ToolAssignment.effectiveEndBoundary(assignment.endDate)?.toISOString() || null,
-      hasSessionBundle: !!(assignment.toolId && assignment.toolId.sessionBundle &&
-        (assignment.toolId.sessionBundle.cookiesEncrypted || assignment.toolId.sessionBundle.localStorageEncrypted || assignment.toolId.sessionBundle.sessionStorageEncrypted)),
-      toolDomain: assignment.toolId?.domain || null,
-      serverTime: now.toISOString(), reason: 'valid',
-    });
-
-    // 3) ONLY now (token valid + assignment valid) mark the one-time intent
-    //    consumed — the extension immediately fetches the latest session bundle
-    //    (assignment-gated) and injects target-domain cookies next.
-    await OpenIntent.markConsumed(result.intent);
-
-    return res.json({ success: true, toolId, verified: true });
-  } catch (err) {
-    console.error('Verify intent error:', err);
-    return res.status(500).json({ error: 'Intent verification failed' });
-  }
-});
-
 
 // ─── POST /api/crm/extension/security-scan — submit extension scanner report ──
 // The client-side scanner (with explicit user consent) sends safe metadata about
@@ -1331,7 +1173,16 @@ router.post('/verify-intent', verifyExtensionToken, async (req, res) => {
 // Privacy: disclosed in privacy policy. Scanner can be disabled by admin.
 router.post('/security-scan', verifyExtensionToken, async (req, res) => {
   try {
-    const { riskyExtensions = [], userConsentGiven, scannerEnabled } = req.body;
+    const {
+      extensions = [],
+      riskyExtensions = [],
+      userConsentGiven,
+      scannerEnabled,
+      scannerStatus,
+      deviceIdHash,
+      lastSync,
+      scannedAt,
+    } = req.body;
 
     // Respect scanner-disabled flag
     if (scannerEnabled === false) {
@@ -1343,30 +1194,78 @@ router.post('/security-scan', verifyExtensionToken, async (req, res) => {
       return res.json({ success: true, skipped: true, reason: 'consent_not_given' });
     }
 
-    // Validate input — only accept safe metadata fields
-    const sanitized = (Array.isArray(riskyExtensions) ? riskyExtensions : [])
-      .slice(0, 50) // max 50 extensions
-      .map(e => ({
-        extId:             String(e.extId  || '').slice(0, 64),
-        extName:           String(e.extName || 'Unknown').slice(0, 128),
-        riskLevel:         ['low','medium','high'].includes(e.riskLevel) ? e.riskLevel : 'low',
-        permissionsSummary: String(e.permissionsSummary || '').slice(0, 256),
-      }));
+    // Sanitize the FULL installed list — only safe metadata fields, never secrets.
+    const cleanExt = (e) => ({
+      extId:              String(e.extId  || '').slice(0, 64),
+      extName:            String(e.extName || 'Unknown').slice(0, 128),
+      version:            e.version ? String(e.version).slice(0, 32) : null,
+      enabled:            e.enabled !== false,
+      type:               String(e.type || 'extension').slice(0, 32),
+      permissionsSummary: String(e.permissionsSummary || '').slice(0, 256),
+      riskLevel:          ['none','low','medium','high'].includes(e.riskLevel) ? e.riskLevel : 'none',
+    });
+    const sanitizedAll = (Array.isArray(extensions) ? extensions : []).slice(0, 100).map(cleanExt);
+    // Prefer the full list to derive the risky subset; fall back to riskyExtensions.
+    const sanitizedRisky = (sanitizedAll.length
+      ? sanitizedAll.filter(e => e.riskLevel !== 'none')
+      : (Array.isArray(riskyExtensions) ? riskyExtensions : []).slice(0, 100).map(cleanExt)
+    );
 
+    const counts = {
+      total:  sanitizedAll.length,
+      risky:  sanitizedRisky.length,
+      high:   sanitizedRisky.filter(e => e.riskLevel === 'high').length,
+      medium: sanitizedRisky.filter(e => e.riskLevel === 'medium').length,
+      low:    sanitizedRisky.filter(e => e.riskLevel === 'low').length,
+    };
+
+    const extensionVersion = req.headers['x-extension-version'] || req.body.extensionVersion || null;
+    const status = ['enabled', 'disabled', 'permission_missing'].includes(scannerStatus) ? scannerStatus : 'enabled';
+
+    // Authoritative client identity from the user record (token-bound) — fall back
+    // to body values only if the record lacks them.
+    let clientEmail = req.body.clientEmail || null;
+    let clientName  = req.body.clientName  || null;
+    try {
+      const user = await User.findById(req.clientId).lean?.() || await User.findById(req.clientId);
+      if (user) {
+        clientEmail = user.email || clientEmail;
+        clientName  = user.fullName || user.name || clientName;
+      }
+    } catch (_) {}
+
+    // Persist the latest scan for this client (one row per client).
+    await ExtensionScan.recordScan(req.clientId, {
+      clientEmail,
+      clientName,
+      deviceIdHash:     deviceIdHash || req.headers['x-device-id-hash'] || null,
+      extensionVersion,
+      lastSync:         lastSync || null,
+      scannedAt:        scannedAt || new Date().toISOString(),
+      scannerStatus:    status,
+      counts,
+      extensions:       sanitizedAll,
+    });
+
+    // Still raise a high-risk SecurityAlert (existing behaviour).
     const context = {
       ipAddress:        req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
       userAgent:        req.headers['user-agent'],
-      extensionVersion: req.headers['x-extension-version'],
+      extensionVersion,
+      deviceIdHash:     deviceIdHash || req.headers['x-device-id-hash'] || null,
     };
-
-    await processExtensionScanReport(req.clientId, sanitized, context);
+    if (sanitizedRisky.length) {
+      await processExtensionScanReport(req.clientId, sanitizedRisky, context);
+    }
 
     await ActivityLog.log('CLIENT', req.clientId, 'EXTENSION_SCAN_SUBMITTED', {
-      totalScanned: sanitized.length,
-      highRiskCount: sanitized.filter(e => e.riskLevel === 'high').length,
+      totalScanned: counts.total,
+      riskyCount:   counts.risky,
+      highRiskCount: counts.high,
+      scannerStatus: status,
     });
 
-    res.json({ success: true, processed: sanitized.length });
+    res.json({ success: true, processed: counts.total, risky: counts.risky });
   } catch (err) {
     console.error('Security scan error:', err);
     res.status(500).json({ error: 'Scan submission failed' });

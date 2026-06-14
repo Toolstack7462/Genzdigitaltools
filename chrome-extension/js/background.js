@@ -11,6 +11,7 @@
 
 import { getOrchestrator } from './core/LoginOrchestrator.js';
 import { Logger, enableDebugMode, disableDebugMode, isDebugModeEnabled, getLogHistory, exportLogs } from './core/Logger.js';
+import { normalizeCredentialResponse } from './api.js';
 
 // Initialize logger
 const logger = new Logger('Background');
@@ -469,29 +470,76 @@ async function handleLoginRequired(data, sender) {
   activeLogins.set(tabId, { tool, startTime: Date.now() });
   
   try {
-    // Get credentials (includes session bundle)
+    // Get credentials (normalized — includes folded session bundle)
     const credentialData = await getToolCredentials(tool.id);
-    
-    if (!credentialData || !credentialData.credentials) {
-      logger.warn('No credentials for tool', { tool: tool.name });
+
+    const creds  = credentialData?.credentials;
+    const bundle = credentialData?.sessionBundle;
+    const hasCreds = !!(creds && creds.type && creds.type !== 'none');
+    const hasBundleCookies = !!(bundle?.cookies && bundle.cookies.length);
+    const hasBundleStorage = storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
+    const hasBundle = hasBundleCookies || hasBundleStorage;
+    const loginType = hasCreds ? creds.type : (hasBundle ? 'session' : 'none');
+
+    logger.info('Login required — resolving session', {
+      tool: tool.name, toolId: String(tool.id), login_type: loginType,
+      hasCreds, hasBundleCookies, hasBundleStorage,
+    });
+
+    // ── Both missing → clear, honest error (req #1). Never silently no-op. ──
+    if (!hasCreds && !hasBundle) {
+      logger.warn('No active session for tool on login page', { tool: tool.name, toolId: String(tool.id) });
+      notifyDashboardTabs({
+        type: 'GENZ_TOOL_UPDATED',
+        toolId: String(tool.id),
+        error: 'no_active_session',
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      });
       return;
     }
-    
-    // Use orchestrator for login with session bundle
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+
+    // ── Session-only tool (cookies/storage, no interactive credentials): just
+    //    REAPPLY the session to THIS tab and reload — do NOT raise a
+    //    "credentials missing" error (req #1, #3). ──
+    if (!hasCreds && hasBundle) {
+      logger.info('Reapplying session bundle on login page', {
+        tool: tool.name, strategy: 'session', cookies: bundle?.cookies?.length || 0,
+      });
+      const targetUrl = tool.targetUrl || url;
+      if (tool.extensionSettings?.clearExistingCookies !== false) {
+        await clearCookiesForDomain(targetUrl);
+      }
+      let cookieResult = { set: 0, failed: 0 };
+      if (hasBundleCookies) cookieResult = await injectCookies(targetUrl, bundle.cookies);
+      // req #9: a few failed (analytics) cookies must not block as long as some
+      // main session cookies applied.
+      if (hasBundleCookies && (cookieResult.set || 0) === 0) {
+        logger.warn('Session cookies could not be applied on login page', { tool: tool.name, failed: cookieResult.failed || 0 });
+        return;
+      }
+      if (bundle.localStorage) await injectStorage(tabId, 'localStorage', bundle.localStorage).catch(() => {});
+      if (bundle.sessionStorage) await injectStorage(tabId, 'sessionStorage', bundle.sessionStorage).catch(() => {});
+      logger.info('Session reapplied — reloading tab', { tool: tool.name, set: cookieResult.set || 0, failed: cookieResult.failed || 0 });
+      await chrome.tabs.reload(tabId);
+      return;
+    }
+
+    // ── Interactive credentials (form/sso/token) → orchestrator, with bundle. ──
+    const result = await orchestrator.executeLogin(tool, creds, {
       tabId,
       currentUrl: url,
-      sessionBundle: credentialData.sessionBundle,
+      sessionBundle: bundle,
       toolInfo: credentialData.tool
     });
-    
-    logger.info('Auto-login result', { 
-      tool: tool.name, 
-      success: result.success, 
+
+    logger.info('Auto-login result', {
+      tool: tool.name,
+      success: result.success,
       method: result.method,
-      sessionBundleApplied: !!credentialData.sessionBundle
+      login_type: loginType,
+      sessionBundleApplied: !!bundle
     });
-    
+
   } catch (error) {
     logger.error('Auto-login failed', { error: error.message });
   } finally {
@@ -501,9 +549,16 @@ async function handleLoginRequired(data, sender) {
 }
 
 /**
- * Get credentials for a tool (with caching)
+ * Get credentials for a tool (with caching).
+ * @param {string} toolId
+ * @param {{throwOnFailure?: boolean}} opts - when throwOnFailure is set, a
+ *   non-business fetch failure (404/500/network) is surfaced as a tagged
+ *   'credentials_unavailable' error instead of resolving to null. This lets the
+ *   open-tool flow distinguish "admin assigned a session but it couldn't be
+ *   fetched" from "this tool genuinely has no session" — so it never opens a
+ *   session-required tool logged-out (OceanHub processTool behaviour).
  */
-async function getToolCredentials(toolId) {
+async function getToolCredentials(toolId, opts = {}) {
   // Check metadata cache (safe — no decrypted credentials stored)
   if (toolCredentialsCache.has(toolId)) {
     const cached = toolCredentialsCache.get(toolId);
@@ -528,11 +583,19 @@ async function getToolCredentials(toolId) {
       toolCredentialsCache.set(toolId, metaCache);
     }
 
+    // Normalize so cookies/storage arriving as top-level fields OR inside a
+    // cookies/storage credential payload are unified into sessionBundle — this is
+    // what lets a "cookies" tool be applied BEFORE opening (OceanHub processTool)
+    // instead of falling through to a logged-out direct_open.
+    const norm = normalizeCredentialResponse(result);
+
     // Return the full shape callers expect
     // Credentials are NOT cached — they are returned once and must be used immediately
     return {
-      credentials: result.credentials,
-      sessionBundle: result.sessionBundle,
+      credentials: norm.credentials,
+      sessionBundle: norm.sessionBundle,
+      login_type: norm.login_type,
+      toolUrl: norm.toolUrl,
       tool: result.tool,
       credentialVersion: result.tool?.credentialVersion,
       domain: result.tool?.domain,
@@ -545,11 +608,20 @@ async function getToolCredentials(toolId) {
     // of silently opening a logged-out tab. Network/unknown failures still
     // resolve to null so transient hiccups don't hard-fail direct-open tools.
     const code = error?.payload?.code || null;
-    logger.error('Failed to fetch credentials', { error: error.message, code, status: error?.status });
+    logger.error('Failed to fetch credentials', { toolId, error: error.message, code, status: error?.status || null });
     if (code) {
       const tagged = new Error(code);
       tagged.code = code;
       tagged.status = error.status;
+      throw tagged;
+    }
+    // No business code → infrastructure failure (404/500/network/decrypt).
+    // When the caller needs to apply a session, surface this so it does NOT
+    // fall through to a logged-out direct_open.
+    if (opts.throwOnFailure) {
+      const tagged = new Error('credentials_unavailable');
+      tagged.code = 'credentials_unavailable';
+      tagged.status = error?.status || null;
       throw tagged;
     }
     return null;
@@ -572,7 +644,7 @@ async function executeOneClickLogin(toolId, tool) {
     
     const creds = credentialData?.credentials;
     const bundle = credentialData?.sessionBundle;
-    const hasBundle = !!(bundle?.cookies || bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundle = !!(bundle?.cookies && bundle.cookies.length) || storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
     const hasCreds = !!(creds && creds.type && creds.type !== 'none');
 
     if (!credentialData || (!hasCreds && !hasBundle)) {
@@ -682,14 +754,11 @@ async function injectCookies(targetUrl, cookies) {
       }
       
       const secure = cookie.secure === true || (cookie.secure !== false && isHttps);
-      
-      // Skip __Host- prefixed cookies — they enforce strict origin binding and
-      // cannot be set externally via chrome.cookies.set (OceanHub safe pattern)
-      if (cookie.name && cookie.name.startsWith('__Host-')) {
-        failedCount++;
-        failures.push({ name: cookie.name, reason: 'host_prefix_unsettable' });
-        continue;
-      }
+
+      // __Host- cookies are host-only. Chrome CAN set them, but only as:
+      //   no domain field, path "/", secure true, URL on the exact target host.
+      // They're frequently the MAIN session cookie, so handle (don't skip) them.
+      const isHostPrefixed = !!(cookie.name && cookie.name.startsWith('__Host-'));
 
       // Normalize sameSite; treat 'unspecified' as no_restriction (OceanHub pattern)
       let sameSite = (cookie.sameSite || 'lax').toLowerCase();
@@ -701,27 +770,40 @@ async function injectCookies(targetUrl, cookies) {
         sameSite = 'lax';
       }
       
-      // SameSite=None requires Secure
-      const finalSecure = sameSite === 'no_restriction' ? true : secure;
-      const protocol = finalSecure ? 'https' : 'http';
-      const cleanDomain = cookieDomain.startsWith('.') ? cookieDomain.substring(1) : cookieDomain;
-      const cookieUrl = `${protocol}://${cleanDomain}/`;
-      
-      const cookieDetails = {
-        url: cookieUrl,
-        name: cookie.name,
-        value: cookie.value,
-        path: cookie.path || '/',
-        secure: finalSecure,
-        httpOnly: cookie.httpOnly === true,
-        sameSite: sameSite
-      };
-      
-      // Set domain for subdomain cookies
-      if (cookieDomain.startsWith('.')) {
-        cookieDetails.domain = cookieDomain;
+      // SameSite=None requires Secure; __Host- cookies must also be Secure.
+      const finalSecure = (sameSite === 'no_restriction' || isHostPrefixed) ? true : secure;
+
+      let cleanDomain = null; // hoisted so the pre-flight check below can use it
+      let cookieDetails;
+      if (isHostPrefixed) {
+        // Host-only: URL on the exact target host, NO domain, path "/".
+        cookieDetails = {
+          url: `https://${targetDomain}/`,
+          name: cookie.name,
+          value: cookie.value,
+          path: '/',
+          secure: true,
+          httpOnly: cookie.httpOnly === true,
+          sameSite: sameSite,
+        };
+      } else {
+        const protocol = finalSecure ? 'https' : 'http';
+        cleanDomain = cookieDomain.startsWith('.') ? cookieDomain.substring(1) : cookieDomain;
+        cookieDetails = {
+          url: `${protocol}://${cleanDomain}/`,
+          name: cookie.name,
+          value: cookie.value,
+          path: cookie.path || '/',
+          secure: finalSecure,
+          httpOnly: cookie.httpOnly === true,
+          sameSite: sameSite,
+        };
+        // Set domain ONLY for subdomain cookies (host-only cookies omit it).
+        if (cookieDomain.startsWith('.')) {
+          cookieDetails.domain = cookieDomain;
+        }
       }
-      
+
       // Handle expiration
       if (cookie.expirationDate) {
         cookieDetails.expirationDate = cookie.expirationDate;
@@ -734,16 +816,18 @@ async function injectCookies(targetUrl, cookies) {
         // Default: 30 days
         cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
       }
-      
+
       // ── Pre-flight rejection classification (so logs show a precise reason,
       // not just "Cookie set returned null"). NEVER log the cookie value.
+      // __Host- cookies legitimately have no domain attribute, so the
+      // domain_mismatch check only applies when a domain IS set (non-host cookies).
       let preReason = null;
       if (!cookie.name) preReason = 'missing_name';
       else if (cookie.value === undefined || cookie.value === null) preReason = 'missing_value';
       else if (sameSite === 'no_restriction' && !finalSecure) preReason = 'samesite_none_requires_secure';
       else if (cookie.name.startsWith('__Secure-') && !finalSecure) preReason = 'secure_prefix_requires_secure';
       else if (cookieDetails.expirationDate && cookieDetails.expirationDate * 1000 < Date.now()) preReason = 'already_expired';
-      else if (cookieDetails.domain && !cleanDomain.endsWith(targetDomain) && !targetDomain.endsWith(cleanDomain)) {
+      else if (cookieDetails.domain && cleanDomain && !cleanDomain.endsWith(targetDomain) && !targetDomain.endsWith(cleanDomain)) {
         // domain attribute does not match the target host family
         preReason = 'domain_mismatch';
       }
@@ -753,10 +837,17 @@ async function injectCookies(targetUrl, cookies) {
         continue;
       }
 
-      const result = await chrome.cookies.set(cookieDetails);
       // chrome.runtime.lastError is the MV3 way Chrome reports cookie rejections.
-      // Capture it WITHOUT logging the cookie value.
-      const lastErr = chrome.runtime.lastError?.message || null;
+      // Capture it WITHOUT logging the cookie value. OceanHub-style retry: set()
+      // can return null when the domain field conflicts with URL/host rules —
+      // retry ONCE without the domain before giving up.
+      let result = await chrome.cookies.set(cookieDetails);
+      let lastErr = chrome.runtime.lastError?.message || null;
+      if (!result && cookieDetails.domain) {
+        const { domain, ...noDomain } = cookieDetails;
+        result = await chrome.cookies.set(noDomain);
+        lastErr = chrome.runtime.lastError?.message || lastErr;
+      }
       if (result) {
         setCount++;
       } else {
@@ -911,6 +1002,19 @@ function getOriginPattern(url) {
   }
 }
 
+// Hostname/origin only — used in safe logs so we never print full URLs that may
+// carry query tokens.
+function safeHost(url) {
+  try { return new URL(url).hostname; } catch (_) { return null; }
+}
+
+// True only when a localStorage/sessionStorage map actually has entries. An empty
+// object ({}) must count as NO data — a bare truthy check would wrongly treat it
+// as a usable session bundle.
+function storageHasKeys(obj) {
+  return !!(obj && typeof obj === 'object' && Object.keys(obj).length > 0);
+}
+
 function getBaseDomain(hostname) {
   // NOTE: This duplicates DomainUtils.getBaseDomain() in api.js.
   // Both are kept for now since background.js is a service worker module
@@ -997,15 +1101,17 @@ function waitForTabLoad(tabId, timeout = 30000) {
 
 
 // ============================================================================
-// GENZ_OPEN_TOOL — Dashboard-triggered tool open
-// Flow: Dashboard → bridge.js postMessage → background.js → verify intent
-//       → fetch credentials → open/reuse tab → run strategy
+// GENZ_OPEN_TOOL — Dashboard-triggered tool open (OceanHub model)
+// Flow: Dashboard → bridge.js postMessage → background.js
+//       → fetch credentials → open/reuse tab via chrome.tabs.create → run strategy
 // ============================================================================
 
 /**
  * Open a tool triggered by the dashboard Access button.
+ * OceanHub model: no per-click open-intent token. Assignment is enforced
+ * server-side at tool-sync time and on every credential fetch.
  * Steps:
- *  1. Verify the openIntentToken with the backend (anti-forgery).
+ *  1. (OceanHub) Open directly — no intent-token verification.
  *  2. Duplicate-open lock (3s debounce per toolId).
  *  3. Load tool info from cached tool list.
  *  4. Check host permission; return permission_required if missing.
@@ -1029,8 +1135,6 @@ async function handleOpenTool(payload) {
 
 async function _handleOpenToolInner(payload) {
   const { toolId, forceFreshSession = true } = payload || {};
-  // Support BOTH intent-token field names the dashboard may send.
-  const intentToken = payload?.openIntentToken || payload?.intentToken;
 
   // toolId may arrive as a number or string — normalize and compare as string.
   if (toolId === undefined || toolId === null || String(toolId).length === 0) {
@@ -1038,26 +1142,13 @@ async function _handleOpenToolInner(payload) {
   }
   const toolIdStr = String(toolId);
 
-  // ── 1. Verify intent token with backend ──────────────────────────────────
-  if (!intentToken || typeof intentToken !== 'string') {
-    return { success: false, error: 'openIntentToken required' };
-  }
-  try {
-    const verifyResult = await apiRequest('/verify-intent', {
-      method: 'POST',
-      body: JSON.stringify({ intentToken, toolId: toolIdStr }),
-    });
-    if (!verifyResult.verified) {
-      logger.warn('Intent not verified', { toolId: toolIdStr, stage: 'intent_not_found' });
-      return { success: false, error: 'intent_not_found', stage: 'intent_not_found', message: 'Secure access token could not be verified.' };
-    }
-    logger.info('Intent verified', { toolId: toolIdStr, stage: 'verify_intent_ok' });
-  } catch (err) {
-    // apiRequest throws with err.payload = backend JSON ({ error, stage, message }).
-    const stage = err?.payload?.stage || err?.payload?.error || (err?.status === 401 ? 'extension_did_not_respond' : 'intent_not_found');
-    logger.warn('Intent verification failed', { toolId: toolIdStr, stage });
-    return { success: false, error: stage, stage, message: err?.payload?.message || 'Could not verify secure access for this tool.' };
-  }
+  // ── 1. OceanHub-model open (no per-click open-intent token) ───────────────
+  // The dashboard no longer mints a single-use open-intent token per click.
+  // Assignment is still fully enforced where it matters:
+  //   • the extension only SYNCS tools the client is assigned (GET /extension/tools), and
+  //   • the credentials endpoint re-verifies the assignment on every fetch.
+  // So we go straight to opening the tab via chrome.tabs.create() in the
+  // background, exactly like OceanHub's openToolDirect / processTool actions.
 
   // ── 2. Duplicate-open lock (3-second debounce) ────────────────────────────
   const now = Date.now();
@@ -1084,12 +1175,32 @@ async function _handleOpenToolInner(payload) {
   }
 
   // Normalize the tool target URL from any of the supported field names.
-  const targetUrl = tool.targetUrl || tool.target_url || tool.url || tool.toolUrl;
+  // Prefer the dashboard-sent requestedToolUrl (OceanHub req #1) but fall back to
+  // the synced tool's targetUrl. Either way the URL stays inside the extension.
+  const targetUrl = payload?.requestedToolUrl || tool.targetUrl || tool.target_url || tool.url || tool.toolUrl;
   if (!targetUrl) {
     logger.warn('Tool has no valid target URL', { toolId: toolIdStr, stage: 'tool_domain_invalid' });
     openIntentLock.delete(toolId);
     return { success: false, error: 'tool_domain_invalid', stage: 'tool_domain_invalid', message: 'This tool has no valid target URL configured. Please contact admin.' };
   }
+
+  // Does admin require an injected/authorized session for this tool? Derived from
+  // the SYNCED tool metadata (never trusts the page). If true, we must apply the
+  // session and must NEVER fall back to a logged-out direct_open.
+  const toolRequiresSession =
+    !!tool.hasCredentials ||
+    !!(tool.sessionBundle && (tool.sessionBundle.hasCookies || tool.sessionBundle.hasLocalStorage || tool.sessionBundle.hasSessionStorage));
+
+  // ── OceanHub-style request log (safe metadata only — no secrets) ──────────
+  const apiState = await getStorage(['apiUrl']);
+  const sessionId = tool.assignment?.id ? String(tool.assignment.id) : (payload?.sessionId ? String(payload.sessionId) : null);
+  logger.info('Processing tool request', {
+    apiUrl: normalizeApiBase(apiState.apiUrl || payload?.apiUrl || ''),
+    toolId: toolIdStr,
+    sessionId,
+    requestedToolUrl: safeHost(targetUrl),
+    requiresSession: toolRequiresSession,
+  });
 
   // ── 4. Check host permission ───────────────────────────────────────────────
   const originPattern = getOriginPattern(targetUrl);
@@ -1113,14 +1224,21 @@ async function _handleOpenToolInner(payload) {
   // always used. We do this BEFORE opening the tab so cookies can be applied
   // pre-navigation (inject new cookies, THEN open the target domain).
   let credentialData = null;
+  let credFetchStatus = null;
+  let credFetchFailed = false;
   try {
-    credentialData = await getToolCredentials(toolId);
+    // throwOnFailure: a non-business fetch failure must NOT silently degrade to a
+    // logged-out direct_open for a session-required tool.
+    credentialData = await getToolCredentials(toolId, { throwOnFailure: true });
   } catch (err) {
     // Exact backend business code (session_bundle_missing, tool_domain_invalid,
-    // assignment_expired/not_found, device_blocked, extension_token_invalid).
+    // assignment_expired/not_found, device_blocked, extension_token_invalid) OR
+    // 'credentials_unavailable' for an infrastructure failure.
     const code = err?.code || err?.payload?.code || null;
-    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: err?.status });
-    if (code) {
+    credFetchStatus = err?.status || null;
+    if (code === 'credentials_unavailable' || !code) credFetchFailed = true;
+    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: credFetchStatus });
+    if (code && code !== 'credentials_unavailable') {
       openIntentLock.delete(toolId);
       const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
       if (FINAL_BUSINESS.includes(code)) {
@@ -1136,6 +1254,8 @@ async function _handleOpenToolInner(payload) {
         return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
       }
     }
+    // 'credentials_unavailable' falls through with credentialData=null; handled
+    // by the session-required guard below.
   }
 
   // If credential fetch failed and the extension session was cleared (401),
@@ -1147,6 +1267,28 @@ async function _handleOpenToolInner(payload) {
       openIntentLock.delete(toolId);
       return { success: false, error: 'auth_expired', needsReauth: true, message: 'Refreshing secure access. Please wait...' };
     }
+  }
+
+  // ── Session-required guard (OceanHub req #3, #4, #5, #10) ──────────────────
+  // Admin assigned a session/account for this tool but we have NO usable session
+  // data. Do NOT open the tool logged-out via direct_open. We block when EITHER
+  // the synced metadata says the tool needs a session, OR the credential fetch
+  // actually failed (covers the case where /extension/tools metadata is missing
+  // hasCredentials/sessionBundle.hasCookies — a fetch failure on a managed tool
+  // must never silently degrade to direct_open, req #5).
+  if (!credentialData && (toolRequiresSession || credFetchFailed)) {
+    openIntentLock.delete(toolId);
+    logger.warn('No authorized session available for session tool', {
+      toolId: toolIdStr, sessionId, status: credFetchStatus,
+      requiresSession: toolRequiresSession, fetchFailed: credFetchFailed,
+    });
+    return {
+      success: false,
+      error: 'no_active_session',
+      stage: 'no_active_session',
+      status: credFetchStatus,
+      message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+    };
   }
 
   const creds            = credentialData?.credentials;
@@ -1170,7 +1312,7 @@ async function _handleOpenToolInner(payload) {
     sessionStorage: bundle?.sessionStorage ? Object.keys(bundle.sessionStorage).length : 0,
     version: bundle?.version || null,
   };
-  logger.info('Opening tool', { toolId: toolIdStr, credType, hasBundleCookies, hasBundleStorage, hasCreds });
+  logger.info('Opening tool', { toolId: toolIdStr, login_type: credType, sessionId, hasBundleCookies, hasBundleStorage, hasCreds });
   logger.info('Latest session bundle received', { toolId: toolIdStr, ...bundleDebug });
 
   // Admin configured a session for this tool (sync metadata says hasCookies),
@@ -1204,10 +1346,22 @@ async function _handleOpenToolInner(payload) {
     preInjectedCookies = setCount > 0;
     // Safe debug: set/failed counts + domain + stage (no cookie values).
     logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount });
+    // OceanHub req #9: a few failed (e.g. analytics) cookies must NOT block login
+    // as long as the main session cookies were applied (setCount > 0). But if NONE
+    // applied, the session genuinely could not be installed — do NOT open the tool
+    // logged-out.
     if (setCount === 0) {
-      // Latest session could not be applied — do NOT open a broken session.
+      logger.warn('All session cookies failed to apply — refusing logged-out open', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
       openIntentLock.delete(toolId);
-      return { success: false, error: 'cookie_injection_failed', stage: 'inject_cookies', domain: cookieDomain, set: 0, failed: failedCount, message: 'The latest session cookies could not be applied for this tool. Please contact admin.' };
+      return {
+        success: false,
+        error: 'no_active_session',
+        stage: 'inject_cookies',
+        domain: cookieDomain,
+        set: 0,
+        failed: failedCount,
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      };
     }
   }
 
@@ -1233,9 +1387,20 @@ async function _handleOpenToolInner(payload) {
   }
 
   // ── 8. Determine and execute strategy ─────────────────────────────────────
-  // direct_open: no credentials and no session bundle
+  // direct_open: no credentials and no session bundle. OceanHub req #3/#4: a tool
+  // that admin configured WITH a session must never silently direct_open.
   if (!hasCreds && !hasBundle) {
-    logger.info('Strategy: direct_open', { toolId });
+    if (toolRequiresSession) {
+      logger.warn('Session-required tool resolved to no session — refusing direct_open', { toolId: toolIdStr, sessionId, login_type: 'none' });
+      openIntentLock.delete(toolId);
+      return {
+        success: false,
+        error: 'no_active_session',
+        stage: 'no_active_session',
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      };
+    }
+    logger.info('Strategy: direct_open', { toolId, login_type: 'direct' });
     await logToolOpened(toolId);
     openIntentLock.delete(toolId);
     return { success: true, method: 'direct_open', tabId: targetTabId };
@@ -1270,7 +1435,9 @@ async function _handleOpenToolInner(payload) {
   // cookies were already injected pre-navigation; the orchestrator drives login.
   try {
     await waitForTabLoad(targetTabId, 20000);
-    if (forceFreshSession) {
+    // Only wipe the tool page's storage when we actually have replacement storage
+    // to inject — otherwise we'd blank a working session and leave nothing (req #7).
+    if (forceFreshSession && hasBundleStorage) {
       await clearPageStorageForTab(targetTabId);
     }
     const result = await orchestrator.executeLogin(tool, creds, {
@@ -1360,17 +1527,21 @@ const RISKY_KEYWORDS = [
   'steal', 'harvest', 'scraper', 'extractor',
 ];
 
-function scoreExtension(ext) {
-  if (ext.id === chrome.runtime.id) return null; // Skip ourselves
+// Describe ONE installed extension with safe metadata only. Returns null for our
+// own extension. Computes a riskLevel for EVERY extension ('none' when no risk
+// indicators), so admin can see the full installed list — not only risky ones.
+// NEVER returns cookie values, history, tab content, or any secret.
+function describeExtension(ext) {
+  if (!ext || ext.id === chrome.runtime.id) return null; // Skip ourselves
 
-  const perms   = ext.permissions || [];
+  const perms    = ext.permissions || [];
   const hostPerm = (ext.hostPermissions || []).join(' ');
-  const hasCookies  = perms.includes('cookies');
-  const hasAllUrls  = hostPerm.includes('<all_urls>') || hostPerm.includes('https://*/*') || hostPerm.includes('http://*/*');
-  const hasTabs     = perms.includes('tabs') || perms.includes('activeTab');
-  const nameMatch   = RISKY_KEYWORDS.some(k => ext.name?.toLowerCase().includes(k));
+  const hasCookies = perms.includes('cookies');
+  const hasAllUrls = hostPerm.includes('<all_urls>') || hostPerm.includes('https://*/*') || hostPerm.includes('http://*/*');
+  const hasTabs    = perms.includes('tabs') || perms.includes('activeTab');
+  const nameMatch  = RISKY_KEYWORDS.some(k => ext.name?.toLowerCase().includes(k));
 
-  let riskLevel = null;
+  let riskLevel = 'none';
   if (hasCookies && hasAllUrls) {
     riskLevel = 'high';
   } else if (hasCookies || (hasAllUrls && hasTabs)) {
@@ -1381,75 +1552,116 @@ function scoreExtension(ext) {
     riskLevel = 'low';
   }
 
-  if (!riskLevel) return null;
-
   const permParts = [];
-  if (hasCookies)  permParts.push('cookies');
-  if (hasTabs)     permParts.push('tabs');
-  if (hasAllUrls)  permParts.push('<all_urls>');
+  if (hasCookies) permParts.push('cookies');
+  if (hasTabs)    permParts.push('tabs');
+  if (hasAllUrls) permParts.push('<all_urls>');
 
   return {
     extId:              ext.id,
     extName:            ext.name || 'Unknown',
+    version:            ext.version || null,
+    enabled:            ext.enabled !== false,
+    type:               ext.type || 'extension',
+    permissionsSummary: permParts.join(', ') || 'standard',
     riskLevel,
-    permissionsSummary: permParts.join(', ') || 'other',
   };
+}
+
+// Back-compat wrapper: only RISKY extensions (used by the high-risk alert path).
+function scoreExtension(ext) {
+  const d = describeExtension(ext);
+  if (!d || d.riskLevel === 'none') return null;
+  return d;
 }
 
 async function runExtensionScan() {
   // 1. Scanner is active by default after extension connection.
   // It sends only safe extension metadata, never cookie values or browsing history.
-  const stored = await getStorage(['scannerEnabled', 'extensionToken']);
+  const stored = await getStorage(['scannerEnabled', 'extensionToken', 'userEmail', 'userName', 'lastSync', 'tools']);
   if (!stored.extensionToken) return;
-  if (stored.scannerEnabled === false) return;
+  if (stored.scannerEnabled === false) {
+    await setStorage({ scannerStatus: 'disabled' });
+    return;
+  }
 
-  // 2. Check if chrome.management is available
+  const extensionVersion = chrome.runtime.getManifest().version;
+  const scannedAt = new Date().toISOString();
+  let deviceIdHash = null;
+  try { deviceIdHash = await digestSha256(await getOrCreateDeviceId()); } catch (_) {}
+
+  // Common client/report fields (safe metadata only — never secrets).
+  const baseReport = {
+    clientEmail:      stored.userEmail || null,
+    clientName:       stored.userName || null,
+    deviceIdHash,
+    extensionVersion,
+    lastSync:         stored.lastSync || null,
+    toolCount:        Array.isArray(stored.tools) ? stored.tools.length : 0,
+    scannedAt,
+    scannerEnabled:   true,
+    userConsentGiven: true,
+  };
+
+  // 2. chrome.management required to enumerate installed extensions.
   if (!chrome.management?.getAll) {
-    logger.debug('Extension scan skipped — chrome.management not available');
+    logger.warn('Extension scan — management permission missing');
+    await setStorage({ scannerStatus: 'permission_missing', lastScanAt: scannedAt });
+    // Still report status so admin can see the device needs an updated extension.
+    try {
+      await apiRequest('/security-scan', {
+        method: 'POST',
+        body: JSON.stringify({ ...baseReport, scannerStatus: 'permission_missing', extensions: [], riskyExtensions: [] }),
+      });
+    } catch (err) {
+      logger.warn('Scanner status report failed', { error: err.message });
+    }
     return;
   }
 
   try {
     const allExtensions = await new Promise(res => chrome.management.getAll(res));
-    const riskyExtensions = allExtensions
-      .map(scoreExtension)
-      .filter(Boolean);
+    // Full installed list (safe metadata), plus the risky subset for alerting.
+    const extensions = allExtensions.map(describeExtension).filter(Boolean);
+    const riskyExtensions = extensions.filter(e => e.riskLevel !== 'none');
+    const counts = {
+      total:  extensions.length,
+      risky:  riskyExtensions.length,
+      high:   extensions.filter(e => e.riskLevel === 'high').length,
+      medium: extensions.filter(e => e.riskLevel === 'medium').length,
+      low:    extensions.filter(e => e.riskLevel === 'low').length,
+    };
 
-    logger.info('Extension scan complete', {
-      total: allExtensions.length,
-      risky: riskyExtensions.length,
-      high: riskyExtensions.filter(e => e.riskLevel === 'high').length,
-    });
+    logger.info('Extension scan complete', { total: counts.total, risky: counts.risky, high: counts.high });
 
-    if (riskyExtensions.length > 0) {
-      // Notify popup/badge
-      const highCount = riskyExtensions.filter(e => e.riskLevel === 'high').length;
-      if (highCount > 0) {
-        chrome.action.setBadgeText({ text: '⚠' });
-        chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
-        // Show a notification — transparent wording, no claim of data theft
-        chrome.notifications.create('risk-scan-' + Date.now(), {
-          type: 'basic',
-          iconUrl: 'icons/icon48.png',
-          title: 'Security Notice — Gen Z Digital Store',
-          message: `${highCount} browser extension(s) with broad data access detected on this device. Your admin has been notified. No action needed unless support contacts you.`,
-          priority: 1,
-        });
-      }
+    if (counts.high > 0) {
+      chrome.action.setBadgeText({ text: '⚠' });
+      chrome.action.setBadgeBackgroundColor({ color: '#f59e0b' });
+      chrome.notifications.create('risk-scan-' + Date.now(), {
+        type: 'basic',
+        iconUrl: 'icons/icon48.png',
+        title: 'Security Notice — Gen Z Digital Store',
+        message: `${counts.high} browser extension(s) with broad data access detected on this device. Your admin has been notified. No action needed unless support contacts you.`,
+        priority: 1,
+      });
     }
 
-    // 3. Report to backend (safe metadata only)
+    // 3. Report to backend (safe metadata only — no cookie values/tokens/history).
     await apiRequest('/security-scan', {
       method: 'POST',
       body: JSON.stringify({
+        ...baseReport,
+        scannerStatus: 'enabled',
+        extensions,
         riskyExtensions,
-        userConsentGiven: true,
-        scannerEnabled: true,
+        counts,
       }),
     });
+    await setStorage({ scannerStatus: 'enabled', lastScanStatus: 'success', lastScanAt: scannedAt });
 
   } catch (err) {
     logger.warn('Extension scan failed', { error: err.message });
+    await setStorage({ scannerStatus: 'enabled', lastScanStatus: 'failed', lastScanAt: scannedAt });
   }
 }
 
@@ -1765,11 +1977,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_SCAN_STATUS':
-      getStorage(['scanConsentGivenAt', 'scannerEnabled']).then(d => {
+      getStorage(['scanConsentGivenAt', 'scannerEnabled', 'scannerStatus', 'lastScanStatus', 'lastScanAt']).then(d => {
+        const managementAvailable = !!(chrome.management && chrome.management.getAll);
+        const enabled = d.scannerEnabled !== false;
+        // Derive a single status: permission missing > disabled > last scan result.
+        let status = 'enabled';
+        if (!managementAvailable) status = 'permission_missing';
+        else if (!enabled) status = 'disabled';
+        else if (d.lastScanStatus === 'failed') status = 'last_scan_failed';
+        else if (d.lastScanStatus === 'success') status = 'last_scan_successful';
         sendResponse({
-          consentGiven: d.scannerEnabled !== false,
-          scannerEnabled: d.scannerEnabled !== false,
+          consentGiven: enabled,
+          scannerEnabled: enabled,
           consentDate: d.scanConsentGivenAt || null,
+          managementAvailable,
+          status,
+          lastScanStatus: d.lastScanStatus || null,
+          lastScanAt: d.lastScanAt || null,
         });
       });
       return true;
@@ -2365,7 +2589,7 @@ async function executeOneClickLoginWithOptions(toolId, tool, options = {}) {
     
     const creds = credentialData?.credentials;
     const bundle = credentialData?.sessionBundle;
-    const hasBundle = !!(bundle?.cookies || bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundle = !!(bundle?.cookies && bundle.cookies.length) || storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
     const hasCreds = !!(creds && creds.type && creds.type !== 'none');
 
     if (!credentialData || (!hasCreds && !hasBundle)) {

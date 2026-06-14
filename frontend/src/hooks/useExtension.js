@@ -90,22 +90,12 @@ function stageMessage(stage, err) {
       return 'Secure access was rejected. Please refresh the dashboard and try again.';
     case 'extension_not_detected':
       return 'Extension not detected. Reload the extension, then refresh the dashboard.';
-    case 'open_intent_failed':
-      return 'Could not authorize this tool. Please refresh the dashboard and try again.';
     case 'session_bundle_missing':
       return 'Session missing for this tool. Please contact admin.';
-    case 'cookie_injection_failed':
-      return 'The latest session cookies could not be applied for this tool. Please contact admin.';
+    case 'no_active_session':
+      return 'No active session assigned for this tool. Please refresh or assign account from admin.';
     case 'tool_domain_invalid':
       return 'This tool has no valid target URL configured. Please contact admin.';
-    case 'intent_expired':
-      return 'Your secure access token expired. Please click Access again.';
-    case 'intent_consumed':
-      return 'That secure access token was already used. Please click Access again.';
-    case 'intent_device_mismatch':
-      return 'This secure access is linked to a different device. Please contact admin.';
-    case 'intent_not_found':
-      return 'Could not verify secure access for this tool. Please refresh the dashboard and try again.';
     case 'assignment_not_found':
       return 'This tool is not assigned to your account.';
     case 'tool_access_expired':
@@ -382,10 +372,33 @@ export function useExtension() {
     return () => window.removeEventListener('message', handler);
   }, [reconnect]);
 
-  const openTool = useCallback(async (rawToolId) => {
+  const openTool = useCallback(async (rawToolId, meta = {}) => {
     // Normalize toolId to a string up front (backend + extension compare as string).
     const toolId = (rawToolId === undefined || rawToolId === null) ? '' : String(rawToolId);
     if (!toolId) return { success: false, error: 'tool_domain_invalid', message: stageMessage('tool_domain_invalid') };
+
+    // OceanHub req #1: the Access click sends a proper tool request — toolId, the
+    // current Genz backend API URL, the requested tool URL, and the assigned
+    // session id. (No secret token here; the extension holds its own session
+    // token. These extra fields drive the background's "Processing tool request"
+    // log and let it prefer the dashboard-sent URL.)
+    const apiBase = getBackendOrigin();
+    let domain = meta.domain || null;
+    if (!domain && meta.requestedToolUrl) {
+      try { domain = new URL(meta.requestedToolUrl).hostname; } catch (_) {}
+    }
+    const openPayload = {
+      toolId,
+      forceFreshSession: true,
+      apiUrl: apiBase,
+      apiBase,
+      requestedToolUrl: meta.requestedToolUrl || null,
+      toolUrl: meta.requestedToolUrl || null,
+      domain,
+      login_type: meta.loginType || meta.credentialType || null,
+      assignmentId: meta.assignmentId || null,
+      sessionId: meta.assignmentId || null,
+    };
     if (!bridgeReady && !getBridgeMarker()) {
       return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
     }
@@ -425,38 +438,16 @@ export function useExtension() {
     openingRef.current.set(toolId, true);
 
     try {
-      let intentResp;
-      try {
-        intentResp = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
-      } catch (e) {
-        const code = e?.response?.data?.code || '';
-        logStage('open_intent_failed', { toolId, status: e?.response?.status, code: code || null });
-        // Prefer the backend's EXACT code — keep "not assigned" / "session missing"
-        // / "expired" DISTINCT. Never collapse not-found or session-missing into
-        // "expired" (that produced false "Access expired" for assigned tools).
-        if (code === 'assignment_expired') {
-          return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
-        }
-        if (code === 'assignment_not_found') {
-          return { success: false, error: 'assignment_not_found', message: stageMessage('assignment_not_found') };
-        }
-        if (code === 'tool_domain_invalid' || code === 'device_blocked' || code === 'session_bundle_missing') {
-          return { success: false, error: code, message: stageMessage(code, e) };
-        }
-        const raw = e?.response?.data?.error || '';
-        if (/not assigned|no assignment/i.test(raw)) {
-          return { success: false, error: 'assignment_not_found', message: stageMessage('assignment_not_found') };
-        }
-        if (/expired|revoked|inactive|not started/i.test(raw)) {
-          return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
-        }
-        return { success: false, error: 'open_intent_failed', message: 'Could not authorize this tool. Please refresh the dashboard and try again.' };
-      }
-      const intentToken = intentResp.data.intentToken || intentResp.data.openIntentToken;
-      if (!intentToken) { logStage('missing_intent_token', { toolId }); return { success: false, error: 'missing_intent_token' }; }
-
+      // ── OceanHub model ──────────────────────────────────────────────────────
+      // No per-click open-intent token. The dashboard simply tells the extension
+      // which tool to open; the extension's own session token authorizes the
+      // credential/cookie fetch and the background opens the tab via
+      // chrome.tabs.create(). Assignment is still enforced server-side at sync
+      // time and on every credential fetch, so dropping the intent token does not
+      // weaken access control — it just removes the gate that was blocking the
+      // tab from ever opening.
       logStage('open_tool:send', { toolId });
-      let result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: intentToken, forceFreshSession: true }, 20000);
+      let result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
       logStage('open_tool:result', { toolId, success: result?.success !== false, error: result?.error || null, method: result?.method || null });
 
       // Auto-request missing host permission, then retry. Never tell user to use popup.
@@ -464,9 +455,7 @@ export function useExtension() {
         try {
           const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
           if (permission?.success || permission?.granted) {
-            const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
-            const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-            result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+            result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
           } else {
             return { success: false, error: 'permission_denied', message: 'Domain access could not be granted automatically. Contact admin.' };
           }
@@ -476,23 +465,20 @@ export function useExtension() {
       }
 
       // Business stages are FINAL — never reconnect/retry on them. (The auth regex
-      // below contains "expired"/"invalid", which would otherwise wrongly match
-      // 'tool_access_expired' / 'tool_domain_invalid' and trigger a pointless
-      // reconnect loop on an assignment that admin must fix.)
-      const BUSINESS_RESULT_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
+      // below contains "token", which must not be mistaken for a retryable auth
+      // error on an assignment that admin must fix.)
+      const BUSINESS_RESULT_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing', 'no_active_session'];
       if (result?.error && BUSINESS_RESULT_STAGES.includes(String(result.error))) {
         logStage('business_stage_final', { toolId, stage: result.error });
         return { success: false, error: String(result.error), message: stageMessage(String(result.error), result) };
       }
 
       // If background signalled auth expiry or needsReauth, silently reconnect
-      // ONCE (stale-token retry) and try again with a fresh intent.
-      if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(String(result.error)))) {
+      // ONCE (stale-token retry) and try again.
+      if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|401|reauth/i.test(String(result.error)))) {
         logStage('stale_token_retry', { toolId, trigger: result?.error || 'needsReauth' });
         await connectExtension({}, { forceReauth: true });
-        const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() });
-        const retryToken = retryIntent.data.intentToken || retryIntent.data.openIntentToken;
-        result = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+        result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
         logStage('stale_token_retry:result', { toolId, success: result?.success !== false, error: result?.error || null });
       }
 
@@ -502,33 +488,27 @@ export function useExtension() {
       logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
       // Known background business stages arrive as Error(code) via the bridge.
       // Map them FIRST and NEVER retry — e.g. 'tool_access_expired' contains
-      // "expired", and 'tool_domain_invalid'/'intent_device_mismatch' contain
-      // "invalid"/"mismatch", which must not be mistaken for a retryable auth error.
-      const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'cookie_injection_failed', 'session_bundle_missing', 'open_intent_failed', 'intent_device_mismatch'];
+      // "expired" and 'tool_domain_invalid' contains "invalid", which must not be
+      // mistaken for a retryable auth error.
+      const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing', 'no_active_session'];
       if (BUSINESS_STAGES.includes(msg)) {
         return { success: false, error: msg, message: stageMessage(msg, err) };
       }
       if (/Tool access expired|not assigned|revoked/i.test(msg)) {
         return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
       }
-      // Intent token problems and auth/token expiry → reconnect with a FRESH
-      // activation token AND a FRESH open-intent token, then retry ONCE. We never
-      // reuse the failed/consumed intent token.
-      const intentRetryable = /^intent_(expired|consumed|not_found)$/.test(msg);
-      if (intentRetryable || /auth_expired|token|authorization|expired|401|invalid|reauth/i.test(msg)) {
+      // Auth/token expiry → reconnect with a FRESH activation token, retry ONCE.
+      if (/auth_expired|token|authorization|401|reauth/i.test(msg)) {
         try {
           logStage('stale_token_retry', { toolId, trigger: msg });
           await connectExtension({}, { forceReauth: true });                       // fresh activation token
-          const retryIntent = await api.post(`/client/tools/${toolId}/open-intent`, { deviceId: getWebsiteDeviceId() }); // fresh open-intent token
-          const retryToken = retryIntent.data.openIntentToken || retryIntent.data.intentToken;
-          if (!retryToken) return { success: false, error: 'open_intent_failed', message: stageMessage('open_intent_failed') };
-          const retryResult = await sendToBridge('GENZ_OPEN_TOOL', { toolId, openIntentToken: retryToken, forceFreshSession: true }, 20000);
+          const retryResult = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
           logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
           return retryResult;
         } catch (retryErr) {
           // Surface the EXACT stage that failed during reconnect, not a generic string.
           const rmsg = retryErr.message || '';
-          const stage = retryErr.stage || (/^intent_/.test(rmsg) ? rmsg : 'extension_reconnect_failed');
+          const stage = retryErr.stage || 'extension_reconnect_failed';
           logStage('stale_token_retry:fail', { toolId, stage, error: rmsg });
           return { success: false, error: stage, message: stageMessage(stage, retryErr) };
         }
