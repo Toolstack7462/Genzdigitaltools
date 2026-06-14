@@ -915,15 +915,17 @@ function waitForTabLoad(tabId, timeout = 30000) {
 
 
 // ============================================================================
-// GENZ_OPEN_TOOL — Dashboard-triggered tool open
-// Flow: Dashboard → bridge.js postMessage → background.js → verify intent
-//       → fetch credentials → open/reuse tab → run strategy
+// GENZ_OPEN_TOOL — Dashboard-triggered tool open (OceanHub model)
+// Flow: Dashboard → bridge.js postMessage → background.js
+//       → fetch credentials → open/reuse tab via chrome.tabs.create → run strategy
 // ============================================================================
 
 /**
  * Open a tool triggered by the dashboard Access button.
+ * OceanHub model: no per-click open-intent token. Assignment is enforced
+ * server-side at tool-sync time and on every credential fetch.
  * Steps:
- *  1. Verify the openIntentToken with the backend (anti-forgery).
+ *  1. (OceanHub) Open directly — no intent-token verification.
  *  2. Duplicate-open lock (3s debounce per toolId).
  *  3. Load tool info from cached tool list.
  *  4. Check host permission; return permission_required if missing.
@@ -947,8 +949,6 @@ async function handleOpenTool(payload) {
 
 async function _handleOpenToolInner(payload) {
   const { toolId, forceFreshSession = true } = payload || {};
-  // Support BOTH intent-token field names the dashboard may send.
-  const intentToken = payload?.openIntentToken || payload?.intentToken;
 
   // toolId may arrive as a number or string — normalize and compare as string.
   if (toolId === undefined || toolId === null || String(toolId).length === 0) {
@@ -956,26 +956,13 @@ async function _handleOpenToolInner(payload) {
   }
   const toolIdStr = String(toolId);
 
-  // ── 1. Verify intent token with backend ──────────────────────────────────
-  if (!intentToken || typeof intentToken !== 'string') {
-    return { success: false, error: 'openIntentToken required' };
-  }
-  try {
-    const verifyResult = await apiRequest('/verify-intent', {
-      method: 'POST',
-      body: JSON.stringify({ intentToken, toolId: toolIdStr }),
-    });
-    if (!verifyResult.verified) {
-      logger.warn('Intent not verified', { toolId: toolIdStr, stage: 'intent_not_found' });
-      return { success: false, error: 'intent_not_found', stage: 'intent_not_found', message: 'Secure access token could not be verified.' };
-    }
-    logger.info('Intent verified', { toolId: toolIdStr, stage: 'verify_intent_ok' });
-  } catch (err) {
-    // apiRequest throws with err.payload = backend JSON ({ error, stage, message }).
-    const stage = err?.payload?.stage || err?.payload?.error || (err?.status === 401 ? 'extension_did_not_respond' : 'intent_not_found');
-    logger.warn('Intent verification failed', { toolId: toolIdStr, stage });
-    return { success: false, error: stage, stage, message: err?.payload?.message || 'Could not verify secure access for this tool.' };
-  }
+  // ── 1. OceanHub-model open (no per-click open-intent token) ───────────────
+  // The dashboard no longer mints a single-use open-intent token per click.
+  // Assignment is still fully enforced where it matters:
+  //   • the extension only SYNCS tools the client is assigned (GET /extension/tools), and
+  //   • the credentials endpoint re-verifies the assignment on every fetch.
+  // So we go straight to opening the tab via chrome.tabs.create() in the
+  // background, exactly like OceanHub's openToolDirect / processTool actions.
 
   // ── 2. Duplicate-open lock (3-second debounce) ────────────────────────────
   const now = Date.now();
@@ -1122,10 +1109,11 @@ async function _handleOpenToolInner(payload) {
     preInjectedCookies = setCount > 0;
     // Safe debug: set/failed counts + domain + stage (no cookie values).
     logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount });
+    // OceanHub model: cookie injection is best-effort. Even if no cookies could
+    // be applied, we still open the tab (OceanHub's processTool always falls back
+    // to chrome.tabs.create). We never block the tab from opening.
     if (setCount === 0) {
-      // Latest session could not be applied — do NOT open a broken session.
-      openIntentLock.delete(toolId);
-      return { success: false, error: 'cookie_injection_failed', stage: 'inject_cookies', domain: cookieDomain, set: 0, failed: failedCount, message: 'The latest session cookies could not be applied for this tool. Please contact admin.' };
+      logger.warn('No cookies applied — opening tool anyway (OceanHub best-effort)', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
     }
   }
 
