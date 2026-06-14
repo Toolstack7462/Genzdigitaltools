@@ -4,7 +4,8 @@ import {
   ShieldAlert, AlertTriangle, CheckCircle2, Eye, RefreshCw, Filter,
   User, Clock, Monitor, Globe, Zap, ChevronDown, X,
   Lock, LogOut, Smartphone, UserX, Flag, Info,
-  Mail, Hash, Puzzle, ChevronRight, ShieldOff, Search
+  Mail, Hash, Puzzle, ChevronRight, ShieldOff, Search,
+  Ban, Check
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
@@ -428,6 +429,152 @@ const ExtensionScansPanel = () => {
   );
 };
 
+// ── Device status styling ────────────────────────────────────────────────────
+const DEVICE_STATUS = {
+  approved: { text: 'Approved', cls: 'bg-green-500/15 text-green-500' },
+  pending:  { text: 'Pending',  cls: 'bg-yellow-500/15 text-yellow-600' },
+  blocked:  { text: 'Blocked',  cls: 'bg-red-500/15 text-red-500' },
+};
+
+// ── Device Profiles panel (approve/block client devices) ─────────────────────
+const DeviceProfilesPanel = () => {
+  const { showSuccess, showError } = useToast();
+  const [devices, setDevices]   = useState([]);
+  const [stats, setStats]       = useState({});
+  const [loading, setLoading]   = useState(true);
+  const [busy, setBusy]         = useState(null);
+  const [q, setQ]               = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const params = new URLSearchParams({ limit: 100 });
+      if (q) params.set('q', q);
+      if (statusFilter) params.set('status', statusFilter);
+      const res = await api.get(`/admin/security-alerts/devices?${params}`);
+      setDevices(res.data.devices || []);
+      setStats(res.data.stats || {});
+    } catch (e) {
+      showError('Failed to load device profiles');
+    } finally {
+      setLoading(false);
+    }
+  }, [q, statusFilter, showError]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const act = async (id, action) => {
+    setBusy(id + action);
+    try {
+      await api.post(`/admin/security-alerts/devices/${id}/${action}`);
+      showSuccess(action === 'approve' ? 'Device approved' : 'Device blocked');
+      await load();
+    } catch (e) {
+      showError(e.response?.data?.error || 'Action failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const fmt = (d) => d ? new Date(d).toLocaleString() : '—';
+
+  return (
+    <div className="space-y-6">
+      {/* Stat cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {[
+          { label: 'Total Devices', value: stats.total ?? '—',    color: 'text-genz-teal',  icon: Monitor },
+          { label: 'Approved',      value: stats.approved ?? '—',  color: 'text-green-500',  icon: Check },
+          { label: 'Pending',       value: stats.pending ?? '—',   color: 'text-yellow-500', icon: Clock },
+          { label: 'Blocked',       value: stats.blocked ?? '—',   color: 'text-red-500',    icon: Ban },
+        ].map(({ label, value, color, icon: Icon }) => (
+          <div key={label} className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-2xl`}>
+            <Icon size={16} className={`${color} mb-2`} />
+            <div className={`text-2xl font-black ${color}`}>{value}</div>
+            <div className="text-xs text-genz-muted mt-0.5">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Search + filter */}
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" />
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by client email or name…"
+            className="w-full pl-9 pr-3 py-2 rounded-xl text-sm text-genz-navy placeholder-genz-muted focus:outline-none"
+            style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }} />
+        </div>
+        <div className="relative">
+          <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+            className="appearance-none pl-3 pr-8 py-2 rounded-xl text-sm text-genz-navy focus:outline-none cursor-pointer"
+            style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}>
+            {[['', 'All Statuses'], ['pending', 'Pending'], ['approved', 'Approved'], ['blocked', 'Blocked']]
+              .map(([v, l]) => <option key={v} value={v} style={{ background: '#FFFFFF' }}>{l}</option>)}
+          </select>
+          <ChevronDown size={12} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" />
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <div className="w-8 h-8 rounded-full border-2 border-genz-teal border-t-transparent animate-spin" />
+        </div>
+      ) : devices.length === 0 ? (
+        <div className={`${ADMIN_CARD_VARIANTS.default} p-12 rounded-2xl text-center`}>
+          <Monitor size={40} className="text-genz-muted mx-auto mb-3" />
+          <p className="text-genz-navy font-semibold">No device profiles yet</p>
+          <p className="text-genz-muted text-sm mt-1">Profiles appear when members sign in. New devices arrive as “Pending”.</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {devices.map((d) => {
+            const st = DEVICE_STATUS[d.status] || DEVICE_STATUS.pending;
+            const email = d.clientEmail || d.clientId?.email || '—';
+            const name = d.clientId?.fullName || '—';
+            return (
+              <div key={d._id} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 flex flex-wrap items-center gap-4`}>
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center text-genz-deep-navy flex-shrink-0"
+                     style={{ background: 'linear-gradient(135deg,#06B6D4,#0891B2)' }}>
+                  <Monitor size={16} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-genz-navy font-semibold text-sm truncate">{name}</p>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full ${st.cls}`}>{st.text}</span>
+                  </div>
+                  <p className="text-genz-muted text-xs flex items-center gap-1 truncate"><Mail size={10} /> {email}</p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-genz-muted mt-1">
+                    <span>{d.os || 'OS ?'} · {d.browser || 'Browser ?'}</span>
+                    <span>ext v{d.extensionVersion || '—'}</span>
+                    <span className="font-mono">grp {d.deviceGroupId ? d.deviceGroupId.slice(0, 10) + '…' : '—'}</span>
+                    <span>{d.browserCount || 0} browser(s)</span>
+                    <span>seen {fmt(d.lastSeenAt)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {d.status !== 'approved' && (
+                    <button onClick={() => act(d._id, 'approve')} disabled={busy === d._id + 'approve'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-green-600 bg-green-500/10 border border-green-500/30 hover:bg-green-500/20 disabled:opacity-40 transition-all">
+                      <Check size={13} /> Approve
+                    </button>
+                  )}
+                  {d.status !== 'blocked' && (
+                    <button onClick={() => act(d._id, 'block')} disabled={busy === d._id + 'block'}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-red-500 bg-red-500/10 border border-red-500/30 hover:bg-red-500/20 disabled:opacity-40 transition-all">
+                      <Ban size={13} /> Block
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Main Admin Security Alerts page ──────────────────────────────────────────
 const AdminSecurityAlerts = () => {
   const { showError } = useToast();
@@ -485,8 +632,9 @@ const AdminSecurityAlerts = () => {
         {/* View tabs: Alerts | Extension Scans */}
         <div className="flex gap-2">
           {[
-            { id: 'alerts', label: 'Security Alerts', icon: ShieldAlert },
-            { id: 'scans',  label: 'Extension Scans', icon: Puzzle },
+            { id: 'alerts',  label: 'Security Alerts', icon: ShieldAlert },
+            { id: 'scans',   label: 'Extension Scans', icon: Puzzle },
+            { id: 'devices', label: 'Devices',         icon: Monitor },
           ].map(({ id, label, icon: Icon }) => (
             <button key={id} onClick={() => setView(id)}
               className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
@@ -501,6 +649,7 @@ const AdminSecurityAlerts = () => {
         </div>
 
         {view === 'scans' && <ExtensionScansPanel />}
+        {view === 'devices' && <DeviceProfilesPanel />}
 
         {view === 'alerts' && (<>
         {/* Stat cards */}

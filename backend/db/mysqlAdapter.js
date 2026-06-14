@@ -34,6 +34,7 @@ const tableNames = {
   OpenIntent: 'open_intents',
   ActivationToken: 'activation_tokens',
   ExtensionScan: 'extension_scans',
+  DeviceProfile: 'device_profiles',
 };
 
 const populateModelByPath = {

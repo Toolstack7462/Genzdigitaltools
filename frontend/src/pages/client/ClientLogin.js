@@ -30,13 +30,21 @@ const ClientLogin = () => {
     setLoading(true);
     try {
       const deviceId = authService.getOrCreateDeviceId();
-      await authService.clientLogin(formData.email, formData.password, deviceId);
+      const { os, browser } = authService.getDeviceInfo();
+      await authService.clientLogin(formData.email, formData.password, deviceId, {
+        deviceFingerprint: authService.getDeviceFingerprint(),
+        os,
+        browser,
+      });
       showSuccess('Welcome back to Gen Z Digital Store!');
       navigate('/client/dashboard');
     } catch (error) {
+      const code = error.response?.data?.code;
       const errorMsg = error.response?.data?.error || 'Login failed';
-      if (error.response?.data?.code === 'DEVICE_MISMATCH') {
-        showError('This account is locked to another device. Contact admin to reset.');
+      if (code === 'DEVICE_PENDING') {
+        showError('New device detected — pending admin approval. Please contact admin to approve this device.');
+      } else if (code === 'DEVICE_BLOCKED' || code === 'DEVICE_MISMATCH') {
+        showError('This device is blocked. Contact admin to approve or reset it.');
       } else {
         showError(errorMsg);
       }

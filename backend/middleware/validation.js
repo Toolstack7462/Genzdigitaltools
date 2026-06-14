@@ -44,7 +44,12 @@ const schemas = {
     password: Joi.string().min(6).required(),
     deviceId: Joi.string().required().messages({
       'any.required': 'Device ID is required for security'
-    })
+    }),
+    // Optional device-profile signals (cross-browser grouping). Safe metadata only
+    // — no cookies/passwords/history. Older clients may omit these.
+    deviceFingerprint: Joi.string().max(512).optional().allow('', null),
+    os: Joi.string().max(64).optional().allow('', null),
+    browser: Joi.string().max(64).optional().allow('', null)
   }),
   
   register: Joi.object({

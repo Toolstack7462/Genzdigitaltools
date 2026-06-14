@@ -6,6 +6,8 @@ const router = express.Router();
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
 const DeviceBinding = require('../models/DeviceBinding');
+const DeviceProfile = require('../models/DeviceProfile');
+const SecurityAlert = require('../models/SecurityAlert');
 const ActivityLog = require('../models/ActivityLog');
 const {
   generateTokenPair,
@@ -100,19 +102,49 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
     }
 
     if (client.devicePolicy && client.devicePolicy.enabled) {
-      const deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
-      const existing = await DeviceBinding.findOne({ clientId: client._id });
+      // Hybrid device-profile policy: group browsers by physical system so the
+      // SAME machine works in different browsers, while a genuinely NEW device is
+      // held for admin approval. The first device per client auto-approves so
+      // existing members are never locked out.
+      const decision = await DeviceProfile.resolve(client, {
+        fingerprint: req.body.deviceFingerprint || deviceId, // fallback keeps older clients working
+        browserInstanceId: deviceId,
+        os: req.body.os || null,
+        browser: req.body.browser || null,
+        ip,
+        userAgent: req.headers['user-agent'],
+      });
 
-      if (!existing) {
-        await DeviceBinding.create({ clientId: client._id, deviceIdHash, userAgent: req.headers['user-agent'] });
-        await ActivityLog.log('CLIENT', client._id, 'DEVICE_BOUND', { deviceId: deviceIdHash.substring(0, 10) + '...', ip });
-      } else if (existing.deviceIdHash !== deviceIdHash) {
-        await ActivityLog.log('CLIENT', client._id, 'LOGIN_BLOCKED_DEVICE', { ip });
-        return res.status(403).json({ error: 'Account is locked to another device. Contact admin.', code: 'DEVICE_MISMATCH' });
-      } else {
-        existing.lastSeenAt = new Date();
-        await existing.save();
+      if (decision.status === 'blocked') {
+        await ActivityLog.log('CLIENT', client._id, 'LOGIN_BLOCKED_DEVICE', { ip, deviceStatus: 'blocked' });
+        return res.status(403).json({ error: 'This device is blocked. Please contact admin.', code: 'DEVICE_BLOCKED' });
       }
+      if (decision.status === 'pending') {
+        await ActivityLog.log('CLIENT', client._id, 'LOGIN_BLOCKED_DEVICE', { ip, deviceStatus: 'pending' });
+        try {
+          await SecurityAlert.raise(client._id, 'NEW_DEVICE', 'medium', {
+            ip, deviceIdHash: decision.profile?.deviceGroupId,
+            details: `New device pending approval (${req.body.browser || 'browser'} / ${req.body.os || 'OS'}).`,
+          });
+        } catch (_) {}
+        return res.status(403).json({
+          error: 'New device detected — pending admin approval. Please contact admin to approve this device.',
+          code: 'DEVICE_PENDING',
+        });
+      }
+
+      // Keep the legacy DeviceBinding row in sync (other reads still reference it),
+      // but it is no longer the access gate.
+      try {
+        const deviceIdHash = DeviceBinding.hashDeviceId(deviceId);
+        const existing = await DeviceBinding.findOne({ clientId: client._id, deviceIdHash });
+        if (!existing) {
+          await DeviceBinding.create({ clientId: client._id, deviceIdHash, userAgent: req.headers['user-agent'] });
+        } else {
+          existing.lastSeenAt = new Date();
+          await existing.save();
+        }
+      } catch (_) {}
     }
 
     client.lastLoginAt = new Date();

@@ -16,8 +16,8 @@ class AuthService {
   }
 
   // ─── Client login ─────────────────────────────────────────────────────────
-  async clientLogin(email, password, deviceId) {
-    const response = await api.post('/auth/client/login', { email, password, deviceId });
+  async clientLogin(email, password, deviceId, extra = {}) {
+    const response = await api.post('/auth/client/login', { email, password, deviceId, ...extra });
     if (response.data.success) {
       localStorage.setItem(CLIENT_USER_KEY, JSON.stringify(response.data.user));
       return response.data.user;
@@ -152,6 +152,40 @@ class AuthService {
       const r = (Math.random() * 16) | 0;
       return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
     });
+  }
+
+  // ─── Device fingerprint (cross-browser, best-effort) ──────────────────────
+  // Stable across browsers on the SAME machine: OS + screen + timezone + cores.
+  // No hardware IDs (browsers can't read them). Backend hashes this; we send the
+  // raw string so the server stores only the hash. NOT a tracking identifier.
+  getDeviceFingerprint() {
+    try {
+      const s = window.screen || {};
+      const parts = [
+        (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '',
+        `${s.width || 0}x${s.height || 0}`,
+        s.colorDepth || '',
+        Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+        navigator.hardwareConcurrency || '',
+        navigator.maxTouchPoints || 0,
+      ];
+      return parts.join('|');
+    } catch {
+      return '';
+    }
+  }
+
+  // Human-readable OS/browser for the admin device list (display only).
+  getDeviceInfo() {
+    const ua = navigator.userAgent || '';
+    let os = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || 'Unknown';
+    let browser = 'Browser';
+    if (/Edg\//.test(ua)) browser = 'Edge';
+    else if (/OPR\//.test(ua) || /Opera/.test(ua)) browser = 'Opera';
+    else if (/Chrome\//.test(ua)) browser = 'Chrome';
+    else if (/Firefox\//.test(ua)) browser = 'Firefox';
+    else if (/Safari\//.test(ua)) browser = 'Safari';
+    return { os: String(os).slice(0, 64), browser };
   }
 }
 

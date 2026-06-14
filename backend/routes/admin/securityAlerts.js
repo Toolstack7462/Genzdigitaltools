@@ -10,6 +10,7 @@ const express       = require('express');
 const router        = express.Router();
 const SecurityAlert = require('../../models/SecurityAlert');
 const ExtensionScan = require('../../models/ExtensionScan');
+const DeviceProfile = require('../../models/DeviceProfile');
 const User          = require('../../models/User');
 const ExtensionToken = require('../../models/ExtensionToken');
 const RefreshToken  = require('../../models/RefreshToken');
@@ -104,6 +105,73 @@ router.get('/scans', async (req, res) => {
   } catch (err) {
     console.error('[securityAlerts GET /scans]', err);
     res.status(500).json({ error: 'Failed to fetch extension scans' });
+  }
+});
+
+// ── GET /api/crm/admin/security-alerts/devices — client device profiles ──────
+// Registered BEFORE /:id so "devices" isn't captured as an :id param.
+router.get('/devices', async (req, res) => {
+  try {
+    const { page, limit, skip } = safePagination(req.query);
+    const { status, q } = req.query;
+
+    let devices = await DeviceProfile.find({})
+      .sort({ lastSeenAt: -1 })
+      .populate('clientId', 'fullName email status')
+      .lean();
+    devices = Array.isArray(devices) ? devices : [];
+
+    if (status) devices = devices.filter(d => d.status === status);
+    if (q) {
+      const needle = String(q).toLowerCase();
+      devices = devices.filter(d =>
+        (d.clientEmail || d.clientId?.email || '').toLowerCase().includes(needle) ||
+        (d.clientId?.fullName || '').toLowerCase().includes(needle)
+      );
+    }
+
+    const total = devices.length;
+    const paged = devices.slice(skip, skip + limit).map(d => ({
+      ...d,
+      browserCount: Array.isArray(d.browserInstanceIds) ? d.browserInstanceIds.length : 0,
+    }));
+    const stats = {
+      total,
+      approved: devices.filter(d => d.status === 'approved').length,
+      pending:  devices.filter(d => d.status === 'pending').length,
+      blocked:  devices.filter(d => d.status === 'blocked').length,
+    };
+
+    res.json({ devices: paged, total, page, limit, stats });
+  } catch (err) {
+    console.error('[securityAlerts GET /devices]', err);
+    res.status(500).json({ error: 'Failed to fetch device profiles' });
+  }
+});
+
+// ── POST /api/crm/admin/security-alerts/devices/:id/:action — approve|block ──
+router.post('/devices/:id/:action', async (req, res) => {
+  try {
+    const { id, action } = req.params;
+    const STATUS = { approve: 'approved', block: 'blocked', unblock: 'approved', pending: 'pending' };
+    if (!STATUS[action]) return res.status(400).json({ error: 'Invalid action' });
+
+    const device = await DeviceProfile.findById(id);
+    if (!device) return res.status(404).json({ error: 'Device not found' });
+
+    device.status = STATUS[action];
+    device.reviewedBy = req.user._id;
+    device.reviewedAt = new Date();
+    await device.save();
+
+    await ActivityLog.log('ADMIN', req.user._id, 'DEVICE_PROFILE_' + action.toUpperCase(), {
+      targetClientId: device.clientId, deviceProfileId: device._id, newStatus: device.status,
+    });
+
+    res.json({ success: true, device });
+  } catch (err) {
+    console.error('[securityAlerts POST /devices action]', err);
+    res.status(500).json({ error: 'Action failed: ' + err.message });
   }
 });
 
