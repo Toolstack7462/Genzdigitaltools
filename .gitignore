@@ -46,6 +46,10 @@ next-env.d.ts
 **/.env.*
 !.env.example
 !*.env.example
+# Committed on purpose: holds only the PUBLIC backend URL (baked into the shipped
+# JS anyway). Without it the prod build falls back to a relative /api/crm baseURL
+# and every API call hits the static app subdomain → 404 (breaks login).
+!frontend/.env.production
 
 # Secrets and credentials
 *token.json*
