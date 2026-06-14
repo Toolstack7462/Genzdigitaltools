@@ -382,11 +382,20 @@ export function useExtension() {
     // session id. (No secret token here; the extension holds its own session
     // token. These extra fields drive the background's "Processing tool request"
     // log and let it prefer the dashboard-sent URL.)
+    const apiBase = getBackendOrigin();
+    let domain = meta.domain || null;
+    if (!domain && meta.requestedToolUrl) {
+      try { domain = new URL(meta.requestedToolUrl).hostname; } catch (_) {}
+    }
     const openPayload = {
       toolId,
       forceFreshSession: true,
-      apiUrl: getBackendOrigin(),
+      apiUrl: apiBase,
+      apiBase,
       requestedToolUrl: meta.requestedToolUrl || null,
+      toolUrl: meta.requestedToolUrl || null,
+      domain,
+      login_type: meta.loginType || meta.credentialType || null,
       assignmentId: meta.assignmentId || null,
       sessionId: meta.assignmentId || null,
     };

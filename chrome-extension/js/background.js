@@ -11,6 +11,7 @@
 
 import { getOrchestrator } from './core/LoginOrchestrator.js';
 import { Logger, enableDebugMode, disableDebugMode, isDebugModeEnabled, getLogHistory, exportLogs } from './core/Logger.js';
+import { normalizeCredentialResponse } from './api.js';
 
 // Initialize logger
 const logger = new Logger('Background');
@@ -440,29 +441,76 @@ async function handleLoginRequired(data, sender) {
   activeLogins.set(tabId, { tool, startTime: Date.now() });
   
   try {
-    // Get credentials (includes session bundle)
+    // Get credentials (normalized — includes folded session bundle)
     const credentialData = await getToolCredentials(tool.id);
-    
-    if (!credentialData || !credentialData.credentials) {
-      logger.warn('No credentials for tool', { tool: tool.name });
+
+    const creds  = credentialData?.credentials;
+    const bundle = credentialData?.sessionBundle;
+    const hasCreds = !!(creds && creds.type && creds.type !== 'none');
+    const hasBundleCookies = !!(bundle?.cookies && bundle.cookies.length);
+    const hasBundleStorage = !!(bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundle = hasBundleCookies || hasBundleStorage;
+    const loginType = hasCreds ? creds.type : (hasBundle ? 'session' : 'none');
+
+    logger.info('Login required — resolving session', {
+      tool: tool.name, toolId: String(tool.id), login_type: loginType,
+      hasCreds, hasBundleCookies, hasBundleStorage,
+    });
+
+    // ── Both missing → clear, honest error (req #1). Never silently no-op. ──
+    if (!hasCreds && !hasBundle) {
+      logger.warn('No active session for tool on login page', { tool: tool.name, toolId: String(tool.id) });
+      notifyDashboardTabs({
+        type: 'GENZ_TOOL_UPDATED',
+        toolId: String(tool.id),
+        error: 'no_active_session',
+        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+      });
       return;
     }
-    
-    // Use orchestrator for login with session bundle
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+
+    // ── Session-only tool (cookies/storage, no interactive credentials): just
+    //    REAPPLY the session to THIS tab and reload — do NOT raise a
+    //    "credentials missing" error (req #1, #3). ──
+    if (!hasCreds && hasBundle) {
+      logger.info('Reapplying session bundle on login page', {
+        tool: tool.name, strategy: 'session', cookies: bundle?.cookies?.length || 0,
+      });
+      const targetUrl = tool.targetUrl || url;
+      if (tool.extensionSettings?.clearExistingCookies !== false) {
+        await clearCookiesForDomain(targetUrl);
+      }
+      let cookieResult = { set: 0, failed: 0 };
+      if (hasBundleCookies) cookieResult = await injectCookies(targetUrl, bundle.cookies);
+      // req #9: a few failed (analytics) cookies must not block as long as some
+      // main session cookies applied.
+      if (hasBundleCookies && (cookieResult.set || 0) === 0) {
+        logger.warn('Session cookies could not be applied on login page', { tool: tool.name, failed: cookieResult.failed || 0 });
+        return;
+      }
+      if (bundle.localStorage) await injectStorage(tabId, 'localStorage', bundle.localStorage).catch(() => {});
+      if (bundle.sessionStorage) await injectStorage(tabId, 'sessionStorage', bundle.sessionStorage).catch(() => {});
+      logger.info('Session reapplied — reloading tab', { tool: tool.name, set: cookieResult.set || 0, failed: cookieResult.failed || 0 });
+      await chrome.tabs.reload(tabId);
+      return;
+    }
+
+    // ── Interactive credentials (form/sso/token) → orchestrator, with bundle. ──
+    const result = await orchestrator.executeLogin(tool, creds, {
       tabId,
       currentUrl: url,
-      sessionBundle: credentialData.sessionBundle,
+      sessionBundle: bundle,
       toolInfo: credentialData.tool
     });
-    
-    logger.info('Auto-login result', { 
-      tool: tool.name, 
-      success: result.success, 
+
+    logger.info('Auto-login result', {
+      tool: tool.name,
+      success: result.success,
       method: result.method,
-      sessionBundleApplied: !!credentialData.sessionBundle
+      login_type: loginType,
+      sessionBundleApplied: !!bundle
     });
-    
+
   } catch (error) {
     logger.error('Auto-login failed', { error: error.message });
   } finally {
@@ -506,11 +554,19 @@ async function getToolCredentials(toolId, opts = {}) {
       toolCredentialsCache.set(toolId, metaCache);
     }
 
+    // Normalize so cookies/storage arriving as top-level fields OR inside a
+    // cookies/storage credential payload are unified into sessionBundle — this is
+    // what lets a "cookies" tool be applied BEFORE opening (OceanHub processTool)
+    // instead of falling through to a logged-out direct_open.
+    const norm = normalizeCredentialResponse(result);
+
     // Return the full shape callers expect
     // Credentials are NOT cached — they are returned once and must be used immediately
     return {
-      credentials: result.credentials,
-      sessionBundle: result.sessionBundle,
+      credentials: norm.credentials,
+      sessionBundle: norm.sessionBundle,
+      login_type: norm.login_type,
+      toolUrl: norm.toolUrl,
       tool: result.tool,
       credentialVersion: result.tool?.credentialVersion,
       domain: result.tool?.domain,
@@ -1265,7 +1321,9 @@ async function _handleOpenToolInner(payload) {
   // cookies were already injected pre-navigation; the orchestrator drives login.
   try {
     await waitForTabLoad(targetTabId, 20000);
-    if (forceFreshSession) {
+    // Only wipe the tool page's storage when we actually have replacement storage
+    // to inject — otherwise we'd blank a working session and leave nothing (req #7).
+    if (forceFreshSession && hasBundleStorage) {
       await clearPageStorageForTab(targetTabId);
     }
     const result = await orchestrator.executeLogin(tool, creds, {

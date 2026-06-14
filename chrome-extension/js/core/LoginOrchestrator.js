@@ -133,6 +133,38 @@ export class LoginOrchestrator {
         return result;
       }
 
+      // SESSION-ONLY: no interactive credentials, but a usable session bundle was
+      // provided. Apply it (cookies + localStorage + sessionStorage) and open the
+      // tool — do NOT raise a "credentials missing" error (req #3).
+      const hasCredPayload = !!(credentials && credentials.type && credentials.type !== 'none');
+      const sb = options.sessionBundle;
+      const sbHasData = !!(sb && (
+        (Array.isArray(sb.cookies) && sb.cookies.length) ||
+        (sb.localStorage && Object.keys(sb.localStorage).length) ||
+        (sb.sessionStorage && Object.keys(sb.sessionStorage).length)
+      ));
+      if (!hasCredPayload && sbHasData) {
+        this.logger.info('Session-only login: applying bundle, no credential flow', {
+          flowId, cookies: Array.isArray(sb.cookies) ? sb.cookies.length : 0,
+        });
+        const applied = await this.applySessionBundleParallel(tool.targetUrl, sb, tool.domain);
+        // req #9: partial cookie failures (analytics) are fine as long as SOMETHING applied.
+        if (!applied.anySuccess) {
+          result.error = 'Session could not be applied';
+          this.completeFlow(flowId, result);
+          return result;
+        }
+        const tab = options.tabId
+          ? (await chrome.tabs.update(options.tabId, { url: tool.targetUrl, active: true }))
+          : (await chrome.tabs.create({ url: tool.targetUrl, active: true }));
+        result.success = true;
+        result.method = 'session_bundle';
+        result.tabId = tab.id;
+        result.finalUrl = tool.targetUrl;
+        this.completeFlow(flowId, result);
+        return result;
+      }
+
       // STEP 2: Execute login based on mode
       let loginResult;
       

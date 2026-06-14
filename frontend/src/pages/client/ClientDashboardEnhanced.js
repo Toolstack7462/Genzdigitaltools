@@ -259,6 +259,8 @@ const ClientDashboardEnhanced = () => {
       result = await openTool(toolId, {
         requestedToolUrl: tool.targetUrl || tool.target_url || tool.url || null,
         assignmentId: tool.assignmentId || null,
+        loginType: tool.credentialType || null,
+        domain: tool.domain || null,
       });
     } catch (err) {
       // openTool should never throw (it returns {success:false}), but guard anyway.

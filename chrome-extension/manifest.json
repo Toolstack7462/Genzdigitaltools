@@ -72,6 +72,11 @@
     }
   ],
   "host_permissions": [
+    "https://genzdigitalstore.com/*",
+    "https://app.genzdigitalstore.com/*",
+    "https://api.genzdigitalstore.com/*",
+    "https://hix.ai/*",
+    "https://*.hix.ai/*",
     "http://*/*",
     "https://*/*"
   ]

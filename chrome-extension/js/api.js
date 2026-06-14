@@ -18,12 +18,90 @@ const Storage = {
     });
   },
   
+  // ⚠️ MANUAL-ONLY. Wipes the extension's stored session/token/tools. This must
+  // NEVER run automatically during the access flow — doing so logs the member out
+  // and breaks tool opening. Only the popup "Sign out" button and explicit debug
+  // reset may call this.
   async clear() {
     return new Promise((resolve) => {
       chrome.storage.local.clear(resolve);
     });
   }
 };
+
+/**
+ * Normalize a Genz backend credentials/session response (and OceanHub-style
+ * shapes) into ONE unified object the open-tool flow understands:
+ *
+ *   { success, login_type, toolUrl, sessionBundle: { cookies, localStorage,
+ *     sessionStorage }, credentials, tool }
+ *
+ * Rules:
+ *  - Accept session data from EITHER `sessionBundle.*`, top-level
+ *    `cookies`/`localStorage`/`sessionStorage`, OR a `credentials.payload` whose
+ *    type is cookies/localStorage/sessionStorage.
+ *  - A pure cookies/storage credential IS session data: it is folded into
+ *    `sessionBundle` and the interactive `credentials` is cleared, so the session
+ *    is applied BEFORE the tool opens (OceanHub processTool) — never a
+ *    logged-out direct_open.
+ *  - form/sso/token credentials are preserved for the interactive login flow.
+ */
+function normalizeCredentialResponse(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return { success: false, login_type: 'none', toolUrl: null, sessionBundle: null, credentials: null, tool: null };
+  }
+
+  const tool = raw.tool || null;
+  const toolUrl = raw.toolUrl || raw.url || tool?.targetUrl || tool?.loginUrl || raw.credentials?.loginUrl || null;
+
+  const bundle = {
+    version: raw.sessionBundle?.version || null,
+    updatedAt: raw.sessionBundle?.updatedAt || null,
+    cookies: raw.sessionBundle?.cookies || null,
+    localStorage: raw.sessionBundle?.localStorage || null,
+    sessionStorage: raw.sessionBundle?.sessionStorage || null,
+  };
+
+  // OceanHub-style top-level fields.
+  if (!bundle.cookies && raw.cookies) bundle.cookies = CookieUtils.parseCookies(raw.cookies);
+  if (!bundle.localStorage && raw.localStorage) bundle.localStorage = raw.localStorage;
+  if (!bundle.sessionStorage && raw.sessionStorage) bundle.sessionStorage = raw.sessionStorage;
+
+  // Fold a pure cookies/storage credential into the bundle (session-only tool).
+  let credentials = raw.credentials || null;
+  const ctype = credentials?.type;
+  if (ctype === 'cookies' && !bundle.cookies) {
+    bundle.cookies = CookieUtils.parseCookies(credentials.payload);
+    credentials = null;
+  } else if (ctype === 'localStorage' && !bundle.localStorage) {
+    bundle.localStorage = credentials.payload || null;
+    credentials = null;
+  } else if (ctype === 'sessionStorage' && !bundle.sessionStorage) {
+    bundle.sessionStorage = credentials.payload || null;
+    credentials = null;
+  }
+
+  const hasBundleData = !!(
+    (Array.isArray(bundle.cookies) && bundle.cookies.length) ||
+    (bundle.localStorage && Object.keys(bundle.localStorage).length) ||
+    (bundle.sessionStorage && Object.keys(bundle.sessionStorage).length)
+  );
+  const sessionBundle = hasBundleData ? bundle : (raw.sessionBundle || null);
+
+  const login_type = raw.login_type
+    || (hasBundleData ? 'session' : null)
+    || credentials?.type
+    || 'none';
+
+  return {
+    success: raw.success !== false,
+    login_type,
+    toolUrl,
+    sessionBundle,
+    credentials,
+    tool,
+  };
+}
 
 // API client for extension
 class ApiClient {
@@ -344,4 +422,4 @@ const DomainUtils = {
 };
 
 // Export for use in other files
-export { Storage, ApiClient, CookieUtils, DomainUtils };
+export { Storage, ApiClient, CookieUtils, DomainUtils, normalizeCredentialResponse };
