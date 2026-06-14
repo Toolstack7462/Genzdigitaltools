@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
 /**
@@ -10,14 +10,23 @@ import { useLocation } from 'react-router-dom';
  * would leave those panels stuck at the previous scroll position, so we reset
  * the window AND every known scroll container on each pathname change.
  *
- * Behavior is instant ("auto") by design — a smooth animation across a long
- * page feels slow when it fires on every navigation.
+ * The jump is instant by design — a smooth animation across a long page feels
+ * slow when it fires on every navigation.
  */
 const ScrollToTop = () => {
   const { pathname } = useLocation();
 
-  useEffect(() => {
-    const behavior = 'auto';
+  // useLayoutEffect (not useEffect) so the reset runs after the new route's DOM
+  // is committed but BEFORE the browser paints — otherwise a heavy page paints
+  // once at the inherited scroll position and visibly jumps to the top a few
+  // hundred ms later.
+  useLayoutEffect(() => {
+    // Force a non-animated jump. NOTE: 'auto' is NOT instant — per the CSSOM
+    // spec it defers to the element's CSS `scroll-behavior`, and this app sets
+    // `html { scroll-behavior: smooth }`, which would make the window glide to
+    // the top over ~0.5s (the page appears to open partway down, then scroll
+    // up). 'instant' overrides that and jumps immediately.
+    const behavior = 'instant';
 
     // 1. Window / document scroll (public marketing site).
     window.scrollTo({ top: 0, left: 0, behavior });
