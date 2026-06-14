@@ -85,13 +85,15 @@ curl --fail-with-body --ftp-create-dirs \
   "${FRONT_ARGS[@]}"
 echo "    frontend upload complete (extension zip included)."
 
-# ── 3) VERIFY backend is live: verify-intent with no token returns the exact
-#       code field. 000 = mid-restart, retry. ─────────────────────────────────
+# ── 3) VERIFY backend is live: an authenticated extension route with NO token
+#       returns the exact code field (extension_token_invalid). 000 = mid-restart,
+#       retry. (Uses /security-scan — /verify-intent was removed in the OceanHub
+#       direct-open refactor.) ─────────────────────────────────────────────────
 echo "==> [3/3] Verifying backend (waiting for Passenger restart)..."
 for i in 1 2 3 4 5 6; do
   sleep 5
-  BODY="$(curl -s -X POST https://api.genzdigitalstore.com/api/crm/extension/verify-intent \
-    -H 'Content-Type: application/json' -d '{"intentToken":"x","toolId":"x"}' || true)"
+  BODY="$(curl -s -X POST https://api.genzdigitalstore.com/api/crm/extension/security-scan \
+    -H 'Content-Type: application/json' -d '{}' || true)"
   echo "  attempt ${i}: ${BODY}"
   if echo "${BODY}" | grep -q 'extension_token_invalid'; then
     echo "==> SUCCESS: backend live, frontend + extension published."
