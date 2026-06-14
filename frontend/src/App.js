@@ -49,6 +49,7 @@ import PublicNavbar from './components/public/PublicNavbar';
 import PublicFooter from './components/public/PublicFooter';
 import WhatsAppButton from './components/WhatsAppButton';
 import ScrollProgress from './components/public/ScrollProgress';
+import ScrollToTop from './components/ScrollToTop';
 import { ToastProvider } from './components/Toast';
 
 // Public Pages (existing)
@@ -119,6 +120,7 @@ function App() {
     <ToastProvider>
       <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
+          <ScrollToTop />
           <Routes>
 
             {/* ── Public Routes ───────────────────────────────── */}
