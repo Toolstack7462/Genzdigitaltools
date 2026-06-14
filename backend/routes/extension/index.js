@@ -388,19 +388,25 @@ router.get('/tools/versions', verifyExtensionToken, async (req, res) => {
     const assignments = await ToolAssignment.find({
       clientId: req.clientId,
       status: 'active'
-    }).populate('toolId', '_id credentialVersion credentialUpdatedAt');
-    
+    }).populate('toolId', '_id credentialVersion credentialUpdatedAt sessionBundle');
+
     const now = new Date();
     const versions = {};
-    
+
     for (const assignment of assignments) {
       if (!assignment.toolId) continue;
       if (assignment.startDate && new Date(assignment.startDate) > now) continue;
       if (ToolAssignment.isAssignmentExpired(assignment, now)) continue; // end-of-day inclusive
 
-      versions[assignment.toolId._id] = {
-        version: assignment.toolId.credentialVersion || 1,
-        updatedAt: assignment.toolId.credentialUpdatedAt
+      const t = assignment.toolId;
+      // Lightweight version signature inputs — lets the extension decide whether its
+      // cached sessionBundle is still current WITHOUT fetching/decrypting the bundle.
+      versions[t._id] = {
+        version: t.credentialVersion || 1,
+        updatedAt: t.credentialUpdatedAt,
+        bundleVersion: t.sessionBundle?.version || 0,
+        bundleUpdatedAt: t.sessionBundle?.bundleUpdatedAt || null,
+        assignmentId: String(assignment._id),
       };
     }
     

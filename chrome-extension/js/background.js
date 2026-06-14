@@ -60,6 +60,7 @@ const EXTENSION_SESSION_KEYS = [
 
 async function clearExtensionAuthSession(reason = 'force_reauth') {
   await removeStorage(EXTENSION_SESSION_KEYS);
+  await clearAllSessionCaches(); // drop cached decrypted sessionBundles on logout/reauth
   toolCredentialsCache.clear();
   domainToolMap.clear();
   try {
@@ -1015,6 +1016,66 @@ function storageHasKeys(obj) {
   return !!(obj && typeof obj === 'object' && Object.keys(obj).length > 0);
 }
 
+// ============================================================================
+// FAST-OPEN SESSION CACHE (speed) — never weakens the working session logic.
+// Caches the DECRYPTED sessionBundle per tool in chrome.storage.local (sandboxed
+// to this extension; not web-accessible). A repeat Access click does a tiny
+// version-signature check instead of re-fetching + re-decrypting the whole bundle,
+// and skips re-injecting cookies that are verified still present. The signature
+// (assignment + credential version + bundle version/updatedAt) invalidates the
+// cache automatically the moment admin changes anything. NO secrets are logged.
+// ============================================================================
+const SESSION_CACHE_PREFIX = 'sessCache_';
+const SESSION_APPLY_TTL_MS = 4 * 60 * 1000; // re-inject skipped within this window
+
+// Names that are analytics/tracking → applied AFTER the tab opens so they never
+// delay it. Everything else (incl. httpOnly and __Host-/__Secure-) is critical.
+const NONCRITICAL_COOKIE_RE = /^(_ga|_gid|_gat|_gcl|__utm|utm_|_fbp|_fbc|_hj|ajs_|amplitude|mp_|mixpanel|intercom|_pk_|_clck|_clsk|optimizely|_uet|_scid|_pin_|_ttp|_rdt)/i;
+function isCriticalCookie(c) {
+  if (!c || !c.name) return false;
+  if (c.httpOnly) return true;                       // httpOnly ⇒ almost always session
+  if (/^__(Host|Secure)-/.test(c.name)) return true; // host/secure-prefixed ⇒ session
+  if (NONCRITICAL_COOKIE_RE.test(c.name)) return false;
+  return true;                                       // default: critical (safe)
+}
+function classifyCookies(cookies) {
+  const critical = [], nonCritical = [];
+  for (const c of (cookies || [])) (isCriticalCookie(c) ? critical : nonCritical).push(c);
+  return { critical, nonCritical };
+}
+
+function sessionCacheKey(toolId) { return `${SESSION_CACHE_PREFIX}${toolId}`; }
+async function getSessionCache(toolId) {
+  const k = sessionCacheKey(toolId);
+  const d = await getStorage([k]);
+  return d[k] || null;
+}
+async function setSessionCache(toolId, data) {
+  try { await setStorage({ [sessionCacheKey(toolId)]: data }); } catch (_) {}
+}
+async function clearAllSessionCaches() {
+  try {
+    const all = await getStorage(null);
+    const keys = Object.keys(all).filter(k => k.startsWith(SESSION_CACHE_PREFIX));
+    if (keys.length) await removeStorage(keys);
+  } catch (_) {}
+}
+
+// One tiny GET (no decrypt) → a version signature for this tool. Returns null on
+// any failure so the caller safely falls back to a full fetch.
+async function fetchToolVersionSignature(toolId) {
+  const res = await apiRequest('/tools/versions');
+  const v = (res.versions || {})[String(toolId)];
+  if (!v) return null;
+  const signature = [
+    v.assignmentId || '',
+    v.version || '',
+    v.bundleVersion || '',
+    v.bundleUpdatedAt || '',
+  ].join('|');
+  return { signature, assignmentId: v.assignmentId || null };
+}
+
 function getBaseDomain(hostname) {
   // NOTE: This duplicates DomainUtils.getBaseDomain() in api.js.
   // Both are kept for now since background.js is a service worker module
@@ -1219,43 +1280,74 @@ async function _handleOpenToolInner(payload) {
     };
   }
 
-  // ── 5. Fetch the LATEST admin-managed credentials / session bundle FIRST ──
-  // Fetched fresh on every open, so the newest admin-updated cookies/session are
-  // always used. We do this BEFORE opening the tab so cookies can be applied
-  // pre-navigation (inject new cookies, THEN open the target domain).
+  // ── 5. Resolve the session bundle — FAST PATH (version check + local cache) ─
+  // Speed: do a tiny version-signature check instead of always fetching AND
+  // decrypting the full bundle. If the signature matches our cached decrypted
+  // bundle, reuse it immediately; otherwise fetch fresh. Either way this happens
+  // BEFORE the tab opens so cookies apply pre-navigation. Timing is logged below
+  // (counts/ms only — never cookie values or secrets).
+  const t0 = Date.now();
+  let versionCheckMs = 0, fetchMs = 0, injectMs = 0;
+  let cacheHit = false, usedCache = false;
+
+  let sigInfo = null;
+  const tVc = Date.now();
+  try { sigInfo = await fetchToolVersionSignature(toolId); }
+  catch (e) { logger.debug('Version check failed; will fetch fresh', { toolId: toolIdStr, error: e.message }); }
+  versionCheckMs = Date.now() - tVc;
+
   let credentialData = null;
   let credFetchStatus = null;
   let credFetchFailed = false;
-  try {
-    // throwOnFailure: a non-business fetch failure must NOT silently degrade to a
-    // logged-out direct_open for a session-required tool.
-    credentialData = await getToolCredentials(toolId, { throwOnFailure: true });
-  } catch (err) {
-    // Exact backend business code (session_bundle_missing, tool_domain_invalid,
-    // assignment_expired/not_found, device_blocked, extension_token_invalid) OR
-    // 'credentials_unavailable' for an infrastructure failure.
-    const code = err?.code || err?.payload?.code || null;
-    credFetchStatus = err?.status || null;
-    if (code === 'credentials_unavailable' || !code) credFetchFailed = true;
-    logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: credFetchStatus });
-    if (code && code !== 'credentials_unavailable') {
-      openIntentLock.delete(toolId);
-      const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
-      if (FINAL_BUSINESS.includes(code)) {
-        // Map ONLY a genuine expiry to the dashboard's tool_access_expired stage
-        // (final, non-retry). assignment_not_found must stay DISTINCT so the
-        // dashboard shows "Tool not assigned" — never the false "Access expired"
-        // for a tool that simply has no assignment row (req #8/#9). All other
-        // business codes pass through verbatim.
-        const stage = (code === 'assignment_expired') ? 'tool_access_expired' : code;
-        return { success: false, error: stage, stage, code };
-      }
-      if (code === 'extension_token_invalid') {
-        return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
-      }
+  let cached = null;
+
+  if (sigInfo) {
+    cached = await getSessionCache(toolId);
+    if (cached && cached.signature === sigInfo.signature &&
+        cached.sessionBundle && Array.isArray(cached.sessionBundle.cookies) && cached.sessionBundle.cookies.length) {
+      // CACHE HIT — reuse the decrypted bundle, skip the heavy fetch + decrypt.
+      credentialData = { credentials: null, sessionBundle: cached.sessionBundle, tool };
+      cacheHit = true;
+      usedCache = true;
+      logger.info('Session cache HIT', { toolId: toolIdStr, versionCheckMs });
     }
-    // 'credentials_unavailable' falls through with credentialData=null; handled
-    // by the session-required guard below.
+  }
+
+  if (!credentialData) {
+    const tF = Date.now();
+    try {
+      // throwOnFailure: a non-business fetch failure must NOT silently degrade to a
+      // logged-out direct_open for a session-required tool.
+      credentialData = await getToolCredentials(toolId, { throwOnFailure: true });
+    } catch (err) {
+      // Exact backend business code (session_bundle_missing, tool_domain_invalid,
+      // assignment_expired/not_found, device_blocked, extension_token_invalid) OR
+      // 'credentials_unavailable' for an infrastructure failure.
+      const code = err?.code || err?.payload?.code || null;
+      credFetchStatus = err?.status || null;
+      if (code === 'credentials_unavailable' || !code) credFetchFailed = true;
+      logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: credFetchStatus });
+      if (code && code !== 'credentials_unavailable') {
+        openIntentLock.delete(toolId);
+        const FINAL_BUSINESS = ['session_bundle_missing', 'tool_domain_invalid', 'assignment_expired', 'assignment_not_found', 'device_blocked'];
+        if (FINAL_BUSINESS.includes(code)) {
+          // Map ONLY a genuine expiry to the dashboard's tool_access_expired stage
+          // (final, non-retry). assignment_not_found must stay DISTINCT so the
+          // dashboard shows "Tool not assigned" — never the false "Access expired"
+          // for a tool that simply has no assignment row (req #8/#9). All other
+          // business codes pass through verbatim.
+          const stage = (code === 'assignment_expired') ? 'tool_access_expired' : code;
+          return { success: false, error: stage, stage, code };
+        }
+        if (code === 'extension_token_invalid') {
+          return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
+        }
+      }
+      // 'credentials_unavailable' falls through with credentialData=null; handled
+      // by the session-required guard below.
+    }
+    fetchMs = Date.now() - tF;
+    logger.info('Session cache MISS — fetched fresh', { toolId: toolIdStr, versionCheckMs, fetchMs });
   }
 
   // If credential fetch failed and the extension session was cleared (401),
@@ -1323,46 +1415,75 @@ async function _handleOpenToolInner(payload) {
     return { success: false, error: 'session_bundle_missing', stage: 'session_bundle_missing', message: 'The latest session for this tool is not available yet. Please contact admin.' };
   }
 
-  // ── 6. Clear old (target-domain only) cookies, then inject the NEW cookies ──
-  // BEFORE navigation. Cookies are set at the cookie-store/domain level (no tab
-  // needed), so the first load of the target tab is already authenticated.
-  // A direct_open tool (no creds/bundle) is never cleared/logged out.
-  if (forceFreshSession && willApplyAuth) {
+  // ── 6. Apply cookies BEFORE navigation — speed-optimized ───────────────────
+  // Fast path: if the SAME session was applied very recently AND a critical cookie
+  // is still in the store, skip clear+reinject entirely and just open (verified
+  // via cookies.get, not assumed). Otherwise inject CRITICAL (auth/session)
+  // cookies first so the tab opens immediately, and DEFER tracking cookies so they
+  // never delay opening (req #7, #9). A direct_open tool is never cleared/logged out.
+  let preInjectedCookies = false;
+  let skipReinject = false;
+
+  if (hasBundleCookies) {
+    const tInj = Date.now();
+    const { critical, nonCritical } = classifyCookies(bundle.cookies);
+    const criticalSet = critical.length ? critical : bundle.cookies; // never block on tracking-only
+
+    if (usedCache && cached && (Date.now() - (cached.appliedAt || 0) < SESSION_APPLY_TTL_MS)) {
+      const probe = criticalSet[0];
+      let stillValid = false;
+      if (probe?.name) {
+        try { stillValid = !!(await chrome.cookies.get({ url: targetUrl, name: probe.name })); } catch (_) {}
+      }
+      if (stillValid) {
+        skipReinject = true;
+        preInjectedCookies = true;
+        logger.info('Cookies still valid — skipping re-inject', { toolId: toolIdStr, domain: cookieDomain });
+      }
+    }
+
+    if (!skipReinject) {
+      if (forceFreshSession && willApplyAuth) {
+        await clearCookiesForDomain(targetUrl);
+        logger.info('Cleared old cookies for domain', { toolId: toolIdStr, stage: 'clear_cookies', domain: cookieDomain });
+      } else if (tool.extensionSettings?.clearExistingCookies) {
+        await clearCookiesForDomain(targetUrl);
+      }
+      let ck = null;
+      try { ck = await injectCookies(targetUrl, criticalSet); }
+      catch (err) { logger.warn('Cookie injection threw', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, error: err.message }); }
+      const setCount = ck?.set || 0;
+      const failedCount = ck?.failed || 0;
+      preInjectedCookies = setCount > 0;
+      // Safe debug: set/failed counts + domain + stage (no cookie values).
+      logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount, critical: criticalSet.length });
+      // req #9: only the CRITICAL/auth cookies gate login. If NONE of them applied,
+      // refuse a logged-out open; failed tracking cookies never block.
+      if (setCount === 0) {
+        logger.warn('All session cookies failed to apply — refusing logged-out open', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
+        openIntentLock.delete(toolId);
+        return {
+          success: false,
+          error: 'no_active_session',
+          stage: 'inject_cookies',
+          domain: cookieDomain,
+          set: 0,
+          failed: failedCount,
+          message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+        };
+      }
+      // Defer NON-critical (tracking) cookies — fire-and-forget; never delays open.
+      if (critical.length && nonCritical.length) {
+        injectCookies(targetUrl, nonCritical)
+          .then(r => logger.debug('Deferred tracking cookies applied', { toolId: toolIdStr, set: r?.set || 0 }))
+          .catch(() => {});
+      }
+    }
+    injectMs = Date.now() - tInj;
+  } else if (forceFreshSession && willApplyAuth) {
+    // Creds-only path (no bundle cookies) — keep the prior fresh-session clear.
     await clearCookiesForDomain(targetUrl);
     logger.info('Cleared old cookies for domain', { toolId: toolIdStr, stage: 'clear_cookies', domain: cookieDomain });
-  } else if (tool.extensionSettings?.clearExistingCookies && hasBundleCookies) {
-    await clearCookiesForDomain(targetUrl);
-  }
-  let preInjectedCookies = false;
-  if (hasBundleCookies) {
-    let ck = null;
-    try {
-      ck = await injectCookies(targetUrl, bundle.cookies);
-    } catch (err) {
-      logger.warn('Cookie injection threw', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, error: err.message });
-    }
-    const setCount = ck?.set || 0;
-    const failedCount = ck?.failed || 0;
-    preInjectedCookies = setCount > 0;
-    // Safe debug: set/failed counts + domain + stage (no cookie values).
-    logger.info('Cookie injection result', { toolId: toolIdStr, stage: 'inject_cookies', domain: cookieDomain, set: setCount, failed: failedCount });
-    // OceanHub req #9: a few failed (e.g. analytics) cookies must NOT block login
-    // as long as the main session cookies were applied (setCount > 0). But if NONE
-    // applied, the session genuinely could not be installed — do NOT open the tool
-    // logged-out.
-    if (setCount === 0) {
-      logger.warn('All session cookies failed to apply — refusing logged-out open', { toolId: toolIdStr, domain: cookieDomain, failed: failedCount });
-      openIntentLock.delete(toolId);
-      return {
-        success: false,
-        error: 'no_active_session',
-        stage: 'inject_cookies',
-        domain: cookieDomain,
-        set: 0,
-        failed: failedCount,
-        message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
-      };
-    }
   }
 
   // ── 7. NOW open (or reuse) the target tab — it loads with the new session ──
@@ -1402,6 +1523,11 @@ async function _handleOpenToolInner(payload) {
     }
     logger.info('Strategy: direct_open', { toolId, login_type: 'direct' });
     await logToolOpened(toolId);
+    logger.info('Open timing', {
+      toolId: toolIdStr, method: 'direct_open',
+      cache: cacheHit ? 'hit' : 'miss', skipReinject,
+      versionCheckMs, fetchMs, injectMs, totalMs: Date.now() - t0,
+    });
     openIntentLock.delete(toolId);
     return { success: true, method: 'direct_open', tabId: targetTabId };
   }
@@ -1427,6 +1553,22 @@ async function _handleOpenToolInner(payload) {
       openIntentLock.delete(toolId);
       return { success: false, error: err.message, actionableError: 'Session data could not be applied. Please contact admin.' };
     }
+    // Refresh the fast-open cache: store the decrypted bundle + the version
+    // signature we validated against + when it was applied. Only when we have a
+    // signature (so it can be invalidated later). No secrets are logged.
+    if (sigInfo?.signature) {
+      await setSessionCache(toolId, {
+        signature: sigInfo.signature,
+        sessionBundle: bundle,
+        domain: cookieDomain,
+        appliedAt: Date.now(),
+      });
+    }
+    logger.info('Open timing', {
+      toolId: toolIdStr, method: 'session_bundle',
+      cache: cacheHit ? 'hit' : 'miss', skipReinject,
+      versionCheckMs, fetchMs, injectMs, totalMs: Date.now() - t0,
+    });
     openIntentLock.delete(toolId);
     return { success: true, method: 'session_bundle', tabId: targetTabId };
   }
@@ -1459,6 +1601,11 @@ async function _handleOpenToolInner(payload) {
       }
     }
 
+    logger.info('Open timing', {
+      toolId: toolIdStr, method: result.method || 'orchestrator',
+      cache: cacheHit ? 'hit' : 'miss', skipReinject,
+      versionCheckMs, fetchMs, injectMs, totalMs: Date.now() - t0,
+    });
     openIntentLock.delete(toolId);
     // Return only safe fields — no credentials
     return {
