@@ -54,30 +54,48 @@ function normalizeCredentialResponse(raw) {
   const tool = raw.tool || null;
   const toolUrl = raw.toolUrl || raw.url || tool?.targetUrl || tool?.loginUrl || raw.credentials?.loginUrl || null;
 
+  // Cookies may arrive as an array, a JSON string, or a "a=b; c=d" cookie string.
+  // Normalize to a non-empty array, else null.
+  const toCookieArray = (input) => {
+    const arr = CookieUtils.parseCookies(input);
+    return (Array.isArray(arr) && arr.length) ? arr : null;
+  };
+  // localStorage/sessionStorage may arrive as an object OR a JSON string. Normalize
+  // to a plain object, else null. (Used with Object.keys().length for emptiness.)
+  const toStorageMap = (input) => {
+    if (!input) return null;
+    if (typeof input === 'string') {
+      try { const p = JSON.parse(input); return (p && typeof p === 'object' && !Array.isArray(p)) ? p : null; }
+      catch (_) { return null; }
+    }
+    if (typeof input === 'object' && !Array.isArray(input)) return input;
+    return null;
+  };
+
   const bundle = {
     version: raw.sessionBundle?.version || null,
     updatedAt: raw.sessionBundle?.updatedAt || null,
-    cookies: raw.sessionBundle?.cookies || null,
-    localStorage: raw.sessionBundle?.localStorage || null,
-    sessionStorage: raw.sessionBundle?.sessionStorage || null,
+    cookies: toCookieArray(raw.sessionBundle?.cookies),
+    localStorage: toStorageMap(raw.sessionBundle?.localStorage),
+    sessionStorage: toStorageMap(raw.sessionBundle?.sessionStorage),
   };
 
   // OceanHub-style top-level fields.
-  if (!bundle.cookies && raw.cookies) bundle.cookies = CookieUtils.parseCookies(raw.cookies);
-  if (!bundle.localStorage && raw.localStorage) bundle.localStorage = raw.localStorage;
-  if (!bundle.sessionStorage && raw.sessionStorage) bundle.sessionStorage = raw.sessionStorage;
+  if (!bundle.cookies && raw.cookies) bundle.cookies = toCookieArray(raw.cookies);
+  if (!bundle.localStorage && raw.localStorage) bundle.localStorage = toStorageMap(raw.localStorage);
+  if (!bundle.sessionStorage && raw.sessionStorage) bundle.sessionStorage = toStorageMap(raw.sessionStorage);
 
   // Fold a pure cookies/storage credential into the bundle (session-only tool).
   let credentials = raw.credentials || null;
   const ctype = credentials?.type;
   if (ctype === 'cookies' && !bundle.cookies) {
-    bundle.cookies = CookieUtils.parseCookies(credentials.payload);
+    bundle.cookies = toCookieArray(credentials.payload);
     credentials = null;
   } else if (ctype === 'localStorage' && !bundle.localStorage) {
-    bundle.localStorage = credentials.payload || null;
+    bundle.localStorage = toStorageMap(credentials.payload);
     credentials = null;
   } else if (ctype === 'sessionStorage' && !bundle.sessionStorage) {
-    bundle.sessionStorage = credentials.payload || null;
+    bundle.sessionStorage = toStorageMap(credentials.payload);
     credentials = null;
   }
 

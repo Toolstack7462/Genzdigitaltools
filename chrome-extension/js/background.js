@@ -448,7 +448,7 @@ async function handleLoginRequired(data, sender) {
     const bundle = credentialData?.sessionBundle;
     const hasCreds = !!(creds && creds.type && creds.type !== 'none');
     const hasBundleCookies = !!(bundle?.cookies && bundle.cookies.length);
-    const hasBundleStorage = !!(bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundleStorage = storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
     const hasBundle = hasBundleCookies || hasBundleStorage;
     const loginType = hasCreds ? creds.type : (hasBundle ? 'session' : 'none');
 
@@ -615,7 +615,7 @@ async function executeOneClickLogin(toolId, tool) {
     
     const creds = credentialData?.credentials;
     const bundle = credentialData?.sessionBundle;
-    const hasBundle = !!(bundle?.cookies || bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundle = !!(bundle?.cookies && bundle.cookies.length) || storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
     const hasCreds = !!(creds && creds.type && creds.type !== 'none');
 
     if (!credentialData || (!hasCreds && !hasBundle)) {
@@ -725,10 +725,11 @@ async function injectCookies(targetUrl, cookies) {
       }
       
       const secure = cookie.secure === true || (cookie.secure !== false && isHttps);
-      
-      // Skip __Host- prefixed cookies — they enforce strict origin binding and
-      // cannot be set externally via chrome.cookies.set (OceanHub safe pattern)
-      if (cookie.name && cookie.name.startsWith('__Host-')) continue;
+
+      // __Host- cookies are host-only. Chrome CAN set them, but only as:
+      //   no domain field, path "/", secure true, URL on the exact target host.
+      // They're frequently the MAIN session cookie, so handle (don't skip) them.
+      const isHostPrefixed = !!(cookie.name && cookie.name.startsWith('__Host-'));
 
       // Normalize sameSite; treat 'unspecified' as no_restriction (OceanHub pattern)
       let sameSite = (cookie.sameSite || 'lax').toLowerCase();
@@ -740,27 +741,39 @@ async function injectCookies(targetUrl, cookies) {
         sameSite = 'lax';
       }
       
-      // SameSite=None requires Secure
-      const finalSecure = sameSite === 'no_restriction' ? true : secure;
-      const protocol = finalSecure ? 'https' : 'http';
-      const cleanDomain = cookieDomain.startsWith('.') ? cookieDomain.substring(1) : cookieDomain;
-      const cookieUrl = `${protocol}://${cleanDomain}/`;
-      
-      const cookieDetails = {
-        url: cookieUrl,
-        name: cookie.name,
-        value: cookie.value,
-        path: cookie.path || '/',
-        secure: finalSecure,
-        httpOnly: cookie.httpOnly === true,
-        sameSite: sameSite
-      };
-      
-      // Set domain for subdomain cookies
-      if (cookieDomain.startsWith('.')) {
-        cookieDetails.domain = cookieDomain;
+      // SameSite=None requires Secure; __Host- cookies must also be Secure.
+      const finalSecure = (sameSite === 'no_restriction' || isHostPrefixed) ? true : secure;
+
+      let cookieDetails;
+      if (isHostPrefixed) {
+        // Host-only: URL on the exact target host, NO domain, path "/".
+        cookieDetails = {
+          url: `https://${targetDomain}/`,
+          name: cookie.name,
+          value: cookie.value,
+          path: '/',
+          secure: true,
+          httpOnly: cookie.httpOnly === true,
+          sameSite: sameSite,
+        };
+      } else {
+        const protocol = finalSecure ? 'https' : 'http';
+        const cleanDomain = cookieDomain.startsWith('.') ? cookieDomain.substring(1) : cookieDomain;
+        cookieDetails = {
+          url: `${protocol}://${cleanDomain}/`,
+          name: cookie.name,
+          value: cookie.value,
+          path: cookie.path || '/',
+          secure: finalSecure,
+          httpOnly: cookie.httpOnly === true,
+          sameSite: sameSite,
+        };
+        // Set domain ONLY for subdomain cookies (host-only cookies omit it).
+        if (cookieDomain.startsWith('.')) {
+          cookieDetails.domain = cookieDomain;
+        }
       }
-      
+
       // Handle expiration
       if (cookie.expirationDate) {
         cookieDetails.expirationDate = cookie.expirationDate;
@@ -773,8 +786,14 @@ async function injectCookies(targetUrl, cookies) {
         // Default: 30 days
         cookieDetails.expirationDate = Math.floor(Date.now() / 1000) + (30 * 24 * 60 * 60);
       }
-      
-      const result = await chrome.cookies.set(cookieDetails);
+
+      // OceanHub-style retry: chrome.cookies.set() can return null when the domain
+      // field conflicts with the URL/host rules. Retry ONCE without the domain.
+      let result = await chrome.cookies.set(cookieDetails);
+      if (!result && cookieDetails.domain) {
+        const { domain, ...noDomain } = cookieDetails;
+        result = await chrome.cookies.set(noDomain);
+      }
       if (result) {
         setCount++;
       } else {
@@ -905,6 +924,13 @@ function getOriginPattern(url) {
 // carry query tokens.
 function safeHost(url) {
   try { return new URL(url).hostname; } catch (_) { return null; }
+}
+
+// True only when a localStorage/sessionStorage map actually has entries. An empty
+// object ({}) must count as NO data — a bare truthy check would wrongly treat it
+// as a usable session bundle.
+function storageHasKeys(obj) {
+  return !!(obj && typeof obj === 'object' && Object.keys(obj).length > 0);
 }
 
 function getBaseDomain(hostname) {
@@ -1117,6 +1143,7 @@ async function _handleOpenToolInner(payload) {
   // pre-navigation (inject new cookies, THEN open the target domain).
   let credentialData = null;
   let credFetchStatus = null;
+  let credFetchFailed = false;
   try {
     // throwOnFailure: a non-business fetch failure must NOT silently degrade to a
     // logged-out direct_open for a session-required tool.
@@ -1127,6 +1154,7 @@ async function _handleOpenToolInner(payload) {
     // 'credentials_unavailable' for an infrastructure failure.
     const code = err?.code || err?.payload?.code || null;
     credFetchStatus = err?.status || null;
+    if (code === 'credentials_unavailable' || !code) credFetchFailed = true;
     logger.warn('Credential fetch failed', { toolId: toolIdStr, error: err.message, code, status: credFetchStatus });
     if (code && code !== 'credentials_unavailable') {
       openIntentLock.delete(toolId);
@@ -1159,14 +1187,18 @@ async function _handleOpenToolInner(payload) {
     }
   }
 
-  // ── Session-required guard (OceanHub req #3, #4, #10) ──────────────────────
+  // ── Session-required guard (OceanHub req #3, #4, #5, #10) ──────────────────
   // Admin assigned a session/account for this tool but we have NO usable session
-  // data (fetch failed, or returned empty). Do NOT open HIX AI / any such tool
-  // logged-out via direct_open. Surface the exact, user-safe message instead.
-  if (!credentialData && toolRequiresSession) {
+  // data. Do NOT open the tool logged-out via direct_open. We block when EITHER
+  // the synced metadata says the tool needs a session, OR the credential fetch
+  // actually failed (covers the case where /extension/tools metadata is missing
+  // hasCredentials/sessionBundle.hasCookies — a fetch failure on a managed tool
+  // must never silently degrade to direct_open, req #5).
+  if (!credentialData && (toolRequiresSession || credFetchFailed)) {
     openIntentLock.delete(toolId);
-    logger.warn('No authorized session available for session-required tool', {
-      toolId: toolIdStr, sessionId, status: credFetchStatus, requiresSession: true,
+    logger.warn('No authorized session available for session tool', {
+      toolId: toolIdStr, sessionId, status: credFetchStatus,
+      requiresSession: toolRequiresSession, fetchFailed: credFetchFailed,
     });
     return {
       success: false,
@@ -2404,7 +2436,7 @@ async function executeOneClickLoginWithOptions(toolId, tool, options = {}) {
     
     const creds = credentialData?.credentials;
     const bundle = credentialData?.sessionBundle;
-    const hasBundle = !!(bundle?.cookies || bundle?.localStorage || bundle?.sessionStorage);
+    const hasBundle = !!(bundle?.cookies && bundle.cookies.length) || storageHasKeys(bundle?.localStorage) || storageHasKeys(bundle?.sessionStorage);
     const hasCreds = !!(creds && creds.type && creds.type !== 'none');
 
     if (!credentialData || (!hasCreds && !hasBundle)) {
