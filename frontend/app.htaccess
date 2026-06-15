@@ -3,6 +3,15 @@
 # Never redirect client/admin/api/static assets. No redirect loops.
 DirectoryIndex index.html
 
+# Always revalidate the HTML shell so new deploys appear immediately and a stale
+# cached index.html can never produce an old/blank page. Hashed JS/CSS keep their
+# own long-lived caching via their unique per-build filenames.
+<IfModule mod_headers.c>
+  <FilesMatch "\.html$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>
+
 RewriteEngine On
 RewriteBase /
 
@@ -13,9 +22,11 @@ RewriteRule ^ - [L]
 # 2) Let the backend handle API routes (Passenger) — never touch
 RewriteRule ^api(/|$) - [L]
 
-# 3) App routes (client/admin) -> load the SPA so deep links survive refresh.
+# 3) App + email-link routes -> load the SPA so deep links survive refresh.
 #    React Router + the in-app domain guard handle routing client-side.
-RewriteRule ^(client|admin)(/|$) /index.html [L]
+#    reset-password / forgot-password MUST be here so emailed links open the
+#    SPA page instead of falling through to the login redirect below.
+RewriteRule ^(client|admin|reset-password|forgot-password)(/|$) /index.html [L]
 
 # 4) Everything else (incl. "/", /about, /services, marketing) -> client login.
 RewriteRule ^ /client/login [R=302,L]

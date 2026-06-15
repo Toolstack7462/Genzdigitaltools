@@ -5,15 +5,31 @@
  *
  * Configuration comes ONLY from environment variables:
  *   RESEND_API_KEY  - Resend API key (secret; never logged)
- *   EMAIL_FROM      - verified "from" address, e.g. "Genz Digital Store <noreply@genzdigitalstore.com>"
- *   FRONTEND_URL    - base URL used to build links, e.g. https://app.genzdigitalstore.com
+ *   EMAIL_FROM      - verified "from", e.g. "Gen Z Digital Store <noreply@genzdigitalstore.com>"
+ *   FRONTEND_URL    - base URL for links, e.g. https://app.genzdigitalstore.com
  *
  * If RESEND_API_KEY or EMAIL_FROM are missing the helper degrades gracefully
- * (returns { skipped: true }) so existing deployments keep working without email.
- * No OTP codes, reset tokens, passwords or secrets are ever logged.
+ * (returns { skipped: true }). No OTP codes, reset tokens, passwords, API keys
+ * or email bodies are ever logged — only Resend's safe validation message.
  */
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
+
+// Public brand assets used inside emails.
+const SITE_URL = 'https://genzdigitalstore.com';
+const LOGO_URL = `${SITE_URL}/logo-genz-digital-store.png`;
+const SUPPORT_WHATSAPP = 'https://wa.me/923027467462';
+const BRAND = 'Gen Z Digital Store';
+const PROMO =
+  'Gen Z Digital Store helps you access premium digital tools, AI productivity support, web services, branding, and digital solutions.';
+
+// Brand palette
+const NAVY = '#0B2440';
+const NAVY_SOFT = '#13304f';
+const TEAL = '#06B6D4';
+const INK = '#0f172a';
+const SLATE = '#475569';
+const MUTED = '#94a3b8';
 
 function getConfig() {
   return {
@@ -28,17 +44,22 @@ function isEmailEnabled() {
   return Boolean(apiKey && from);
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * Low-level send. Best-effort: returns { id } on success, { skipped: true } when
- * email is not configured, or { error: <generic message> } on failure. Never
- * throws, so a mail failure can't break the surrounding request.
+ * email is not configured, or { error, status, domainNotVerified } on failure.
+ * Never throws.
  */
-async function sendEmail({ to, subject, html }) {
+async function sendEmail({ to, subject, html, text }) {
   const { apiKey, from } = getConfig();
   if (!apiKey || !from) {
     console.warn('[email] RESEND_API_KEY/EMAIL_FROM not configured — skipping email send.');
     return { skipped: true };
   }
+  if (!to || !EMAIL_RE.test(String(to))) return { error: 'Invalid recipient email address' };
+  if (!subject || (!html && !text)) return { error: 'Email is missing subject or body' };
+
   try {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
@@ -46,13 +67,26 @@ async function sendEmail({ to, subject, html }) {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ from, to, subject, html }),
+      body: JSON.stringify({ from, to, subject, html, text }),
     });
+
     if (!resp.ok) {
-      // Log status only — never the body (could echo sensitive content) or the key.
-      console.error(`[email] Resend responded with HTTP ${resp.status} for "${subject}".`);
-      return { error: 'Email provider rejected the request' };
+      // Resend returns a small JSON error like { statusCode, name, message }.
+      // That describes the validation problem (e.g. unverified sending domain)
+      // and never contains the API key or the email HTML — safe to log/surface.
+      let detail = '';
+      try {
+        const body = await resp.json();
+        detail = [body.name, body.message].filter(Boolean).join(': ') || JSON.stringify(body);
+      } catch (_) {
+        try { detail = (await resp.text()).slice(0, 300); } catch (_) { /* noop */ }
+      }
+      console.error(`[email] Resend rejected "${subject}" — HTTP ${resp.status}: ${detail}`);
+      const domainNotVerified =
+        resp.status === 403 || /not verified|verify (a |your )?domain|domain is not/i.test(detail);
+      return { error: detail || `Resend HTTP ${resp.status}`, status: resp.status, domainNotVerified };
     }
+
     const data = await resp.json().catch(() => ({}));
     return { id: data.id };
   } catch (err) {
@@ -61,56 +95,107 @@ async function sendEmail({ to, subject, html }) {
   }
 }
 
-// ─── Branded templates ─────────────────────────────────────────────────────────
+// ─── Branded, mobile-responsive shell ───────────────────────────────────────────
 
-const BRAND = 'Genz Digital Store';
+function emailShell(previewText, innerHtml) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>${BRAND}</title>
+<style>
+  @media (max-width:600px){ .card{border-radius:0 !important} .pad{padding:24px 20px !important} .h1{font-size:22px !important} }
+  a{ text-decoration:none }
+</style>
+</head>
+<body style="margin:0;padding:0;background:#eef2f7;">
+  <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#eef2f7">${previewText}</div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#eef2f7;padding:28px 12px;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <tr><td align="center">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" class="card" style="width:600px;max-width:100%;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(11,36,64,0.10)">
+        <!-- Header -->
+        <tr>
+          <td align="center" style="background:${NAVY};background:linear-gradient(135deg,${NAVY},${NAVY_SOFT});padding:28px 24px">
+            <img src="${LOGO_URL}" alt="${BRAND}" height="40" style="height:40px;display:block;border:0;outline:none" />
+          </td>
+        </tr>
+        <tr><td style="height:4px;background:linear-gradient(90deg,${TEAL},#2563EB)"></td></tr>
 
-function shell(title, bodyHtml) {
-  return `<!doctype html><html><body style="margin:0;background:#f6f8fb;font-family:Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a">
-    <div style="max-width:520px;margin:0 auto;padding:32px 16px">
-      <div style="background:#ffffff;border:1px solid #e6eaf0;border-radius:16px;padding:32px">
-        <h1 style="margin:0 0 8px;font-size:20px;color:#0f172a">${BRAND}</h1>
-        <h2 style="margin:0 0 16px;font-size:16px;color:#334155;font-weight:600">${title}</h2>
-        ${bodyHtml}
-      </div>
-      <p style="text-align:center;color:#94a3b8;font-size:12px;margin-top:16px">
-        If you didn't request this, you can safely ignore this email.
-      </p>
-    </div>
-  </body></html>`;
+        <!-- Body -->
+        <tr><td class="pad" style="padding:36px 40px">
+          ${innerHtml}
+        </td></tr>
+
+        <!-- Promo / support -->
+        <tr><td style="padding:0 40px 8px">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f6fb;border:1px solid #e3ebf3;border-radius:14px">
+            <tr><td style="padding:18px 20px">
+              <p style="margin:0 0 12px;color:${SLATE};font-size:13px;line-height:20px">${PROMO}</p>
+              <a href="${SUPPORT_WHATSAPP}" style="display:inline-block;background:#25D366;color:#ffffff;font-size:13px;font-weight:700;padding:9px 16px;border-radius:10px">Chat with us on WhatsApp</a>
+              <a href="${SITE_URL}" style="display:inline-block;margin-left:8px;color:${NAVY};font-size:13px;font-weight:700;padding:9px 12px">Visit website →</a>
+            </td></tr>
+          </table>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td align="center" style="padding:18px 40px 30px">
+          <p style="margin:0;color:${MUTED};font-size:12px;line-height:18px">
+            If you did not request this, you can safely ignore this email.<br>
+            © ${new Date().getFullYear()} ${BRAND}. All rights reserved.
+          </p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 }
 
-function btn(href, label) {
-  return `<a href="${href}" style="display:inline-block;background:#0ea5a4;color:#ffffff;text-decoration:none;padding:12px 22px;border-radius:12px;font-weight:600">${label}</a>`;
+function button(href, label) {
+  return `<a href="${href}" style="display:inline-block;background:${TEAL};background:linear-gradient(135deg,#2563EB,${TEAL});color:#ffffff;font-size:15px;font-weight:700;padding:14px 30px;border-radius:12px">${label}</a>`;
 }
+
+// ─── Email types ────────────────────────────────────────────────────────────────
 
 async function sendVerificationEmail(to, code) {
-  const html = shell('Verify your email', `
-    <p style="margin:0 0 16px;color:#475569">Use this code to verify your email address. It expires in 10 minutes.</p>
-    <div style="font-size:30px;letter-spacing:8px;font-weight:700;color:#0f172a;background:#f1f5f9;border-radius:12px;padding:16px;text-align:center">${code}</div>
-    <p style="margin:16px 0 0;color:#94a3b8;font-size:13px">Enter this code on the verification screen to activate your account.</p>
-  `);
-  return sendEmail({ to, subject: `${BRAND} — your verification code`, html });
+  const inner = `
+    <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">Verify your email</h1>
+    <p style="margin:0 0 22px;color:${SLATE};font-size:15px;line-height:23px">Welcome to ${BRAND}! Use the code below to verify your email address and activate your account.</p>
+    <div style="text-align:center;margin:0 0 18px">
+      <div style="display:inline-block;font-size:32px;letter-spacing:10px;font-weight:800;color:${NAVY};background:#f1f6fb;border:1px solid #e3ebf3;border-radius:14px;padding:16px 26px">${code}</div>
+    </div>
+    <p style="margin:0;color:${MUTED};font-size:13px;line-height:20px">This code expires in 10 minutes and can be used once.</p>
+  `;
+  const text = `Welcome to ${BRAND}! Your email verification code is ${code}. It expires in 10 minutes and can be used once. If you did not request this, you can ignore this email.`;
+  return sendEmail({ to, subject: `${BRAND} — your verification code`, html: emailShell('Your verification code', inner), text });
 }
 
 async function sendPasswordResetEmail(to, resetUrl) {
-  const html = shell('Reset your password', `
-    <p style="margin:0 0 20px;color:#475569">We received a request to reset your password. Click the button below to choose a new one. This link expires in 30 minutes and can be used once.</p>
-    <p style="margin:0 0 20px">${btn(resetUrl, 'Reset password')}</p>
-    <p style="margin:0;color:#94a3b8;font-size:13px;word-break:break-all">Or paste this link into your browser:<br>${resetUrl}</p>
-  `);
-  return sendEmail({ to, subject: `${BRAND} — reset your password`, html });
+  const inner = `
+    <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">Reset your password</h1>
+    <p style="margin:0 0 24px;color:${SLATE};font-size:15px;line-height:23px">We received a request to reset the password for your ${BRAND} account. Click the button below to choose a new password.</p>
+    <div style="text-align:center;margin:0 0 24px">${button(resetUrl, 'Reset Password')}</div>
+    <p style="margin:0 0 8px;color:${SLATE};font-size:13px;line-height:20px">If the button doesn't work, copy and paste this link into your browser:</p>
+    <p style="margin:0 0 22px;font-size:13px;line-height:20px;word-break:break-all"><a href="${resetUrl}" style="color:#2563EB">${resetUrl}</a></p>
+    <p style="margin:0;color:${MUTED};font-size:13px;line-height:20px">This link expires in 30 minutes and can be used once.</p>
+  `;
+  const text = `Reset your ${BRAND} password using this link: ${resetUrl}\nThis link expires in 30 minutes and can be used once. If you did not request this, you can ignore this email.`;
+  return sendEmail({ to, subject: `${BRAND} — reset your password`, html: emailShell('Reset your password', inner), text });
 }
 
 async function sendPasswordResetSuccessEmail(to) {
   const { frontendUrl } = getConfig();
-  const loginUrl = frontendUrl ? `${frontendUrl}/client/login` : '';
-  const html = shell('Your password was changed', `
-    <p style="margin:0 0 20px;color:#475569">Your password was changed successfully. If this was you, no further action is needed.</p>
-    ${loginUrl ? `<p style="margin:0 0 20px">${btn(loginUrl, 'Go to login')}</p>` : ''}
-    <p style="margin:0;color:#94a3b8;font-size:13px">If you did not make this change, please contact support immediately.</p>
-  `);
-  return sendEmail({ to, subject: `${BRAND} — your password was changed`, html });
+  const loginUrl = frontendUrl ? `${frontendUrl}/client/login` : `${SITE_URL}`;
+  const inner = `
+    <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">Your password was changed</h1>
+    <p style="margin:0 0 24px;color:${SLATE};font-size:15px;line-height:23px">Your ${BRAND} account password was changed successfully. If this was you, no further action is needed.</p>
+    <div style="text-align:center;margin:0 0 22px">${button(loginUrl, 'Go to Member Login')}</div>
+    <p style="margin:0;color:${MUTED};font-size:13px;line-height:20px">If you did not make this change, please contact our support right away using the WhatsApp button below.</p>
+  `;
+  const text = `Your ${BRAND} password was changed successfully. If this wasn't you, contact support immediately. Login: ${loginUrl}`;
+  return sendEmail({ to, subject: `${BRAND} — your password was changed`, html: emailShell('Your password was changed', inner), text });
 }
 
 module.exports = {
