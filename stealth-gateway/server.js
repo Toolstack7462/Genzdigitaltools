@@ -25,7 +25,21 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Minimal .env loader — dependency-free so the gateway needs no `npm install`.
+// Only sets keys NOT already present in the real environment (hPanel/Passenger wins).
+(function loadEnv() {
+  try {
+    const raw = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+    for (const line of raw.split(/\r?\n/)) {
+      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i.exec(line);
+      if (!m || line.trim().startsWith('#')) continue;
+      const key = m[1];
+      let val = m[2];
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      if (process.env[key] === undefined) process.env[key] = val;
+    }
+  } catch (_) { /* no .env file — rely on real environment */ }
+})();
 
 const PORT = Number(process.env.PORT || 8080);
 const TARGET_ORIGIN = (process.env.STEALTH_TARGET_ORIGIN || '').replace(/\/$/, '');
