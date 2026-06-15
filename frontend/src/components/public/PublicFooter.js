@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight } from 'lucide-react';
+import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight, Mail } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
 import { WHATSAPP_URL, APP_LOGIN_URL } from './PublicNavbar';
 
@@ -19,7 +19,6 @@ const COMPANY_LINKS = [
   { to: '/pricing',   label: 'Pricing'        },
   { to: '/blog',      label: 'Blog'           },
   { to: '/contact',   label: 'Contact Us'     },
-  { to: '/chrome-extension', label: 'Chrome Extension' },
 ];
 
 const PublicFooter = () => {
@@ -74,10 +73,16 @@ const PublicFooter = () => {
             <Link to="/" className="inline-block mb-4">
               <BrandLogo variant="horizontal" size="md" />
             </Link>
-            <p className="text-white/55 text-sm leading-relaxed mb-6 max-w-xs">
+            <p className="text-white/55 text-sm leading-relaxed mb-4 max-w-xs">
               Premium digital tools access, creative services, and smart web solutions
               — all from one platform built for creators, businesses, and digital professionals.
             </p>
+            <a
+              href="mailto:admin@genzdigitalstore.com"
+              className="inline-flex items-center gap-2 text-white/60 hover:text-genz-teal text-sm mb-6 transition-colors duration-150"
+            >
+              <Mail size={15} /> admin@genzdigitalstore.com
+            </a>
             <div className="flex gap-3 flex-wrap">
               {[
                 { Icon: Facebook, href: '#', label: 'Facebook' },

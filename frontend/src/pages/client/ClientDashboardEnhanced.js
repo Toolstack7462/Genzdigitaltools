@@ -131,7 +131,6 @@ const ClientDashboardEnhanced = () => {
   const [expiringTools, setExpiringTools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
-  const [showExtensionBanner, setShowExtensionBanner] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
 
@@ -525,47 +524,60 @@ const ClientDashboardEnhanced = () => {
           })()}
         </div>
 
-        {/* ── Chrome Extension Banner ── only while the extension is NOT yet
-            detected. Once the bridge is present the extension is READY (the
-            secure session is fetched on-demand when Access is clicked), so we
-            never show a "connecting / disconnected / retry" state. */}
-        {showExtensionBanner && !bridgeReady && (
-          <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-3.5"
+        {/* ── Chrome Extension Banner ── premium glass strip, shown only while the
+            extension is NOT yet detected. Once the bridge is present the extension
+            is READY (the secure session is fetched on-demand when Access is
+            clicked), so we never show a "connecting / disconnected" state.
+            Install opens the member install page in a NEW TAB — the dashboard tab
+            never reloads or navigates away. No dismiss control by design. */}
+        {!bridgeReady && (
+          <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-4"
                style={{
-                 background: 'linear-gradient(120deg, rgba(7,27,51,0.92) 0%, rgba(15,42,73,0.92) 60%, rgba(6,78,89,0.88) 100%)',
-                 border: '1px solid rgba(6,182,212,0.22)',
-                 boxShadow: '0 10px 26px -16px rgba(6,182,212,0.4), inset 0 1px 0 rgba(255,255,255,0.06)',
+                 background: 'linear-gradient(120deg, rgba(7,27,51,0.96) 0%, rgba(15,42,73,0.95) 55%, rgba(6,78,89,0.92) 100%)',
+                 border: '1px solid rgba(6,182,212,0.28)',
+                 boxShadow: '0 16px 40px -22px rgba(6,182,212,0.55), inset 0 1px 0 rgba(255,255,255,0.07)',
+                 backdropFilter: 'blur(10px)',
+                 WebkitBackdropFilter: 'blur(10px)',
                }}>
-            <div className="absolute -top-12 -right-8 w-56 h-32 pointer-events-none opacity-60"
-                 style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.32), transparent 70%)' }} />
-            <button onClick={() => setShowExtensionBanner(false)}
-                    className="absolute top-2.5 right-2.5 text-white/40 hover:text-white transition-colors z-10">
-              <X size={14} />
-            </button>
-            <div className="flex items-center gap-3 relative z-10">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
-                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 6px 18px -8px rgba(6,182,212,0.7)' }}>
-                <Chrome size={18} className="text-white" />
+            {/* glow accents */}
+            <div className="absolute -top-14 -right-10 w-64 h-36 pointer-events-none opacity-70"
+                 style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.35), transparent 70%)' }} />
+            <div className="absolute -bottom-16 left-1/4 w-64 h-32 pointer-events-none opacity-50"
+                 style={{ background: 'radial-gradient(closest-side, rgba(37,99,235,0.28), transparent 70%)' }} />
+            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-3.5">
+              {/* icon */}
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 8px 20px -8px rgba(6,182,212,0.75), inset 0 1px 0 rgba(255,255,255,0.25)' }}>
+                <Chrome size={20} className="text-white" />
               </div>
+              {/* text */}
               <div className="flex-1 min-w-0">
-                <h3 className="font-bold text-white text-[13.5px] leading-tight" data-testid="ext-banner-title">
-                  {extConnStatus?.checking ? 'Checking Extension…' : 'Install the Chrome Extension'}
-                </h3>
-                <p className="text-[11.5px] text-white/60 mt-0.5 leading-snug">
-                  One-click access to all your tools. Install once and you're set.
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-white text-[14.5px] leading-tight" data-testid="ext-banner-title">
+                    {extConnStatus?.checking ? 'Checking for the extension…' : 'Install the Chrome Extension'}
+                  </h3>
+                  <span className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-md text-[10px] font-bold text-genz-cyan"
+                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.30)' }}>
+                    <ShieldCheck size={10} /> Secure
+                  </span>
+                </div>
+                <p className="text-[12px] text-white/65 mt-1 leading-snug">
+                  One-click access to all your tools — already signed in. Install once and you're set.
                 </p>
               </div>
-              <div className="flex-shrink-0">
+              {/* action */}
+              <div className="flex-shrink-0 sm:self-center">
                 {!extConnStatus?.checking ? (
-                  <Link to="/chrome-extension"
-                     className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-bold text-white transition-all hover:-translate-y-0.5"
-                     style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 6px 16px -8px rgba(37,99,235,0.65)' }}>
-                    <Download size={13} /> Install
-                  </Link>
+                  <a href="/chrome-extension" target="_blank" rel="noopener noreferrer"
+                     data-testid="ext-banner-install"
+                     className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
+                     style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 10px 22px -10px rgba(37,99,235,0.75)' }}>
+                    <Download size={14} /> Install Extension
+                  </a>
                 ) : (
-                  <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12px] font-semibold text-genz-cyan"
-                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
-                    <Loader2 size={13} className="animate-spin" /> Detecting…
+                  <span className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-semibold text-genz-cyan"
+                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.30)' }}>
+                    <Loader2 size={14} className="animate-spin" /> Detecting…
                   </span>
                 )}
               </div>

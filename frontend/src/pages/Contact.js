@@ -132,6 +132,19 @@ const Contact = () => {
                 </div>
               </a>
 
+              <a href="mailto:admin@genzdigitalstore.com"
+                className="hover-glow flex items-center gap-4 p-6 rounded-2xl bg-white border border-blue-200/60"
+                style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.06), #ffffff)' }}>
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white"
+                  style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 12px 26px -10px rgba(37,99,235,0.5)' }}>
+                  <Mail size={20} />
+                </div>
+                <div>
+                  <div className="text-genz-navy font-bold text-[15.5px]">Email us</div>
+                  <div className="text-genz-muted text-[13px] mt-0.5">admin@genzdigitalstore.com</div>
+                </div>
+              </a>
+
               <div className="gz-card-soft p-6">
                 <div className="flex items-center gap-3 mb-3">
                   <div className="w-10 h-10 rounded-xl flex items-center justify-center" style={{ background: 'rgba(6,182,212,0.12)', color: '#0891B2' }}>

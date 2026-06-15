@@ -25,7 +25,11 @@ import "@/App.css";
   if (isInfraPath(path)) return;
 
   const isAppPath = (p) =>
-    p === '/login' || p.startsWith('/client') || p.startsWith('/admin');
+    p === '/login' || p.startsWith('/client') || p.startsWith('/admin') ||
+    // Member-only extension install/setup pages — reached from the logged-in
+    // dashboard (opened in a new tab). Allow them on the app subdomain so the
+    // fresh tab load is not bounced to /client/login.
+    p === '/chrome-extension' || p === '/extension';
 
   // ── On the MAIN domain: send app-only paths to the app subdomain ──
   if (MAIN_HOSTS.includes(host)) {

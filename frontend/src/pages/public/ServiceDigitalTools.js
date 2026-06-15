@@ -59,9 +59,11 @@ const ServiceDigitalTools = () => {
               style={{ background: 'var(--gradient-cta)' }}>
               <LayoutDashboard size={15} /> Access Dashboard
             </Link>
-            <Link to="/chrome-extension"
+            {/* The Chrome extension is installed from inside the member dashboard,
+                so no public "Get Extension" link is exposed here. */}
+            <Link to="/pricing"
               className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-semibold text-genz-teal border border-genz-teal/40 hover:bg-genz-teal/10 transition-all">
-              <Chrome size={15} /> Get Extension
+              <ArrowRight size={15} /> View Pricing
             </Link>
           </div>
         </div>
