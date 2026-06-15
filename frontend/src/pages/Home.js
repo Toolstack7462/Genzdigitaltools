@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import { motion, MotionConfig } from 'framer-motion';
 import {
   Zap, ArrowRight, MessageCircle, LayoutDashboard, Shield, Star,
   Globe, Smartphone, Palette, TrendingUp, PenTool,
@@ -15,6 +16,14 @@ import { WHATSAPP_URL, APP_LOGIN_URL } from '../components/public/PublicNavbar';
 const Eyebrow = ({ label, light }) => (
   <div className={`gz-eyebrow mb-5 ${light ? 'gz-eyebrow-light' : ''}`}><span className="glow-dot" /> {label}</div>
 );
+
+/* shared motion — exponential ease-out, no bounce; reduced-motion handled by
+   <MotionConfig reducedMotion="user"> at the call site (transforms collapse,
+   opacity remains). Lightweight: transform + opacity only. */
+const EASE_OUT = [0.16, 1, 0.3, 1];
+const mStagger = { hidden: {}, show: { transition: { staggerChildren: 0.06, delayChildren: 0.08 } } };
+const mFadeUp = { hidden: { opacity: 0, y: 24 }, show: { opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE_OUT } } };
+const mRowIn = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: EASE_OUT } } };
 
 /* curved logo-inspired brand ribbons (reused) */
 const Ribbons = ({ className = '' }) => (
@@ -420,31 +429,70 @@ const Home = () => {
         </div>
       </section>
 
-      {/* ── COMPARISON ── */}
+      {/* ── COMPARISON — premium "versus" (generic vs. Gen Z) ── */}
       <section className="gz-section px-5">
-        <div ref={cmpRef} className={`gz-container reveal ${cmpV ? 'visible' : ''}`}>
+        <div ref={cmpRef} className="gz-container">
           <div className="text-center max-w-xl mx-auto mb-12">
             <Eyebrow label="Why Gen Z Digital Store" />
-            <h2 className="type-section-title text-genz-navy mb-4">A clear step above generic providers</h2>
+            <h2 className="type-section-title text-genz-navy mb-4" style={{ textWrap: 'balance' }}>A clear step above generic providers</h2>
+            <p className="text-genz-muted text-[15px] leading-relaxed">The same goals — handled with premium care, security and real support, not pieced together from disconnected tools.</p>
           </div>
-          <div className="gz-card max-w-3xl mx-auto overflow-hidden p-0">
-            <div className="grid grid-cols-[1fr_auto_auto]">
-              <div className="px-5 py-4 text-[13px] font-bold uppercase tracking-wider text-genz-muted">What you get</div>
-              <div className="px-5 py-4 text-center text-[13px] font-bold text-genz-muted w-28">Generic</div>
-              <div className="px-5 py-4 text-center text-[13px] font-bold text-genz-blue w-32 bg-genz-blue/[0.05]">Gen Z</div>
-              {COMPARE.map((row, i) => (
-                <div key={row} className="contents">
-                  <div className={`px-5 py-3.5 text-[14px] text-genz-navy/85 border-t border-genz-border ${i % 2 ? 'bg-genz-bg/40' : ''}`}>{row}</div>
-                  <div className={`px-5 py-3.5 flex justify-center border-t border-genz-border ${i % 2 ? 'bg-genz-bg/40' : ''}`}>
-                    <X size={17} className="text-genz-muted/50" />
-                  </div>
-                  <div className="px-5 py-3.5 flex justify-center border-t border-genz-border bg-genz-blue/[0.05]">
-                    <Check size={17} className="text-genz-blue" />
-                  </div>
+
+          <MotionConfig reducedMotion="user">
+            <motion.div
+              className="grid gap-5 md:grid-cols-2 max-w-4xl mx-auto items-stretch"
+              variants={mStagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.25 }}
+            >
+              {/* Generic providers — deliberately understated */}
+              <motion.div variants={mFadeUp}
+                className="rounded-3xl border border-genz-border bg-white/70 p-7 sm:p-8 backdrop-blur-[2px]">
+                <div className="flex items-center gap-2.5 mb-6">
+                  <span className="w-9 h-9 rounded-xl grid place-items-center bg-genz-bg text-genz-muted"><X size={17} /></span>
+                  <h3 className="text-[15px] font-bold text-genz-muted">Generic providers</h3>
                 </div>
-              ))}
-            </div>
-          </div>
+                <ul className="space-y-3.5">
+                  {COMPARE.map((row) => (
+                    <li key={row} className="flex items-start gap-3 text-[14.5px] text-genz-navy/55 leading-snug">
+                      <X size={16} className="mt-0.5 flex-shrink-0 text-genz-muted/50" />
+                      <span>{row}</span>
+                    </li>
+                  ))}
+                </ul>
+              </motion.div>
+
+              {/* Gen Z Digital Store — elevated, on-brand, gently lifts on hover */}
+              <motion.div
+                variants={mFadeUp}
+                whileHover={{ y: -4 }}
+                transition={{ type: 'spring', stiffness: 240, damping: 22 }}
+                className="relative rounded-3xl p-7 sm:p-8 overflow-hidden depth-cyan"
+                style={{ background: 'linear-gradient(160deg,#001A3D 0%,#001030 58%,#000820 100%)', border: '1px solid rgba(6,182,212,0.34)' }}
+              >
+                <div className="absolute -top-20 -right-16 w-56 h-56 rounded-full pointer-events-none"
+                     style={{ background: 'radial-gradient(circle, rgba(6,182,212,0.30), transparent 70%)' }} />
+                <div className="relative">
+                  <div className="flex items-center justify-between gap-3 mb-6">
+                    <div className="flex items-center gap-2.5">
+                      <span className="w-9 h-9 rounded-xl grid place-items-center text-white" style={{ background: 'var(--gradient-cta)' }}><Sparkles size={16} /></span>
+                      <h3 className="text-[15px] font-extrabold text-white">Gen Z Digital Store</h3>
+                    </div>
+                    <span className="text-[10.5px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full text-genz-cyan whitespace-nowrap"
+                          style={{ background: 'rgba(6,182,212,0.14)', border: '1px solid rgba(6,182,212,0.32)' }}>Recommended</span>
+                  </div>
+                  <motion.ul className="space-y-3.5" variants={mStagger}>
+                    {COMPARE.map((row) => (
+                      <motion.li key={row} variants={mRowIn} className="flex items-start gap-3 text-[14.5px] text-white/90 leading-snug">
+                        <span className="mt-0.5 w-5 h-5 rounded-full grid place-items-center flex-shrink-0" style={{ background: 'rgba(6,182,212,0.18)' }}>
+                          <Check size={13} className="text-genz-cyan" />
+                        </span>
+                        <span>{row}</span>
+                      </motion.li>
+                    ))}
+                  </motion.ul>
+                </div>
+              </motion.div>
+            </motion.div>
+          </MotionConfig>
         </div>
       </section>
 
