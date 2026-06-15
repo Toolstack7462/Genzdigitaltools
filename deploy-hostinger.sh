@@ -64,6 +64,20 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/EmailVerification.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/EmailVerification.js" \
   -T backend/routes/authEmail.js              "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEmail.js" \
   -T backend/routes/public.js                 "sftp://${HOST}:${PORT}${API_ROOT}/routes/public.js" \
+  -T backend/models/stealth/StealthClient.js     "sftp://${HOST}:${PORT}${API_ROOT}/models/stealth/StealthClient.js" \
+  -T backend/models/stealth/StealthLease.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/stealth/StealthLease.js" \
+  -T backend/models/stealth/StealthUsageLog.js   "sftp://${HOST}:${PORT}${API_ROOT}/models/stealth/StealthUsageLog.js" \
+  -T backend/models/stealth/StealthSettings.js   "sftp://${HOST}:${PORT}${API_ROOT}/models/stealth/StealthSettings.js" \
+  -T backend/utils/stealth/time.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/time.js" \
+  -T backend/utils/stealth/config.js             "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/config.js" \
+  -T backend/utils/stealth/lease.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/lease.js" \
+  -T backend/utils/stealth/access.js             "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/access.js" \
+  -T backend/utils/stealth/resetAll.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/resetAll.js" \
+  -T backend/routes/admin/stealth.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/stealth.js" \
+  -T backend/routes/client/stealth.js            "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/stealth.js" \
+  -T backend/routes/stealth/gateway.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/stealth/gateway.js" \
+  -T backend/cron/stealthScheduler.js            "sftp://${HOST}:${PORT}${API_ROOT}/cron/stealthScheduler.js" \
+  -T backend/scripts/stealth-reset.js            "sftp://${HOST}:${PORT}${API_ROOT}/scripts/stealth-reset.js" \
   -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 

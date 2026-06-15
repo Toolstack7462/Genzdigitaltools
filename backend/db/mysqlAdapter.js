@@ -36,6 +36,11 @@ const tableNames = {
   ExtensionScan: 'extension_scans',
   DeviceProfile: 'device_profiles',
   EmailVerification: 'email_verifications',
+  // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
+  StealthClient: 'stealth_clients',
+  StealthLease: 'stealth_leases',
+  StealthUsageLog: 'stealth_usage_logs',
+  StealthSettings: 'stealth_settings',
 };
 
 const populateModelByPath = {

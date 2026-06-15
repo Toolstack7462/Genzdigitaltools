@@ -1,0 +1,15 @@
+{
+  "name": "stealthwriter-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Gen Z StealthWriter Proxy Gateway — lease-gated reverse proxy with usage overlay",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "check": "node --check server.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3"
+  }
+}

@@ -103,6 +103,7 @@ import AdminContacts from './pages/admin/AdminContacts';
 import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminSecurityAlerts from './pages/admin/AdminSecurityAlerts';
 import AdminToolWizard from './pages/admin/AdminToolWizard';
+import AdminStealthWriter from './pages/admin/AdminStealthWriter';
 
 // Client Pages
 import ClientRoute from './components/ClientRoute';
@@ -111,6 +112,7 @@ import ClientDashboardEnhanced from './pages/client/ClientDashboardEnhanced';
 import ClientToolsEnhanced from './pages/client/ClientToolsEnhanced';
 import ClientToolDetail from './pages/client/ClientToolDetail';
 import ClientProfile from './pages/client/ClientProfile';
+import ClientStealthWriter from './pages/client/ClientStealthWriter';
 
 // Public layout wrapper
 const PublicPage = ({ children }) => (
@@ -180,12 +182,14 @@ function App() {
             <Route path="/admin/contacts" element={<ErrorBoundary><AdminRoute><AdminContacts /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/analytics" element={<ErrorBoundary><AdminRoute><AdminAnalytics /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/security" element={<ErrorBoundary><AdminRoute><AdminSecurityAlerts /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/stealthwriter" element={<ErrorBoundary><AdminRoute><AdminStealthWriter /></AdminRoute></ErrorBoundary>} />
 
             {/* ── Client Routes (untouched) ────────────────────── */}
             <Route path="/client/login"  element={<ClientLogin />} />
             <Route path="/client/dashboard" element={<ErrorBoundary><ClientRoute><ClientDashboardEnhanced /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/tools"  element={<ErrorBoundary><ClientRoute><ClientToolsEnhanced /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/tools/:id" element={<ErrorBoundary><ClientRoute><ClientToolDetail /></ClientRoute></ErrorBoundary>} />
+            <Route path="/client/stealthwriter" element={<ErrorBoundary><ClientRoute><ClientStealthWriter /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/profile" element={<ErrorBoundary><ClientRoute><ClientProfile /></ClientRoute></ErrorBoundary>} />
 
             {/* ── 404 ─────────────────────────────────────────── */}

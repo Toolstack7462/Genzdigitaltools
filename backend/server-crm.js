@@ -132,6 +132,7 @@ mysqlAdapter.connect()
     console.log(`   - Database: ${info.database}`);
     await ensureIndexes();
     await bootstrapAdmin();
+    stealthScheduler.start(); // StealthWriter daily reset (no-op unless STEALTH_INTERNAL_CRON=true)
   })
   .catch(err => {
     console.error('❌ MySQL/MariaDB connection FAILED:', err.message);
@@ -227,6 +228,11 @@ const clientNotificationsRoutes = require('./routes/client/notifications');
 const clientProfileRoutes     = require('./routes/client/profile');
 const clientExtensionRoutes   = require('./routes/client/extension');
 const extensionRoutes         = require('./routes/extension');
+// StealthWriter Proxy Gateway module (isolated)
+const adminStealthRoutes      = require('./routes/admin/stealth');
+const clientStealthRoutes     = require('./routes/client/stealth');
+const stealthGatewayRoutes    = require('./routes/stealth/gateway');
+const stealthScheduler        = require('./cron/stealthScheduler');
 
 // Mount routes
 app.use('/api/crm/auth',             authRoutes);
@@ -245,6 +251,10 @@ app.use('/api/crm/client/tools',     clientToolsRoutes);
 app.use('/api/crm/client/assignments', clientAssignmentsRoutes);
 app.use('/api/crm/client/notifications', clientNotificationsRoutes);
 app.use('/api/crm/client/extension', clientExtensionRoutes);
+// StealthWriter Proxy Gateway module — isolated mounts
+app.use('/api/crm/admin/stealth',    adminStealthRoutes);
+app.use('/api/crm/client/stealth',   clientStealthRoutes);
+app.use('/api/crm/stealth/gateway',  stealthGatewayRoutes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check
