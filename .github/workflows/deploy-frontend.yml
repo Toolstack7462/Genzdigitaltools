@@ -1,0 +1,65 @@
+name: Deploy frontend to Hostinger
+
+# Builds the React app and uploads frontend/build/ to the Hostinger frontend
+# domain over FTP. Runs on every push to main that touches the frontend (or
+# manually via the "Run workflow" button).
+#
+# One-time setup — add these in the repo: Settings → Secrets and variables → Actions
+#   Secrets:
+#     FTP_SERVER     e.g. ftp.genzdigitalstore.com   (Hostinger hPanel → Files → FTP Accounts)
+#     FTP_USERNAME   the FTP account username
+#     FTP_PASSWORD   the FTP account password
+#   Variables (optional):
+#     FTP_SERVER_DIR  target public dir, defaults to public_html/ if unset
+#
+# The production API base (https://api.genzdigitalstore.com) comes from
+# frontend/.env.production, which CRA loads automatically during `npm run build`.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/deploy-frontend.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-frontend
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm install --legacy-peer-deps
+
+      - name: Build
+        working-directory: frontend
+        env:
+          CI: 'false'
+          GENERATE_SOURCEMAP: 'false'
+        run: npm run build
+
+      - name: Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./frontend/build/
+          server-dir: ${{ vars.FTP_SERVER_DIR || 'public_html/' }}
+          # Keep server-only files (e.g. .htaccess, the extension ZIP under
+          # /downloads if managed separately) from being wiped on each deploy.
+          dangerous-clean-slate: false
