@@ -11,6 +11,7 @@ import {
 const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { EXT_ZIP_URL, EXT_ZIP_FILENAME } from '../../lib/extension';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 
@@ -127,6 +128,15 @@ const ToolCard = ({ tool, onOpen, openState }) => {
 const ClientDashboardEnhanced = () => {
   const navigate = useNavigate();
   const { showError } = useToast();
+  // The Install Extension button downloads the static ZIP directly. We don't
+  // preventDefault (so the anchor's own download fires in the user gesture,
+  // avoiding popup blockers); this just verifies the file is reachable and
+  // surfaces a clear error if it's missing.
+  const verifyExtensionDownload = useCallback(() => {
+    fetch(EXT_ZIP_URL, { method: 'HEAD' })
+      .then((r) => { if (!r.ok) throw new Error('missing'); })
+      .catch(() => showError('Extension download is temporarily unavailable. Please try again or contact support.'));
+  }, [showError]);
   const [tools, setTools] = useState([]);
   const [expiringTools, setExpiringTools] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -568,7 +578,8 @@ const ClientDashboardEnhanced = () => {
               {/* action */}
               <div className="flex-shrink-0 sm:self-center">
                 {!extConnStatus?.checking ? (
-                  <a href="/chrome-extension" target="_blank" rel="noopener noreferrer"
+                  <a href={EXT_ZIP_URL} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer"
+                     onClick={verifyExtensionDownload}
                      data-testid="ext-banner-install"
                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
                      style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 10px 22px -10px rgba(37,99,235,0.75)' }}>
