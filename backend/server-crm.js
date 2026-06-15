@@ -70,6 +70,14 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
   : [];
 
+// StealthWriter Proxy Gateway origin — a fixed first-party origin whose injected
+// overlay calls the gateway API cross-origin. Allowed in code (derived from
+// STEALTH_GATEWAY_URL) so it never depends on ALLOWED_ORIGINS being edited.
+let STEALTH_GATEWAY_ORIGIN = '';
+try {
+  if (process.env.STEALTH_GATEWAY_URL) STEALTH_GATEWAY_ORIGIN = new URL(process.env.STEALTH_GATEWAY_URL).origin;
+} catch (_) { /* ignore malformed URL */ }
+
 if (ALLOWED_ORIGINS.length === 0) {
   console.warn('⚠️  WARNING: ALLOWED_ORIGINS is not set. No browser origins will be permitted.');
   console.warn('   Set ALLOWED_ORIGINS in .env, e.g.: https://app.example.com,http://localhost:3000');
@@ -82,6 +90,11 @@ const corsOptions = {
 
     if (ALLOWED_ORIGINS.includes(origin)) {
       console.log(`✅ CORS: Allowed origin: ${origin}`);
+      return callback(null, true);
+    }
+
+    // StealthWriter gateway origin (first-party, fixed) — overlay → gateway API.
+    if (STEALTH_GATEWAY_ORIGIN && origin === STEALTH_GATEWAY_ORIGIN) {
       return callback(null, true);
     }
 
