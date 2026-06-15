@@ -27,7 +27,10 @@ const ToolCard = ({ tool, onOpen, openState }) => {
   const isUrgent   = !isExpired && hasDays && days <= 3;   // 0–3 days → red/orange
   const isWarning  = !isExpired && hasDays && days >= 4 && days <= 7; // 4–7 → amber
   const isExpiring = isUrgent || isWarning;
-  const expiryLabel = days === 0 ? 'Expires today' : `Expires in ${days} day${days === 1 ? '' : 's'}`;
+  const fmtFull = (d) => { const dt = new Date(d); return isNaN(dt.getTime()) ? null : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
+  const endDateStr = fmtFull(tool.endDate || tool.accessEndDate);
+  const expiryLabel = (days === 0 ? 'Expires today' : `Expires in ${days}d`) + (endDateStr ? ` · ${endDateStr}` : '');
+  const expiredLabel = 'Expired' + (endDateStr ? ` · ${endDateStr}` : '');
 
   const getBadges = () => {
     const badges = [];
@@ -92,7 +95,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
       {isExpired && (
         <div className="mb-3">
           <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700">
-            <Lock size={11} /> Subscription expired
+            <Lock size={11} /> {expiredLabel}
           </span>
         </div>
       )}

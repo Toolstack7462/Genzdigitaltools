@@ -1,16 +1,16 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, Link } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
-import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2, Loader2, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2, Loader2, AlertCircle, Lock, RefreshCw, AlertTriangle } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { useExtension } from '../../hooks/useExtension';
-import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
+import { daysUntilExpiry as expiryDays, isAccessExpired } from '../../utils/expiry';
 
 const ClientToolDetail = () => {
   const navigate = useNavigate();
   const { id } = useParams();
-  const { showError } = useToast();
+  const { showError, showWarning } = useToast();
   // Same secure opener as the dashboard: the extension fetches the latest
   // admin session bundle in the background, injects it, and opens the real
   // tool URL in a separate tab. The session bundle never reaches this page.
@@ -48,6 +48,18 @@ const ClientToolDetail = () => {
   useEffect(() => {
     loadTool();
   }, [id]);
+
+  // Urgent expiry warning toast — once per day (shares the dashboard's key so it
+  // never double-fires the same day).
+  useEffect(() => {
+    if (!tool) return;
+    const d = expiryDays(tool.accessEndDate, tool.daysUntilExpiry);
+    if (tool.status === 'expired' || d === null || d < 1 || d > 3) return;
+    const key = `expiry_urgent_toast_${new Date().toDateString()}`;
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, '1');
+    showWarning(`Your access to ${tool.name} expires in ${d} day${d === 1 ? '' : 's'}. Please renew or contact support.`, 9000);
+  }, [tool, showWarning]);
 
   const loadTool = async () => {
     try {
@@ -99,124 +111,137 @@ const ClientToolDetail = () => {
 
   const theme = getCategoryTheme(tool.category);
   const days = daysUntilExpiry(tool.accessEndDate, tool.daysUntilExpiry);
-  const isExpiringSoon = days !== null && days <= 7 && days > 0;
+  const expired = tool.status === 'expired' || isAccessExpired(tool.accessEndDate);
+  const isUrgent  = !expired && days !== null && days >= 0 && days <= 3;
+  const isWarning = !expired && days !== null && days >= 4 && days <= 7;
+  const isExpiringSoon = isUrgent || isWarning;
+  const fmtFull = (d) => { const dt = new Date(d); return isNaN(dt.getTime()) ? null : dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  const endStr = fmtFull(tool.accessEndDate);
+  const expiryText = expired
+    ? `Expired${endStr ? ' · ' + endStr : ''}`
+    : (days === 0 ? 'Expires today' : `Expires in ${days}d`) + (endStr ? ` · ${endStr}` : '');
 
   return (
     <ClientLayoutEnhanced>
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div className="max-w-3xl mx-auto space-y-4">
         {/* Back Button */}
         <button
           onClick={() => navigate('/client/tools')}
-          className="flex items-center gap-2 text-genz-muted hover:text-genz-navy transition-colors group"
+          className="flex items-center gap-2 text-[14px] text-genz-muted hover:text-genz-navy transition-colors group"
         >
-          <ArrowLeft size={20} className="group-hover:-translate-x-1 transition-transform" />
+          <ArrowLeft size={18} className="group-hover:-translate-x-1 transition-transform" />
           Back to Tools
         </button>
 
         {/* Main Tool Card */}
-        <div className={`relative overflow-hidden rounded-3xl ${CARD_VARIANTS.elevated}`}>
+        <div className={`relative overflow-hidden rounded-2xl ${CARD_VARIANTS.elevated}`}>
           {/* Background glow */}
-          <div className={`absolute top-0 right-0 w-80 h-80 bg-gradient-to-br ${theme.gradient} opacity-10 rounded-full blur-3xl`} />
-          <div className={`absolute bottom-0 left-0 w-60 h-60 bg-gradient-to-br from-blue-500 to-purple-500 opacity-5 rounded-full blur-3xl`} />
-          
-          <div className="relative p-8">
+          <div className={`absolute top-0 right-0 w-64 h-64 bg-gradient-to-br ${theme.gradient} opacity-10 rounded-full blur-3xl`} />
+          <div className={`absolute bottom-0 left-0 w-48 h-48 bg-gradient-to-br from-blue-500 to-purple-500 opacity-5 rounded-full blur-3xl`} />
+
+          <div className="relative p-5 sm:p-6">
             {/* Tool Header */}
-            <div className="flex flex-col sm:flex-row items-start gap-6 mb-8">
-              <div className={`w-24 h-24 bg-gradient-to-br ${theme.gradient} rounded-2xl flex items-center justify-center shadow-2xl flex-shrink-0`}>
-                <Package size={48} className="text-white" />
+            <div className="flex items-start gap-4 mb-5">
+              <div className={`w-16 h-16 bg-gradient-to-br ${theme.gradient} rounded-2xl flex items-center justify-center shadow-xl flex-shrink-0`}>
+                <Package size={30} className="text-white" />
               </div>
-              <div className="flex-1">
-                <div className="flex flex-wrap items-center gap-3 mb-3">
-                  <h1 className="font-heading text-3xl font-extrabold text-genz-navy">{tool.name}</h1>
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2.5 mb-1.5">
+                  <h1 className="font-heading text-2xl font-extrabold text-genz-navy">{tool.name}</h1>
                   {tool.category && (
-                    <span className={`px-4 py-1.5 ${theme.bg} ${theme.text} rounded-full text-sm font-medium`}>
+                    <span className={`px-3 py-1 ${theme.bg} ${theme.text} rounded-full text-[12px] font-semibold`}>
                       {tool.category}
                     </span>
                   )}
                 </div>
-                <p className="text-genz-muted text-lg leading-relaxed">
+                <p className="text-genz-muted text-[14px] leading-relaxed">
                   {tool.description || 'No description available'}
                 </p>
               </div>
             </div>
 
             {/* Status Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
               {/* Access Status */}
-              <div className={`${CARD_VARIANTS.green} rounded-xl p-4`}>
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center">
-                    <CheckCircle2 size={20} className="text-green-600" />
+              <div className={`rounded-xl p-3.5 border ${expired ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+                <div className="flex items-center gap-2.5">
+                  <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${expired ? 'bg-red-500/15' : 'bg-green-500/15'}`}>
+                    {expired ? <Lock size={17} className="text-red-600" /> : <CheckCircle2 size={17} className="text-green-600" />}
                   </div>
                   <div>
-                    <p className="text-green-600 font-medium">Access Status</p>
-                    <p className="text-genz-muted text-sm">Active & Ready</p>
+                    <p className={`font-semibold text-[13px] ${expired ? 'text-red-600' : 'text-green-600'}`}>Access Status</p>
+                    <p className="text-genz-muted text-[12px]">{expired ? 'Expired' : 'Active & Ready'}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Expiry Info */}
+              {/* Valid Until / Expiry */}
               {tool.accessEndDate && (
-                <div className={`${isExpiringSoon ? CARD_VARIANTS.yellow : CARD_VARIANTS.blue} rounded-xl p-4`}>
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 ${isExpiringSoon ? 'bg-yellow-500/20' : 'bg-blue-500/20'} rounded-lg flex items-center justify-center`}>
-                      <Clock size={20} className={isExpiringSoon ? 'text-amber-600' : 'text-blue-600'} />
+                <div className={`rounded-xl p-3.5 border ${
+                  expired || isUrgent ? 'bg-red-50 border-red-200' : isWarning ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'
+                }`}>
+                  <div className="flex items-center gap-2.5">
+                    <div className={`w-9 h-9 rounded-lg flex items-center justify-center ${expired || isUrgent ? 'bg-red-500/15' : isWarning ? 'bg-amber-500/15' : 'bg-blue-500/15'}`}>
+                      {expired ? <Lock size={17} className="text-red-600" />
+                        : isExpiringSoon ? <AlertTriangle size={17} className={isUrgent ? 'text-red-600' : 'text-amber-600'} />
+                        : <Clock size={17} className="text-blue-600" />}
                     </div>
-                    <div>
-                      <p className={`font-medium ${isExpiringSoon ? 'text-amber-600' : 'text-blue-600'}`}>
-                        {isExpiringSoon ? `${days} Days Left` : 'Valid Until'}
+                    <div className="min-w-0">
+                      <p className={`font-semibold text-[13px] ${expired || isUrgent ? 'text-red-600' : isWarning ? 'text-amber-600' : 'text-blue-600'}`}>
+                        {expired ? 'Access Ended' : isExpiringSoon ? 'Expiring Soon' : 'Valid Until'}
                       </p>
-                      <p className="text-genz-muted text-sm">
-                        {new Date(tool.accessEndDate).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'long',
-                          day: 'numeric'
-                        })}
-                      </p>
+                      <p className="text-genz-muted text-[12px] truncate">{isExpiringSoon ? expiryText : endStr}</p>
                     </div>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Action Button — opens the admin-saved tool URL via the extension
-                (latest session injected in the background, separate new tab). */}
-            {tool.targetUrl && (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  onClick={handleAccess}
-                  disabled={openState.loading}
-                  className="w-full flex items-center justify-center gap-3 py-4 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl font-semibold text-lg hover:shadow-2xl hover:shadow-genz-teal/30 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
-                  data-testid="open-tool-website-btn"
-                >
-                  {openState.loading
-                    ? <Loader2 size={22} className="animate-spin" />
-                    : <ExternalLink size={22} />}
-                  {openState.loading ? 'Opening Tool' : 'Access Now'}
-                </button>
-                {openState.error && (
-                  <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
-                    <AlertCircle size={16} className="text-red-500 flex-shrink-0 mt-0.5" />
-                    <span className="text-sm text-red-600">{openState.error}</span>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* Action — expired tools show Renew (Access disabled); otherwise the
+                extension opens the admin-saved tool URL in a new tab. */}
+            <div className="space-y-2">
+              {expired ? (
+                <Link to="/contact"
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-[15px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
+                  <RefreshCw size={18} /> Renew Access
+                </Link>
+              ) : tool.targetUrl ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={handleAccess}
+                    disabled={openState.loading}
+                    className="w-full flex items-center justify-center gap-2.5 py-3 bg-gradient-to-r from-genz-teal to-genz-dark-teal text-white rounded-xl font-semibold text-[15px] hover:shadow-xl hover:shadow-genz-teal/30 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed disabled:scale-100"
+                    data-testid="open-tool-website-btn"
+                  >
+                    {openState.loading
+                      ? <Loader2 size={18} className="animate-spin" />
+                      : <ExternalLink size={18} />}
+                    {openState.loading ? 'Opening Tool' : 'Access Now'}
+                  </button>
+                  {openState.error && (
+                    <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200">
+                      <AlertCircle size={15} className="text-red-500 flex-shrink-0 mt-0.5" />
+                      <span className="text-[13px] text-red-600">{openState.error}</span>
+                    </div>
+                  )}
+                </>
+              ) : null}
+            </div>
           </div>
         </div>
 
         {/* Info Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {/* How to Use */}
-          <div className={`${CARD_VARIANTS.indigo} rounded-2xl p-6`}>
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
-                <Info size={24} className="text-indigo-600" />
+          <div className={`${CARD_VARIANTS.indigo} rounded-xl p-4`}>
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-indigo-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Info size={18} className="text-indigo-600" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-genz-navy mb-2">How to Use</h3>
-                <p className="text-genz-muted text-sm leading-relaxed">
+                <h3 className="text-[15px] font-semibold text-genz-navy mb-1">How to Use</h3>
+                <p className="text-genz-muted text-[12.5px] leading-relaxed">
                   Click &quot;Access Now&quot; above to open your assigned tool in a new tab with your latest session applied automatically.
                 </p>
               </div>
@@ -224,14 +249,14 @@ const ClientToolDetail = () => {
           </div>
 
           {/* Security Info */}
-          <div className={`${CARD_VARIANTS.cyan} rounded-2xl p-6`}>
-            <div className="flex items-start gap-4">
-              <div className="w-12 h-12 bg-cyan-500/20 rounded-xl flex items-center justify-center flex-shrink-0">
-                <Shield size={24} className="text-cyan-600" />
+          <div className={`${CARD_VARIANTS.cyan} rounded-xl p-4`}>
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-cyan-500/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                <Shield size={18} className="text-cyan-600" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-genz-navy mb-2">Secure Access</h3>
-                <p className="text-genz-muted text-sm leading-relaxed">
+                <h3 className="text-[15px] font-semibold text-genz-navy mb-1">Secure Access</h3>
+                <p className="text-genz-muted text-[12.5px] leading-relaxed">
                   Your tool access is secured and monitored. Activity is logged for security purposes.
                 </p>
               </div>
