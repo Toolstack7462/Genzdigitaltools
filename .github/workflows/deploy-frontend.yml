@@ -60,6 +60,16 @@ jobs:
           password: ${{ secrets.FTP_PASSWORD }}
           local-dir: ./frontend/build/
           server-dir: ${{ vars.FTP_SERVER_DIR || 'public_html/' }}
+          # Never upload .htaccess: on this host the server-side .htaccess also
+          # carries the Passenger/Node backend config (PassengerStartupFile
+          # server-crm.js, etc.). The build's .htaccess only has SPA routing, so
+          # uploading it would strip the backend directives and take the API down.
+          # Excluding it keeps the server's complete .htaccess as the source of truth.
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            **/.htaccess
           # Keep server-only files (e.g. .htaccess, the extension ZIP under
           # /downloads if managed separately) from being wiped on each deploy.
           dangerous-clean-slate: false
