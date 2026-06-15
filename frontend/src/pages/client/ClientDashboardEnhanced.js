@@ -21,8 +21,13 @@ import { useExtension } from '../../hooks/useExtension';
 /* ─── Tool Card Component ────────────────────────────────────────── */
 const ToolCard = ({ tool, onOpen, openState }) => {
   const theme = getCategoryTheme(tool.category);
+  const days = tool.daysUntilExpiry;
+  const hasDays = typeof days === 'number' && days >= 0;
   const isExpired  = tool.status === 'expired';
-  const isExpiring = tool.daysUntilExpiry !== undefined && tool.daysUntilExpiry <= 7 && !isExpired;
+  const isUrgent   = !isExpired && hasDays && days <= 3;   // 0–3 days → red/orange
+  const isWarning  = !isExpired && hasDays && days >= 4 && days <= 7; // 4–7 → amber
+  const isExpiring = isUrgent || isWarning;
+  const expiryLabel = days === 0 ? 'Expires today' : `Expires in ${days} day${days === 1 ? '' : 's'}`;
 
   const getBadges = () => {
     const badges = [];
@@ -34,14 +39,21 @@ const ToolCard = ({ tool, onOpen, openState }) => {
   };
 
   return (
-    <div className={`relative group rounded-xl p-4 flex flex-col transition-all duration-200 hover:-translate-y-1 ${
+    <div className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
       isExpired
-        ? 'opacity-70 border border-red-200 bg-red-50'
-        : 'gz-card'
-    }`}>
+        ? 'opacity-80 border border-red-200 bg-red-50'
+        : 'gz-card hover:shadow-[0_18px_38px_-18px_rgba(37,99,235,0.45),0_0_0_1px_rgba(6,182,212,0.18)]'
+    }`}
+      style={!isExpired ? { background: 'linear-gradient(167deg,#ffffff 0%,#f6fbfe 100%)' } : undefined}
+    >
+      {/* subtle hover sheen */}
+      {!isExpired && (
+        <div className="absolute inset-x-0 top-0 h-10 rounded-t-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+             style={{ background: 'linear-gradient(180deg, rgba(6,182,212,0.08), transparent)' }} />
+      )}
       {/* Status indicator */}
       {isExpiring && (
-        <div className="absolute top-3 right-3 w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <div className={`absolute top-3 right-3 w-2 h-2 rounded-full animate-pulse ${isUrgent ? 'bg-red-500' : 'bg-amber-400'}`} />
       )}
 
       {/* Tool header */}
@@ -69,15 +81,19 @@ const ToolCard = ({ tool, onOpen, openState }) => {
 
       {/* Status / expiry */}
       {isExpiring && (
-        <div className="flex items-center gap-1 text-[12px] text-amber-600 mb-3">
-          <AlertTriangle size={11} />
-          <span>Expires in {tool.daysUntilExpiry}d</span>
+        <div className="mb-3">
+          <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold ${
+            isUrgent ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+          }`}>
+            <AlertTriangle size={11} /> {expiryLabel}
+          </span>
         </div>
       )}
       {isExpired && (
-        <div className="flex items-center gap-1 text-[12px] text-red-500 mb-3">
-          <Lock size={11} />
-          <span>Subscription expired</span>
+        <div className="mb-3">
+          <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-100 text-red-700">
+            <Lock size={11} /> Subscription expired
+          </span>
         </div>
       )}
 
@@ -127,7 +143,7 @@ const ToolCard = ({ tool, onOpen, openState }) => {
 /* ─── MAIN DASHBOARD ─────────────────────────────────────────────── */
 const ClientDashboardEnhanced = () => {
   const navigate = useNavigate();
-  const { showError } = useToast();
+  const { showError, showWarning } = useToast();
   // The Install Extension button downloads the static ZIP directly. We don't
   // preventDefault (so the anchor's own download fires in the user gesture,
   // avoiding popup blockers); this just verifies the file is reachable and
@@ -178,6 +194,20 @@ const ClientDashboardEnhanced = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Urgent expiry toast: if any active tool has 1–3 days left, warn once per day.
+  useEffect(() => {
+    if (!tools.length) return;
+    const urgent = tools
+      .filter(t => t.status !== 'expired' && typeof t.daysUntilExpiry === 'number' && t.daysUntilExpiry >= 1 && t.daysUntilExpiry <= 3)
+      .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry)[0];
+    if (!urgent) return;
+    const key = `expiry_urgent_toast_${new Date().toDateString()}`;
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, '1');
+    const d = urgent.daysUntilExpiry;
+    showWarning(`Your access to ${urgent.name} expires in ${d} day${d === 1 ? '' : 's'}. Please renew or contact support.`, 9000);
+  }, [tools, showWarning]);
+
   // Check scanner consent once bridge is ready
   useEffect(() => {
     if (!bridgeReady) return;
@@ -193,6 +223,18 @@ const ClientDashboardEnhanced = () => {
   const activeTools   = tools.filter(t => t.status !== 'expired');
   const expiredTools  = tools.filter(t => t.status === 'expired');
   const featuredTools = tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4);
+
+  // Expiring Soon — computed from real assignment data (backend daysUntilExpiry,
+  // which mirrors effectiveEndBoundary). Within 7 days, excludes expired.
+  const expiringSoon = activeTools
+    .filter(t => typeof t.daysUntilExpiry === 'number' && t.daysUntilExpiry >= 0 && t.daysUntilExpiry <= 7)
+    .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+  const nearestExpiry = expiringSoon[0] || null;
+  const fmtExpiry = (d) => {
+    if (!d) return null;
+    const dt = new Date(d);
+    return isNaN(dt.getTime()) ? null : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  };
 
   // Unique categories
   const categories = ['All', ...new Set(tools.map(t => t.category).filter(Boolean))];
@@ -252,6 +294,14 @@ const ClientDashboardEnhanced = () => {
   const handleOpenTool = async (tool) => {
     const toolId = tool._id || tool.toolId;
     if (!toolId) return;
+
+    // Frontend guard: never attempt to open an expired tool. The backend also
+    // blocks expired access (assignment_expired / 403), so this just avoids a
+    // pointless round-trip and shows a clear message.
+    if (tool.status === 'expired') {
+      setToolOpenStates(prev => ({ ...prev, [toolId]: { error: 'Access expired. Contact admin to renew.' } }));
+      return;
+    }
 
     // Extension is the required background access helper. Do not open targetUrl directly
     // from the website because credentials/session data must stay inside the extension.
@@ -482,14 +532,14 @@ const ClientDashboardEnhanced = () => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
               { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
-              { icon: Clock,        kind: 'num',    value: expiringTools.length, label: 'Expiring Soon',   sub: 'Within 7 days',     color: '#D97706' },
+              { icon: Clock,        kind: 'num',    value: expiringSoon.length,  label: 'Expiring Soon',   sub: nearestExpiry ? `Soonest ${fmtExpiry(nearestExpiry.endDate)}` : 'Within 7 days', color: '#D97706' },
               { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership',        color: accountActive ? '#16A34A' : '#EF4444' },
               { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal',     label: 'Device Security', sub: 'Encrypted bridge',  color: '#06B6D4' },
             ];
             return cards.map(({ icon: Icon, kind, value, label, sub, color, badge }) => (
               <div
                 key={label}
-                className="group relative overflow-hidden rounded-xl px-3.5 py-3 transition-all duration-300 hover:-translate-y-0.5"
+                className="group relative overflow-hidden rounded-xl px-3 py-2.5 transition-all duration-300 hover:-translate-y-0.5"
                 style={{
                   background: 'linear-gradient(165deg, rgba(255,255,255,0.99) 0%, rgba(244,250,253,0.96) 100%)',
                   border: `1px solid ${color}33`,
@@ -505,9 +555,9 @@ const ClientDashboardEnhanced = () => {
                   className="absolute -inset-px rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
                   style={{ boxShadow: `0 14px 30px -14px ${color}66, 0 0 0 1px ${color}44 inset` }}
                 />
-                <div className="relative flex items-center gap-3 pl-1.5">
+                <div className="relative flex items-center gap-2.5 pl-1">
                   <span
-                    className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform duration-300 group-hover:scale-105"
+                    className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-transform duration-300 group-hover:scale-105"
                     style={{
                       background: `linear-gradient(135deg, ${color}26, ${color}10)`,
                       color,
@@ -515,11 +565,11 @@ const ClientDashboardEnhanced = () => {
                       boxShadow: `inset 0 1px 0 rgba(255,255,255,0.55), 0 4px 10px -6px ${color}55`,
                     }}
                   >
-                    <Icon size={15} strokeWidth={2.4} />
+                    <Icon size={14} strokeWidth={2.4} />
                   </span>
                   <div className="min-w-0 flex-1">
                     {kind === 'num' ? (
-                      <div className="font-heading text-[22px] font-extrabold tabular-nums leading-none" style={{ color: '#071B33' }}>
+                      <div className="font-heading text-[20px] font-extrabold tabular-nums leading-none" style={{ color: '#071B33' }}>
                         {value}
                       </div>
                     ) : (
@@ -596,6 +646,32 @@ const ClientDashboardEnhanced = () => {
           </div>
         )}
 
+        {/* Extension installed → compact connected/synced status strip */}
+        {bridgeReady && (
+          <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-3"
+               style={{
+                 background: 'linear-gradient(120deg, rgba(7,27,51,0.96) 0%, rgba(6,78,89,0.9) 100%)',
+                 border: '1px solid rgba(52,211,153,0.32)',
+                 boxShadow: '0 12px 30px -20px rgba(52,211,153,0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
+               }}>
+            <div className="flex items-center gap-3">
+              <span className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                    style={{ background: 'rgba(52,211,153,0.16)', border: '1px solid rgba(52,211,153,0.4)', color: '#34D399' }}>
+                <ShieldCheck size={18} />
+              </span>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-white text-[13.5px] leading-tight flex items-center gap-2">
+                  Extension connected
+                  <span className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-md text-[10px] font-bold" style={{ background: 'rgba(52,211,153,0.16)', border: '1px solid rgba(52,211,153,0.38)', color: '#6EE7B7' }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Synced
+                  </span>
+                </h3>
+                <p className="text-[12px] text-white/60 mt-0.5 leading-snug">Your tools open securely in one click — you're all set.</p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* ── Featured Tools ── */}
         {featuredTools.length > 0 && (
           <div>
@@ -628,7 +704,7 @@ const ClientDashboardEnhanced = () => {
           </div>
 
           {/* Search + Filter */}
-          <div className="flex flex-col sm:flex-row gap-2.5 mb-4">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-4">
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
               <input
@@ -649,7 +725,7 @@ const ClientDashboardEnhanced = () => {
               {categories.slice(0, 8).map(cat => (
                 <button key={cat}
                         onClick={() => setActiveFilter(cat)}
-                        className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-all ${
+                        className={`flex-shrink-0 px-3 py-2 rounded-lg text-[12px] font-semibold transition-all ${
                           activeFilter === cat
                             ? 'text-white shadow-md'
                             : 'text-white/55 hover:text-white'
@@ -687,7 +763,8 @@ const ClientDashboardEnhanced = () => {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            <div className="grid gap-3"
+                 style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 250px), 300px))', justifyContent: 'start' }}>
               {filteredTools.map(tool => (
                 <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />
               ))}
