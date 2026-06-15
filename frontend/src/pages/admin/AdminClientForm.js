@@ -63,15 +63,20 @@ const AdminClientForm = () => {
       setSaving(true);
       
       const payload = {
-        fullName: formData.fullName,
-        email: formData.email,
+        fullName: formData.fullName.trim(),
+        email: formData.email.trim(),
         status: formData.status,
-        devicePolicyEnabled: formData.devicePolicyEnabled
+        // Always a real boolean true/false (never a string or masked value).
+        devicePolicyEnabled: formData.devicePolicyEnabled === true
       };
-      
-      // Only include password if provided
-      if (formData.password.trim()) {
-        payload.password = formData.password;
+
+      // Only include password if the admin actually typed a new one. Never send
+      // an empty value or a masked placeholder (•••) — that would overwrite the
+      // existing password. Omitting the field leaves it unchanged on the backend.
+      const pwd = (formData.password || '').trim();
+      const isMaskOnly = pwd.length > 0 && /^[•●∙·*‣◦•·]+$/.test(pwd);
+      if (pwd && !isMaskOnly) {
+        payload.password = pwd;
       }
 
       if (isEdit) {
@@ -81,10 +86,14 @@ const AdminClientForm = () => {
         await api.post('/admin/clients', payload);
         showSuccess('Client created successfully');
       }
-      
+
       navigate('/admin/clients');
     } catch (error) {
-      showError(error.response?.data?.error || 'Failed to save client');
+      const data = error.response?.data;
+      const msg = (Array.isArray(data?.details) && data.details.length
+        ? data.details.map(d => d.message).join('; ')
+        : data?.message || data?.error) || 'Failed to save client';
+      showError(msg);
     } finally {
       setSaving(false);
     }
@@ -180,6 +189,7 @@ const AdminClientForm = () => {
                 value={formData.password}
                 onChange={handleChange}
                 required={!isEdit}
+                autoComplete="new-password"
                 className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder={isEdit ? '••••••••' : 'Enter password'}
                 data-testid="client-password-input"

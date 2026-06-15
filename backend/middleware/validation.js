@@ -6,19 +6,23 @@ const Joi = require('joi');
 const validate = (schema) => {
   return (req, res, next) => {
     const { error } = schema.validate(req.body, { abortEarly: false });
-    
+
     if (error) {
       const errors = error.details.map(detail => ({
         field: detail.path.join('.'),
         message: detail.message
       }));
-      
+
+      // Surface the precise field-level message(s) instead of a generic
+      // "Validation failed" so the client sees exactly what to correct.
+      const summary = errors.map(e => e.message).join('; ');
       return res.status(400).json({
-        error: 'Validation failed',
+        error: summary || 'Validation failed',
+        message: summary || 'Validation failed',
         details: errors
       });
     }
-    
+
     next();
   };
 };

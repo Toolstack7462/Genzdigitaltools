@@ -203,7 +203,13 @@ router.put('/:id', validate(schemas.updateClient), async (req, res) => {
     }
     if (password) { changes.password = 'changed'; client.passwordHash = password; }
     if (status && status !== client.status) { changes.status = { from: client.status, to: status }; client.status = status; }
-    if (devicePolicyEnabled !== undefined) { changes.devicePolicy = { from: client.devicePolicy.enabled, to: devicePolicyEnabled }; client.devicePolicy.enabled = devicePolicyEnabled; }
+    if (devicePolicyEnabled !== undefined) {
+      // Guard against legacy/partial records missing devicePolicy so toggling
+      // device binding OFF/ON can never throw.
+      if (!client.devicePolicy || typeof client.devicePolicy !== 'object') client.devicePolicy = { enabled: true, maxDevices: 1 };
+      changes.devicePolicy = { from: client.devicePolicy.enabled, to: devicePolicyEnabled };
+      client.devicePolicy.enabled = devicePolicyEnabled;
+    }
     if (notes !== undefined) client.notes = notes;
 
     await client.save();
