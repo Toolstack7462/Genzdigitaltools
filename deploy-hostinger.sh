@@ -59,6 +59,11 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
+  -T backend/utils/email.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/email.js" \
+  -T backend/models/EmailVerification.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/EmailVerification.js" \
+  -T backend/routes/authEmail.js              "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEmail.js" \
+  -T backend/routes/public.js                 "sftp://${HOST}:${PORT}${API_ROOT}/routes/public.js" \
+  -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 
 rm -f "${RESTART_TMP}"
