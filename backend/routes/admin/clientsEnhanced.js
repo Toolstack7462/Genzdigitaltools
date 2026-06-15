@@ -164,8 +164,13 @@ router.get('/:id', async (req, res) => {
 // ─── POST / — create client ───────────────────────────────────────────────────
 router.post('/', validate(schemas.createClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, notes } = req.body;
+    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes } = req.body;
     const ip = getClientIp(req);
+
+    // Accept either the flat flag or a nested { enabled } object; default ON.
+    const deviceEnabled = devicePolicyEnabled !== undefined
+      ? devicePolicyEnabled
+      : (devicePolicy && typeof devicePolicy === 'object' && devicePolicy.enabled !== undefined ? devicePolicy.enabled : true);
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: 'Email already exists' });
@@ -173,7 +178,7 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
     const client = await User.create({
       fullName, email, passwordHash: password,
       role: 'CLIENT', status: status || 'active',
-      devicePolicy: { enabled: devicePolicyEnabled !== false, maxDevices: 1 },
+      devicePolicy: { enabled: deviceEnabled !== false, maxDevices: 1 },
       notes
     });
 
@@ -188,8 +193,13 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
 // ─── PUT /:id ─────────────────────────────────────────────────────────────────
 router.put('/:id', validate(schemas.updateClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, notes } = req.body;
+    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes } = req.body;
     const ip = getClientIp(req);
+
+    // Accept either the flat flag or a nested { enabled } object.
+    const deviceEnabled = devicePolicyEnabled !== undefined
+      ? devicePolicyEnabled
+      : (devicePolicy && typeof devicePolicy === 'object' && devicePolicy.enabled !== undefined ? devicePolicy.enabled : undefined);
 
     const client = await User.findById(req.params.id);
     if (!client || client.role !== 'CLIENT') return res.status(404).json({ error: 'Client not found' });
@@ -203,12 +213,12 @@ router.put('/:id', validate(schemas.updateClient), async (req, res) => {
     }
     if (password) { changes.password = 'changed'; client.passwordHash = password; }
     if (status && status !== client.status) { changes.status = { from: client.status, to: status }; client.status = status; }
-    if (devicePolicyEnabled !== undefined) {
+    if (deviceEnabled !== undefined) {
       // Guard against legacy/partial records missing devicePolicy so toggling
       // device binding OFF/ON can never throw.
       if (!client.devicePolicy || typeof client.devicePolicy !== 'object') client.devicePolicy = { enabled: true, maxDevices: 1 };
-      changes.devicePolicy = { from: client.devicePolicy.enabled, to: devicePolicyEnabled };
-      client.devicePolicy.enabled = devicePolicyEnabled;
+      changes.devicePolicy = { from: client.devicePolicy.enabled, to: deviceEnabled };
+      client.devicePolicy.enabled = deviceEnabled;
     }
     if (notes !== undefined) client.notes = notes;
 

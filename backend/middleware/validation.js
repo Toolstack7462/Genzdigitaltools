@@ -82,15 +82,26 @@ const schemas = {
     password: Joi.string().min(8).required(),
     status: Joi.string().valid('active', 'disabled').default('active'),
     devicePolicyEnabled: Joi.boolean().default(true),
+    // Accept the nested object too (older/cached frontends send this) so a
+    // device-binding toggle never fails with "devicePolicy is not allowed".
+    devicePolicy: Joi.object({
+      enabled: Joi.boolean(),
+      maxDevices: Joi.number().integer().min(1)
+    }),
     notes: Joi.string().allow('', null).max(500)
   }),
-  
+
   updateClient: Joi.object({
     fullName: Joi.string().min(2).max(100),
     email: Joi.string().email(),
     password: Joi.string().min(8),
     status: Joi.string().valid('active', 'disabled'),
     devicePolicyEnabled: Joi.boolean(),
+    // Accept the nested object too (older/cached frontends send this).
+    devicePolicy: Joi.object({
+      enabled: Joi.boolean(),
+      maxDevices: Joi.number().integer().min(1)
+    }),
     notes: Joi.string().allow('', null).max(500)
   }).min(1),
   
