@@ -743,21 +743,33 @@ const ClientDashboardEnhanced = () => {
         {/* ── Quick actions ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: Chrome, title: 'Extension Setup',  desc: 'Install the Chrome extension for one-click tool access.', to: '/chrome-extension', cta: 'Install', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)' },
-            { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',        to: '/client/profile',   cta: 'Manage',  grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
-            { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',         to: '/pricing',          cta: 'Upgrade', grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
-          ].map(({ icon: Icon, title, desc, to, cta, grad }) => (
-            <Link key={title} to={to} className="ds-card ds-stat p-4 flex flex-col group">
-              <span className="w-9 h-9 rounded-lg flex items-center justify-center text-white mb-2.5" style={{ background: grad, boxShadow: '0 6px 14px -8px rgba(37,99,235,0.5)' }}>
-                <Icon size={17} />
-              </span>
-              <h4 className="text-[13.5px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
-              <p className="text-[12px] text-genz-muted mt-0.5 leading-snug flex-1">{desc}</p>
-              <span className="inline-flex items-center gap-1.5 mt-2.5 text-[12.5px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
-                {cta} <ArrowRight size={13} />
-              </span>
-            </Link>
-          ))}
+            { icon: Chrome, title: 'Extension Setup',  desc: 'Download the Chrome extension for one-click tool access.', to: EXT_ZIP_URL,       cta: 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true },
+            { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',         to: '/client/profile', cta: 'Manage',   grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
+            { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',          to: '/pricing',        cta: 'Upgrade',  grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
+          ].map(({ icon: Icon, title, desc, to, cta, grad, download }) => {
+            const cardClass = 'ds-card ds-stat p-4 flex flex-col group';
+            const inner = (
+              <>
+                <span className="w-9 h-9 rounded-lg flex items-center justify-center text-white mb-2.5" style={{ background: grad, boxShadow: '0 6px 14px -8px rgba(37,99,235,0.5)' }}>
+                  <Icon size={17} />
+                </span>
+                <h4 className="text-[13.5px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
+                <p className="text-[12px] text-genz-muted mt-0.5 leading-snug flex-1">{desc}</p>
+                <span className="inline-flex items-center gap-1.5 mt-2.5 text-[12.5px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
+                  {cta} <ArrowRight size={13} />
+                </span>
+              </>
+            );
+            // The extension entry downloads the static ZIP directly (new tab),
+            // so it never routes through the auth-gated /chrome-extension page.
+            return download ? (
+              <a key={title} href={to} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer" onClick={verifyExtensionDownload} className={cardClass}>
+                {inner}
+              </a>
+            ) : (
+              <Link key={title} to={to} className={cardClass}>{inner}</Link>
+            );
+          })}
         </div>
 
       </div>
