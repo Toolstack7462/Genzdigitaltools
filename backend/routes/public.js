@@ -3,6 +3,8 @@ const router = express.Router();
 const Blog = require('../models/Blog');
 const Contact = require('../models/Contact');
 const User = require('../models/User');
+const EmailVerification = require('../models/EmailVerification');
+const { sendVerificationEmail, isEmailEnabled } = require('../utils/email');
 const { normalizeAuthInputs } = require('../middleware/normalize');
 
 // POST /api/crm/public/register - Public client registration
@@ -45,22 +47,40 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
       passwordHash: password, // Will be hashed by pre-save hook
       role: 'CLIENT',
       status: 'active',
+      emailVerified: false,
       devicePolicy: {
         enabled: true, // Enable device binding for clients
         maxDevices: 1
       }
     });
-    
+
     console.log(`✅ New client registered: ${client.email} (ID: ${client._id})`);
-    
+
+    // Send an email-verification OTP (best-effort — never blocks signup). Login
+    // is intentionally left unchanged; verification is additive.
+    let emailSent = false;
+    try {
+      if (isEmailEnabled()) {
+        const { code } = await EmailVerification.issueOtp({ userId: client._id, email: client.email });
+        const r = await sendVerificationEmail(client.email, code);
+        emailSent = !r.error && !r.skipped;
+      }
+    } catch (e) {
+      console.error('Verification email failed to send (signup still succeeded):', e.message);
+    }
+
     res.status(201).json({
       success: true,
-      message: 'Account created successfully! You can now login.',
+      message: emailSent
+        ? 'Account created. Check your email for a verification code.'
+        : 'Account created successfully! You can now login.',
+      emailVerificationRequired: emailSent,
       user: {
         id: client._id,
         email: client.email,
         fullName: client.fullName,
-        role: client.role
+        role: client.role,
+        emailVerified: false
       }
     });
   } catch (error) {

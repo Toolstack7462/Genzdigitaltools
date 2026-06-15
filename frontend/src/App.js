@@ -64,6 +64,8 @@ import BlogDetail from './pages/BlogDetail';
 import About from './pages/About';
 import Contact from './pages/Contact';
 import Login from './pages/Login';
+import ForgotPassword from './pages/ForgotPassword';
+import ResetPassword from './pages/ResetPassword';
 import Join from './pages/Join';
 import NotFound from './pages/NotFound';
 import ExtensionSetup from './pages/ExtensionSetup';
@@ -146,6 +148,8 @@ function App() {
             <Route path="/tools"         element={<PublicPage><Tools /></PublicPage>} />
             <Route path="/login"         element={<PublicPage><Login /></PublicPage>} />
             <Route path="/join"          element={<PublicPage><Join /></PublicPage>} />
+            <Route path="/forgot-password" element={<PublicPage><ForgotPassword /></PublicPage>} />
+            <Route path="/reset-password"  element={<PublicPage><ResetPassword /></PublicPage>} />
             <Route path="/client/signup"   element={<PublicPage><Join /></PublicPage>} />
             <Route path="/client/register" element={<PublicPage><Join /></PublicPage>} />
             {/* Extension install/setup pages are MEMBER-ONLY — hard-gated behind

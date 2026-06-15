@@ -49,6 +49,14 @@ if (!/^[0-9a-fA-F]{64}$/.test(process.env.COOKIES_ENCRYPTION_KEY)) {
 
 console.log('✅ All required environment variables validated.');
 
+// Optional email (Resend) — verification & password-reset flows. Never required;
+// if unset, those emails are simply skipped. Vars: RESEND_API_KEY, EMAIL_FROM, FRONTEND_URL.
+console.log(
+  process.env.RESEND_API_KEY && process.env.EMAIL_FROM
+    ? '✅ Resend email configured (email verification & password reset enabled).'
+    : 'ℹ️  Resend not configured (RESEND_API_KEY/EMAIL_FROM) — verification & reset emails are disabled.'
+);
+
 const app = express();
 
 // Hostinger runs Node.js apps behind a reverse proxy.
@@ -204,6 +212,7 @@ async function bootstrapAdmin() {
 
 // Import enhanced routes
 const authRoutes              = require('./routes/authEnhanced');
+const authEmailRoutes         = require('./routes/authEmail');
 const publicRoutes            = require('./routes/public');
 const adminToolsRoutes        = require('./routes/admin/toolsEnhanced');
 const adminClientsRoutes      = require('./routes/admin/clientsEnhanced');
@@ -221,6 +230,7 @@ const extensionRoutes         = require('./routes/extension');
 
 // Mount routes
 app.use('/api/crm/auth',             authRoutes);
+app.use('/api/crm/auth',             authEmailRoutes); // email verification + password reset (additive)
 app.use('/api/crm/public',           publicRoutes);
 app.use('/api/crm/extension',        extensionRoutes);
 // Admin tools routes get a higher body limit for session bundle uploads (cookies/storage JSON)

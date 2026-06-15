@@ -158,6 +158,7 @@ const ClientLogin = () => {
               </form>
 
               <div className="mt-6 pt-5 border-t border-genz-border text-center space-y-2.5">
+                <Link to="/forgot-password" className="block text-[14px] text-genz-blue hover:underline font-semibold">Forgot your password?</Link>
                 <Link to="/join" className="block text-[14px] text-genz-blue hover:underline font-semibold">Don't have an account? Get Membership</Link>
                 <Link to="/" className="block text-[14px] text-genz-muted hover:text-genz-blue transition-colors">← Back to Gen Z Digital Store</Link>
               </div>

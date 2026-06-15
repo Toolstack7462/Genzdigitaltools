@@ -35,6 +35,7 @@ const tableNames = {
   ActivationToken: 'activation_tokens',
   ExtensionScan: 'extension_scans',
   DeviceProfile: 'device_profiles',
+  EmailVerification: 'email_verifications',
 };
 
 const populateModelByPath = {

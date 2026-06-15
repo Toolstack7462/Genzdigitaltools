@@ -11,6 +11,10 @@ const Join = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [verifyStep, setVerifyStep] = useState(false);
+  const [otp, setOtp] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const [resending, setResending] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -42,11 +46,18 @@ const Join = () => {
       });
       
       if (response.data.success) {
-        setSuccess(true);
-        showSuccess('Account created successfully! You can now login.');
-        setTimeout(() => {
-          navigate('/client/login');
-        }, 2000);
+        if (response.data.emailVerificationRequired) {
+          // Email is configured — verify with the OTP we just sent.
+          setVerifyStep(true);
+          showSuccess('Account created. Enter the code we emailed you.');
+        } else {
+          // Email not configured — preserve the original "just login" behaviour.
+          setSuccess(true);
+          showSuccess('Account created successfully! You can now login.');
+          setTimeout(() => {
+            navigate('/client/login');
+          }, 2000);
+        }
       }
     } catch (error) {
       const errorMsg = error.response?.data?.error || 'Failed to create account. Please try again.';
@@ -55,7 +66,39 @@ const Join = () => {
       setLoading(false);
     }
   };
-  
+
+  const handleVerify = async (e) => {
+    e.preventDefault();
+    const code = otp.trim();
+    if (code.length !== 6) {
+      showError('Enter the 6-digit code from your email');
+      return;
+    }
+    try {
+      setVerifying(true);
+      await api.post('/auth/verify-email', { email: formData.email, code });
+      setSuccess(true);
+      showSuccess('Email verified! Redirecting to login…');
+      setTimeout(() => navigate('/client/login'), 2000);
+    } catch (error) {
+      showError(error.response?.data?.error || 'Invalid or expired code');
+    } finally {
+      setVerifying(false);
+    }
+  };
+
+  const handleResend = async () => {
+    try {
+      setResending(true);
+      await api.post('/auth/resend-verification', { email: formData.email });
+      showSuccess('A new verification code is on its way.');
+    } catch (error) {
+      showError(error.response?.data?.error || 'Could not resend code');
+    } finally {
+      setResending(false);
+    }
+  };
+
   const handleChange = (e) => {
     setFormData({
       ...formData,
@@ -86,7 +129,71 @@ const Join = () => {
       </div>
     );
   }
-  
+
+  if (verifyStep) {
+    return (
+      <div className="text-genz-navy min-h-screen flex items-center justify-center px-4 py-24">
+        <div className="max-w-md w-full">
+          <div className="text-center mb-8">
+            <Link to="/" className="inline-block mb-4">
+              <GenZDigitalStoreLogo className="h-12" />
+            </Link>
+            <h1 className="text-3xl font-bold mb-2">Verify your email</h1>
+            <p className="text-genz-muted">
+              We sent a 6-digit code to <span className="font-semibold text-genz-navy">{formData.email}</span>
+            </p>
+          </div>
+
+          <div className="bg-white border border-genz-border rounded-2xl p-8">
+            <form onSubmit={handleVerify} className="space-y-6">
+              <div>
+                <label htmlFor="otp" className="block text-sm font-medium mb-2">Verification Code</label>
+                <input
+                  type="text"
+                  id="otp"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={otp}
+                  onChange={(e) => setOtp(e.target.value.replace(/\D/g, ''))}
+                  className="w-full px-4 py-3 text-center text-2xl tracking-[0.5em] font-bold bg-[#FFFFFF] border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
+                  placeholder="000000"
+                  data-testid="join-otp-input"
+                  autoFocus
+                />
+                <p className="text-xs text-genz-muted mt-1">The code expires in 10 minutes.</p>
+              </div>
+
+              <button
+                type="submit"
+                disabled={verifying}
+                className="w-full py-3 bg-gradient-orange text-genz-navy rounded-full font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+                data-testid="join-verify-btn"
+              >
+                {verifying ? 'Verifying…' : 'Verify Email'}
+              </button>
+            </form>
+
+            <div className="mt-6 text-center space-y-2">
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resending}
+                className="text-genz-teal hover:underline text-sm disabled:opacity-50"
+                data-testid="join-resend-btn"
+              >
+                {resending ? 'Sending…' : "Didn't get it? Resend code"}
+              </button>
+              <p className="text-genz-muted text-sm">
+                <Link to="/client/login" className="text-genz-muted hover:text-genz-teal">Skip for now and log in</Link>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="text-genz-navy min-h-screen flex items-center justify-center px-4 py-24">
       <div className="max-w-md w-full">

@@ -4,6 +4,7 @@ import AdminLayout from '../../components/AdminLayout';
 import { ArrowLeft, Save, User, Mail, Lock, Shield } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import PasswordInput from '../../components/PasswordInput';
 
 const AdminClientForm = () => {
   const navigate = useNavigate();
@@ -182,15 +183,14 @@ const AdminClientForm = () => {
                 <Lock size={16} className="text-genz-teal" />
                 Password {isEdit ? '(leave empty to keep existing)' : '*'}
               </label>
-              <input
-                type="password"
+              <PasswordInput
                 id="password"
                 name="password"
                 value={formData.password}
                 onChange={handleChange}
                 required={!isEdit}
                 autoComplete="new-password"
-                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                className="w-full px-4 py-3 pr-12 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
                 placeholder={isEdit ? '••••••••' : 'Enter password'}
                 data-testid="client-password-input"
               />
