@@ -26,6 +26,9 @@ import "@/App.css";
 
   const isAppPath = (p) =>
     p === '/login' || p.startsWith('/client') || p.startsWith('/admin') ||
+    // Public auth pages opened from emailed links — must NOT be bounced to the
+    // login on the app subdomain, or the reset/forgot flows can't be used.
+    p === '/reset-password' || p === '/forgot-password' ||
     // Member-only extension install/setup pages — reached from the logged-in
     // dashboard (opened in a new tab). Allow them on the app subdomain so the
     // fresh tab load is not bounced to /client/login.

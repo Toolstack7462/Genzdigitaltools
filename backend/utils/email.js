@@ -117,8 +117,10 @@ function emailShell(previewText, innerHtml) {
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" class="card" style="width:600px;max-width:100%;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 10px 30px rgba(11,36,64,0.10)">
         <!-- Header -->
         <tr>
-          <td align="center" style="background:${NAVY};background:linear-gradient(135deg,${NAVY},${NAVY_SOFT});padding:28px 24px">
-            <img src="${LOGO_URL}" alt="${BRAND}" height="40" style="height:40px;display:block;border:0;outline:none" />
+          <td align="center" style="background:${NAVY};background:linear-gradient(135deg,${NAVY},${NAVY_SOFT});padding:34px 24px 28px">
+            <img src="${LOGO_URL}" width="72" height="72" alt="${BRAND}"
+                 style="width:72px;height:72px;display:block;margin:0 auto;border:0;outline:none;border-radius:20px;background:#ffffff;padding:12px;box-shadow:0 6px 18px rgba(0,0,0,0.28)" />
+            <div style="margin-top:14px;color:#ffffff;font-size:19px;font-weight:800;letter-spacing:0.3px;font-family:'Segoe UI',Roboto,Helvetica,Arial,sans-serif">${BRAND}</div>
           </td>
         </tr>
         <tr><td style="height:4px;background:linear-gradient(90deg,${TEAL},#2563EB)"></td></tr>
