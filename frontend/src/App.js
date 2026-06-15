@@ -148,8 +148,11 @@ function App() {
             <Route path="/join"          element={<PublicPage><Join /></PublicPage>} />
             <Route path="/client/signup"   element={<PublicPage><Join /></PublicPage>} />
             <Route path="/client/register" element={<PublicPage><Join /></PublicPage>} />
-            <Route path="/extension"     element={<PublicPage><ExtensionSetup /></PublicPage>} />
-            <Route path="/chrome-extension" element={<PublicPage><ChromeExtensionPage /></PublicPage>} />
+            {/* Extension install/setup pages are MEMBER-ONLY — hard-gated behind
+                ClientRoute so anonymous visitors who type the URL are redirected
+                to the client login. Reached from the logged-in dashboard banner. */}
+            <Route path="/extension"     element={<ErrorBoundary><ClientRoute><PublicPage><ExtensionSetup /></PublicPage></ClientRoute></ErrorBoundary>} />
+            <Route path="/chrome-extension" element={<ErrorBoundary><ClientRoute><PublicPage><ChromeExtensionPage /></PublicPage></ClientRoute></ErrorBoundary>} />
 
             {/* ── Admin Routes (untouched) ─────────────────────── */}
             <Route path="/admin/login"   element={<AdminLogin />} />
