@@ -66,7 +66,7 @@ const AdminClientForm = () => {
         fullName: formData.fullName,
         email: formData.email,
         status: formData.status,
-        devicePolicy: { enabled: formData.devicePolicyEnabled, maxDevices: 1 }
+        devicePolicyEnabled: formData.devicePolicyEnabled
       };
       
       // Only include password if provided
