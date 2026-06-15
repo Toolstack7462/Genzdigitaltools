@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, User, Eye, EyeOff, CheckCircle2 } from 'lucide-react';
 import GenZDigitalStoreLogo from '../components/GenZDigitalStoreLogo';
@@ -21,7 +21,17 @@ const Join = () => {
     password: ''
   });
   const [agreed, setAgreed] = useState(false);
-  
+
+  // Member signup belongs on the app subdomain. If a public-domain link (or a
+  // client-side nav the domain guard can't catch) lands here on the main domain,
+  // send the visitor to the real app signup flow.
+  useEffect(() => {
+    const MAIN_HOSTS = ['genzdigitalstore.com', 'www.genzdigitalstore.com'];
+    if (MAIN_HOSTS.includes(window.location.hostname)) {
+      window.location.replace('https://app.genzdigitalstore.com/client/signup');
+    }
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     

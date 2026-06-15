@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight, Mail } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
-import { WHATSAPP_URL, APP_LOGIN_URL } from './PublicNavbar';
+import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from './PublicNavbar';
 
 const SERVICES_LINKS = [
   { to: '/services/digital-tools',           label: 'Digital Tools Access'       },
@@ -139,9 +139,9 @@ const PublicFooter = () => {
             </ul>
           </div>
 
-          {/* Dashboard & Legal */}
+          {/* Members & Legal */}
           <div>
-            <h4 className="text-white font-semibold text-xs uppercase tracking-widest mb-5">Dashboard</h4>
+            <h4 className="text-white font-semibold text-xs uppercase tracking-widest mb-5">Members</h4>
             <ul className="space-y-2.5 mb-8">
               <li>
                 <a href={APP_LOGIN_URL} className="text-genz-teal hover:text-genz-dark-teal text-sm font-medium transition-colors">
@@ -149,14 +149,9 @@ const PublicFooter = () => {
                 </a>
               </li>
               <li>
-                <Link to="/client/dashboard" className="text-white/55 hover:text-genz-teal text-sm transition-colors">
-                  Client Dashboard
-                </Link>
-              </li>
-              <li>
-                <Link to="/admin/login" className="text-white/55 hover:text-white/60 text-xs transition-colors">
-                  Admin Panel
-                </Link>
+                <a href={APP_SIGNUP_URL} className="text-white/55 hover:text-genz-teal text-sm transition-colors">
+                  Get Started
+                </a>
               </li>
             </ul>
             <h4 className="text-white font-semibold text-xs uppercase tracking-widest mb-4">Legal</h4>

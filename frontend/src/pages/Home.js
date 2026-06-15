@@ -127,8 +127,8 @@ const StatBadge = ({ n, label }) => (
 /* ───────────────────────── DATA ───────────────────────── */
 const FEATURED = {
   icon: Cpu, color: '#06B6D4', title: 'Premium Digital Tools', badge: 'Most Popular',
-  desc: 'Admin-managed access to 90+ professional AI, SEO, design and productivity tools — opened securely from one dashboard via our Chrome extension. No shared passwords, no risk.',
-  bullets: ['One-click secure access', 'Assigned per membership', 'Encrypted extension bridge', '90+ tools across 8 categories'],
+  desc: 'Members-only access to 90+ professional AI, SEO, design and productivity tools — all opened securely from one premium dashboard with a single click.',
+  bullets: ['One-click secure access', 'Assigned per membership', 'Members-only premium tools', '90+ tools across 8 categories'],
   to: '/services/digital-tools',
 };
 
@@ -168,7 +168,7 @@ const COMPARE = [
   'Custom web & app development',
   'Branding, design & content',
   'Fast turnaround & revisions',
-  'Encrypted, admin-controlled access',
+  'Secure, members-only access',
 ];
 
 const STEPS = [
@@ -182,8 +182,8 @@ const STEPS = [
 const FAQS = [
   { q: 'What is Gen Z Digital Store?', a: 'Gen Z Digital Store is a premium digital platform offering secure access to professional tools, plus creative services including social media management, writing, web design, app development, branding, and SEO.' },
   { q: 'Do you only provide tools?', a: 'No. While we offer admin-managed access to premium digital tools, we also deliver a full range of digital services — from content creation and web design to mobile apps and business automation.' },
-  { q: 'How does tool access work?', a: 'An admin assigns specific tools to your account. You log in to your client dashboard, and the Chrome extension securely connects you to your assigned tools in one click — no passwords needed.' },
-  { q: 'Is the Chrome extension required?', a: 'The extension is required for secure tool access. It communicates with your session to open assigned tools safely. For our other digital services, no extension is needed.' },
+  { q: 'How does tool access work?', a: 'Your assigned tools are added to your account by our team. You simply log in to your member dashboard and open any assigned tool in one click — securely, with nothing to set up.' },
+  { q: 'Is my access secure?', a: 'Yes. Access is members-only and fully managed by our team, so your premium tools open safely every time. Our other digital services are delivered directly by our team.' },
   { q: 'Can you build a website or app?', a: 'Absolutely. We build animated landing pages, business websites, web apps, mobile apps, admin dashboards, CRM systems, client portals, and custom automation tools.' },
   { q: 'How do I order a service?', a: 'Contact us on WhatsApp or fill out our contact form. We will understand your requirements, send a proposal, and get started after confirmation.' },
 ];
@@ -363,8 +363,8 @@ const Home = () => {
                 <Eyebrow label="Tools Marketplace" light />
                 <h2 className="type-section-title text-white mb-4 leading-tight">90+ premium tools, one secure dashboard</h2>
                 <p className="text-white/70 text-[16px] leading-relaxed mb-7">
-                  Members get admin-assigned access to professional tools across every category — opened
-                  securely through our Chrome extension, with no shared passwords.
+                  Members get access to professional tools across every category — opened
+                  securely from your dashboard in one click.
                 </p>
                 <div className="flex flex-wrap gap-3">
                   <a href={APP_LOGIN_URL} className="btn-grad inline-flex items-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-bold">

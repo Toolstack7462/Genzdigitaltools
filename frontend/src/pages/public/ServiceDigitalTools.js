@@ -16,17 +16,17 @@ const TOOLS_CATEGORIES = [
 ];
 
 const HOW_STEPS = [
-  { icon: Key,             label: 'Admin assigns tools',     sub: 'Your membership plan includes specific tool access assigned by an admin.' },
-  { icon: LayoutDashboard, label: 'Log in to dashboard',     sub: 'Sign in to your client dashboard to view all your assigned tools.' },
-  { icon: Chrome,          label: 'Extension connects',      sub: 'The Chrome extension securely bridges your session to the assigned tool.' },
-  { icon: Zap,             label: 'Open and work instantly', sub: 'One click — the tool opens with secure, pre-authorised access.' },
+  { icon: Key,             label: 'Tools added to your plan', sub: 'Your membership includes premium tools chosen for your plan.' },
+  { icon: LayoutDashboard, label: 'Log in to your dashboard', sub: 'Sign in to your member dashboard to see all your tools.' },
+  { icon: Zap,             label: 'Open with one click',      sub: 'Click any tool and it opens instantly with secure member access.' },
+  { icon: Zap,             label: 'Work without setup',       sub: 'No installs and nothing to configure — just open and start working.' },
 ];
 
 const FAQS = [
-  { q: 'What tools are included?', a: 'The tools vary by plan. Categories include AI writing, SEO, design, productivity, academic research, social media, business tools, and more. Your admin confirms which tools are in your package.' },
-  { q: 'Do I need the Chrome extension?', a: 'Yes — the Chrome extension is required to securely open assigned tools. It communicates with your active session to authenticate access without exposing credentials.' },
-  { q: 'Are the tools shared accounts?', a: 'Tools are accessed through a secure, admin-controlled system. Credentials are never exposed to clients — the extension handles the secure connection.' },
-  { q: 'Can I request a specific tool?', a: 'Yes. Contact your admin or reach us via WhatsApp to request tool additions or upgrades to your plan.' },
+  { q: 'What tools are included?', a: 'The tools vary by plan. Categories include AI writing, SEO, design, productivity, academic research, social media, business tools, and more. Our team confirms which tools are in your package.' },
+  { q: 'How do I open my tools?', a: 'Just log in to your member dashboard and click any tool in your plan — it opens instantly with secure access. There is nothing to install or set up.' },
+  { q: 'Is my access secure?', a: 'Yes. Your access is members-only and fully managed by our team, so your premium tools open safely every time.' },
+  { q: 'Can I request a specific tool?', a: 'Yes. Reach us via WhatsApp or our contact form to request tool additions or upgrades to your plan.' },
 ];
 
 const ServiceDigitalTools = () => {
@@ -50,8 +50,8 @@ const ServiceDigitalTools = () => {
             Premium <span className="text-grad-brand">Digital Tools</span>, Securely Accessed
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
-            Get admin-managed access to 50+ professional AI, SEO, design, and productivity tools —
-            all through one secure, extension-powered client dashboard.
+            Get members-only access to 50+ professional AI, SEO, design, and productivity tools —
+            all through one secure, premium member dashboard.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
             <Link to="/client/login"
@@ -117,11 +117,11 @@ const ServiceDigitalTools = () => {
           <Shield size={28} className="text-genz-teal mx-auto mb-4" />
           <h3 className="text-genz-navy font-bold text-xl mb-3">Enterprise-grade security</h3>
           <p className="text-genz-muted text-sm leading-relaxed mb-6">
-            No credentials are ever exposed to clients. Tool access is handled entirely through the
-            extension bridge — admin-controlled, session-bound, and always encrypted.
+            Your access is members-only and fully managed by our team, so every premium tool
+            opens safely and reliably — with nothing for you to set up.
           </p>
           <div className="flex flex-wrap justify-center gap-3">
-            {['Admin-controlled access','Session-bound tokens','Extension-encrypted bridge','Activity logging'].map(f=>(
+            {['Members-only access','Secure access','Managed by our team','Reliable support'].map(f=>(
               <span key={f} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium text-genz-teal"
                 style={{ background: 'rgba(6,182,212,0.1)', border: '1px solid rgba(6,182,212,0.2)' }}>
                 <CheckCircle size={11} /> {f}

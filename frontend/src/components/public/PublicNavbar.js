@@ -23,6 +23,10 @@ const NAV_LINKS = [
 
 const WHATSAPP_URL = 'https://wa.me/923027467462';
 const APP_LOGIN_URL = 'https://app.genzdigitalstore.com/client/login';
+// Member signup lives on the app subdomain. Use an absolute URL (full-page load)
+// so "Get Started" lands on the real member flow instead of rendering on the
+// public marketing domain.
+const APP_SIGNUP_URL = 'https://app.genzdigitalstore.com/client/signup';
 
 const PublicNavbar = () => {
   const location = useLocation();
@@ -174,8 +178,8 @@ const PublicNavbar = () => {
             >
               Member Login
             </a>
-            <Link
-              to="/client/signup"
+            <a
+              href={APP_SIGNUP_URL}
               data-testid="public-nav-get-started-desktop"
               className="flex items-center gap-1.5 px-5 py-2.5 text-[15px] font-bold text-white rounded-[14px] transition-all duration-200 hover:-translate-y-0.5"
               style={{
@@ -184,7 +188,7 @@ const PublicNavbar = () => {
               }}
             >
               Get Started <ArrowRight size={15} />
-            </Link>
+            </a>
           </div>
 
           {/* Mobile toggle */}
@@ -264,14 +268,14 @@ const PublicNavbar = () => {
               >
                 Member Login
               </a>
-              <Link
-                to="/client/signup"
+              <a
+                href={APP_SIGNUP_URL}
                 data-testid="public-nav-get-started-mobile"
                 className="text-center py-3 text-[15px] font-bold text-white rounded-[14px]"
                 style={{ background: 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)' }}
               >
                 Get Started
-              </Link>
+              </a>
             </div>
           </div>
         )}
@@ -281,4 +285,4 @@ const PublicNavbar = () => {
 };
 
 export default PublicNavbar;
-export { WHATSAPP_URL, APP_LOGIN_URL };
+export { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL };

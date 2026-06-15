@@ -188,7 +188,7 @@ export const ToolsPlatformMock = ({ accent = '#14B8A6' }) => (
         <div className="absolute bottom-3 right-3 flex items-center gap-1 px-1.5 py-0.5 rounded-full"
           style={{ background: 'rgba(16,185,129,0.15)', border: '0.5px solid rgba(16,185,129,0.4)' }}>
           <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-[6px] font-bold text-emerald-300">Extension live</span>
+          <span className="text-[6px] font-bold text-emerald-300">Tools live</span>
         </div>
       </div>
     </Browser>
@@ -436,7 +436,7 @@ export const WhatsAppPortalMock = ({ accent = '#10B981' }) => (
             <span className="block text-[4.5px] font-semibold text-genz-navy">Hi, how do I access tools?</span>
           </div>
           <div className="ml-auto rounded-md rounded-tr-none px-1.5 py-1 max-w-[85%]" style={{ background: '#DCF8C6' }}>
-            <span className="block text-[4.5px] font-semibold text-genz-navy">Hello! Install the Chrome extension &amp; log in.</span>
+            <span className="block text-[4.5px] font-semibold text-genz-navy">Just log in to your member dashboard.</span>
           </div>
           <div className="ml-auto rounded-md rounded-tr-none px-1.5 py-1 max-w-[60%]" style={{ background: '#DCF8C6' }}>
             <span className="block text-[4.5px] font-semibold text-genz-navy">Setup link sent ✓</span>
