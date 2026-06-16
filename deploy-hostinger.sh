@@ -71,6 +71,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/stealth/StealthAccount.js    "sftp://${HOST}:${PORT}${API_ROOT}/models/stealth/StealthAccount.js" \
   -T backend/utils/stealth/vaultCrypto.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/vaultCrypto.js" \
   -T backend/utils/stealth/accountSelect.js      "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/accountSelect.js" \
+  -T backend/utils/stealth/verify.js             "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/verify.js" \
   -T backend/utils/stealth/time.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/time.js" \
   -T backend/utils/stealth/config.js             "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/config.js" \
   -T backend/utils/stealth/lease.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/stealth/lease.js" \

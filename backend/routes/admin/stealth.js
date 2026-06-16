@@ -22,7 +22,16 @@ const { validate } = require('../../middleware/validation');
 const access = require('../../utils/stealth/access');
 const config = require('../../utils/stealth/config');
 const vaultCrypto = require('../../utils/stealth/vaultCrypto');
+const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
+
+// Build a Cookie header string from a stored bundle (cookies-based only).
+function bundleCookieHeader(bundle) {
+  const c = bundle && bundle.cookies;
+  if (Array.isArray(c)) return c.filter(x => x && x.name).map(x => `${x.name}=${x.value == null ? '' : x.value}`).join('; ');
+  if (typeof c === 'string') return c;
+  return '';
+}
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -54,9 +63,11 @@ const schemas = {
   }).min(1),
   createAccount: Joi.object({
     label: Joi.string().min(1).max(120).required(),
-    // The session bundle is accepted as a JSON object or a JSON string; it is
+    // The cookie bundle is accepted as a JSON object or a JSON string; it is
     // encrypted at rest immediately and never returned. Optional at create time.
     sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).allow(null),
+    // Optional expected login (e.g. email) used only to flag "wrong account" on verify.
+    expectedIdentifier: Joi.string().max(160).allow('', null),
     status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').default('active'),
     priority: Joi.number().integer().min(0).max(100000).default(100),
     isPrimary: Joi.boolean().default(false),
@@ -64,6 +75,7 @@ const schemas = {
   }),
   updateAccount: Joi.object({
     label: Joi.string().min(1).max(120),
+    expectedIdentifier: Joi.string().max(160).allow('', null),
     status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked'),
     priority: Joi.number().integer().min(0).max(100000),
     isPrimary: Joi.boolean(),
@@ -367,6 +379,10 @@ function presentAccount(account, activeLeaseCount = 0) {
     notes: account.notes || '',
     hasSession: !!account.sessionEncrypted,        // boolean only — never the secret
     sessionMeta: account.sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
+    // Verification: safe result + masked identifier only (no cookies ever).
+    verification: account.verification || null,
+    maskedIdentifier: account.verification?.maskedId || (account.expectedIdentifier ? maskEmail(account.expectedIdentifier) : null),
+    hasExpectedIdentifier: !!account.expectedIdentifier,
     activeLeaseCount,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -413,7 +429,7 @@ router.get('/accounts', async (req, res) => {
 // ─── Create account ─────────────────────────────────────────────────────────
 router.post('/accounts', validate(schemas.createAccount), async (req, res) => {
   try {
-    const { label, sessionBundle, status, priority, isPrimary, notes } = req.body;
+    const { label, sessionBundle, expectedIdentifier, status, priority, isPrimary, notes } = req.body;
     let sessionEncrypted, sessionMeta;
     if (sessionBundle !== undefined && sessionBundle !== null) {
       const bundle = normalizeBundle(sessionBundle);
@@ -423,6 +439,7 @@ router.post('/accounts', validate(schemas.createAccount), async (req, res) => {
     }
     const account = await StealthAccount.create({
       label, status: status || 'active', priority: priority ?? 100, isPrimary: !!isPrimary,
+      expectedIdentifier: expectedIdentifier || '',
       notes: notes || '', usageCount: 0,
       sessionEncrypted: sessionEncrypted || null,
       sessionMeta: sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
@@ -442,7 +459,7 @@ router.put('/accounts/:id', validate(schemas.updateAccount), async (req, res) =>
   try {
     const account = await StealthAccount.findById(req.params.id);
     if (!account) return res.status(404).json({ error: 'Account not found' });
-    for (const f of ['label', 'status', 'priority', 'notes']) if (req.body[f] !== undefined) account[f] = req.body[f];
+    for (const f of ['label', 'status', 'priority', 'notes', 'expectedIdentifier']) if (req.body[f] !== undefined) account[f] = req.body[f];
     if (req.body.isPrimary !== undefined) account.isPrimary = !!req.body.isPrimary;
     await account.save();
     if (account.isPrimary) await clearOtherPrimaries(account._id);
@@ -470,6 +487,70 @@ router.post('/accounts/:id/session', validate(schemas.accountSession), async (re
   } catch (err) {
     console.error('Stealth refresh session error:', err.message);
     return res.status(500).json({ error: 'Failed to refresh session' });
+  }
+});
+
+// ─── Verify account cookies ──────────────────────────────────────────────────
+// Decrypts the cookie bundle server-side, asks the StealthWriter origin whether it
+// is logged in, and stores ONLY a safe result + masked identifier. Optionally syncs
+// the account status. Never logs cookies.
+router.post('/accounts/:id/verify', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    if (!account.sessionEncrypted) return res.status(400).json({ error: 'No cookie bundle saved for this account' });
+
+    let cookieHeader = '';
+    try { cookieHeader = bundleCookieHeader(JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted))); } catch (_) {}
+    if (!cookieHeader) {
+      account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
+      account.status = 'session_expired';
+      await account.save();
+      return res.json({ success: true, account: presentAccount(account) });
+    }
+
+    const v = await verifyAccountCookies(cookieHeader, account.expectedIdentifier);
+    account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
+
+    // Sync status for clear-cut results so account selection reacts immediately.
+    if (v.result === 'session_expired') account.status = 'session_expired';
+    else if (v.result === 'limit_reached') account.status = 'limit_reached';
+    else if (v.result === 'blocked') account.status = 'blocked';
+    else if (v.result === 'wrong_account') account.status = 'standby';
+    else if (v.result === 'working' && ['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
+
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_VERIFIED', { accountId: account._id, label: account.label, result: v.result, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), result: v.result });
+  } catch (err) {
+    console.error('Stealth verify account error:', err.message);
+    return res.status(500).json({ error: 'Failed to verify account' });
+  }
+});
+
+// ─── Leases using this account ───────────────────────────────────────────────
+router.get('/accounts/:id/leases', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    const leases = (await StealthLease.find({ accountId: account._id })).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 50);
+    const now = Date.now();
+    // Resolve client labels (no secrets) for display.
+    const clientIds = [...new Set(leases.map(l => String(l.stealthClientId)))];
+    const clientsById = {};
+    for (const cid of clientIds) {
+      const sc = await StealthClient.findById(cid);
+      if (sc) { const u = await User.findById(sc.userId).select('fullName email'); clientsById[cid] = u ? (u.fullName || u.email) : cid; }
+    }
+    const view = leases.map(l => ({
+      id: l._id, issuedAt: l.issuedAt, expiresAt: l.expiresAt, revoked: l.revoked,
+      active: !l.revoked && new Date(l.expiresAt).getTime() > now,
+      client: clientsById[String(l.stealthClientId)] || null,
+    }));
+    return res.json({ success: true, account: presentAccount(account), leases: view });
+  } catch (err) {
+    console.error('Stealth account leases error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch account leases' });
   }
 });
 

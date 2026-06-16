@@ -3,7 +3,7 @@ import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Sparkles, Plus, RefreshCw, Trash2, Edit2, ShieldOff, Clock,
   Loader2, X, Save, Eye, Settings as SettingsIcon, Users, Zap,
-  KeyRound, Star, CheckCircle2, AlertOctagon
+  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
 import api from '../../services/api';
@@ -33,6 +33,8 @@ const AdminStealthWriter = () => {
   const [detail, setDetail] = useState(null);
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [refreshAccount, setRefreshAccount] = useState(null);
+  const [leasesAccount, setLeasesAccount] = useState(null);
+  const [verifyingId, setVerifyingId] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -75,6 +77,17 @@ const AdminStealthWriter = () => {
   const doAction = async (fn, msg) => {
     try { await fn(); showSuccess(msg); load(); }
     catch (e) { showError(e.response?.data?.error || 'Action failed'); }
+  };
+
+  const verify = async (a) => {
+    try {
+      setVerifyingId(a.id);
+      const res = await stealthAdmin.verifyAccount(a.id);
+      const result = (res.data?.result || res.data?.account?.verification?.result || '').replace('_', ' ');
+      showSuccess(`Verify "${a.label}": ${result || 'done'}`);
+      load();
+    } catch (e) { showError(e.response?.data?.error || 'Verify failed'); }
+    finally { setVerifyingId(null); }
   };
 
   return (
@@ -147,8 +160,8 @@ const AdminStealthWriter = () => {
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
                 <KeyRound size={16} className="text-violet-500" />
-                <h2 className="font-semibold text-slate-700">Account Vault</h2>
-                <span className="text-[11px] text-slate-400">— your StealthWriter accounts (sessions encrypted at rest)</span>
+                <h2 className="font-semibold text-slate-700">StealthWriter Accounts (Cookies)</h2>
+                <span className="text-[11px] text-slate-400">— multiple cookie-based accounts, encrypted at rest</span>
               </div>
               <button onClick={() => setShowAddAccount(true)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-violet-600 to-fuchsia-500">
@@ -173,7 +186,10 @@ const AdminStealthWriter = () => {
                             {a.isPrimary && <Star size={13} className="text-amber-400 fill-amber-400" title="Primary" />}
                             {a.label}
                           </div>
-                          <div className="text-[11px] text-slate-400">priority {a.priority}{a.sessionMeta?.origin ? ` · ${a.sessionMeta.origin}` : ''}</div>
+                          <div className="text-[11px] text-slate-400">priority {a.priority}{a.maskedIdentifier ? ` · ${a.maskedIdentifier}` : ''}</div>
+                          {a.verification?.result && (
+                            <div className="text-[11px] mt-0.5"><VerifyBadge result={a.verification.result} /> <span className="text-slate-400">{a.verification.checkedAt ? new Date(a.verification.checkedAt).toLocaleDateString() : ''}</span></div>
+                          )}
                         </td>
                         <td className="px-4 py-2.5"><AccountStatusBadge status={a.status} /></td>
                         <td className="px-4 py-2.5 text-slate-600">
@@ -185,7 +201,11 @@ const AdminStealthWriter = () => {
                         <td className="px-4 py-2.5 text-slate-600">{a.activeLeaseCount}</td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center justify-end gap-1.5 text-slate-400">
-                            <button title="Refresh session" onClick={() => setRefreshAccount(a)} className="hover:text-blue-600"><RefreshCw size={16} /></button>
+                            <button title="Verify cookies" disabled={verifyingId === a.id} onClick={() => verify(a)} className="hover:text-green-600 disabled:opacity-50">
+                              {verifyingId === a.id ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                            </button>
+                            <button title="View leases using this account" onClick={() => setLeasesAccount(a)} className="hover:text-blue-600"><List size={16} /></button>
+                            <button title="Refresh cookies" onClick={() => setRefreshAccount(a)} className="hover:text-blue-600"><RefreshCw size={16} /></button>
                             <button title="Set as primary" onClick={() => doAction(() => stealthAdmin.setAccountPrimary(a.id), 'Primary set')} className="hover:text-amber-500"><Star size={16} /></button>
                             {a.status !== 'limit_reached'
                               ? <button title="Mark limit reached" onClick={() => doAction(() => stealthAdmin.setAccountStatus(a.id, 'limit_reached'), 'Marked limit reached')} className="hover:text-orange-600"><AlertOctagon size={16} /></button>
@@ -262,9 +282,25 @@ const AdminStealthWriter = () => {
         onSaved={() => { setShowAddAccount(false); load(); }} showError={showError} showSuccess={showSuccess} />}
       {refreshAccount && <RefreshSessionModal account={refreshAccount} onClose={() => setRefreshAccount(null)}
         onSaved={() => { setRefreshAccount(null); load(); }} showError={showError} showSuccess={showSuccess} />}
+      {leasesAccount && <AccountLeasesModal account={leasesAccount} onClose={() => setLeasesAccount(null)}
+        showError={showError} showSuccess={showSuccess} onChanged={load} />}
     </AdminLayoutEnhanced>
   );
 };
+
+// ── Verification result badge ───────────────────────────────────────────────
+const VERIFY_STYLES = {
+  working: 'bg-green-100 text-green-700',
+  session_expired: 'bg-amber-100 text-amber-700',
+  limit_reached: 'bg-orange-100 text-orange-700',
+  wrong_account: 'bg-red-100 text-red-700',
+  blocked: 'bg-red-100 text-red-700',
+};
+const VerifyBadge = ({ result }) => (
+  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${VERIFY_STYLES[result] || 'bg-slate-100 text-slate-600'}`}>
+    {String(result || '').replace('_', ' ')}
+  </span>
+);
 
 // ── Account status badge ────────────────────────────────────────────────────
 const STATUS_STYLES = {
@@ -414,7 +450,7 @@ const DetailModal = ({ detail, onClose, onRevokeLease }) => {
 
 // ── Account Vault modals ────────────────────────────────────────────────────
 const AccountModal = ({ onClose, onSaved, showError, showSuccess }) => {
-  const [form, setForm] = useState({ label: '', sessionBundle: '', status: 'active', priority: 100, isPrimary: false });
+  const [form, setForm] = useState({ label: '', sessionBundle: '', expectedIdentifier: '', status: 'active', priority: 100, isPrimary: false });
   const [saving, setSaving] = useState(false);
   const submit = async () => {
     if (!form.label.trim()) return showError('Label is required');
@@ -423,6 +459,7 @@ const AccountModal = ({ onClose, onSaved, showError, showSuccess }) => {
       await stealthAdmin.createAccount({
         label: form.label.trim(),
         sessionBundle: form.sessionBundle.trim() || null,
+        expectedIdentifier: form.expectedIdentifier.trim() || null,
         status: form.status, priority: Number(form.priority), isPrimary: form.isPrimary,
       });
       showSuccess('Account added'); onSaved();
@@ -431,9 +468,13 @@ const AccountModal = ({ onClose, onSaved, showError, showSuccess }) => {
   return (
     <Modal title="Add StealthWriter account" onClose={onClose}>
       <Field label="Label (internal name)"><input className={inputCls} value={form.label} placeholder="e.g. SW Main #1" onChange={(e) => setForm({ ...form, label: e.target.value })} /></Field>
-      <Field label="Session bundle (JSON — cookies / localStorage). Encrypted at rest; never shown again.">
+      <Field label="Cookie bundle (JSON — cookies, optional localStorage). Encrypted at rest; never shown again.">
         <textarea className={`${inputCls} font-mono text-[12px]`} rows={6} placeholder={BUNDLE_PLACEHOLDER}
           value={form.sessionBundle} onChange={(e) => setForm({ ...form, sessionBundle: e.target.value })} />
+      </Field>
+      <Field label="Expected login email (optional — used only to flag 'wrong account' on verify; shown masked)">
+        <input className={inputCls} value={form.expectedIdentifier} placeholder="name@example.com"
+          onChange={(e) => setForm({ ...form, expectedIdentifier: e.target.value })} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field label="Status">
@@ -476,6 +517,49 @@ const RefreshSessionModal = ({ account, onClose, onSaved, showError, showSuccess
       <button onClick={submit} disabled={saving} className="w-full mt-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-white bg-blue-600 disabled:opacity-60">
         {saving ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />} Refresh session
       </button>
+    </Modal>
+  );
+};
+
+const AccountLeasesModal = ({ account, onClose, showError, showSuccess, onChanged }) => {
+  const [loading, setLoading] = useState(true);
+  const [leases, setLeases] = useState([]);
+  useEffect(() => {
+    (async () => {
+      try { const r = await stealthAdmin.accountLeases(account.id); setLeases(r.data.leases || []); }
+      catch (e) { showError(e.response?.data?.error || 'Failed to load leases'); }
+      finally { setLoading(false); }
+    })();
+  }, [account.id, showError]);
+  const revokeAll = async () => {
+    if (!window.confirm(`Revoke all active leases using "${account.label}"?`)) return;
+    try { await stealthAdmin.revokeAccountLeases(account.id); showSuccess('Active leases revoked'); onChanged && onChanged(); onClose(); }
+    catch (e) { showError(e.response?.data?.error || 'Failed to revoke leases'); }
+  };
+  const activeCount = leases.filter(l => l.active).length;
+  return (
+    <Modal title={`Leases — ${account.label}`} onClose={onClose} wide>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-[13px] text-slate-500">{activeCount} active · {leases.length} recent (showing latest 50)</p>
+        {activeCount > 0 && (
+          <button onClick={revokeAll} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-orange-600 hover:bg-orange-500">
+            <ShieldOff size={14} /> Revoke active leases
+          </button>
+        )}
+      </div>
+      {loading ? <div className="py-10 text-center text-slate-400"><Loader2 className="animate-spin inline" size={18} /></div>
+        : leases.length === 0 ? <p className="text-sm text-slate-400 py-6 text-center">No leases have used this account.</p> : (
+        <div className="overflow-x-auto max-h-80"><table className="w-full text-[12.5px]">
+          <thead><tr className="text-left text-slate-500 border-b"><th className="py-1.5 pr-2">Client</th><th className="py-1.5 pr-2">Issued</th><th className="py-1.5 pr-2">Expires</th><th className="py-1.5">State</th></tr></thead>
+          <tbody>{leases.map((l) => (
+            <tr key={l.id} className="border-b border-slate-50">
+              <td className="py-1.5 pr-2 text-slate-600">{l.client || '—'}</td>
+              <td className="py-1.5 pr-2 text-slate-600">{fmtDate(l.issuedAt)}</td>
+              <td className="py-1.5 pr-2 text-slate-600">{fmtDate(l.expiresAt)}</td>
+              <td className="py-1.5">{l.revoked ? <span className="text-red-600">revoked</span> : l.active ? <span className="text-green-600">active</span> : <span className="text-slate-400">expired</span>}</td>
+            </tr>))}</tbody>
+        </table></div>
+      )}
     </Modal>
   );
 };

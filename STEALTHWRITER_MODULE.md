@@ -90,6 +90,13 @@ STEALTH_GATEWAY_KEY=<random 32+ char string>
 # isolated key is derived from JWT_SECRET; set explicitly in production so rotating
 # JWT_SECRET never strands vault data.
 STEALTH_VAULT_KEY=<64 hex chars>
+
+# Account verification (Verify button). The backend makes ONE server-side request
+# with the account cookies and stores only a safe result + masked id.
+STEALTH_TARGET_ORIGIN=https://stealthwriter.ai
+STEALTH_VERIFY_PATH=/dashboard
+# Optional regex overrides if StealthWriter's logged-in/limit/blocked markers differ:
+#   STEALTH_VERIFY_LOGIN_RE / STEALTH_VERIFY_LIMIT_RE / STEALTH_VERIFY_BLOCK_RE
 ```
 Add the gateway origin to the existing `ALLOWED_ORIGINS` so the overlay's
 cross-origin calls are permitted:
