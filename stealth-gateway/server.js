@@ -46,6 +46,12 @@ const PORT = process.env.PORT || 3000;
 const TARGET_ORIGIN = (process.env.STEALTH_TARGET_ORIGIN || '').replace(/\/$/, '');
 const API_BASE = (process.env.STEALTH_API_BASE || '').replace(/\/$/, ''); // e.g. https://api.genzdigitalstore.com/api/crm/stealth/gateway
 const PUBLIC_ORIGIN = (process.env.GATEWAY_PUBLIC_ORIGIN || '').replace(/\/$/, '');
+// Landing path AFTER the lease cookie is set — go straight to the authenticated
+// humanizer dashboard so a logged-in account is not bounced to the marketing/sign-in root.
+function cleanPath(p, def) { p = String(p || '').trim(); if (!p) return def; return p.startsWith('/') ? p : '/' + p; }
+const DEFAULT_PATH = cleanPath(process.env.STEALTH_DEFAULT_PATH, '/dashboard/humanizer');
+const HUMANIZER_PATH = cleanPath(process.env.STEALTH_HUMANIZER_PATH, '/dashboard/humanizer');
+const DETECTOR_PATH = cleanPath(process.env.STEALTH_DETECTOR_PATH, '/dashboard/ai-detector');
 const LEASE_SECRET = process.env.STEALTH_LEASE_SECRET || '';
 const GATEWAY_KEY = process.env.STEALTH_GATEWAY_KEY || ''; // shared key for the backend /session endpoint
 const LEASE_COOKIE = 'sw_lease';
@@ -332,7 +338,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           lease_id: ctx.jti || null,
           account_id: (session && session.accountId) || null,
           account_label: (session && session.accountLabel) || null,
-          target_path: String(req.url || '').split('?')[0],
+          path_requested: String(req.url || '').split('?')[0],
           cookies_count_attached: (session && session.cookieCount) || 0,
           upstream_status: uRes.statusCode,
           redirected_to_sign_in: redirectedToSignIn,
@@ -399,9 +405,13 @@ const server = http.createServer(async (req, res) => {
     // /validate and /consume calls. The lease is already visible in the open URL,
     // and it only authorizes metered, backend-validated StealthWriter usage.
     const secure = (PUBLIC_ORIGIN.startsWith('https://')) ? ' Secure;' : '';
+    // Capture (admin) leases land on the sign-in page to log in fresh; client leases
+    // land directly on the authenticated humanizer dashboard.
+    const cap = !!(verifyLeaseLocal(token) || {}).cap;
+    const landing = cap ? (process.env.STEALTH_SIGNIN_PATH || '/sign-in') : DEFAULT_PATH;
     res.writeHead(302, {
       'set-cookie': `${LEASE_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax;${secure}`,
-      'location': '/',
+      'location': landing,
       'cache-control': 'no-store',
     });
     return res.end();
