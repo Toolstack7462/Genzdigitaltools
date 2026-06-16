@@ -41,4 +41,3 @@ const StealthAccount = createModel('StealthAccount', {
 });
 
 module.exports = StealthAccount;
-module.exports.STATUSES = STATUSES;
