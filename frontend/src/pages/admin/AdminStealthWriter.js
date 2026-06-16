@@ -3,7 +3,7 @@ import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Sparkles, Plus, RefreshCw, Trash2, Edit2, ShieldOff, Clock,
   Loader2, X, Save, Eye, Settings as SettingsIcon, Users, Zap,
-  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List
+  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
 import api from '../../services/api';
@@ -88,6 +88,16 @@ const AdminStealthWriter = () => {
       load();
     } catch (e) { showError(e.response?.data?.error || 'Verify failed'); }
     finally { setVerifyingId(null); }
+  };
+
+  const refreshThroughProxy = async (a) => {
+    try {
+      const res = await stealthAdmin.captureLease(a.id);
+      if (res.data?.url) {
+        window.open(res.data.url, '_blank', 'noopener');
+        showSuccess(`Capture tab opened for "${a.label}". Log in, then click "Save session to vault".`);
+      }
+    } catch (e) { showError(e.response?.data?.error || 'Failed to start capture'); }
   };
 
   return (
@@ -205,7 +215,8 @@ const AdminStealthWriter = () => {
                               {verifyingId === a.id ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
                             </button>
                             <button title="View leases using this account" onClick={() => setLeasesAccount(a)} className="hover:text-blue-600"><List size={16} /></button>
-                            <button title="Refresh cookies" onClick={() => setRefreshAccount(a)} className="hover:text-blue-600"><RefreshCw size={16} /></button>
+                            <button title="Refresh cookies (paste bundle)" onClick={() => setRefreshAccount(a)} className="hover:text-blue-600"><RefreshCw size={16} /></button>
+                            <button title="Refresh cookies through proxy (log in via stealth1)" onClick={() => refreshThroughProxy(a)} className="hover:text-violet-600"><Globe size={16} /></button>
                             <button title="Set as primary" onClick={() => doAction(() => stealthAdmin.setAccountPrimary(a.id), 'Primary set')} className="hover:text-amber-500"><Star size={16} /></button>
                             {a.status !== 'limit_reached'
                               ? <button title="Mark limit reached" onClick={() => doAction(() => stealthAdmin.setAccountStatus(a.id, 'limit_reached'), 'Marked limit reached')} className="hover:text-orange-600"><AlertOctagon size={16} /></button>

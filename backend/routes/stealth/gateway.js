@@ -26,7 +26,13 @@ const StealthAccount = require('../../models/stealth/StealthAccount');
 const access = require('../../utils/stealth/access');
 const leaseUtil = require('../../utils/stealth/lease');
 const vaultCrypto = require('../../utils/stealth/vaultCrypto');
+const { normalizeCookieBundle } = require('../../utils/stealth/cookies');
 const { getClientIp } = require('../../middleware/authEnhanced');
+
+const TARGET_HOST = (() => {
+  try { return new URL(process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').hostname; }
+  catch (_) { return 'stealthwriter.ai'; }
+})();
 const { apiLimiter } = require('../../middleware/rateLimiter');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
@@ -175,11 +181,67 @@ router.post('/session', requireGatewayKey, async (req, res) => {
 
     return res.json({
       ok: true,
-      account: { id: account._id, status: account.status }, // status only — no label/secrets to the browser-facing layer
-      bundle, // { cookies:[{name,value,domain,path}]|string, localStorage:{}, sessionStorage:{}, origin }
+      // label is for server-side admin logging only (gateway-key protected; never reaches the browser).
+      account: { id: account._id, status: account.status, label: account.label },
+      bundle, // { cookies:[{name,value,domain,path}], localStorage:{}, sessionStorage:{}, origin }
     });
   } catch (err) {
     console.error('Stealth gateway session error:', err.message);
+    return res.status(500).json({ ok: false, code: 'server_error' });
+  }
+});
+
+// ─── Account expired signal (gateway-only) ───────────────────────────────────
+// The gateway calls this when the upstream redirects the account to /sign-in, so
+// the bound account is flagged session_expired and skipped for NEW leases.
+router.post('/account-expired', requireGatewayKey, async (req, res) => {
+  try {
+    const r = await resolveLease(req);
+    if (!r.ok) return res.status(r.status).json({ ok: false, code: r.code });
+    if (!r.lease.accountId) return res.json({ ok: true, updated: false });
+    const account = await StealthAccount.findById(r.lease.accountId);
+    if (account && account.status === 'active') {
+      account.status = 'session_expired';
+      account.verification = { result: 'session_expired', maskedId: account.verification?.maskedId || null, httpStatus: 0, checkedAt: new Date() };
+      await account.save();
+      return res.json({ ok: true, updated: true });
+    }
+    return res.json({ ok: true, updated: false });
+  } catch (err) {
+    console.error('Stealth account-expired error:', err.message);
+    return res.status(500).json({ ok: false, code: 'server_error' });
+  }
+});
+
+// ─── Capture session (gateway-only) — "Refresh Cookies Through Proxy" ─────────
+// In capture mode the admin logs into StealthWriter through the proxy; the gateway
+// posts the cookies captured in the proxy context here to (re)fill the account
+// session. Requires the lease to be a capture lease (cap flag).
+router.post('/capture-session', requireGatewayKey, async (req, res) => {
+  try {
+    const token = getLeaseToken(req);
+    const payload = token ? leaseUtil.verifyLease(token) : null;
+    if (!payload) return res.status(401).json({ ok: false, code: 'lease_invalid' });
+    if (!payload.cap) return res.status(403).json({ ok: false, code: 'not_capture_lease' });
+    const lease = await StealthLease.findById(payload.jti);
+    if (!lease || lease.revoked) return res.status(403).json({ ok: false, code: 'lease_invalid' });
+    const account = await StealthAccount.findById(lease.accountId || payload.acid);
+    if (!account) return res.status(404).json({ ok: false, code: 'account_not_found' });
+
+    const cookieBundle = normalizeCookieBundle(req.body && req.body.cookies);
+    if (!cookieBundle || !cookieBundle.cookies || cookieBundle.cookies.length === 0) {
+      return res.status(400).json({ ok: false, code: 'no_cookies_captured' });
+    }
+    // Stamp the captured cookies with the target host so they always attach later.
+    cookieBundle.cookies = cookieBundle.cookies.map(c => ({ ...c, domain: c.domain || TARGET_HOST }));
+    account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(cookieBundle));
+    account.sessionMeta = { cookieCount: cookieBundle.cookies.length, hasLocalStorage: false, origin: process.env.STEALTH_TARGET_ORIGIN || '', updatedAt: new Date() };
+    account.status = 'active';
+    account.verification = { result: 'working', maskedId: account.verification?.maskedId || null, httpStatus: 200, checkedAt: new Date() };
+    await account.save();
+    return res.json({ ok: true, cookiesSaved: cookieBundle.cookies.length });
+  } catch (err) {
+    console.error('Stealth capture-session error:', err.message);
     return res.status(500).json({ ok: false, code: 'server_error' });
   }
 });

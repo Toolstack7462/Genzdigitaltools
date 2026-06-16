@@ -196,6 +196,9 @@
 
   function start() {
     if (!LEASE) { showBlock(BLOCK_MSGS.lease_missing); return; }
+    // Admin "Refresh Cookies Through Proxy" mode: no metering/validation — just let
+    // the admin log in, then capture the proxy-context session into the vault.
+    if (CFG.capture) { buildCaptureUI(); return; }
     buildBar();
     hideBillingUI(document);
     var mo = new MutationObserver(function (muts) {
@@ -210,6 +213,29 @@
     validate();
     setInterval(tick, 1000);
     setInterval(validate, 30000); // periodic re-validation catches revocation / limit changes
+  }
+
+  // ── Capture mode UI (admin only) ────────────────────────────────────────────
+  function buildCaptureUI() {
+    var bar = document.createElement('div');
+    bar.id = 'genz-sw-bar';
+    bar.innerHTML =
+      '<span class="genz-sw-brand">Gen Z · Capture mode</span>' +
+      '<span class="genz-sw-stat">Log in to your StealthWriter account, then click →</span>' +
+      '<button id="genz-sw-save" style="margin-left:auto;background:linear-gradient(135deg,#16a34a,#22d3ee);color:#fff;border:0;border-radius:8px;padding:6px 14px;font-weight:700;cursor:pointer">💾 Save session to vault</button>';
+    document.documentElement.appendChild(bar);
+    if (document.body) document.body.style.paddingTop = '38px';
+    var btn = document.getElementById('genz-sw-save');
+    btn.addEventListener('click', function () {
+      btn.disabled = true; btn.textContent = 'Saving…';
+      fetch('/__genz/save-session', { method: 'POST', credentials: 'same-origin' })
+        .then(function (r) { return r.json().catch(function () { return {}; }); })
+        .then(function (j) {
+          if (j && j.ok) { btn.textContent = '✓ Saved (' + (j.cookiesSaved || 0) + ' cookies)'; toast('Session saved to vault. You can close this tab.'); }
+          else { btn.disabled = false; btn.textContent = '💾 Save session to vault'; toast('Could not save — make sure you are logged in first.'); }
+        })
+        .catch(function () { btn.disabled = false; btn.textContent = '💾 Save session to vault'; toast('Save failed.'); });
+    });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

@@ -23,15 +23,13 @@ const access = require('../../utils/stealth/access');
 const config = require('../../utils/stealth/config');
 const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify');
+const { normalizeCookieBundle, buildCookieHeader, countCookies } = require('../../utils/stealth/cookies');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
-// Build a Cookie header string from a stored bundle (cookies-based only).
-function bundleCookieHeader(bundle) {
-  const c = bundle && bundle.cookies;
-  if (Array.isArray(c)) return c.filter(x => x && x.name).map(x => `${x.name}=${x.value == null ? '' : x.value}`).join('; ');
-  if (typeof c === 'string') return c;
-  return '';
-}
+const TARGET_HOST = (() => {
+  try { return new URL(process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').hostname; }
+  catch (_) { return 'stealthwriter.ai'; }
+})();
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -341,26 +339,16 @@ router.delete('/clients/:id', async (req, res) => {
 // Never returns or logs raw cookies/sessions/tokens.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Accept a bundle as an object, a JSON string, or a raw cookie header string.
+// Normalize any pasted format into a canonical cookie bundle (see utils/stealth/cookies).
 function normalizeBundle(input) {
-  if (input && typeof input === 'object') return input;
-  if (typeof input === 'string') {
-    const s = input.trim();
-    if (!s) return null;
-    try { const o = JSON.parse(s); if (o && typeof o === 'object') return o; } catch (_) {}
-    return { cookies: s }; // raw "name=value; ..." header
-  }
-  return null;
+  return normalizeCookieBundle(input);
 }
 
 function buildSessionMeta(bundle) {
-  let cookieCount = 0;
-  const c = bundle && bundle.cookies;
-  if (Array.isArray(c)) cookieCount = c.length;
-  else if (typeof c === 'string') cookieCount = c.split(';').map(s => s.trim()).filter(Boolean).length;
   const ls = bundle && bundle.localStorage;
   return {
-    cookieCount,
+    cookieCount: Array.isArray(bundle && bundle.cookies) ? bundle.cookies.length : 0,
+    attachableCount: countCookies(bundle, TARGET_HOST), // cookies that match the target host
     hasLocalStorage: !!(ls && typeof ls === 'object' && Object.keys(ls).length > 0),
     origin: (bundle && bundle.origin) || '',
     updatedAt: new Date(),
@@ -490,6 +478,35 @@ router.post('/accounts/:id/session', validate(schemas.accountSession), async (re
   }
 });
 
+// ─── Refresh Cookies Through Proxy — mint a capture lease ────────────────────
+// Returns a gateway URL the admin opens to log into StealthWriter THROUGH the
+// proxy; the gateway then captures the session in the proxy context and saves it
+// back to this account (so cookies always work from the proxy IP/context).
+router.post('/accounts/:id/capture-lease', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    const settings = await config.getSettingsObject();
+    const ttlMinutes = Math.min(60, settings.leaseDurationMinutes || 30);
+    const issuedAt = new Date();
+    const expiresAt = new Date(issuedAt.getTime() + ttlMinutes * 60 * 1000);
+    const leaseRow = await StealthLease.create({
+      userId: req.userId, stealthClientId: null, accountId: account._id, accountLabel: account.label,
+      issuedAt, expiresAt, fixedLease: true, revoked: false, capture: true,
+      ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
+    });
+    const lease = require('../../utils/stealth/lease');
+    const token = lease.signLease({ jti: leaseRow._id, userId: req.userId, accountId: account._id, fixed: true, ttlMinutes, capture: true });
+    leaseRow.tokenHash = lease.hashToken(token);
+    await leaseRow.save();
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_CAPTURE_LEASE', { accountId: account._id, label: account.label, ip: getClientIp(req) });
+    return res.json({ success: true, url: lease.gatewayUrl(token), expiresAt, ttlMinutes });
+  } catch (err) {
+    console.error('Stealth capture-lease error:', err.message);
+    return res.status(500).json({ error: 'Failed to create capture lease' });
+  }
+});
+
 // ─── Verify account cookies ──────────────────────────────────────────────────
 // Decrypts the cookie bundle server-side, asks the StealthWriter origin whether it
 // is logged in, and stores ONLY a safe result + masked identifier. Optionally syncs
@@ -501,7 +518,7 @@ router.post('/accounts/:id/verify', async (req, res) => {
     if (!account.sessionEncrypted) return res.status(400).json({ error: 'No cookie bundle saved for this account' });
 
     let cookieHeader = '';
-    try { cookieHeader = bundleCookieHeader(JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted))); } catch (_) {}
+    try { cookieHeader = buildCookieHeader(JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)), TARGET_HOST); } catch (_) {}
     if (!cookieHeader) {
       account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
       account.status = 'session_expired';

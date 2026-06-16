@@ -25,10 +25,11 @@ function leaseSecret() {
 /** Sign a lease. ttlMinutes controls expiry; jti must match the DB lease row id.
  *  accountId binds the lease to a vault account; the gateway uses it to load the
  *  correct encrypted session server-side (never exposed to the browser). */
-function signLease({ jti, userId, stealthClientId, accountId, fixed, ttlMinutes }) {
+function signLease({ jti, userId, stealthClientId, accountId, fixed, ttlMinutes, capture }) {
   const expiresIn = `${Math.max(1, Math.trunc(ttlMinutes))}m`;
-  const payload = { jti, sub: String(userId), scid: String(stealthClientId), type: LEASE_TYPE, fixed: !!fixed };
+  const payload = { jti, sub: String(userId), scid: String(stealthClientId || ''), type: LEASE_TYPE, fixed: !!fixed };
   if (accountId) payload.acid = String(accountId);
+  if (capture) payload.cap = true; // admin "Refresh Cookies Through Proxy" lease
   return jwt.sign(payload, leaseSecret(), { expiresIn });
 }
 

@@ -22,6 +22,7 @@ export const stealthAdmin = {
   refreshAccountSession: (id, sessionBundle) => api.post(`/admin/stealth/accounts/${id}/session`, { sessionBundle }),
   verifyAccount: (id) => api.post(`/admin/stealth/accounts/${id}/verify`),
   accountLeases: (id) => api.get(`/admin/stealth/accounts/${id}/leases`),
+  captureLease: (id) => api.post(`/admin/stealth/accounts/${id}/capture-lease`),
   setAccountPrimary: (id) => api.post(`/admin/stealth/accounts/${id}/primary`),
   setAccountStatus: (id, status) => api.post(`/admin/stealth/accounts/${id}/status`, { status }),
   revokeAccountLeases: (id) => api.post(`/admin/stealth/accounts/${id}/revoke-leases`),

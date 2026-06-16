@@ -158,11 +158,30 @@ function fetchAccountSession(token) {
   });
 }
 
+function hostMatchesCookieDomain(cookieDomain, host) {
+  if (!cookieDomain) return true;
+  const d = String(cookieDomain).replace(/^\./, '').toLowerCase();
+  const h = String(host || '').toLowerCase();
+  if (!h) return true;
+  return h === d || h.endsWith('.' + d) || d.endsWith('.' + h);
+}
+
+// Build "name=value; ..." for the upstream target host. Includes only cookies whose
+// domain matches the target (host-only cookies always included). Last value wins.
 function buildCookieHeader(bundle) {
-  const c = bundle && bundle.cookies;
-  if (Array.isArray(c)) return c.filter(x => x && x.name).map(x => `${x.name}=${x.value == null ? '' : x.value}`).join('; ');
-  if (typeof c === 'string') return c;
-  return '';
+  const host = targetUrl.hostname;
+  let arr = bundle && bundle.cookies;
+  if (typeof arr === 'string') {
+    arr = arr.split(';').map(p => p.trim()).filter(Boolean).map(p => { const i = p.indexOf('='); return i < 0 ? null : { name: p.slice(0, i).trim(), value: p.slice(i + 1).trim() }; }).filter(Boolean);
+  }
+  if (!Array.isArray(arr)) return '';
+  const map = new Map();
+  for (const c of arr) {
+    if (!c || !c.name) continue;
+    if (c.domain && !hostMatchesCookieDomain(c.domain, host)) continue;
+    map.set(c.name, c.value == null ? '' : c.value);
+  }
+  return [...map.entries()].map(([n, v]) => `${n}=${v}`).join('; ');
 }
 
 async function getSession(token, jti) {
@@ -174,14 +193,47 @@ async function getSession(token, jti) {
   if (r.noKey) data = { noAccount: true };                              // vault disabled — manual login
   else if (r.status === 0) data = hit ? hit.data : { noInject: true };  // transient backend blip — don't hard-block
   else if (r.body && r.body.ok === true && r.body.account == null) data = { noAccount: true };
-  else if (r.body && r.body.ok === true && r.body.bundle) data = {
-    cookieHeader: buildCookieHeader(r.body.bundle),
-    localStorage: r.body.bundle.localStorage || null,
-    sessionStorage: r.body.bundle.sessionStorage || null,
-  };
+  else if (r.body && r.body.ok === true && r.body.bundle) {
+    const cookieHeader = buildCookieHeader(r.body.bundle);
+    data = {
+      cookieHeader,
+      cookieCount: cookieHeader ? cookieHeader.split('; ').filter(Boolean).length : 0,
+      localStorage: r.body.bundle.localStorage || null,
+      sessionStorage: r.body.bundle.sessionStorage || null,
+      accountId: (r.body.account && r.body.account.id) || null,
+      accountLabel: (r.body.account && r.body.account.label) || null,
+    };
+  }
   else data = { blocked: true, code: (r.body && r.body.code) || 'account_no_session' };
   sessionCache.set(key, { exp: Date.now() + SESSION_TTL_MS, data });
   return data;
+}
+
+// Generic gateway→backend POST (gateway-key + lease bearer). Used for the
+// account-expired signal and capture-session save. Never carries the lease cookie
+// to the browser; cookie payloads are sent only here, server-to-server.
+function gatewayApiPost(subpath, token, jsonBody) {
+  return new Promise((resolve) => {
+    if (!GATEWAY_KEY) return resolve({ status: 0, body: {} });
+    try {
+      const ul = new URL(`${API_BASE}${subpath}`);
+      const lib = ul.protocol === 'https:' ? https : http;
+      const body = Buffer.from(JSON.stringify(jsonBody || {}));
+      const r = lib.request(ul, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': body.length, 'authorization': `Bearer ${token}`, 'x-gateway-key': GATEWAY_KEY },
+        timeout: 8000,
+      }, (resp) => { let d = ''; resp.on('data', c => { d += c; }); resp.on('end', () => { try { resolve({ status: resp.statusCode, body: JSON.parse(d || '{}') }); } catch { resolve({ status: resp.statusCode, body: {} }); } }); });
+      r.on('error', () => resolve({ status: 0, body: {} }));
+      r.on('timeout', () => { r.destroy(); resolve({ status: 0, body: {} }); });
+      r.end(body);
+    } catch { resolve({ status: 0, body: {} }); }
+  });
+}
+
+// Safe structured log — IDs / counts / status only. NEVER cookie names or values.
+function safeLog(event, fields) {
+  try { console.log(`[stealth-gw] ${event} ${JSON.stringify(fields)}`); } catch (_) {}
 }
 
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
@@ -224,8 +276,8 @@ function rewriteSetCookie(values) {
 }
 
 // ── Overlay injection ─────────────────────────────────────────────────────────
-function injectOverlay(html) {
-  const cfg = JSON.stringify({ api: API_BASE });
+function injectOverlay(html, capture) {
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture });
   const tags =
     `<link rel="stylesheet" href="/__genz/overlay.css">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
@@ -247,7 +299,8 @@ function injectSessionBootstrap(html, session) {
 }
 
 // ── Reverse proxy ──────────────────────────────────────────────────────────────
-function proxy(req, res, isHtmlNav, session) {
+function proxy(req, res, isHtmlNav, session, ctx) {
+  ctx = ctx || {};
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
@@ -271,6 +324,26 @@ function proxy(req, res, isHtmlNav, session) {
     const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
       const isHtml = ct.includes('text/html');
+      const rawLoc = String(uRes.headers['location'] || '');
+      const redirectedToSignIn = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|login|auth\/login)\b/i.test(rawLoc);
+
+      if (isHtmlNav) {
+        safeLog('proxy', {
+          lease_id: ctx.jti || null,
+          account_id: (session && session.accountId) || null,
+          account_label: (session && session.accountLabel) || null,
+          target_path: String(req.url || '').split('?')[0],
+          cookies_count_attached: (session && session.cookieCount) || 0,
+          upstream_status: uRes.statusCode,
+          redirected_to_sign_in: redirectedToSignIn,
+        });
+        // If an account-backed lease lands on /sign-in, the cookies are dead →
+        // flag the account session_expired so it's skipped for NEW leases.
+        if (redirectedToSignIn && !ctx.capture && session && session.accountId && ctx.token) {
+          gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
+        }
+      }
+
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
         if (STRIP_RESP_HEADERS.has(k.toLowerCase())) continue;
@@ -287,7 +360,7 @@ function proxy(req, res, isHtmlNav, session) {
         uRes.on('end', () => {
           let html = Buffer.concat(buf).toString('utf8');
           html = injectSessionBootstrap(html, session);
-          html = injectOverlay(html);
+          html = injectOverlay(html, ctx.capture);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
           res.writeHead(uRes.statusCode || 200, outHeaders);
@@ -340,11 +413,25 @@ const server = http.createServer(async (req, res) => {
   // Local signature/expiry check (fast fail).
   const local = verifyLeaseLocal(token);
   if (local === null) return sendBlockPage(res, 'lease_invalid');
+  const capture = !!(local && local.cap); // admin "Refresh Cookies Through Proxy" lease
+
+  // Capture-mode save: collect the StealthWriter cookies accumulated under this
+  // gateway host (server-side) and post them to the backend to (re)fill the account.
+  if (pathName === '/__genz/save-session') {
+    if (!capture) { res.writeHead(403, { 'content-type': 'application/json' }); return res.end('{"ok":false,"code":"not_capture"}'); }
+    const cookies = parseCookies(req.headers.cookie);
+    const raw = Object.entries(cookies).filter(([k]) => k !== LEASE_COOKIE).map(([k, v]) => `${k}=${v}`).join('; ');
+    const r = await gatewayApiPost('/capture-session', token, { cookies: raw });
+    safeLog('capture-save', { lease_id: local && local.jti, account_id: (local && local.acid) || null, upstream_status: r.status, cookies_count_attached: raw ? raw.split('; ').filter(Boolean).length : 0 });
+    res.writeHead((r.status === 200 && r.body && r.body.ok) ? 200 : 400, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+    return res.end(JSON.stringify(r.body || { ok: false }));
+  }
 
   // For top-level HTML navigations, authoritatively re-validate against the backend.
+  // Capture leases have no client plan, so they skip the client/plan validation.
   const accept = String(req.headers.accept || '');
   const isHtmlNav = req.method === 'GET' && accept.includes('text/html');
-  if (isHtmlNav) {
+  if (isHtmlNav && !capture) {
     const v = await backendValidate(token);
     if (v.status === 0) {
       // Backend unreachable — fail closed only if we couldn't verify locally either.
@@ -354,11 +441,17 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Load the bound vault account's session (server-side) for upstream injection.
-  const session = await getSession(token, local && local.jti);
-  if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
+  // Capture mode: do NOT inject the stored bundle — let the admin log in fresh so
+  // the gateway can capture a session valid in the proxy context.
+  let session;
+  if (capture) {
+    session = { noAccount: true, capture: true };
+  } else {
+    session = await getSession(token, local && local.jti);
+    if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
+  }
 
-  return proxy(req, res, isHtmlNav, session);
+  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture });
 });
 
 server.listen(PORT, () => {

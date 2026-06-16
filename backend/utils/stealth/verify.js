@@ -15,7 +15,7 @@
  * Results: working | session_expired | limit_reached | wrong_account | blocked
  */
 const TARGET = (process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').replace(/\/$/, '');
-const VERIFY_PATH = process.env.STEALTH_VERIFY_PATH || '/dashboard';
+const VERIFY_PATH = process.env.STEALTH_VERIFY_PATH || '/dashboard/humanizer';
 
 const LOGIN_RE = process.env.STEALTH_VERIFY_LOGIN_RE
   ? new RegExp(process.env.STEALTH_VERIFY_LOGIN_RE, 'i')
