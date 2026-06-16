@@ -41,6 +41,7 @@ const tableNames = {
   StealthLease: 'stealth_leases',
   StealthUsageLog: 'stealth_usage_logs',
   StealthSettings: 'stealth_settings',
+  StealthAccount: 'stealth_accounts',
 };
 
 const populateModelByPath = {

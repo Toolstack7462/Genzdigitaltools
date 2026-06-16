@@ -80,6 +80,16 @@ STEALTH_GATEWAY_URL=https://stealth1.genzdigitalstore.com/gateway
 
 # Optional: run the daily reset inside the API process (default off → use system cron)
 STEALTH_INTERNAL_CRON=false
+
+# Account Vault (multi-account):
+# Shared key for the gateway-only /session endpoint (returns the decrypted account
+# session). MUST match the gateway's STEALTH_GATEWAY_KEY. If unset, account-session
+# injection is disabled and the gateway proxies without logging in as a vault account.
+STEALTH_GATEWAY_KEY=<random 32+ char string>
+# AES-256 key (64 hex chars) for encrypting account sessions at rest. If unset, an
+# isolated key is derived from JWT_SECRET; set explicitly in production so rotating
+# JWT_SECRET never strands vault data.
+STEALTH_VAULT_KEY=<64 hex chars>
 ```
 Add the gateway origin to the existing `ALLOWED_ORIGINS` so the overlay's
 cross-origin calls are permitted:
@@ -155,3 +165,45 @@ Lazy reset is the safety net, so the exact cron time is not critical.
 **Security**
 - [ ] Editing localStorage / overlay state does not raise limits (backend rejects).
 - [ ] Logs contain no cookies, tokens, passwords, or auth headers.
+
+---
+
+## 7. Multi-account Account Vault
+
+Admin → StealthWriter → **Account Vault** manages the operator's *own* authorized
+StealthWriter accounts. This never bypasses StealthWriter's official limits, credits,
+login, captcha or payment — it only chooses which of your accounts a lease proxies
+through and injects that account's session server-side.
+
+- **Model:** `StealthAccount` (`stealth_accounts`). Session bundles are encrypted at
+  rest with AES-256-GCM (`utils/stealth/vaultCrypto`, key `STEALTH_VAULT_KEY`). Only
+  `sessionMeta` (cookie count, hasLocalStorage, origin) is ever shown — never the secret.
+- **Statuses:** `active`, `standby`, `limit_reached`, `session_expired`, `blocked`.
+- **Buttons:** Refresh Session, Set as Primary, Mark Limit Reached, Mark Active,
+  Revoke Active Leases (+ Delete). Selection mode (settings): Manual Primary,
+  Auto Failover (default = Manual Primary + Auto Failover), Round Robin, Least Used.
+- **Selection at lease creation:** `utils/stealth/accountSelect` picks an `active`
+  account and stores `accountId` + `accountLabel` on the lease (and `acid` in the JWT).
+  Only active accounts are eligible; existing leases keep their account until expiry
+  or admin revocation.
+- **Gateway session injection:** the gateway calls the gateway-only
+  `POST /api/crm/stealth/gateway/session` (header `X-Gateway-Key: STEALTH_GATEWAY_KEY`),
+  receives the decrypted bundle server-side, injects cookies into the upstream `Cookie`
+  header and localStorage/sessionStorage via an early bootstrap script. The browser
+  never sees account details; `/validate` and `/consume` never return account info.
+  `blocked` accounts hard-stop the session; admin "Revoke Active Leases" cuts sessions.
+- **Admin logs:** lease + usage views show the internal account label used — no secrets.
+
+**Bundle format** (pasted when adding/refreshing an account):
+```json
+{ "cookies": [{ "name": "session", "value": "..." }], "localStorage": { "token": "..." } }
+```
+`cookies` may also be a raw `"name=value; ..."` header string.
+
+### Multi-account testing checklist
+- [ ] Add 2+ accounts; mark one primary. Auto Failover uses primary; Mark Limit Reached → new leases use the next active account.
+- [ ] Open StealthWriter → gateway loads the bound account's session (logged in as that account).
+- [ ] Round Robin / Least Used rotate across active accounts on new leases.
+- [ ] Mark an account `blocked` → its sessions stop; Revoke Active Leases cuts them immediately.
+- [ ] Refresh Session clears `session_expired`; admin UI shows only cookie counts, never raw values.
+- [ ] Lease/usage logs show the account label; no secrets anywhere.

@@ -14,6 +14,8 @@ const StealthUsageLog = createModel('StealthUsageLog', {
           userId: entry.userId,
           stealthClientId: entry.stealthClientId,
           leaseId: entry.leaseId || null,
+          accountId: entry.accountId || null,
+          accountLabel: entry.accountLabel || null,
           action: entry.action,
           allowed: !!entry.allowed,
           reason: entry.reason || null,

@@ -10,20 +10,41 @@
  *
  *   POST /validate  → is this lease still usable? returns remaining + secondsRemaining
  *   POST /consume   → check + atomically increment usage for one humanizer/detector action
+ *   POST /session   → GATEWAY-ONLY (X-Gateway-Key): returns the decrypted account
+ *                     session bundle for the lease's bound account, server-to-server.
+ *                     Never reachable from a browser (key is gateway-only) and never
+ *                     exposed to /validate or /consume.
  */
+const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 
 const StealthClient = require('../../models/stealth/StealthClient');
 const StealthLease = require('../../models/stealth/StealthLease');
 const StealthUsageLog = require('../../models/stealth/StealthUsageLog');
+const StealthAccount = require('../../models/stealth/StealthAccount');
 const access = require('../../utils/stealth/access');
 const leaseUtil = require('../../utils/stealth/lease');
+const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { getClientIp } = require('../../middleware/authEnhanced');
 const { apiLimiter } = require('../../middleware/rateLimiter');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
 router.use(apiLimiter);
+
+// Gateway-only guard: the session endpoint returns decrypted secrets, so it
+// requires a shared key that ONLY the gateway server holds (never the browser).
+function requireGatewayKey(req, res, next) {
+  const key = process.env.STEALTH_GATEWAY_KEY;
+  if (!key) return res.status(503).json({ ok: false, code: 'vault_unconfigured' });
+  const got = String(req.headers['x-gateway-key'] || '');
+  const a = Buffer.from(got);
+  const b = Buffer.from(key);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(403).json({ ok: false, code: 'forbidden' });
+  }
+  next();
+}
 
 function getLeaseToken(req) {
   const auth = req.headers.authorization;
@@ -102,6 +123,8 @@ router.post('/consume', async (req, res) => {
       userId: r.client.userId,
       stealthClientId: r.client._id,
       leaseId: r.lease._id,
+      accountId: r.lease.accountId || null,
+      accountLabel: r.lease.accountLabel || null, // internal account label only — no secrets
       action,
       allowed: decision.allowed,
       reason: decision.reason,
@@ -121,6 +144,43 @@ router.post('/consume', async (req, res) => {
   } catch (err) {
     console.error('Stealth gateway consume error:', err.message);
     return res.status(500).json({ allowed: false, code: 'server_error' });
+  }
+});
+
+// ─── Session (gateway-only) ──────────────────────────────────────────────────
+// Returns the decrypted session/cookie bundle for the lease's bound vault account
+// so the gateway can inject it into upstream requests. Secrets leave the DB ONLY
+// here, server-to-server, and are never logged.
+router.post('/session', requireGatewayKey, async (req, res) => {
+  try {
+    const r = await resolveLease(req);
+    if (!r.ok) return res.status(r.status).json({ ok: false, code: r.code });
+
+    // Legacy / no-vault: lease has no bound account → gateway proxies without injection.
+    if (!r.lease.accountId) return res.json({ ok: true, account: null });
+
+    const account = await StealthAccount.findById(r.lease.accountId);
+    if (!account) return res.json({ ok: true, account: null });
+
+    // 'blocked' is an admin kill-switch — stop the session immediately.
+    if (account.status === 'blocked') {
+      return res.json({ ok: false, blocked: true, code: 'account_blocked' });
+    }
+
+    let bundle = null;
+    try {
+      if (account.sessionEncrypted) bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted));
+    } catch (_) { bundle = null; }
+    if (!bundle) return res.json({ ok: false, blocked: true, code: 'account_no_session' });
+
+    return res.json({
+      ok: true,
+      account: { id: account._id, status: account.status }, // status only — no label/secrets to the browser-facing layer
+      bundle, // { cookies:[{name,value,domain,path}]|string, localStorage:{}, sessionStorage:{}, origin }
+    });
+  } catch (err) {
+    console.error('Stealth gateway session error:', err.message);
+    return res.status(500).json({ ok: false, code: 'server_error' });
   }
 });
 

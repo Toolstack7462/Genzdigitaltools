@@ -47,6 +47,7 @@ const TARGET_ORIGIN = (process.env.STEALTH_TARGET_ORIGIN || '').replace(/\/$/, '
 const API_BASE = (process.env.STEALTH_API_BASE || '').replace(/\/$/, ''); // e.g. https://api.genzdigitalstore.com/api/crm/stealth/gateway
 const PUBLIC_ORIGIN = (process.env.GATEWAY_PUBLIC_ORIGIN || '').replace(/\/$/, '');
 const LEASE_SECRET = process.env.STEALTH_LEASE_SECRET || '';
+const GATEWAY_KEY = process.env.STEALTH_GATEWAY_KEY || ''; // shared key for the backend /session endpoint
 const LEASE_COOKIE = 'sw_lease';
 const LEASE_TYPE = 'stealth_lease';
 
@@ -54,6 +55,9 @@ if (!TARGET_ORIGIN) { console.error('FATAL: STEALTH_TARGET_ORIGIN is required');
 if (!API_BASE) { console.error('FATAL: STEALTH_API_BASE is required'); process.exit(1); }
 if (!LEASE_SECRET || LEASE_SECRET.length < 32) {
   console.warn('⚠️  STEALTH_LEASE_SECRET missing/weak — local lease verification disabled; relying on backend /validate only.');
+}
+if (!GATEWAY_KEY) {
+  console.warn('⚠️  STEALTH_GATEWAY_KEY not set — Account Vault session injection disabled (proxy will not inject account sessions).');
 }
 
 const targetUrl = new URL(TARGET_ORIGIN);
@@ -119,6 +123,67 @@ function backendValidate(token) {
   });
 }
 
+// ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
+// Calls the backend /session endpoint with the gateway key to obtain the decrypted
+// session bundle for the lease's bound account, then injects it into upstream
+// requests. Cached briefly per-lease to avoid a backend round-trip per asset.
+const sessionCache = new Map(); // key -> { exp, data }
+const SESSION_TTL_MS = 60 * 1000;
+
+function fetchAccountSession(token) {
+  return new Promise((resolve) => {
+    if (!GATEWAY_KEY) return resolve({ noKey: true });
+    try {
+      const ul = new URL(`${API_BASE}/session`);
+      const lib = ul.protocol === 'https:' ? https : http;
+      const body = Buffer.from('{}');
+      const r = lib.request(ul, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': body.length,
+          'authorization': `Bearer ${token}`,
+          'x-gateway-key': GATEWAY_KEY,
+        },
+        timeout: 5000,
+      }, (resp) => {
+        let d = '';
+        resp.on('data', c => { d += c; });
+        resp.on('end', () => { try { resolve({ status: resp.statusCode, body: JSON.parse(d || '{}') }); } catch { resolve({ status: resp.statusCode, body: {} }); } });
+      });
+      r.on('error', () => resolve({ status: 0, body: {} }));
+      r.on('timeout', () => { r.destroy(); resolve({ status: 0, body: {} }); });
+      r.end(body);
+    } catch { resolve({ status: 0, body: {} }); }
+  });
+}
+
+function buildCookieHeader(bundle) {
+  const c = bundle && bundle.cookies;
+  if (Array.isArray(c)) return c.filter(x => x && x.name).map(x => `${x.name}=${x.value == null ? '' : x.value}`).join('; ');
+  if (typeof c === 'string') return c;
+  return '';
+}
+
+async function getSession(token, jti) {
+  const key = jti || ('t:' + String(token).slice(-24));
+  const hit = sessionCache.get(key);
+  if (hit && hit.exp > Date.now()) return hit.data;
+  const r = await fetchAccountSession(token);
+  let data;
+  if (r.noKey) data = { noAccount: true };                              // vault disabled — manual login
+  else if (r.status === 0) data = hit ? hit.data : { noInject: true };  // transient backend blip — don't hard-block
+  else if (r.body && r.body.ok === true && r.body.account == null) data = { noAccount: true };
+  else if (r.body && r.body.ok === true && r.body.bundle) data = {
+    cookieHeader: buildCookieHeader(r.body.bundle),
+    localStorage: r.body.bundle.localStorage || null,
+    sessionStorage: r.body.bundle.sessionStorage || null,
+  };
+  else data = { blocked: true, code: (r.body && r.body.code) || 'account_no_session' };
+  sessionCache.set(key, { exp: Date.now() + SESSION_TTL_MS, data });
+  return data;
+}
+
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
@@ -131,6 +196,8 @@ function sendBlockPage(res, code) {
     lease_revoked: 'Your session was ended by an administrator.',
     client_disabled: 'Your StealthWriter access is disabled. Contact support.',
     plan_expired: 'Your StealthWriter plan has expired. Contact support to renew.',
+    account_blocked: 'This StealthWriter session was stopped by an administrator. Please reopen from your dashboard.',
+    account_no_session: 'This StealthWriter session needs to be refreshed. Please reopen from your dashboard shortly.',
   };
   const msg = messages[code] || 'Your StealthWriter session is no longer valid.';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Session ended</title>
@@ -168,8 +235,19 @@ function injectOverlay(html) {
   return html + tags;
 }
 
+// Inject the account's localStorage/sessionStorage before the app's own scripts run.
+function injectSessionBootstrap(html, session) {
+  if (!session || (!session.localStorage && !session.sessionStorage)) return html;
+  const ls = JSON.stringify(session.localStorage || {});
+  const ss = JSON.stringify(session.sessionStorage || {});
+  const script = `<script>(function(){try{var L=${ls};for(var k in L)localStorage.setItem(k,L[k]);}catch(e){}try{var S=${ss};for(var k in S)sessionStorage.setItem(k,S[k]);}catch(e){}})();</script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + script);
+  return script + html;
+}
+
 // ── Reverse proxy ──────────────────────────────────────────────────────────────
-function proxy(req, res, isHtmlNav) {
+function proxy(req, res, isHtmlNav, session) {
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
@@ -178,12 +256,17 @@ function proxy(req, res, isHtmlNav) {
     headers.host = targetUrl.host;
     delete headers['accept-encoding']; // ask upstream for identity so we can inject
     headers['accept-encoding'] = 'identity';
-    delete headers.cookie; // do not forward our lease cookie upstream
-    // Re-attach any non-lease cookies the user may have for the target.
-    const cookies = parseCookies(req.headers.cookie);
-    const passthru = Object.entries(cookies).filter(([k]) => k !== LEASE_COOKIE)
-      .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
-    if (passthru) headers.cookie = passthru;
+    delete headers.cookie; // never forward our lease cookie upstream
+    if (session && session.cookieHeader) {
+      // Inject the selected vault account's session cookies (server-side only).
+      headers.cookie = session.cookieHeader;
+    } else if (session && session.noAccount) {
+      // Legacy / no-vault: pass through the user's own non-lease cookies for the target.
+      const cookies = parseCookies(req.headers.cookie);
+      const passthru = Object.entries(cookies).filter(([k]) => k !== LEASE_COOKIE)
+        .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
+      if (passthru) headers.cookie = passthru;
+    }
 
     const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
@@ -203,6 +286,7 @@ function proxy(req, res, isHtmlNav) {
         uRes.on('data', c => buf.push(c));
         uRes.on('end', () => {
           let html = Buffer.concat(buf).toString('utf8');
+          html = injectSessionBootstrap(html, session);
           html = injectOverlay(html);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
@@ -270,7 +354,11 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  return proxy(req, res, isHtmlNav);
+  // Load the bound vault account's session (server-side) for upstream injection.
+  const session = await getSession(token, local && local.jti);
+  if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
+
+  return proxy(req, res, isHtmlNav, session);
 });
 
 server.listen(PORT, () => {

@@ -21,6 +21,8 @@ const StealthSettings = createModel('StealthSettings', {
     if (data.leaseDurationMinutes === undefined || data.leaseDurationMinutes === null) data.leaseDurationMinutes = 30;
     if (data.fixedLeaseEnabled === undefined || data.fixedLeaseEnabled === null) data.fixedLeaseEnabled = true;
     if (data.maxSessionMinutes === undefined || data.maxSessionMinutes === null) data.maxSessionMinutes = 720;
+    const MODES = ['manual_primary', 'auto_failover', 'round_robin', 'least_used'];
+    if (!MODES.includes(data.accountSelectionMode)) data.accountSelectionMode = 'auto_failover';
     data.leaseDurationMinutes = Math.min(720, Math.max(1, Math.trunc(Number(data.leaseDurationMinutes)) || 30));
     data.maxSessionMinutes = Math.min(1440, Math.max(5, Math.trunc(Number(data.maxSessionMinutes)) || 720));
     data.fixedLeaseEnabled = !!data.fixedLeaseEnabled;

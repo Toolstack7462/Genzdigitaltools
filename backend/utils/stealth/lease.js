@@ -22,14 +22,14 @@ function leaseSecret() {
   return crypto.createHmac('sha256', base).update('stealthwriter:lease:v1').digest('hex');
 }
 
-/** Sign a lease. ttlMinutes controls expiry; jti must match the DB lease row id. */
-function signLease({ jti, userId, stealthClientId, fixed, ttlMinutes }) {
+/** Sign a lease. ttlMinutes controls expiry; jti must match the DB lease row id.
+ *  accountId binds the lease to a vault account; the gateway uses it to load the
+ *  correct encrypted session server-side (never exposed to the browser). */
+function signLease({ jti, userId, stealthClientId, accountId, fixed, ttlMinutes }) {
   const expiresIn = `${Math.max(1, Math.trunc(ttlMinutes))}m`;
-  return jwt.sign(
-    { jti, sub: String(userId), scid: String(stealthClientId), type: LEASE_TYPE, fixed: !!fixed },
-    leaseSecret(),
-    { expiresIn }
-  );
+  const payload = { jti, sub: String(userId), scid: String(stealthClientId), type: LEASE_TYPE, fixed: !!fixed };
+  if (accountId) payload.acid = String(accountId);
+  return jwt.sign(payload, leaseSecret(), { expiresIn });
 }
 
 /** Verify a lease token. Returns the decoded payload or null. */

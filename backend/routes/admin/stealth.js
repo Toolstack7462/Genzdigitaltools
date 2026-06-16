@@ -16,10 +16,12 @@ const ActivityLog = require('../../models/ActivityLog');
 const StealthClient = require('../../models/stealth/StealthClient');
 const StealthLease = require('../../models/stealth/StealthLease');
 const StealthUsageLog = require('../../models/stealth/StealthUsageLog');
+const StealthAccount = require('../../models/stealth/StealthAccount');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate } = require('../../middleware/validation');
 const access = require('../../utils/stealth/access');
 const config = require('../../utils/stealth/config');
+const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
 router.use(requireAuth);
@@ -48,7 +50,31 @@ const schemas = {
     leaseDurationMinutes: Joi.number().integer().min(1).max(720),
     fixedLeaseEnabled: Joi.boolean(),
     maxSessionMinutes: Joi.number().integer().min(5).max(1440),
+    accountSelectionMode: Joi.string().valid('manual_primary', 'auto_failover', 'round_robin', 'least_used'),
   }).min(1),
+  createAccount: Joi.object({
+    label: Joi.string().min(1).max(120).required(),
+    // The session bundle is accepted as a JSON object or a JSON string; it is
+    // encrypted at rest immediately and never returned. Optional at create time.
+    sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).allow(null),
+    status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').default('active'),
+    priority: Joi.number().integer().min(0).max(100000).default(100),
+    isPrimary: Joi.boolean().default(false),
+    notes: Joi.string().max(500).allow('', null),
+  }),
+  updateAccount: Joi.object({
+    label: Joi.string().min(1).max(120),
+    status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked'),
+    priority: Joi.number().integer().min(0).max(100000),
+    isPrimary: Joi.boolean(),
+    notes: Joi.string().max(500).allow('', null),
+  }).min(1),
+  accountSession: Joi.object({
+    sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).required(),
+  }),
+  accountStatus: Joi.object({
+    status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').required(),
+  }),
 };
 
 function safePagination(query) {
@@ -172,6 +198,7 @@ router.get('/clients/:id', async (req, res) => {
       id: l._id, issuedAt: l.issuedAt, expiresAt: l.expiresAt, revoked: l.revoked,
       revokedReason: l.revokedReason || null, fixedLease: l.fixedLease,
       active: !l.revoked && new Date(l.expiresAt).getTime() > now,
+      accountLabel: l.accountLabel || null, // which internal account this lease used (label only)
       ip: l.ip || null, userAgent: l.userAgent || null,
     }));
     return res.json({ success: true, client: presented, usageLogs, leases: leaseView });
@@ -293,6 +320,222 @@ router.delete('/clients/:id', async (req, res) => {
   } catch (err) {
     console.error('Stealth delete client error:', err.message);
     return res.status(500).json({ error: 'Failed to delete StealthWriter client' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// STEALTHWRITER ACCOUNT VAULT (admin-only, multi-account)
+// Stores the operator's OWN StealthWriter account sessions, encrypted at rest.
+// Never returns or logs raw cookies/sessions/tokens.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Accept a bundle as an object, a JSON string, or a raw cookie header string.
+function normalizeBundle(input) {
+  if (input && typeof input === 'object') return input;
+  if (typeof input === 'string') {
+    const s = input.trim();
+    if (!s) return null;
+    try { const o = JSON.parse(s); if (o && typeof o === 'object') return o; } catch (_) {}
+    return { cookies: s }; // raw "name=value; ..." header
+  }
+  return null;
+}
+
+function buildSessionMeta(bundle) {
+  let cookieCount = 0;
+  const c = bundle && bundle.cookies;
+  if (Array.isArray(c)) cookieCount = c.length;
+  else if (typeof c === 'string') cookieCount = c.split(';').map(s => s.trim()).filter(Boolean).length;
+  const ls = bundle && bundle.localStorage;
+  return {
+    cookieCount,
+    hasLocalStorage: !!(ls && typeof ls === 'object' && Object.keys(ls).length > 0),
+    origin: (bundle && bundle.origin) || '',
+    updatedAt: new Date(),
+  };
+}
+
+function presentAccount(account, activeLeaseCount = 0) {
+  return {
+    id: account._id,
+    label: account.label,
+    status: account.status,
+    isPrimary: !!account.isPrimary,
+    priority: account.priority,
+    usageCount: account.usageCount || 0,
+    lastUsedAt: account.lastUsedAt || null,
+    notes: account.notes || '',
+    hasSession: !!account.sessionEncrypted,        // boolean only — never the secret
+    sessionMeta: account.sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
+    activeLeaseCount,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+  };
+}
+
+async function activeLeaseCountsByAccount() {
+  const now = Date.now();
+  const leases = await StealthLease.find({ revoked: false });
+  const map = {};
+  for (const l of leases) {
+    if (l.accountId && new Date(l.expiresAt).getTime() > now) {
+      const k = String(l.accountId);
+      map[k] = (map[k] || 0) + 1;
+    }
+  }
+  return map;
+}
+
+async function clearOtherPrimaries(exceptId) {
+  await StealthAccount.updateMany(
+    { isPrimary: true, _id: { $ne: exceptId } },
+    { $set: { isPrimary: false } }
+  );
+}
+
+// ─── List accounts ────────────────────────────────────────────────────────────
+router.get('/accounts', async (req, res) => {
+  try {
+    const accounts = (await StealthAccount.find({})).sort((a, b) =>
+      (a.priority - b.priority) || (new Date(a.createdAt) - new Date(b.createdAt)));
+    const counts = await activeLeaseCountsByAccount();
+    return res.json({
+      success: true,
+      accounts: accounts.map(a => presentAccount(a, counts[String(a._id)] || 0)),
+      statuses: StealthAccount.STATUSES(),
+    });
+  } catch (err) {
+    console.error('Stealth list accounts error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch accounts' });
+  }
+});
+
+// ─── Create account ─────────────────────────────────────────────────────────
+router.post('/accounts', validate(schemas.createAccount), async (req, res) => {
+  try {
+    const { label, sessionBundle, status, priority, isPrimary, notes } = req.body;
+    let sessionEncrypted, sessionMeta;
+    if (sessionBundle !== undefined && sessionBundle !== null) {
+      const bundle = normalizeBundle(sessionBundle);
+      if (!bundle) return res.status(400).json({ error: 'Invalid session bundle' });
+      sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
+      sessionMeta = buildSessionMeta(bundle);
+    }
+    const account = await StealthAccount.create({
+      label, status: status || 'active', priority: priority ?? 100, isPrimary: !!isPrimary,
+      notes: notes || '', usageCount: 0,
+      sessionEncrypted: sessionEncrypted || null,
+      sessionMeta: sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
+      createdBy: req.userId,
+    });
+    if (account.isPrimary) await clearOtherPrimaries(account._id);
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_CREATED', { accountId: account._id, label, ip: getClientIp(req) });
+    return res.status(201).json({ success: true, account: presentAccount(account) });
+  } catch (err) {
+    console.error('Stealth create account error:', err.message);
+    return res.status(500).json({ error: 'Failed to create account' });
+  }
+});
+
+// ─── Update account (label / status / priority / primary / notes) ────────────
+router.put('/accounts/:id', validate(schemas.updateAccount), async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    for (const f of ['label', 'status', 'priority', 'notes']) if (req.body[f] !== undefined) account[f] = req.body[f];
+    if (req.body.isPrimary !== undefined) account.isPrimary = !!req.body.isPrimary;
+    await account.save();
+    if (account.isPrimary) await clearOtherPrimaries(account._id);
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_UPDATED', { accountId: account._id, changes: { ...req.body, sessionBundle: undefined }, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account) });
+  } catch (err) {
+    console.error('Stealth update account error:', err.message);
+    return res.status(500).json({ error: 'Failed to update account' });
+  }
+});
+
+// ─── Refresh session (re-upload bundle, mark active) ─────────────────────────
+router.post('/accounts/:id/session', validate(schemas.accountSession), async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    const bundle = normalizeBundle(req.body.sessionBundle);
+    if (!bundle) return res.status(400).json({ error: 'Invalid session bundle' });
+    account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
+    account.sessionMeta = buildSessionMeta(bundle);
+    if (account.status === 'session_expired') account.status = 'active'; // a refresh clears expiry
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_SESSION_REFRESHED', { accountId: account._id, label: account.label, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account) });
+  } catch (err) {
+    console.error('Stealth refresh session error:', err.message);
+    return res.status(500).json({ error: 'Failed to refresh session' });
+  }
+});
+
+// ─── Set as primary ───────────────────────────────────────────────────────────
+router.post('/accounts/:id/primary', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    account.isPrimary = true;
+    await account.save();
+    await clearOtherPrimaries(account._id);
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_PRIMARY_SET', { accountId: account._id, label: account.label, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account) });
+  } catch (err) {
+    console.error('Stealth set primary error:', err.message);
+    return res.status(500).json({ error: 'Failed to set primary' });
+  }
+});
+
+// ─── Set status (Mark Limit Reached / Mark Active / standby / blocked) ───────
+router.post('/accounts/:id/status', validate(schemas.accountStatus), async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    account.status = req.body.status;
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_STATUS_SET', { accountId: account._id, label: account.label, status: account.status, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account) });
+  } catch (err) {
+    console.error('Stealth set status error:', err.message);
+    return res.status(500).json({ error: 'Failed to set status' });
+  }
+});
+
+// ─── Revoke active leases bound to this account ──────────────────────────────
+router.post('/accounts/:id/revoke-leases', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    const { modifiedCount } = await StealthLease.updateMany(
+      { accountId: account._id, revoked: false },
+      { $set: { revoked: true, revokedReason: 'account_revoked', revokedAt: new Date() } }
+    );
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_LEASES_REVOKED', { accountId: account._id, label: account.label, count: modifiedCount, ip: getClientIp(req) });
+    return res.json({ success: true, revoked: modifiedCount });
+  } catch (err) {
+    console.error('Stealth revoke account leases error:', err.message);
+    return res.status(500).json({ error: 'Failed to revoke account leases' });
+  }
+});
+
+// ─── Delete account ───────────────────────────────────────────────────────────
+router.delete('/accounts/:id', async (req, res) => {
+  try {
+    const account = await StealthAccount.findById(req.params.id);
+    if (!account) return res.status(404).json({ error: 'Account not found' });
+    await StealthLease.updateMany(
+      { accountId: account._id, revoked: false },
+      { $set: { revoked: true, revokedReason: 'account_deleted', revokedAt: new Date() } }
+    );
+    await account.deleteOne();
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_DELETED', { accountId: account._id, label: account.label, ip: getClientIp(req) });
+    return res.json({ success: true, message: 'Account deleted' });
+  } catch (err) {
+    console.error('Stealth delete account error:', err.message);
+    return res.status(500).json({ error: 'Failed to delete account' });
   }
 });
 

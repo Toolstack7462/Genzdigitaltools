@@ -12,10 +12,12 @@ const router = express.Router();
 
 const StealthClient = require('../../models/stealth/StealthClient');
 const StealthLease = require('../../models/stealth/StealthLease');
+const StealthAccount = require('../../models/stealth/StealthAccount');
 const ActivityLog = require('../../models/ActivityLog');
 const { requireAuth, requireRole, getClientIp } = require('../../middleware/authEnhanced');
 const access = require('../../utils/stealth/access');
 const config = require('../../utils/stealth/config');
+const accountSelect = require('../../utils/stealth/accountSelect');
 const lease = require('../../utils/stealth/lease');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
@@ -73,6 +75,24 @@ router.post('/open', async (req, res) => {
     }
 
     const settings = await config.getSettingsObject();
+
+    // ── Account Vault selection (multi-account) ──────────────────────────────
+    // Pick one of the operator's own active StealthWriter accounts for this lease.
+    // If the vault is empty we proceed without an account (legacy: manual login in
+    // the gateway). If accounts exist but none are active, block — admin must
+    // refresh a session or mark an account active.
+    const accounts = await StealthAccount.find({});
+    let account = null;
+    if (accounts.length > 0) {
+      account = accountSelect.selectAccount(accounts, settings.accountSelectionMode);
+      if (!account) {
+        return res.status(503).json({
+          error: 'No StealthWriter account is currently available. Please try again shortly.',
+          code: 'no_account_available',
+        });
+      }
+    }
+
     const ttlMinutes = config.effectiveLeaseMinutes(settings);
     const fixed = settings.fixedLeaseEnabled;
     const issuedAt = new Date();
@@ -82,6 +102,8 @@ router.post('/open', async (req, res) => {
     const leaseRow = await StealthLease.create({
       userId: req.userId,
       stealthClientId: client._id,
+      accountId: account ? account._id : null,
+      accountLabel: account ? account.label : null, // denormalized for admin logs (label only, no secrets)
       issuedAt, expiresAt,
       fixedLease: fixed,
       revoked: false,
@@ -89,10 +111,18 @@ router.post('/open', async (req, res) => {
       userAgent: req.headers['user-agent'] || '',
     });
 
+    // Record usage on the selected account (for round-robin / least-used).
+    if (account) {
+      account.usageCount = Number(account.usageCount || 0) + 1;
+      account.lastUsedAt = issuedAt;
+      await account.save();
+    }
+
     const token = lease.signLease({
       jti: leaseRow._id,
       userId: req.userId,
       stealthClientId: client._id,
+      accountId: account ? account._id : undefined,
       fixed,
       ttlMinutes,
     });
@@ -101,7 +131,9 @@ router.post('/open', async (req, res) => {
     await leaseRow.save();
 
     await ActivityLog.log('CLIENT', req.userId, 'STEALTH_LEASE_ISSUED', {
-      stealthClientId: client._id, leaseId: leaseRow._id, ttlMinutes, fixed, ip: getClientIp(req),
+      stealthClientId: client._id, leaseId: leaseRow._id, ttlMinutes, fixed,
+      accountId: account ? account._id : null, accountLabel: account ? account.label : null,
+      ip: getClientIp(req),
     });
 
     return res.json({

@@ -14,6 +14,16 @@ export const stealthAdmin = {
   resetUsage: (id) => api.post(`/admin/stealth/clients/${id}/reset-usage`),
   revokeLeases: (id) => api.post(`/admin/stealth/clients/${id}/revoke-leases`),
   revokeLease: (leaseId) => api.post(`/admin/stealth/leases/${leaseId}/revoke`),
+
+  // ── Account Vault ──────────────────────────────────────────────────────────
+  listAccounts: () => api.get('/admin/stealth/accounts'),
+  createAccount: (body) => api.post('/admin/stealth/accounts', body),
+  updateAccount: (id, body) => api.put(`/admin/stealth/accounts/${id}`, body),
+  refreshAccountSession: (id, sessionBundle) => api.post(`/admin/stealth/accounts/${id}/session`, { sessionBundle }),
+  setAccountPrimary: (id) => api.post(`/admin/stealth/accounts/${id}/primary`),
+  setAccountStatus: (id, status) => api.post(`/admin/stealth/accounts/${id}/status`, { status }),
+  revokeAccountLeases: (id) => api.post(`/admin/stealth/accounts/${id}/revoke-leases`),
+  deleteAccount: (id) => api.delete(`/admin/stealth/accounts/${id}`),
 };
 
 // ── Client ────────────────────────────────────────────────────────────────
