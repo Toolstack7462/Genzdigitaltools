@@ -99,6 +99,15 @@ function getLease(req) {
   return parseCookies(req.headers.cookie)[LEASE_COOKIE] || null;
 }
 
+// Strip ONLY the sw_lease cookie from a raw Cookie header, preserving every other
+// cookie's value byte-for-byte (no decode/encode) — important for tokens like
+// __Secure-better-auth.session_token that contain %2B / %2F / %3D / dots.
+function stripLeaseCookie(rawCookieHeader) {
+  return String(rawCookieHeader || '').split(';').map(s => s.trim()).filter(Boolean)
+    .filter(p => { const i = p.indexOf('='); const name = (i < 0 ? p : p.slice(0, i)).trim(); return name !== LEASE_COOKIE; })
+    .join('; ');
+}
+
 // ── Authoritative backend validation (HTML loads) ───────────────────────────
 function backendValidate(token) {
   return new Promise((resolve) => {
@@ -201,9 +210,11 @@ async function getSession(token, jti) {
   else if (r.body && r.body.ok === true && r.body.account == null) data = { noAccount: true };
   else if (r.body && r.body.ok === true && r.body.bundle) {
     const cookieHeader = buildCookieHeader(r.body.bundle);
+    const cookieCount = cookieHeader ? cookieHeader.split('; ').filter(Boolean).length : 0;
     data = {
       cookieHeader,
-      cookieCount: cookieHeader ? cookieHeader.split('; ').filter(Boolean).length : 0,
+      cookieCount,
+      hasSessionCookie: cookieCount > 0,
       localStorage: r.body.bundle.localStorage || null,
       sessionStorage: r.body.bundle.sessionStorage || null,
       accountId: (r.body.account && r.body.account.id) || null,
@@ -320,10 +331,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       // Inject the selected vault account's session cookies (server-side only).
       headers.cookie = session.cookieHeader;
     } else if (session && session.noAccount) {
-      // Legacy / no-vault: pass through the user's own non-lease cookies for the target.
-      const cookies = parseCookies(req.headers.cookie);
-      const passthru = Object.entries(cookies).filter(([k]) => k !== LEASE_COOKIE)
-        .map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('; ');
+      // Legacy / no-vault / capture: pass through the browser's non-lease cookies
+      // for the target — value-preserving (no decode/encode).
+      const passthru = stripLeaseCookie(req.headers.cookie);
       if (passthru) headers.cookie = passthru;
     }
 
@@ -340,6 +350,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           account_label: (session && session.accountLabel) || null,
           path_requested: String(req.url || '').split('?')[0],
           cookies_count_attached: (session && session.cookieCount) || 0,
+          has_session_cookie: !!(session && (session.hasSessionCookie || (session.cookieCount || 0) > 0)),
           upstream_status: uRes.statusCode,
           redirected_to_sign_in: redirectedToSignIn,
         });
@@ -429,8 +440,7 @@ const server = http.createServer(async (req, res) => {
   // gateway host (server-side) and post them to the backend to (re)fill the account.
   if (pathName === '/__genz/save-session') {
     if (!capture) { res.writeHead(403, { 'content-type': 'application/json' }); return res.end('{"ok":false,"code":"not_capture"}'); }
-    const cookies = parseCookies(req.headers.cookie);
-    const raw = Object.entries(cookies).filter(([k]) => k !== LEASE_COOKIE).map(([k, v]) => `${k}=${v}`).join('; ');
+    const raw = stripLeaseCookie(req.headers.cookie); // value-preserving (no decode/encode)
     const r = await gatewayApiPost('/capture-session', token, { cookies: raw });
     safeLog('capture-save', { lease_id: local && local.jti, account_id: (local && local.acid) || null, upstream_status: r.status, cookies_count_attached: raw ? raw.split('; ').filter(Boolean).length : 0 });
     res.writeHead((r.status === 200 && r.body && r.body.ok) ? 200 : 400, { 'content-type': 'application/json', 'cache-control': 'no-store' });

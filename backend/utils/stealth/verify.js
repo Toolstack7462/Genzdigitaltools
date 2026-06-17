@@ -20,9 +20,11 @@ const VERIFY_PATH = process.env.STEALTH_VERIFY_PATH || '/dashboard/humanizer';
 const LOGIN_RE = process.env.STEALTH_VERIFY_LOGIN_RE
   ? new RegExp(process.env.STEALTH_VERIFY_LOGIN_RE, 'i')
   : /(type=["']?password|name=["']?password|forgot[ -]?password|>\s*(log|sign)\s*in\b)/i;
+// Strict: only explicit "limit reached" phrasing — NOT bare "word limit", which
+// appears in the normal humanizer UI and caused false limit_reached.
 const LIMIT_RE = process.env.STEALTH_VERIFY_LIMIT_RE
   ? new RegExp(process.env.STEALTH_VERIFY_LIMIT_RE, 'i')
-  : /(limit reached|word limit|out of (words|credits)|quota (exceeded|reached)|upgrade to continue)/i;
+  : /(limit reached|you have reached your (word|usage) limit|out of (words|credits)|quota (exceeded|reached)|monthly limit reached)/i;
 const BLOCK_RE = process.env.STEALTH_VERIFY_BLOCK_RE
   ? new RegExp(process.env.STEALTH_VERIFY_BLOCK_RE, 'i')
   : /(account (suspended|banned|blocked|disabled)|access denied|you (have been|are) (banned|blocked))/i;

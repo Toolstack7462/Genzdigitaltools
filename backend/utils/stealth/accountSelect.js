@@ -19,8 +19,29 @@ function byPriorityThenIdle(a, b) {
   return new Date(a.lastUsedAt || 0).getTime() - new Date(b.lastUsedAt || 0).getTime();
 }
 
+function accountHasSessionCookie(a) {
+  if (a.sessionMeta && typeof a.sessionMeta.hasSessionCookie === 'boolean') return a.sessionMeta.hasSessionCookie;
+  return !!a.sessionEncrypted;
+}
+
+// Safe, log-able reason an account is NOT eligible for a new lease (no secrets).
+function unavailableReason(a) {
+  if (a.status === 'blocked') return 'blocked';
+  if (a.status === 'limit_reached') return 'status_limit_reached';
+  if (!accountHasSessionCookie(a)) return 'no_session_cookie';
+  const ss = a.session_status || 'pending_verification';
+  if (ss === 'session_expired') return 'session_expired';
+  if (ss === 'cookies_invalid') return 'verify_failed';
+  if (!['active', 'standby'].includes(a.status)) return 'status_' + a.status;
+  return null; // eligible
+}
+
+function isEligible(a) {
+  return unavailableReason(a) === null;
+}
+
 function selectAccount(accounts, mode) {
-  const active = (accounts || []).filter(a => a.status === 'active');
+  const active = (accounts || []).filter(isEligible);
   if (active.length === 0) return null;
   const primary = active.find(a => a.isPrimary);
 
@@ -40,4 +61,4 @@ function selectAccount(accounts, mode) {
   }
 }
 
-module.exports = { MODES, selectAccount };
+module.exports = { MODES, selectAccount, isEligible, unavailableReason };

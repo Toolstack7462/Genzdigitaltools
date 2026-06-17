@@ -15,12 +15,26 @@
  * Never logs cookie names/values. Only canonical structure is returned.
  */
 
+// Name of StealthWriter's single session cookie (better-auth). One such cookie is a
+// complete, valid session — never treated as "incomplete".
+const SESSION_COOKIE_NAME = process.env.STEALTH_SESSION_COOKIE || '__Secure-better-auth.session_token';
+
 function parseCookieString(s) {
   return String(s).split(';').map(p => p.trim()).filter(Boolean).map(p => {
     const i = p.indexOf('=');
     if (i < 0) return null;
-    return { name: p.slice(0, i).trim(), value: p.slice(i + 1).trim() };
+    // Preserve the value EXACTLY — no decode, no re-encode, no value trim
+    // (keeps %2B / %2F / %3D / dots intact for tokens like better-auth's).
+    return { name: p.slice(0, i).trim(), value: p.slice(i + 1) };
   }).filter(c => c && c.name);
+}
+
+// True when the bundle carries a usable StealthWriter session cookie.
+function hasSessionCookie(bundle) {
+  const arr = (bundle && Array.isArray(bundle.cookies)) ? bundle.cookies : [];
+  if (arr.some(c => c && c.name === SESSION_COOKIE_NAME && c.value != null && String(c.value).length > 0)) return true;
+  // Generic fallback: any auth/session/token cookie with a value.
+  return arr.some(c => c && c.name && /session|auth|token/i.test(c.name) && c.value != null && String(c.value).length > 0);
 }
 
 function normCookieArray(arr) {
@@ -92,4 +106,4 @@ function countCookies(bundle, targetHost) {
   return h ? h.split('; ').filter(Boolean).length : 0;
 }
 
-module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, parseCookieString, hostMatchesCookieDomain };
+module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, parseCookieString, hostMatchesCookieDomain, hasSessionCookie, SESSION_COOKIE_NAME };

@@ -23,7 +23,8 @@ const access = require('../../utils/stealth/access');
 const config = require('../../utils/stealth/config');
 const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify');
-const { normalizeCookieBundle, buildCookieHeader, countCookies } = require('../../utils/stealth/cookies');
+const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/stealth/cookies');
+const { unavailableReason } = require('../../utils/stealth/accountSelect');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
 const TARGET_HOST = (() => {
@@ -349,6 +350,7 @@ function buildSessionMeta(bundle) {
   return {
     cookieCount: Array.isArray(bundle && bundle.cookies) ? bundle.cookies.length : 0,
     attachableCount: countCookies(bundle, TARGET_HOST), // cookies that match the target host
+    hasSessionCookie: hasSessionCookie(bundle),         // 1 valid session cookie is enough
     hasLocalStorage: !!(ls && typeof ls === 'object' && Object.keys(ls).length > 0),
     origin: (bundle && bundle.origin) || '',
     updatedAt: new Date(),
@@ -366,11 +368,16 @@ function presentAccount(account, activeLeaseCount = 0) {
     lastUsedAt: account.lastUsedAt || null,
     notes: account.notes || '',
     hasSession: !!account.sessionEncrypted,        // boolean only — never the secret
-    sessionMeta: account.sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
+    hasSessionCookie: account.sessionMeta?.hasSessionCookie ?? !!account.sessionEncrypted,
+    sessionStatus: account.session_status || 'pending_verification',
+    lastVerifiedAt: account.lastVerifiedAt || null,
+    sessionMeta: account.sessionMeta || { cookieCount: 0, hasSessionCookie: false, hasLocalStorage: false, origin: '', updatedAt: null },
     // Verification: safe result + masked identifier only (no cookies ever).
     verification: account.verification || null,
     maskedIdentifier: account.verification?.maskedId || (account.expectedIdentifier ? maskEmail(account.expectedIdentifier) : null),
     hasExpectedIdentifier: !!account.expectedIdentifier,
+    available: unavailableReason(account) === null,
+    unavailableReason: unavailableReason(account), // safe reason (no secrets) or null
     activeLeaseCount,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -468,7 +475,9 @@ router.post('/accounts/:id/session', validate(schemas.accountSession), async (re
     if (!bundle) return res.status(400).json({ error: 'Invalid session bundle' });
     account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
     account.sessionMeta = buildSessionMeta(bundle);
-    if (account.status === 'session_expired') account.status = 'active'; // a refresh clears expiry
+    // Clear stale bad states on a fresh cookie; require re-verification.
+    if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
+    account.session_status = 'pending_verification';
     await account.save();
     await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_SESSION_REFRESHED', { accountId: account._id, label: account.label, ip: getClientIp(req) });
     return res.json({ success: true, account: presentAccount(account) });
@@ -522,19 +531,22 @@ router.post('/accounts/:id/verify', async (req, res) => {
     if (!cookieHeader) {
       account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
       account.status = 'session_expired';
+      account.session_status = 'session_expired';
+      account.lastVerifiedAt = new Date();
       await account.save();
       return res.json({ success: true, account: presentAccount(account) });
     }
 
     const v = await verifyAccountCookies(cookieHeader, account.expectedIdentifier);
     account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
+    account.lastVerifiedAt = new Date();
 
-    // Sync status for clear-cut results so account selection reacts immediately.
-    if (v.result === 'session_expired') account.status = 'session_expired';
-    else if (v.result === 'limit_reached') account.status = 'limit_reached';
-    else if (v.result === 'blocked') account.status = 'blocked';
-    else if (v.result === 'wrong_account') account.status = 'standby';
-    else if (v.result === 'working' && ['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
+    // Sync status + session_status for clear-cut results so selection reacts immediately.
+    if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
+    else if (v.result === 'limit_reached') { account.status = 'limit_reached'; account.session_status = 'working'; }
+    else if (v.result === 'blocked') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
+    else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
+    else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
 
     await account.save();
     await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_VERIFIED', { accountId: account._id, label: account.label, result: v.result, ip: getClientIp(req) });

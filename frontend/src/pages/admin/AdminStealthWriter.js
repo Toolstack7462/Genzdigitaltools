@@ -203,9 +203,11 @@ const AdminStealthWriter = () => {
                         </td>
                         <td className="px-4 py-2.5"><AccountStatusBadge status={a.status} /></td>
                         <td className="px-4 py-2.5 text-slate-600">
-                          {a.hasSession
-                            ? <span className="text-[12px]">✓ {a.sessionMeta?.cookieCount || 0} cookies{a.sessionMeta?.hasLocalStorage ? ' + LS' : ''}</span>
-                            : <span className="text-[12px] text-amber-600">no session</span>}
+                          {a.hasSessionCookie
+                            ? <span className="text-[12px] text-green-700">✓ session cookie</span>
+                            : <span className="text-[12px] text-amber-600">⚠ no session cookie</span>}
+                          {a.sessionStatus && <div className="text-[10px] text-slate-400 mt-0.5">{String(a.sessionStatus).replace('_', ' ')}</div>}
+                          {a.available === false && a.unavailableReason && <div className="text-[10px] text-red-500 mt-0.5">unavailable: {String(a.unavailableReason).replace(/_/g, ' ')}</div>}
                         </td>
                         <td className="px-4 py-2.5 text-slate-600">{a.usageCount} leases</td>
                         <td className="px-4 py-2.5 text-slate-600">{a.activeLeaseCount}</td>

@@ -86,6 +86,9 @@ router.post('/open', async (req, res) => {
     if (accounts.length > 0) {
       account = accountSelect.selectAccount(accounts, settings.accountSelectionMode);
       if (!account) {
+        // Safe per-account reasons for admin logs (no secrets, no cookie values).
+        const reasons = accounts.map(a => ({ account_id: a._id, account_label: a.label, reason: accountSelect.unavailableReason(a) }));
+        await ActivityLog.log('CLIENT', req.userId, 'STEALTH_NO_ACCOUNT_AVAILABLE', { reasons, ip: getClientIp(req) });
         return res.status(503).json({
           error: 'No StealthWriter account is currently available. Please try again shortly.',
           code: 'no_account_available',
