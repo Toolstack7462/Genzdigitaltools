@@ -38,15 +38,19 @@ const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
 router.use(apiLimiter);
 
+// Safe debug logger — IDs / statuses / counts only. NEVER cookies, tokens or secrets.
+function dbg(fields) { try { console.log('[stealth]', JSON.stringify(fields)); } catch (_) {} }
+
 // Gateway-only guard: the session endpoint returns decrypted secrets, so it
 // requires a shared key that ONLY the gateway server holds (never the browser).
 function requireGatewayKey(req, res, next) {
   const key = process.env.STEALTH_GATEWAY_KEY;
-  if (!key) return res.status(503).json({ ok: false, code: 'vault_unconfigured' });
+  if (!key) { dbg({ evt: 'session', response_status: 503, code: 'vault_unconfigured', error_source: 'genz_api' }); return res.status(503).json({ ok: false, code: 'vault_unconfigured' }); }
   const got = String(req.headers['x-gateway-key'] || '');
   const a = Buffer.from(got);
   const b = Buffer.from(key);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    dbg({ evt: 'session', response_status: 403, code: 'forbidden', error_source: 'genz_api' });
     return res.status(403).json({ ok: false, code: 'forbidden' });
   }
   next();
@@ -85,11 +89,15 @@ function secondsRemaining(lease, now = Date.now()) {
 router.post('/validate', async (req, res) => {
   try {
     const r = await resolveLease(req);
-    if (!r.ok) return res.status(r.status).json({ valid: false, code: r.code });
+    if (!r.ok) {
+      dbg({ evt: 'validate', response_status: r.status, code: r.code, error_source: 'lease_check' });
+      return res.status(r.status).json({ valid: false, code: r.code });
+    }
 
     const snap = await access.snapshot(r.client);
     const status = access.assessStatus(r.client);
     if (!status.allowed) {
+      dbg({ evt: 'validate', lease_id: r.lease._id, account_id: r.lease.accountId || null, client_id: r.client._id, response_status: 403, code: status.reason, error_source: 'account_check' });
       return res.status(403).json({ valid: false, code: status.reason, plan: { status: snap.status, expired: snap.expired } });
     }
     return res.json({
@@ -124,6 +132,13 @@ router.post('/consume', async (req, res) => {
     }
 
     const decision = await access.consume(r.client, action);
+
+    dbg({
+      evt: 'consume', action_type: action,
+      lease_id: r.lease._id, account_id: r.lease.accountId || null, client_id: r.client._id,
+      response_status: 200, allowed: decision.allowed, reason: decision.reason,
+      error_source: decision.allowed ? null : (decision.reason === 'limit_reached' ? 'usage_limit' : 'account_check'),
+    });
 
     await StealthUsageLog.record({
       userId: r.client.userId,

@@ -265,10 +265,12 @@ function sendBlockPage(res, code) {
     lease_revoked: 'Your session was ended by an administrator.',
     client_disabled: 'Your StealthWriter access is disabled. Contact support.',
     plan_expired: 'Your StealthWriter plan has expired. Contact support to renew.',
-    account_blocked: 'This StealthWriter session was stopped by an administrator. Please reopen from your dashboard.',
-    account_no_session: 'This StealthWriter session needs to be refreshed. Please reopen from your dashboard shortly.',
+    account_blocked: 'StealthWriter is temporarily unavailable. Please contact support.',
+    account_no_session: 'StealthWriter is temporarily unavailable. Please contact support.',
+    unavailable: 'Access could not be verified. Please refresh or contact support.',
   };
-  const msg = messages[code] || 'Your StealthWriter session is no longer valid.';
+  // Never surface technical codes — anything unknown maps to a friendly message.
+  const msg = messages[code] || 'Access could not be verified. Please refresh or contact support.';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Session ended</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
@@ -342,23 +344,34 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       const isHtml = ct.includes('text/html');
       const rawLoc = String(uRes.headers['location'] || '');
       const redirectedToSignIn = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|login|auth\/login)\b/i.test(rawLoc);
+      const upstreamForbidden = uRes.statusCode === 401 || uRes.statusCode === 403;
+      const errorSource = (redirectedToSignIn || upstreamForbidden) ? 'upstream' : null;
 
       if (isHtmlNav) {
         safeLog('proxy', {
+          request_path: String(req.url || '').split('?')[0],
           lease_id: ctx.jti || null,
           account_id: (session && session.accountId) || null,
           account_label: (session && session.accountLabel) || null,
-          path_requested: String(req.url || '').split('?')[0],
-          cookies_count_attached: (session && session.cookieCount) || 0,
           has_session_cookie: !!(session && (session.hasSessionCookie || (session.cookieCount || 0) > 0)),
-          upstream_status: uRes.statusCode,
+          cookies_count_attached: (session && session.cookieCount) || 0,
+          target_path: String(req.url || '').split('?')[0],
+          response_status: uRes.statusCode,
+          error_source: errorSource,
           redirected_to_sign_in: redirectedToSignIn,
         });
-        // If an account-backed lease lands on /sign-in, the cookies are dead →
+        // Account-backed lease bounced to /sign-in or forbidden → cookies dead →
         // flag the account session_expired so it's skipped for NEW leases.
-        if (redirectedToSignIn && !ctx.capture && session && session.accountId && ctx.token) {
+        if ((redirectedToSignIn || upstreamForbidden) && !ctx.capture && session && session.accountId && ctx.token) {
           gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
         }
+      }
+
+      // Never pass a raw upstream "Forbidden"/login document through to the client.
+      // Serve a clean page; the floating widget explains it in friendly terms.
+      if (isHtmlNav && upstreamForbidden && !ctx.capture) {
+        uRes.resume(); // drain
+        return sendBlockPage(res, 'unavailable');
       }
 
       const outHeaders = {};

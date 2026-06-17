@@ -1,38 +1,51 @@
-/* Gen Z StealthWriter overlay styles (injected). Scoped under #genz-sw-* ids. */
-#genz-sw-bar{
-  position:fixed;top:0;left:0;right:0;height:38px;z-index:2147483646;
-  display:flex;align-items:center;gap:14px;padding:0 16px;
-  font:600 12.5px/1 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-  color:#e6f6fb;background:linear-gradient(90deg,#0b1220,#10243b);
-  border-bottom:1px solid rgba(6,182,212,.35);box-shadow:0 2px 14px rgba(0,0,0,.25);
-  -webkit-user-select:none;user-select:none;
+/* Gen Z StealthWriter overlay — bottom-right floating glass widget (no top bar). */
+#genz-sw-widget{
+  position:fixed; right:18px; bottom:18px; z-index:2147483646; width:230px;
+  font:500 12.5px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:#e6f6fb;
+  background:linear-gradient(160deg, rgba(11,18,32,.92), rgba(16,36,59,.92));
+  border:1px solid rgba(6,182,212,.35); border-radius:14px;
+  box-shadow:0 16px 40px -12px rgba(0,0,0,.55), 0 0 0 1px rgba(6,182,212,.08);
+  backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  overflow:hidden; transition:width .2s ease, height .2s ease;
 }
-#genz-sw-bar .genz-sw-brand{font-weight:800;letter-spacing:.2px;background:linear-gradient(135deg,#60a5fa,#22d3ee);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-#genz-sw-bar .genz-sw-plan{color:#7dd3fc;font-weight:700}
-#genz-sw-bar .genz-sw-plan:empty{display:none}
-#genz-sw-bar .genz-sw-stat{color:#cbd5e1;font-weight:500}
-#genz-sw-bar .genz-sw-stat b{color:#fff;font-weight:800}
-#genz-sw-bar .genz-sw-time{margin-left:auto;color:#a5f3fc;font-weight:700}
-#genz-sw-bar .genz-sw-time b{color:#fff}
-#genz-sw-bar .genz-sw-sep{width:1px;height:18px;background:rgba(255,255,255,.14)}
-#genz-sw-bar.genz-sw-warn{background:linear-gradient(90deg,#3b1018,#4a1020);border-bottom-color:rgba(248,113,113,.5)}
-#genz-sw-bar.genz-sw-warn .genz-sw-time b{color:#fecaca}
+#genz-sw-widget .genz-sw-head{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:9px 12px; cursor:default; border-bottom:1px solid rgba(255,255,255,.08);
+  background:linear-gradient(90deg, rgba(37,99,235,.18), rgba(6,182,212,.12));
+}
+#genz-sw-widget .genz-sw-brand{font-weight:800; font-size:12px; letter-spacing:.2px;
+  background:linear-gradient(135deg,#60a5fa,#22d3ee); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+#genz-sw-widget .genz-sw-min{background:rgba(255,255,255,.08); color:#cbd5e1; border:0; width:20px; height:20px; border-radius:6px; cursor:pointer; font-weight:700; line-height:1;}
+#genz-sw-widget .genz-sw-min:hover{background:rgba(255,255,255,.16); color:#fff;}
+#genz-sw-widget .genz-sw-body{padding:10px 12px 12px;}
+#genz-sw-widget .genz-sw-row{display:flex; align-items:center; justify-content:space-between; padding:3px 0; color:#cbd5e1;}
+#genz-sw-widget .genz-sw-row b{color:#fff; font-weight:800;}
+#genz-sw-widget .genz-sw-msg{display:none; margin-top:8px; padding:8px 10px; border-radius:9px;
+  background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.32); color:#fecaca; font-size:12px; line-height:1.45;}
+#genz-sw-widget .genz-sw-support{display:block; text-align:center; margin-top:10px; padding:8px 10px; border-radius:9px;
+  text-decoration:none; font-weight:700; font-size:12px; color:#fff; background:linear-gradient(135deg,#2563EB,#06B6D4);}
+#genz-sw-widget .genz-sw-support:hover{opacity:.94;}
 
-#genz-sw-block{
-  position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;
-  background:rgba(7,12,22,.93);backdrop-filter:blur(4px);
-  font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-}
-#genz-sw-block .genz-sw-block-card{max-width:420px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
-#genz-sw-block h2{color:#e2e8f0;font-size:20px;margin:0 0 12px}
-#genz-sw-block p{color:#94a3b8;line-height:1.6;margin:0 0 22px}
-#genz-sw-block a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:700}
+/* warning (≤60s) + error states */
+#genz-sw-widget.genz-sw-warn{border-color:rgba(251,191,36,.5);}
+#genz-sw-widget.genz-sw-warn #genz-sw-time{color:#fde68a;}
+#genz-sw-widget.genz-sw-error{border-color:rgba(248,113,113,.55);}
+
+/* collapsed → just the header pill (never covers the editor/buttons) */
+#genz-sw-widget.genz-sw-collapsed{width:150px;}
+#genz-sw-widget.genz-sw-collapsed .genz-sw-body{display:none;}
+#genz-sw-widget.genz-sw-collapsed .genz-sw-head{cursor:pointer;}
 
 .genz-sw-toast{
-  position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:2147483647;
-  background:#10243b;color:#e6f6fb;border:1px solid rgba(248,113,113,.45);
-  padding:12px 18px;border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.4);
-  font:600 13px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:90vw;
-  transition:opacity .35s ease, transform .35s ease;
+  position:fixed; bottom:18px; right:262px; z-index:2147483647;
+  background:linear-gradient(160deg, rgba(11,18,32,.95), rgba(16,36,59,.95)); color:#e6f6fb;
+  border:1px solid rgba(6,182,212,.4); padding:11px 16px; border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.45); font:600 12.5px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  max-width:300px; transition:opacity .35s ease, transform .35s ease;
 }
-.genz-sw-toast-out{opacity:0;transform:translateX(-50%) translateY(8px)}
+.genz-sw-toast-out{opacity:0; transform:translateY(8px);}
+
+@media (max-width:640px){
+  #genz-sw-widget{ right:10px; bottom:10px; width:200px; }
+  .genz-sw-toast{ right:10px; bottom:160px; }
+}
