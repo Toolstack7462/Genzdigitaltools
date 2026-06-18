@@ -96,6 +96,7 @@ import AdminToolForm from './pages/admin/AdminToolForm';
 import AdminClientsEnhanced from './pages/admin/AdminClientsEnhanced';
 import AdminClientForm from './pages/admin/AdminClientForm';
 import AdminBulkAssign from './pages/admin/AdminBulkAssign';
+import AdminAssignments from './pages/admin/AdminAssignments';
 import AdminActivity from './pages/admin/AdminActivity';
 import AdminBlog from './pages/admin/AdminBlog';
 import AdminBlogForm from './pages/admin/AdminBlogForm';
@@ -174,6 +175,7 @@ function App() {
             <Route path="/admin/clients/new" element={<ErrorBoundary><AdminRoute><AdminClientForm /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/clients/:id/edit" element={<ErrorBoundary><AdminRoute><AdminClientForm /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/clients/:clientId/assign" element={<ErrorBoundary><AdminRoute><AdminBulkAssign /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/assignments" element={<ErrorBoundary><AdminRoute><AdminAssignments /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/assign"  element={<ErrorBoundary><AdminRoute><AdminBulkAssign /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/activity" element={<ErrorBoundary><AdminRoute><AdminActivity /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/blog"    element={<ErrorBoundary><AdminRoute><AdminBlog /></AdminRoute></ErrorBoundary>} />

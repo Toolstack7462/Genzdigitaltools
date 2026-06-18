@@ -10,10 +10,13 @@ import {
   ExternalLink,
   TrendingUp,
   Sparkles,
-  Wand2
+  Wand2,
+  Users
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import AdminModal from '../../components/admin/AdminModal';
+import AssignmentManager from '../../components/admin/AssignmentManager';
 
 const AdminToolsEnhanced = () => {
   const navigate = useNavigate();
@@ -24,8 +27,9 @@ const AdminToolsEnhanced = () => {
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 12, totalPages: 0 });
-  
-  const categories = ['AI', 'Academic', 'SEO', 'Productivity', 'Graphics & SEO', 'Text Humanizers', 'Career-Oriented', 'Miscellaneous', 'Other'];
+  const [manageTool, setManageTool] = useState(null);
+
+  const categories =['AI', 'Academic', 'SEO', 'Productivity', 'Graphics & SEO', 'Text Humanizers', 'Career-Oriented', 'Miscellaneous', 'Other'];
   
   useEffect(() => {
     loadTools();
@@ -223,10 +227,15 @@ const AdminToolsEnhanced = () => {
                           <span className="dot" /> {tool.status}
                         </span>
                         {tool.assignmentCount !== undefined && (
-                          <div className="flex items-center gap-1 text-xs text-genz-muted">
+                          <button
+                            type="button"
+                            onClick={() => setManageTool(tool)}
+                            className="flex items-center gap-1 text-xs text-genz-muted hover:text-genz-teal transition-colors"
+                            title="View assigned clients"
+                          >
                             <TrendingUp size={12} />
-                            <span>{tool.assignmentCount} assignments</span>
-                          </div>
+                            <span>{tool.assignmentCount} assigned</span>
+                          </button>
                         )}
                       </div>
                       
@@ -242,6 +251,16 @@ const AdminToolsEnhanced = () => {
                         </a>
                       )}
                       
+                      <button
+                        onClick={() => setManageTool(tool)}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 mb-2 bg-genz-teal/10 text-genz-teal rounded-xl hover:bg-genz-teal/20 transition-colors text-sm font-semibold"
+                        data-testid={`manage-assignments-${tool._id}`}
+                      >
+                        <Users size={16} />
+                        <span>Manage Assignments</span>
+                        <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-genz-teal/20 text-[11px] font-bold">{tool.assignmentCount ?? 0}</span>
+                      </button>
+
                       <div className="flex items-center gap-2 pt-4 border-t border-genz-border">
                         <button
                           onClick={() => navigate(`/admin/tools/${tool._id}/edit`)}
@@ -290,6 +309,20 @@ const AdminToolsEnhanced = () => {
             )}
           </>
         )}
+
+        {/* Manage assignments modal */}
+        <AdminModal
+          isOpen={!!manageTool}
+          onClose={() => setManageTool(null)}
+          title={manageTool ? `${manageTool.name} — Assignments` : 'Assignments'}
+          subtitle="Clients with access to this tool"
+          icon={Users}
+          maxWidth="max-w-4xl"
+        >
+          {manageTool && (
+            <AssignmentManager toolId={manageTool._id} onChanged={loadTools} />
+          )}
+        </AdminModal>
       </div>
     </AdminLayoutEnhanced>
   );

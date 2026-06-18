@@ -12,10 +12,13 @@ import {
   Smartphone,
   Clock,
   UserPlus,
-  TrendingUp
+  TrendingUp,
+  Package
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import AdminModal from '../../components/admin/AdminModal';
+import AssignmentManager from '../../components/admin/AssignmentManager';
 
 const AdminClientsEnhanced = () => {
   const navigate = useNavigate();
@@ -25,6 +28,7 @@ const AdminClientsEnhanced = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 20, totalPages: 0, total: 0 });
+  const [manageClient, setManageClient] = useState(null);
 
   useEffect(() => {
     loadClients();
@@ -145,6 +149,8 @@ const AdminClientsEnhanced = () => {
     <div className="flex items-center justify-end gap-1.5">
       <ActionBtn tone="blue" icon={Edit2} title="Edit client" testId={`edit-client-${client._id}`}
                  onClick={() => navigate(`/admin/clients/${client._id}/edit`)} />
+      <ActionBtn tone="teal" icon={Package} title="Manage assigned tools" testId={`manage-tools-${client._id}`}
+                 onClick={() => setManageClient(client)} />
       <ActionBtn tone="teal" icon={TrendingUp} title="Assign tools"
                  onClick={() => navigate(`/admin/clients/${client._id}/assign`)} />
       {client.isDeviceLocked && (
@@ -313,6 +319,8 @@ const AdminClientsEnhanced = () => {
                   <div className="flex flex-wrap items-center gap-1.5 mt-3 pt-3 border-t border-genz-border">
                     <ActionBtn tone="blue" icon={Edit2} label="Edit" title="Edit client"
                                onClick={() => navigate(`/admin/clients/${client._id}/edit`)} />
+                    <ActionBtn tone="teal" icon={Package} label="Tools" title="Manage assigned tools"
+                               onClick={() => setManageClient(client)} />
                     <ActionBtn tone="teal" icon={TrendingUp} label="Assign" title="Assign tools"
                                onClick={() => navigate(`/admin/clients/${client._id}/assign`)} />
                     {client.isDeviceLocked && (
@@ -352,6 +360,20 @@ const AdminClientsEnhanced = () => {
             )}
           </>
         )}
+
+        {/* Manage assigned tools modal */}
+        <AdminModal
+          isOpen={!!manageClient}
+          onClose={() => setManageClient(null)}
+          title={manageClient ? `${manageClient.fullName} — Assigned Tools` : 'Assigned Tools'}
+          subtitle={manageClient?.email}
+          icon={Package}
+          maxWidth="max-w-4xl"
+        >
+          {manageClient && (
+            <AssignmentManager clientId={manageClient._id} onChanged={loadClients} />
+          )}
+        </AdminModal>
       </div>
     </AdminLayoutEnhanced>
   );

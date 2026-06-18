@@ -57,6 +57,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/authEnhanced.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEnhanced.js" \
   -T backend/middleware/validation.js         "sftp://${HOST}:${PORT}${API_ROOT}/middleware/validation.js" \
   -T backend/routes/admin/clientsEnhanced.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/clientsEnhanced.js" \
+  -T backend/routes/admin/assignments.js      "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/assignments.js" \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \

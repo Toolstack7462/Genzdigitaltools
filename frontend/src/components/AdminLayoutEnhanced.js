@@ -12,7 +12,7 @@ const NAV_ITEMS = [
   { to: '/admin/dashboard', icon: LayoutDashboard, label: 'Dashboard',   group: 'Overview' },
   { to: '/admin/tools',     icon: Package,         label: 'Tools',       group: 'Manage'   },
   { to: '/admin/clients',   icon: Users,           label: 'Members',     group: 'Manage'   },
-  { to: '/admin/assign',    icon: Activity,        label: 'Assignments', group: 'Manage'   },
+  { to: '/admin/assignments', icon: Activity,      label: 'Assignments', group: 'Manage'   },
   { to: '/admin/stealthwriter', icon: Sparkles,    label: 'StealthWriter', group: 'Manage' },
   { to: '/admin/activity',  icon: Activity,        label: 'Activity',    group: 'Insights' },
   { to: '/admin/blog',      icon: FileText,        label: 'Blog',        group: 'Content'  },
