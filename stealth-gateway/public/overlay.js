@@ -1,18 +1,21 @@
 /* Gen Z StealthWriter overlay — injected into the proxied StealthWriter app.
  *
- * 1) Small bottom-right floating glass widget showing only: title (StealthWriter),
- *    Humanizer total/remaining, AI Detector total/remaining, session time left and a
- *    Contact-support button. Collapsible. No top bar, never covers the editor/buttons.
+ * 1) Small bottom-right floating glass widget: "Gen Z Digital Store" title with a
+ *    "StealthWriter" subtitle, Humanizer remaining/total, AI Detector remaining/total,
+ *    session time left and a Contact-support button. Collapsible. No top bar, never
+ *    covers the editor/buttons.
  * 2) Intent-driven usage metering: Genz usage is counted ONLY when the user clicks the
- *    MAIN "Humanize" or "Check for AI" button. Result-area secondary actions (Humanize
- *    More, Rehumanize, Copy, Compare, Deep Scan, …) never consume usage even though they
- *    may hit the same endpoint.
- * 3) Visual-only hiding of StealthWriter's account identity (signed-in email/name),
- *    plan / pricing / FAQ / support / Discord / affiliate / subscription UI and its
- *    original usage counters, so the sidebar shows only Dashboard / Humanizer /
- *    AI Detector. SPA-safe (MutationObserver + route hooks). Never hides the working
- *    area (textarea, Humanize, Check for AI). Raw upstream "Forbidden"/error text is
- *    replaced by a friendly widget message.
+ *    MAIN "Humanize" or "Check for AI" button. The action comes from the click (not the
+ *    request URL), so AI Detector counts correctly even when it shares an endpoint with
+ *    Humanizer. Result-area secondary actions (Humanize More, Rehumanize, Copy, Compare,
+ *    Deep Scan, …) never consume usage.
+ * 3) Account identity is replaced with the Gen Z Digital Store brand: wherever the
+ *    StealthWriter account name / email is shown, the identity text is hidden and a
+ *    "Gen Z Digital Store" label is shown instead. Plan / pricing / FAQ / support /
+ *    Discord / affiliate / subscription UI and StealthWriter's own usage counters are
+ *    hidden, so the sidebar shows only Dashboard / Humanizer / AI Detector. SPA-safe
+ *    (MutationObserver + route hooks). Never hides the working area (textarea, Humanize,
+ *    Check for AI). Raw upstream "Forbidden"/error text → friendly widget message.
  *
  * This is purely cosmetic — it does NOT touch StealthWriter's backend, limits,
  * subscription, payment or login, and never logs cookies/secrets.
@@ -23,9 +26,6 @@
   var API = (CFG.api || '').replace(/\/$/, '');
   var SUPPORT_URL = CFG.support || 'https://app.genzdigitalstore.com/client/dashboard';
   if (!API) return;
-
-  var HUMANIZE_RE = CFG.humanizePattern ? new RegExp(CFG.humanizePattern, 'i') : /humaniz|rephrase|rewrite|paraphras/i;
-  var DETECT_RE   = CFG.detectPattern   ? new RegExp(CFG.detectPattern, 'i')   : /detect|detector|ai-?score|ai-?check/i;
 
   function getCookie(name) {
     var m = document.cookie.match('(?:^|; )' + name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1') + '=([^;]*)');
@@ -61,12 +61,15 @@
     w.id = 'genz-sw-widget';
     w.innerHTML =
       '<div class="genz-sw-head">' +
-        '<span class="genz-sw-title">StealthWriter</span>' +
+        '<div class="genz-sw-brandwrap">' +
+          '<span class="genz-sw-title">Gen Z Digital Store</span>' +
+          '<span class="genz-sw-sub">StealthWriter</span>' +
+        '</div>' +
         '<button class="genz-sw-min" title="Minimize" aria-label="Minimize">–</button>' +
       '</div>' +
       '<div class="genz-sw-body">' +
-        '<div class="genz-sw-row"><span>Humanizer</span><b><i id="genz-h-total">–</i> / <i id="genz-h-rem">–</i></b></div>' +
-        '<div class="genz-sw-row"><span>AI Detector</span><b><i id="genz-d-total">–</i> / <i id="genz-d-rem">–</i></b></div>' +
+        '<div class="genz-sw-row"><span>Humanizer</span><b><i id="genz-h-rem">–</i> / <i id="genz-h-total">–</i></b></div>' +
+        '<div class="genz-sw-row"><span>AI Detector</span><b><i id="genz-d-rem">–</i> / <i id="genz-d-total">–</i></b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
@@ -113,12 +116,13 @@
   function tick() { if (state.terminal) return; state.secondsRemaining -= 1; if (state.secondsRemaining <= 0) validate(); render(); }
 
   // ── Usage metering — INTENT-DRIVEN ─────────────────────────────────────────
-  // Genz usage must count ONLY for the MAIN "Humanize" / "Check for AI" actions in
-  // the input area — never for result-area secondary buttons (Humanize More,
-  // Rehumanize, Copy, Compare, Deep Scan, etc.), which often hit the SAME endpoint.
-  // A URL match alone cannot tell them apart, so we require a fresh user intent set
-  // by a click on a recognised MAIN button before a matching request is counted.
-  function actionFor(url) { if (HUMANIZE_RE.test(url)) return 'humanizer'; if (DETECT_RE.test(url)) return 'detector'; return null; }
+  // Genz usage counts ONLY for the MAIN "Humanize" / "Check for AI" actions in the
+  // input area — never for result-area secondary buttons (Humanize More, Rehumanize,
+  // Copy, Compare, Deep Scan, etc.). A recognised MAIN-button click arms a short-lived
+  // intent; the very next real mutating request (POST/PUT/PATCH to StealthWriter, not a
+  // static asset or our own API) consumes ONE unit of that intent's action and clears
+  // it. The action is taken from the CLICK, not from the request URL, so AI Detector is
+  // counted correctly even though Humanizer and Detector share request endpoints.
 
   // Map a clicked control's text to a MAIN billable action, or null (not billable).
   // Non-billable controls are checked FIRST so "Humanize More" / "Rehumanize" /
@@ -141,10 +145,21 @@
   var INTENT_TTL = 6000;
   var intent = { action: null, at: 0 };
   function armIntent(action) { intent.action = action; intent.at = Date.now(); }
-  function takeIntent(urlAction) {
-    if (!intent.action || intent.action !== urlAction) return false;
-    if (Date.now() - intent.at > INTENT_TTL) { intent.action = null; return false; }
+  // Take the armed action if still fresh. The request URL is NOT used to decide the
+  // action — the click already told us which action it is.
+  function takeIntent() {
+    if (!intent.action) return null;
+    if (Date.now() - intent.at > INTENT_TTL) { intent.action = null; return null; }
+    var a = intent.action;
     intent.action = null; // each main click counts at most once
+    return a;
+  }
+  // A request that should consume usage: a mutating call to StealthWriter itself,
+  // not our own API and not a static asset.
+  function isCountableRequest(method, url) {
+    if (!url || url.indexOf(API) === 0) return false;
+    if (['POST', 'PUT', 'PATCH'].indexOf(String(method || 'GET').toUpperCase()) < 0) return false;
+    if (/\.(js|css|mjs|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|otf|ico|map)(\?|#|$)/i.test(url)) return false;
     return true;
   }
   // Capture-phase click listener: arm intent from the clicked control's label.
@@ -175,22 +190,25 @@
   if (origFetch) {
     window.fetch = function (input, init) {
       var url = (typeof input === 'string') ? input : (input && input.url) || '';
-      if (url.indexOf(API) === 0) return origFetch(input, init);
-      var action = actionFor(url);
-      // Count only when this request follows a MAIN-button click intent; otherwise
-      // (secondary button / background request) pass through free.
-      if (!action || !takeIntent(action)) return origFetch(input, init);
+      var method = (init && init.method) || (typeof input === 'object' && input && input.method) || 'GET';
+      // Count only when a mutating request follows a recognised MAIN-button click;
+      // secondary buttons never arm an intent, so they pass through free.
+      if (!intent.action || !isCountableRequest(method, url)) return origFetch(input, init);
+      var action = takeIntent();
+      if (!action) return origFetch(input, init);
       return consume(action).then(function (ok) { if (!ok) return Promise.reject(new Error('GENZ_LIMIT_BLOCKED')); return origFetch(input, init); });
     };
   }
   var X = window.XMLHttpRequest;
   if (X) {
     var oOpen = X.prototype.open, oSend = X.prototype.send;
-    X.prototype.open = function (method, url) { this.__genzAction = (url && url.indexOf(API) !== 0) ? actionFor(url) : null; return oOpen.apply(this, arguments); };
+    X.prototype.open = function (method, url) { this.__genzMethod = method; this.__genzUrl = url || ''; return oOpen.apply(this, arguments); };
     X.prototype.send = function () {
       var self = this, args = arguments;
-      if (!self.__genzAction || !takeIntent(self.__genzAction)) return oSend.apply(self, args);
-      consume(self.__genzAction).then(function (ok) { if (ok) oSend.apply(self, args); else { try { self.abort(); } catch (e) {} } });
+      if (!intent.action || !isCountableRequest(self.__genzMethod, self.__genzUrl)) return oSend.apply(self, args);
+      var action = takeIntent();
+      if (!action) return oSend.apply(self, args);
+      consume(action).then(function (ok) { if (ok) oSend.apply(self, args); else { try { self.abort(); } catch (e) {} } });
     };
   }
 
@@ -215,6 +233,44 @@
   function hide(n) { if (n && n.style) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
   function nearestControl(n) { var d = 0, c = n; while (c && d < 4) { var tag = (c.tagName || '').toLowerCase(); if (tag === 'a' || tag === 'button' || tag === 'li' || (c.getAttribute && c.getAttribute('role') === 'button')) return c; c = c.parentElement; d++; } return n; }
 
+  // ── Account identity → "Gen Z Digital Store" branding ────────────────────────
+  // Wherever the StealthWriter account name / email is visible, hide the identity
+  // text leaves and show the Gen Z Digital Store brand instead. Re-applied on every
+  // sweep so it survives SPA re-renders. Never reads or logs the identity values.
+  var BRAND = 'Gen Z Digital Store';
+  var brandControls = [];
+  function brandifyControl(ctrl) {
+    if (!ctrl) return;
+    if (brandControls.indexOf(ctrl) === -1) brandControls.push(ctrl);
+    enforceBranding();
+  }
+  function enforceBranding() {
+    for (var i = brandControls.length - 1; i >= 0; i--) {
+      var ctrl = brandControls[i];
+      if (!ctrl || !document.contains(ctrl)) { brandControls.splice(i, 1); continue; }
+      var leaves = ctrl.querySelectorAll('span,p,small,b,strong,div,a');
+      for (var j = 0; j < leaves.length; j++) {
+        var lf = leaves[j];
+        if (lf.className === 'genz-brand-tag' || (lf.querySelector && lf.querySelector('.genz-brand-tag'))) continue;
+        if (hasEditor(lf)) continue;
+        var tx = ownText(lf);
+        if (tx && !KEEP_RE.test(tx) && tx.length <= 80) lf.style.setProperty('display', 'none', 'important');
+      }
+      // Blank identity text sitting directly on the control (e.g. <button>email</button>).
+      for (var k = 0; k < ctrl.childNodes.length; k++) {
+        var cn = ctrl.childNodes[k];
+        if (cn.nodeType === 3 && cn.nodeValue && cn.nodeValue.trim()) cn.nodeValue = '';
+      }
+      if (!ctrl.querySelector('.genz-brand-tag')) {
+        var tag = document.createElement('span');
+        tag.className = 'genz-brand-tag';
+        tag.textContent = BRAND;
+        tag.style.cssText = 'font-weight:600;color:inherit;white-space:nowrap;';
+        ctrl.appendChild(tag);
+      }
+    }
+  }
+
   function sweep(root) {
     var nodes;
     try { nodes = (root && root.querySelectorAll ? root : document).querySelectorAll('a,button,[role="button"],li,span,div,p,h1,h2,h3,h4'); } catch (e) { return; }
@@ -227,7 +283,7 @@
       if (KEEP_RE.test(t)) continue;            // protect Dashboard/Humanizer/AI Detector/buttons
       if (hasEditor(n)) continue;               // never hide a container with the editor
       if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); continue; } // raw upstream error → friendly
-      if (EMAIL_RE.test(t)) { hide(nearestControl(n)); continue; } // client email/account identity → hide the control
+      if (EMAIL_RE.test(t)) { brandifyControl(nearestControl(n)); continue; } // account name/email → "Gen Z Digital Store"
       if (HIDE_RE.test(t)) { hide(nearestControl(n)); continue; }   // account/plan/pricing/etc → hide the whole control
       if (USAGE_RE.test(t)) { hide(n); }         // StealthWriter usage/reset counters → hide the label
     }
@@ -242,7 +298,7 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); } catch (e) {} }
 
   function start() {
     if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }

@@ -1,6 +1,6 @@
 /* Gen Z StealthWriter overlay — small, clean, premium bottom-right widget (no top bar). */
 #genz-sw-widget{
-  position:fixed; right:16px; bottom:16px; z-index:2147483646; width:178px;
+  position:fixed; right:16px; bottom:16px; z-index:2147483646; width:188px;
   font:500 12px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:#e6f6fb;
   background:linear-gradient(160deg, rgba(11,18,32,.94), rgba(16,36,59,.94));
   border:1px solid rgba(6,182,212,.28); border-radius:12px;
@@ -10,10 +10,12 @@
 }
 #genz-sw-widget .genz-sw-head{
   display:flex; align-items:center; justify-content:space-between; gap:6px;
-  padding:7px 10px; cursor:default; border-bottom:1px solid rgba(255,255,255,.07);
+  padding:8px 10px; cursor:default; border-bottom:1px solid rgba(255,255,255,.07);
 }
-#genz-sw-widget .genz-sw-title{font-weight:800; font-size:11.5px; letter-spacing:.2px;
+#genz-sw-widget .genz-sw-brandwrap{display:flex; flex-direction:column; line-height:1.12; min-width:0;}
+#genz-sw-widget .genz-sw-title{font-weight:800; font-size:12.5px; letter-spacing:.2px; white-space:nowrap;
   background:linear-gradient(135deg,#60a5fa,#22d3ee); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;}
+#genz-sw-widget .genz-sw-sub{font-size:9px; font-weight:700; letter-spacing:.16em; text-transform:uppercase; color:#7dd3fc; margin-top:2px;}
 #genz-sw-widget .genz-sw-min{background:rgba(255,255,255,.07); color:#cbd5e1; border:0; width:18px; height:18px; border-radius:5px; cursor:pointer; font-weight:700; line-height:1; padding:0;}
 #genz-sw-widget .genz-sw-min:hover{background:rgba(255,255,255,.16); color:#fff;}
 #genz-sw-widget .genz-sw-body{padding:7px 10px 9px;}
@@ -34,8 +36,8 @@
 #genz-sw-widget.genz-sw-warn #genz-sw-time{color:#fde68a;}
 #genz-sw-widget.genz-sw-error{border-color:rgba(248,113,113,.55);}
 
-/* collapsed → just the title pill (never covers the editor/buttons) */
-#genz-sw-widget.genz-sw-collapsed{width:128px;}
+/* collapsed → just the brand pill (never covers the editor/buttons) */
+#genz-sw-widget.genz-sw-collapsed{width:168px;}
 #genz-sw-widget.genz-sw-collapsed .genz-sw-body{display:none;}
 #genz-sw-widget.genz-sw-collapsed .genz-sw-head{cursor:pointer; border-bottom:0;}
 
@@ -49,6 +51,6 @@
 .genz-sw-toast-out{opacity:0; transform:translateY(8px);}
 
 @media (max-width:640px){
-  #genz-sw-widget{ right:10px; bottom:10px; width:160px; }
+  #genz-sw-widget{ right:10px; bottom:10px; width:174px; }
   .genz-sw-toast{ right:10px; bottom:150px; }
 }
