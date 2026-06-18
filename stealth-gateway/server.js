@@ -360,9 +360,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           error_source: errorSource,
           redirected_to_sign_in: redirectedToSignIn,
         });
-        // Account-backed lease bounced to /sign-in or forbidden → cookies dead →
-        // flag the account session_expired so it's skipped for NEW leases.
-        if ((redirectedToSignIn || upstreamForbidden) && !ctx.capture && session && session.accountId && ctx.token) {
+        // Flag the account session_expired ONLY on a real /sign-in redirect — not on
+        // a generic 401/403 (which may be a WAF/Cloudflare block, not a dead session).
+        if (redirectedToSignIn && !ctx.capture && session && session.accountId && ctx.token) {
           gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
         }
       }
