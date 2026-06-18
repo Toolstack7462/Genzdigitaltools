@@ -111,19 +111,24 @@ echo "    backend upload complete; Passenger restart triggered."
 #           own no-redirect SPA rule, or /client/* redirects loop forever.
 #       The build also contains downloads/genz-digital-store-extension.zip, so
 #       this step publishes the latest extension zip too. ─────────────────────
-FRONT_ARGS=()
+# Build a curl config file (-K) of upload-file/url pairs instead of one giant
+# argv. Code-splitting produces ~100 hashed chunk files; passing them all inline
+# overflows the OS command-line limit ("Argument list too long"). The credential
+# stays on the command line (-u), never written to the config file.
+FRONT_CFG="$(mktemp)"
 while IFS= read -r rel; do
   rel="${rel#./}"
-  FRONT_ARGS+=( -T "${BUILD_DIR}/${rel}" "sftp://${HOST}:${PORT}${MAIN_WEB}/${rel}" )
+  printf 'upload-file = "%s"\nurl = "sftp://%s:%s%s/%s"\n' "${BUILD_DIR}/${rel}" "${HOST}" "${PORT}" "${MAIN_WEB}" "${rel}" >> "${FRONT_CFG}"
   if [[ "${rel}" != ".htaccess" ]]; then
-    FRONT_ARGS+=( -T "${BUILD_DIR}/${rel}" "sftp://${HOST}:${PORT}${APP_WEB}/${rel}" )
+    printf 'upload-file = "%s"\nurl = "sftp://%s:%s%s/%s"\n' "${BUILD_DIR}/${rel}" "${HOST}" "${PORT}" "${APP_WEB}" "${rel}" >> "${FRONT_CFG}"
   fi
 done < <(cd "${BUILD_DIR}" && find . -type f ! -name '*.map')
 
-echo "==> [2/3] Uploading frontend build to main + app roots"
+echo "==> [2/3] Uploading frontend build to main + app roots ($(grep -c upload-file "${FRONT_CFG}") transfers)"
 curl --fail-with-body --ftp-create-dirs \
   -u "${USER}:${SFTP_PASS}" \
-  "${FRONT_ARGS[@]}"
+  -K "${FRONT_CFG}"
+rm -f "${FRONT_CFG}"
 echo "    frontend upload complete (extension zip included)."
 
 # ── 3) VERIFY backend is live: an authenticated extension route with NO token
