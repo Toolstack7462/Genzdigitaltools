@@ -52,6 +52,11 @@ const GATEWAY_KEY = process.env.GATEWAY_KEY || '';   // must match backend PROXY
 const TOOL_KEY = process.env.TOOL_KEY || '';         // 'hix' | 'bypassgpt' (lease.tool must match)
 const TOOL_NAME = process.env.TOOL_NAME || 'AI Tool';
 const LEASE_COOKIE = 'pg_lease';
+// Pinned upstream browser identity. Kept IDENTICAL for capture + client proxying so a
+// Cloudflare cf_clearance cookie (bound to its minting UA) stays valid, and matched to
+// the backend verifier's UA (utils/proxy/verify.js) so an account that Verifies
+// "working" also opens cleanly through the gateway.
+const UPSTREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const LEASE_TYPE = 'proxy_lease';
 
 if (!TARGET_ORIGIN) { console.error('FATAL: TARGET_ORIGIN is required'); process.exit(1); }
@@ -301,20 +306,40 @@ function proxy(req, res, isHtmlNav, session, ctx) {
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
     const bodyBuf = Buffer.concat(chunks);
-    const headers = { ...req.headers };
-    headers.host = targetUrl.host;
+    // Build a CLEAN, browser-consistent upstream request. The target sites (hix.ai /
+    // bypassgpt.ai) sit behind Cloudflare bot management. Forwarding the visitor's raw
+    // header set — each browser's own User-Agent + sec-ch-ua client hints, plus the
+    // LiteSpeed/Passenger proxy headers (x-forwarded-*, x-real-ip, via, …) — makes the
+    // request look like a bot and Cloudflare returns 403 even when the account cookies
+    // are valid. The backend account verifier, which sends a fixed Chrome UA + a tiny
+    // header set, passes (200). So we mirror that shape here. The UA is PINNED so it is
+    // identical for capture and for every client open: a Cloudflare cf_clearance cookie
+    // is bound to the UA it was minted with, so consistency keeps it valid, and it
+    // matches the verifier's UA so an account that Verifies "working" also opens.
+    const headers = {
+      host: targetUrl.host,
+      'user-agent': UPSTREAM_UA,
+      'accept': req.headers['accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+      // Overlay is injected into HTML, so keep upstream bodies uncompressed.
+      'accept-encoding': 'identity',
+    };
+    // Preserve only the headers the TOOL's own app needs for its API/XHR calls
+    // (Humanize / Check-for-AI POSTs) — never proxy or fingerprint headers.
+    for (const h of ['content-type', 'content-length', 'x-requested-with']) {
+      if (req.headers[h]) headers[h] = req.headers[h];
+    }
     // Rewrite Origin/Referer to the upstream origin so the tool's CSRF/same-origin
-    // checks accept mutating POSTs (Humanize / Check for AI) made from the gateway host.
-    if (headers.origin) headers.origin = targetUrl.origin;
-    if (headers.referer) {
-      try { const rf = new URL(headers.referer); rf.protocol = targetUrl.protocol; rf.host = targetUrl.host; headers.referer = rf.toString(); }
+    // checks accept mutating POSTs made from the gateway host.
+    if (req.headers.origin) headers.origin = targetUrl.origin;
+    if (req.headers.referer) {
+      try { const rf = new URL(req.headers.referer); rf.protocol = targetUrl.protocol; rf.host = targetUrl.host; headers.referer = rf.toString(); }
       catch (_) { headers.referer = targetUrl.origin + '/'; }
     }
-    delete headers['accept-encoding'];
-    headers['accept-encoding'] = 'identity';
-    delete headers.cookie; // never forward our lease cookie upstream
+    // Cookies: inject the vault account's cookies (client lease) or pass the admin's
+    // own login cookies (capture). Our lease cookie is never forwarded upstream.
     if (session && session.cookieHeader) {
-      headers.cookie = session.cookieHeader; // inject the vault account's cookies (server-side only)
+      headers.cookie = session.cookieHeader;
     } else if (session && session.noAccount) {
       const passthru = stripLeaseCookie(req.headers.cookie);
       if (passthru) headers.cookie = passthru;
