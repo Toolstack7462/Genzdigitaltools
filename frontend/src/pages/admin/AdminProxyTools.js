@@ -5,7 +5,7 @@ import {
   Star, ShieldCheck, ShieldOff, Globe, List, CheckCircle2
 } from 'lucide-react';
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
-import api from '../../services/api';
+import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
@@ -77,8 +77,9 @@ const AdminProxyTools = () => {
   useEffect(() => { loadDefs(); }, [loadDefs]);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    // CRM client list for the "grant access" dropdown.
-    api.get('/admin/clients?limit=100').then(r => setCrmClients(r.data?.clients || [])).catch(() => {});
+    // CRM client list for the "grant access" dropdown — stable list, cached + coalesced
+    // so navigating between proxy-tool/StealthWriter admin pages doesn't refetch it.
+    cachedGet('/admin/clients?limit=100').then(d => setCrmClients(d?.clients || [])).catch(() => {});
   }, []);
 
   const currentName = (toolDefs.find(t => t.tool === tool) || {}).name || tool;

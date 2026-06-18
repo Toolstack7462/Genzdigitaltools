@@ -9,15 +9,22 @@
  *    request URL), so AI Detector counts correctly even when it shares an endpoint with
  *    Humanizer. Result-area secondary actions (Humanize More, Rehumanize, Copy, Compare,
  *    Deep Scan, …) never consume usage.
- * 3) Account identity is replaced with the Gen Z Digital Store brand: wherever the
+ * 3) Account / branding chrome is HIDDEN COMPLETELY (not re-branded). Wherever the
  *    StealthWriter account name / email / initials / avatar / profile-dropdown trigger
- *    is shown (top-right AND the bottom-left sidebar account area), the identity is
- *    hidden and a single "Gen Z Digital Store" label is shown instead. Plan / billing /
- *    subscription / pricing / FAQ / support / Discord / affiliate / settings / log out
- *    and StealthWriter's own usage counters are hidden, so the sidebar shows only
- *    Dashboard / Humanizer / AI Detector. SPA-safe (MutationObserver + route hooks).
- *    Never hides the working area (textarea, Humanize, Check for AI, result area).
+ *    is shown (the top account/branding bar AND the bottom-left sidebar account area),
+ *    the whole control is removed from view — nothing, not even "Gen Z Digital Store",
+ *    is shown in those areas. Plan / billing / subscription / pricing / FAQ / support /
+ *    Discord / affiliate / settings / log out and StealthWriter's own usage counters
+ *    are hidden too, so the sidebar shows only Dashboard / Humanizer / AI Detector.
+ *    The Gen Z brand lives ONLY in the small bottom-right floating widget.
+ *    SPA-safe (MutationObserver + route hooks). Never hides the working area
+ *    (textarea, Humanize, Check for AI, result area).
  *    Raw upstream "Forbidden"/error text → friendly widget message.
+ *
+ * NO-FLASH: the static hide rules ship as critical CSS in <head> (server-injected,
+ * see server.js buildCriticalCss) and this script is inlined in <head> too, so its
+ * MutationObserver starts hiding text-matched nodes before <body> first paints. The
+ * MutationObserver / interval are only a backup for SPA re-renders.
  *
  * This is purely cosmetic — it does NOT touch StealthWriter's backend, limits,
  * subscription, payment or login, and never logs cookies/secrets.
@@ -232,68 +239,25 @@
 
   function ownText(n) { var s = ''; for (var i = 0; i < n.childNodes.length; i++) { var c = n.childNodes[i]; if (c.nodeType === 3) s += c.nodeValue; } return s.trim(); }
   function hasEditor(n) { return !!(n.querySelector && n.querySelector('textarea,[contenteditable="true"],input')); }
-  function hide(n) { if (n && n.style && !(n.getAttribute && n.getAttribute('data-genz-brand') === '1')) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
+  function hide(n) { if (n && n.style && n.id !== 'genz-sw-widget') { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
   function nearestControl(n) { var d = 0, c = n; while (c && d < 4) { var tag = (c.tagName || '').toLowerCase(); if (tag === 'a' || tag === 'button' || tag === 'li' || (c.getAttribute && c.getAttribute('role') === 'button')) return c; c = c.parentElement; d++; } return n; }
 
-  // ── Account identity → "Gen Z Digital Store" branding ────────────────────────
-  // Wherever the StealthWriter account name / email is visible, hide the identity
-  // text leaves and show the Gen Z Digital Store brand instead. Re-applied on every
-  // sweep so it survives SPA re-renders. Never reads or logs the identity values.
-  var BRAND = 'Gen Z Digital Store';
-  var AVATAR_SEL = '[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar],img,svg';
-  var brandControls = [];
-  function brandifyControl(ctrl) {
-    if (!ctrl || hasEditor(ctrl)) return;       // never touch the editor/working area
-    if (brandControls.indexOf(ctrl) === -1) brandControls.push(ctrl);
-    enforceBranding();
-  }
-  // An account/identity trigger that has no visible email — detected by an avatar /
-  // initials element or an account/profile/user aria-label/title/testid. Lets us brand
-  // the bottom-left sidebar account area (name + initials, email only in the dropdown).
+  // ── Account / identity controls → HIDDEN COMPLETELY ─────────────────────────
+  // Wherever the StealthWriter account name / email / avatar / profile trigger is
+  // visible — the top account/branding bar AND the bottom-left sidebar account area —
+  // hide the whole control. Nothing is shown in its place; the Gen Z brand lives only
+  // in the floating widget. Never reads or logs the identity values.
+  var AVATAR_SEL = '[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar]';
+  // An account/identity trigger detected structurally (avatar / initials / aria label)
+  // even when it shows no visible email — lets us hide the bottom-left sidebar account
+  // area where the email only appears inside the dropdown.
   function isIdentityControl(n) {
     if (!n || hasEditor(n)) return false;
     // Strong trigger signal: it contains a user avatar / initials element.
-    if (n.querySelector && n.querySelector('[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar]')) return true;
+    if (n.querySelector && n.querySelector(AVATAR_SEL)) return true;
     var a = ((n.getAttribute && (n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('data-testid') || '')) || '').toLowerCase();
-    if (/(^|[\s_-])(user[\s_-]?menu|usermenu|avatar)([\s_-]|$)/.test(a)) return true;
-    // An account/profile control that opens a menu (the trigger, not a menu item).
-    if (n.getAttribute && n.getAttribute('aria-haspopup') && /(^|[\s_-])(account|profile|my[\s_-]?account)([\s_-]|$)/.test(a)) return true;
+    if (/(^|[\s_-])(user[\s_-]?menu|usermenu|avatar|account|profile|my[\s_-]?account)([\s_-]|$)/.test(a)) return true;
     return false;
-  }
-  function enforceBranding() {
-    for (var i = brandControls.length - 1; i >= 0; i--) {
-      var ctrl = brandControls[i];
-      if (!ctrl || !document.contains(ctrl)) { brandControls.splice(i, 1); continue; }
-      // Mark so the generic hiders (HIDE_RE / href CSS) keep this control visible —
-      // it must SHOW the brand, not be removed. Also undo any prior hide.
-      ctrl.setAttribute('data-genz-brand', '1');
-      if (ctrl.getAttribute('data-genz-hidden') === '1') { ctrl.style.removeProperty('display'); ctrl.removeAttribute('data-genz-hidden'); }
-      // Hide every identity visual inside the control: name/email text, avatar,
-      // initials, chevrons — leaving only the injected brand label.
-      var leaves = ctrl.querySelectorAll('span,p,small,b,strong,div,a,' + AVATAR_SEL);
-      for (var j = 0; j < leaves.length; j++) {
-        var lf = leaves[j];
-        if (lf.className === 'genz-brand-tag' || (lf.querySelector && lf.querySelector('.genz-brand-tag'))) continue;
-        if (hasEditor(lf)) continue;
-        var tagL = (lf.tagName || '').toLowerCase();
-        var cls = (lf.getAttribute && lf.getAttribute('class')) || '';
-        if (tagL === 'img' || tagL === 'svg' || /avatar|initial|userpic/i.test(cls)) { lf.style.setProperty('display', 'none', 'important'); continue; }
-        var tx = ownText(lf);
-        if (tx && !KEEP_RE.test(tx) && tx.length <= 80) lf.style.setProperty('display', 'none', 'important');
-      }
-      // Blank identity text sitting directly on the control (e.g. <button>email</button>).
-      for (var k = 0; k < ctrl.childNodes.length; k++) {
-        var cn = ctrl.childNodes[k];
-        if (cn.nodeType === 3 && cn.nodeValue && cn.nodeValue.trim()) cn.nodeValue = '';
-      }
-      if (!ctrl.querySelector('.genz-brand-tag')) {
-        var tag = document.createElement('span');
-        tag.className = 'genz-brand-tag';
-        tag.textContent = BRAND;
-        tag.style.cssText = 'font-weight:600;color:inherit;white-space:nowrap;';
-        ctrl.appendChild(tag);
-      }
-    }
   }
 
   function sweep(root) {
@@ -307,47 +271,72 @@
       // text. Only act on actual controls so nav items / working area are untouched.
       var ctag = (n.tagName || '').toLowerCase();
       if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) {
-        brandifyControl(n); continue;
+        hide(n); continue;                       // account/identity trigger → hide completely
       }
       var t = ownText(n);
       if (!t || t.length > 60) continue;
       if (KEEP_RE.test(t)) continue;            // protect Dashboard/Humanizer/AI Detector/buttons
       if (hasEditor(n)) continue;               // never hide a container with the editor
       if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); continue; } // raw upstream error → friendly
-      if (EMAIL_RE.test(t)) { brandifyControl(nearestControl(n)); continue; } // account name/email → "Gen Z Digital Store"
+      if (EMAIL_RE.test(t)) { hide(nearestControl(n)); continue; } // account name/email → hide the whole control
       if (HIDE_RE.test(t)) { hide(nearestControl(n)); continue; }   // account/plan/pricing/etc → hide the whole control
       if (USAGE_RE.test(t)) { hide(n); }         // StealthWriter usage/reset counters → hide the label
     }
   }
 
   // href / aria based hiding (robust against obfuscated class names) via injected CSS.
+  // The server already ships these as critical CSS (#genz-critical-hide) in <head>;
+  // this is a backup so the overlay still hides them if the script is loaded stand-alone.
   function injectHideStyle() {
-    // Branded controls ([data-genz-brand]) are exempt — they must SHOW the brand.
+    if (document.getElementById('genz-critical-hide') || document.getElementById('genz-sw-hide')) return;
     var hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
       'subscription', 'upgrade', 'refer', 'plans', '/settings', '/profile', '/me',
       'logout', 'log-out', 'sign-out', 'signout'];
-    var css = hrefs.map(function (h) { return 'a[href*="' + h + '"]:not([data-genz-brand])'; }).join(',') +
+    var css = hrefs.map(function (h) { return 'a[href*="' + h + '"]'; }).join(',') +
       ',[data-genz-hidden="1"]{display:none !important;}';
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); } catch (e) {} }
+  function runHiding() { try { sweep(document); } catch (e) {} }
 
-  function start() {
-    if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
-    if (CFG.capture) { buildCaptureUI(); return; }
-    buildWidget();
+  // ── Hiding starts IMMEDIATELY (no DOMContentLoaded wait) ────────────────────
+  // Because this script is inlined in <head>, registering the MutationObserver here
+  // means account/branding nodes are hidden as React inserts them — before <body>
+  // first paints — so there is no flash. The observer + interval remain as a backup
+  // for SPA soft-navigations / re-renders.
+  function startHiding() {
     injectHideStyle();
     runHiding();
-    // SPA-safe: re-run on DOM mutations, on route changes, and on a light interval.
-    var mo = new MutationObserver(function () { runHiding(); });
+    // Debounce the observer so a burst of React mutations triggers ONE sweep on the
+    // next frame, not a full-document sweep per mutation (avoids jank on heavy pages).
+    var scheduled = false;
+    function scheduleHiding() {
+      if (scheduled) return; scheduled = true;
+      var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); };
+      raf(function () { scheduled = false; runHiding(); });
+    }
+    var mo = new MutationObserver(scheduleHiding);
     mo.observe(document.documentElement, { childList: true, subtree: true });
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); setTimeout(runHiding, 60); return r; };
     window.addEventListener('popstate', function () { setTimeout(runHiding, 60); });
     setInterval(runHiding, 1500);
+  }
+
+  // ── Widget + metering: needs <body>, so it waits for DOMContentLoaded ───────
+  function startWidget() {
+    if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
+    if (CFG.capture) { buildCaptureUI(); return; }
+    buildWidget();
     validate();
     setInterval(tick, 1000);
     setInterval(validate, 30000);
+  }
+
+  function start() {
+    // Hiding can begin before the body exists; only real client views hide chrome.
+    if (LEASE && !CFG.capture) startHiding();
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startWidget);
+    else startWidget();
   }
 
   // ── Capture mode (admin) ─────────────────────────────────────────────────────
@@ -366,6 +355,7 @@
     });
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
-  else start();
+  // Run immediately — start() begins hiding now (script is inlined in <head>) and
+  // internally defers only the widget build until the DOM is ready.
+  start();
 })();

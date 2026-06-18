@@ -145,8 +145,17 @@ Layers, in order:
    HTML/SSR payloads have email addresses stripped. Humanizer/AI-Detector and any
    non-identity/streaming responses are **never buffered or altered**, so usage
    counting, cookie injection and the lease flow are untouched.
-3. **Browser overlay** (`overlay.js`): unchanged MutationObserver UI cleanup +
-   “Gen Z Digital Store” branding, as a backup for client-side route changes.
+3. **Critical hide CSS in `<head>`** (`buildCriticalCss` in `server.js`): the static
+   account / billing / pricing / plan / support / logout hiding rules ship in the
+   initial HTML `<head>` (href + aria-label/data-testid selectors, plus any operator
+   `STEALTH_HIDE_SELECTORS`), so the browser never paints them — **this kills the
+   1–2 s flash of hidden UI on load.**
+4. **Browser overlay** (`overlay.js`): inlined in `<head>` so its `MutationObserver`
+   starts hiding text-matched nodes before `<body>` paints, then stays as a backup for
+   SPA re-renders. The top account/branding bar and bottom sidebar account area are
+   hidden **completely** (no longer re-branded) — the “Gen Z Digital Store” label
+   appears only in the bottom-right floating widget; the sidebar keeps just
+   Dashboard / Humanizer / AI Detector and the editor/buttons/result area are untouched.
 
 Sanitization **fails safe**: any JSON that doesn't parse is passed through
 unchanged, so a non-identity payload can never be corrupted. No new layer logs

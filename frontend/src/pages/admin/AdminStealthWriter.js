@@ -6,7 +6,7 @@ import {
   KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
-import api from '../../services/api';
+import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
@@ -56,8 +56,9 @@ const AdminStealthWriter = () => {
 
   const loadCrmClients = async () => {
     try {
-      const res = await api.get('/admin/clients?limit=100');
-      setCrmClients(res.data.clients || []);
+      // Stable list — cached + coalesced across admin pages (see services/apiCache).
+      const data = await cachedGet('/admin/clients?limit=100');
+      setCrmClients(data.clients || []);
     } catch { /* non-fatal */ }
   };
 

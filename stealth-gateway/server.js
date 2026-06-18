@@ -57,6 +57,15 @@ const GATEWAY_KEY = process.env.STEALTH_GATEWAY_KEY || ''; // shared key for the
 const LEASE_COOKIE = 'sw_lease';
 const LEASE_TYPE = 'stealth_lease';
 
+// Optional: extra CSS selectors (comma-separated) for StealthWriter's exact top-bar
+// and bottom account-area containers. These are added to the critical hide CSS that
+// is injected into <head> BEFORE first paint, so they never flash. Use this to hide
+// StealthWriter's structural chrome (e.g. ".sidebar-account, header.topbar") that the
+// generic href/attribute rules can't target by class alone. Editor/working area must
+// NOT be matched here.
+const EXTRA_HIDE_SELECTORS = String(process.env.STEALTH_HIDE_SELECTORS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
 // ════════════════════════════════════════════════════════════════════════════
 // SERVER-SIDE IDENTITY / ACCOUNT / BILLING SHIELD
 // The browser overlay (overlay.js) is now only a cosmetic *backup*. The real
@@ -370,15 +379,50 @@ function rewriteSetCookie(values) {
   return [].concat(values || []).map(v => v.replace(/;\s*Domain=[^;]+/ig, ''));
 }
 
+// ── Critical hide CSS (injected into <head>, applies before first paint) ────────
+// This is the #1 fix for the "hidden UI flashes for 1–2s" problem: the static
+// account / billing / pricing / support / plan / logout hiding rules are shipped in
+// the initial HTML <head> so the browser never paints them, instead of being added
+// by JS after the React app has already rendered. The overlay's MutationObserver is
+// only a backup for text-matched / SPA-rerendered nodes (see overlay.js).
+function buildCriticalCss() {
+  // href-based (robust against obfuscated class names).
+  const hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
+    'subscription', 'upgrade', 'refer', '/plans', '/settings', '/profile', '/me',
+    'logout', 'log-out', 'sign-out', 'signout'];
+  const sel = hrefs.map(h => `a[href*="${h}" i]`);
+  // aria-label / data-testid based (account, profile, user-menu, billing, upgrade…).
+  const attrs = ['account', 'profile', 'user menu', 'usermenu', 'user-menu', 'avatar',
+    'upgrade', 'billing', 'subscription', 'affiliate', 'log out', 'logout', 'sign out'];
+  attrs.forEach(a => { sel.push(`[aria-label*="${a}" i]`); sel.push(`[data-testid*="${a}" i]`); });
+  // Operator-supplied exact selectors for StealthWriter's top bar / bottom account area.
+  EXTRA_HIDE_SELECTORS.forEach(s => sel.push(s));
+  // Anything the overlay JS marks for hiding.
+  sel.push('[data-genz-hidden="1"]');
+  return `/* genz critical hide */\n${sel.join(',')}{display:none !important;}`;
+}
+
 // ── Overlay injection ─────────────────────────────────────────────────────────
+// Everything is injected into <head> so hiding applies before the app paints. The
+// overlay JS is inlined (not an external <script src>) so it executes during head
+// parse with zero extra network round-trip — its MutationObserver is registered
+// before <body> content is inserted, eliminating the flash for text-matched nodes
+// too. Building the floating widget still waits for DOMContentLoaded (see overlay.js).
+const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
 function injectOverlay(html, capture) {
   const cfg = JSON.stringify({ api: API_BASE, capture: !!capture });
+  // Capture (admin) mode must NOT hide account UI — the operator needs to log in and
+  // reach account pages to capture a session — so the critical hide CSS is omitted.
+  const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
+    critical +
     `<link rel="stylesheet" href="/__genz/overlay.css">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
-    `<script src="/__genz/overlay.js" defer></script>`;
+    `<script id="genz-overlay">${OVERLAY_JS_INLINE}</script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + tags);
+  // No <head> (rare / fragment) — fall back to before </body> or append.
   if (html.includes('</body>')) return html.replace('</body>', tags + '</body>');
-  if (html.includes('</html>')) return html.replace('</html>', tags + '</html>');
   return html + tags;
 }
 

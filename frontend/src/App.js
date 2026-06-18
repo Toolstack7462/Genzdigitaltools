@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import "@/App.css";
 
@@ -52,69 +53,74 @@ import "@/App.css";
     window.location.replace('https://' + APP_HOST + '/client/login');
   }
 }());
+// Layout / guards / providers are kept EAGER so the shell paints instantly and route
+// guards run without waiting on a chunk; everything else is code-split (React.lazy)
+// so a given entry point only downloads the JS it actually needs — the public site no
+// longer ships the admin panel + client dashboard + every tool form in one bundle.
 import PublicNavbar from './components/public/PublicNavbar';
 import PublicFooter from './components/public/PublicFooter';
 import WhatsAppButton from './components/WhatsAppButton';
 import ScrollProgress from './components/public/ScrollProgress';
 import ScrollToTop from './components/ScrollToTop';
 import { ToastProvider } from './components/Toast';
-
-// Public Pages (existing)
-import Home from './pages/Home';
-import Pricing from './pages/Pricing';
-import Blog from './pages/Blog';
-import BlogDetail from './pages/BlogDetail';
-import About from './pages/About';
-import Contact from './pages/Contact';
-import Login from './pages/Login';
-import ForgotPassword from './pages/ForgotPassword';
-import ResetPassword from './pages/ResetPassword';
-import Join from './pages/Join';
-import NotFound from './pages/NotFound';
-import ExtensionSetup from './pages/ExtensionSetup';
-import ChromeExtensionPage from './pages/ChromeExtensionPage';
-import Tools from './pages/Tools';
-
-// New Public Service Pages
-import Services from './pages/public/Services';
-import ServiceDigitalTools from './pages/public/ServiceDigitalTools';
-import ServiceSocialMedia from './pages/public/ServiceSocialMedia';
-import ServiceWriting from './pages/public/ServiceWriting';
-import ServiceWebDesign from './pages/public/ServiceWebDesign';
-import ServiceAppDev from './pages/public/ServiceAppDev';
-import ServiceBranding from './pages/public/ServiceBranding';
-import ServiceSEO from './pages/public/ServiceSEO';
-import Portfolio from './pages/public/Portfolio';
-
-// Admin Pages
 import AdminRoute from './components/AdminRoute';
-import ErrorBoundary from './components/ErrorBoundary';
-import AdminLogin from './pages/admin/AdminLogin';
-import AdminDashboardEnhanced from './pages/admin/AdminDashboardEnhanced';
-import AdminToolsEnhanced from './pages/admin/AdminToolsEnhanced';
-import AdminToolForm from './pages/admin/AdminToolForm';
-import AdminClientsEnhanced from './pages/admin/AdminClientsEnhanced';
-import AdminClientForm from './pages/admin/AdminClientForm';
-import AdminBulkAssign from './pages/admin/AdminBulkAssign';
-import AdminAssignments from './pages/admin/AdminAssignments';
-import AdminActivity from './pages/admin/AdminActivity';
-import AdminBlog from './pages/admin/AdminBlog';
-import AdminBlogForm from './pages/admin/AdminBlogForm';
-import AdminContacts from './pages/admin/AdminContacts';
-import AdminAnalytics from './pages/admin/AdminAnalytics';
-import AdminSecurityAlerts from './pages/admin/AdminSecurityAlerts';
-import AdminToolWizard from './pages/admin/AdminToolWizard';
-import AdminStealthWriter from './pages/admin/AdminStealthWriter';
-import AdminProxyTools from './pages/admin/AdminProxyTools';
-
-// Client Pages
 import ClientRoute from './components/ClientRoute';
-import ClientLogin from './pages/client/ClientLogin';
-import ClientDashboardEnhanced from './pages/client/ClientDashboardEnhanced';
-import ClientToolsEnhanced from './pages/client/ClientToolsEnhanced';
-import ClientToolDetail from './pages/client/ClientToolDetail';
-import ClientProfile from './pages/client/ClientProfile';
-import ClientStealthWriter from './pages/client/ClientStealthWriter';
+import ErrorBoundary from './components/ErrorBoundary';
+import PageLoader from './components/PageLoader';
+
+// Public Pages (existing) — code-split
+const Home = lazy(() => import('./pages/Home'));
+const Pricing = lazy(() => import('./pages/Pricing'));
+const Blog = lazy(() => import('./pages/Blog'));
+const BlogDetail = lazy(() => import('./pages/BlogDetail'));
+const About = lazy(() => import('./pages/About'));
+const Contact = lazy(() => import('./pages/Contact'));
+const Login = lazy(() => import('./pages/Login'));
+const ForgotPassword = lazy(() => import('./pages/ForgotPassword'));
+const ResetPassword = lazy(() => import('./pages/ResetPassword'));
+const Join = lazy(() => import('./pages/Join'));
+const NotFound = lazy(() => import('./pages/NotFound'));
+const ExtensionSetup = lazy(() => import('./pages/ExtensionSetup'));
+const ChromeExtensionPage = lazy(() => import('./pages/ChromeExtensionPage'));
+const Tools = lazy(() => import('./pages/Tools'));
+
+// New Public Service Pages — code-split
+const Services = lazy(() => import('./pages/public/Services'));
+const ServiceDigitalTools = lazy(() => import('./pages/public/ServiceDigitalTools'));
+const ServiceSocialMedia = lazy(() => import('./pages/public/ServiceSocialMedia'));
+const ServiceWriting = lazy(() => import('./pages/public/ServiceWriting'));
+const ServiceWebDesign = lazy(() => import('./pages/public/ServiceWebDesign'));
+const ServiceAppDev = lazy(() => import('./pages/public/ServiceAppDev'));
+const ServiceBranding = lazy(() => import('./pages/public/ServiceBranding'));
+const ServiceSEO = lazy(() => import('./pages/public/ServiceSEO'));
+const Portfolio = lazy(() => import('./pages/public/Portfolio'));
+
+// Admin Pages — code-split
+const AdminLogin = lazy(() => import('./pages/admin/AdminLogin'));
+const AdminDashboardEnhanced = lazy(() => import('./pages/admin/AdminDashboardEnhanced'));
+const AdminToolsEnhanced = lazy(() => import('./pages/admin/AdminToolsEnhanced'));
+const AdminToolForm = lazy(() => import('./pages/admin/AdminToolForm'));
+const AdminClientsEnhanced = lazy(() => import('./pages/admin/AdminClientsEnhanced'));
+const AdminClientForm = lazy(() => import('./pages/admin/AdminClientForm'));
+const AdminBulkAssign = lazy(() => import('./pages/admin/AdminBulkAssign'));
+const AdminAssignments = lazy(() => import('./pages/admin/AdminAssignments'));
+const AdminActivity = lazy(() => import('./pages/admin/AdminActivity'));
+const AdminBlog = lazy(() => import('./pages/admin/AdminBlog'));
+const AdminBlogForm = lazy(() => import('./pages/admin/AdminBlogForm'));
+const AdminContacts = lazy(() => import('./pages/admin/AdminContacts'));
+const AdminAnalytics = lazy(() => import('./pages/admin/AdminAnalytics'));
+const AdminSecurityAlerts = lazy(() => import('./pages/admin/AdminSecurityAlerts'));
+const AdminToolWizard = lazy(() => import('./pages/admin/AdminToolWizard'));
+const AdminStealthWriter = lazy(() => import('./pages/admin/AdminStealthWriter'));
+const AdminProxyTools = lazy(() => import('./pages/admin/AdminProxyTools'));
+
+// Client Pages — code-split
+const ClientLogin = lazy(() => import('./pages/client/ClientLogin'));
+const ClientDashboardEnhanced = lazy(() => import('./pages/client/ClientDashboardEnhanced'));
+const ClientToolsEnhanced = lazy(() => import('./pages/client/ClientToolsEnhanced'));
+const ClientToolDetail = lazy(() => import('./pages/client/ClientToolDetail'));
+const ClientProfile = lazy(() => import('./pages/client/ClientProfile'));
+const ClientStealthWriter = lazy(() => import('./pages/client/ClientStealthWriter'));
 
 // Public layout wrapper
 const PublicPage = ({ children }) => (
@@ -134,6 +140,7 @@ function App() {
       <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
           <ScrollToTop />
+          <Suspense fallback={<PageLoader />}>
           <Routes>
 
             {/* ── Public Routes ───────────────────────────────── */}
@@ -199,6 +206,7 @@ function App() {
             {/* ── 404 ─────────────────────────────────────────── */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
         </BrowserRouter>
       </div>
     </ToastProvider>
