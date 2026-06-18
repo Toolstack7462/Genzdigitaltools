@@ -1,10 +1,13 @@
 /* Gen Z StealthWriter overlay — injected into the proxied StealthWriter app.
  *
- * 1) Bottom-right floating glass widget: "Gen Z Digital Store / StealthWriter",
- *    Genz daily usage (Humanizer + AI Detector: limit / used / remaining), a
- *    30-minute session countdown, support button and clean friendly messages.
- *    No top bar, never covers the editor/buttons.
- * 2) Visual-only hiding of StealthWriter's account identity (signed-in email/name),
+ * 1) Small bottom-right floating glass widget showing only: title (StealthWriter),
+ *    Humanizer total/remaining, AI Detector total/remaining, session time left and a
+ *    Contact-support button. Collapsible. No top bar, never covers the editor/buttons.
+ * 2) Intent-driven usage metering: Genz usage is counted ONLY when the user clicks the
+ *    MAIN "Humanize" or "Check for AI" button. Result-area secondary actions (Humanize
+ *    More, Rehumanize, Copy, Compare, Deep Scan, …) never consume usage even though they
+ *    may hit the same endpoint.
+ * 3) Visual-only hiding of StealthWriter's account identity (signed-in email/name),
  *    plan / pricing / FAQ / support / Discord / affiliate / subscription UI and its
  *    original usage counters, so the sidebar shows only Dashboard / Humanizer /
  *    AI Detector. SPA-safe (MutationObserver + route hooks). Never hides the working
@@ -52,37 +55,26 @@
   var el = {};
   function fmtTime(s) { if (s < 0) s = 0; var m = Math.floor(s / 60), x = s % 60; return m + ':' + (x < 10 ? '0' : '') + x; }
 
-  // ── Floating widget (brand + countdown + support) ──────────────────────────
+  // ── Floating widget — compact: title + 2 usage lines + session + support ─────
   function buildWidget() {
     var w = document.createElement('div');
     w.id = 'genz-sw-widget';
     w.innerHTML =
       '<div class="genz-sw-head">' +
-        '<span class="genz-sw-brand">Gen Z Digital Store</span>' +
+        '<span class="genz-sw-title">StealthWriter</span>' +
         '<button class="genz-sw-min" title="Minimize" aria-label="Minimize">–</button>' +
       '</div>' +
       '<div class="genz-sw-body">' +
-        '<div class="genz-sw-sub">StealthWriter</div>' +
-        '<div class="genz-sw-grp">' +
-          '<div class="genz-sw-grp-t">Humanizer</div>' +
-          '<div class="genz-sw-row"><span>Daily limit</span><b id="genz-h-limit">--</b></div>' +
-          '<div class="genz-sw-row"><span>Used today</span><b id="genz-h-used">--</b></div>' +
-          '<div class="genz-sw-row"><span>Remaining</span><b id="genz-h-rem">--</b></div>' +
-        '</div>' +
-        '<div class="genz-sw-grp">' +
-          '<div class="genz-sw-grp-t">AI Detector</div>' +
-          '<div class="genz-sw-row"><span>Daily limit</span><b id="genz-d-limit">--</b></div>' +
-          '<div class="genz-sw-row"><span>Used today</span><b id="genz-d-used">--</b></div>' +
-          '<div class="genz-sw-row"><span>Remaining</span><b id="genz-d-rem">--</b></div>' +
-        '</div>' +
-        '<div class="genz-sw-row genz-sw-cd"><span>Session resets in</span><b id="genz-sw-time">--:--</b></div>' +
+        '<div class="genz-sw-row"><span>Humanizer</span><b><i id="genz-h-total">–</i> / <i id="genz-h-rem">–</i></b></div>' +
+        '<div class="genz-sw-row"><span>AI Detector</span><b><i id="genz-d-total">–</i> / <i id="genz-d-rem">–</i></b></div>' +
+        '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
-        '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener">Contact support</a>' +
+        '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
       '</div>';
     document.documentElement.appendChild(w);
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
-    el.hLimit = w.querySelector('#genz-h-limit'); el.hUsed = w.querySelector('#genz-h-used'); el.hRem = w.querySelector('#genz-h-rem');
-    el.dLimit = w.querySelector('#genz-d-limit'); el.dUsed = w.querySelector('#genz-d-used'); el.dRem = w.querySelector('#genz-d-rem');
+    el.hTotal = w.querySelector('#genz-h-total'); el.hRem = w.querySelector('#genz-h-rem');
+    el.dTotal = w.querySelector('#genz-d-total'); el.dRem = w.querySelector('#genz-d-rem');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
     el.min.addEventListener('click', toggleCollapse);
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
@@ -92,15 +84,12 @@
 
   // Daily usage from the Genz backend. Limit -1 = unlimited; remaining null = unlimited.
   function fmtLimit(n) { return (n == null || Number(n) < 0) ? '∞' : String(n); }
-  function fmtUsed(n) { return (n == null) ? '0' : String(Math.max(0, Number(n) || 0)); }
   function updateUsage(plan) {
     if (!el.widget || !plan) return;
-    var lim = plan.limits || {}, used = plan.used || {}, rem = plan.remaining || {};
-    if (el.hLimit) el.hLimit.textContent = fmtLimit(lim.humanizer);
-    if (el.hUsed) el.hUsed.textContent = fmtUsed(used.humanizer);
+    var lim = plan.limits || {}, rem = plan.remaining || {};
+    if (el.hTotal) el.hTotal.textContent = fmtLimit(lim.humanizer);
     if (el.hRem) el.hRem.textContent = fmtLimit(rem.humanizer);
-    if (el.dLimit) el.dLimit.textContent = fmtLimit(lim.detector);
-    if (el.dUsed) el.dUsed.textContent = fmtUsed(used.detector);
+    if (el.dTotal) el.dTotal.textContent = fmtLimit(lim.detector);
     if (el.dRem) el.dRem.textContent = fmtLimit(rem.detector);
   }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
@@ -123,8 +112,51 @@
   }
   function tick() { if (state.terminal) return; state.secondsRemaining -= 1; if (state.secondsRemaining <= 0) validate(); render(); }
 
-  // ── Usage metering (background; not displayed) ─────────────────────────────────
+  // ── Usage metering — INTENT-DRIVEN ─────────────────────────────────────────
+  // Genz usage must count ONLY for the MAIN "Humanize" / "Check for AI" actions in
+  // the input area — never for result-area secondary buttons (Humanize More,
+  // Rehumanize, Copy, Compare, Deep Scan, etc.), which often hit the SAME endpoint.
+  // A URL match alone cannot tell them apart, so we require a fresh user intent set
+  // by a click on a recognised MAIN button before a matching request is counted.
   function actionFor(url) { if (HUMANIZE_RE.test(url)) return 'humanizer'; if (DETECT_RE.test(url)) return 'detector'; return null; }
+
+  // Map a clicked control's text to a MAIN billable action, or null (not billable).
+  // Non-billable controls are checked FIRST so "Humanize More" / "Rehumanize" /
+  // result-area buttons never arm an intent even though they contain "humanize".
+  var SECONDARY_RE = /humanize\s*more|re-?humanize|humanize\s*again|^copy\b|^compare\b|deep\s*scan|^paste\b|^retry\b|^regenerate\b|^share\b|^download\b|^export\b|^clear\b|^undo\b/i;
+  // Main actions: word-boundary "humanize" (so the sidebar "Humanizer" label and
+  // "Rehumanize" do NOT match) and the "Check for AI" detector button.
+  var MAIN_HUMANIZE_RE = /\bhumanise\b|\bhumanize\b/i;
+  var MAIN_DETECT_RE   = /check\s*(for\s*)?ai\b|detect\s*ai\b|scan\s*for\s*ai\b/i;
+  function classifyClick(text) {
+    var t = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!t || t.length > 40) return null;
+    if (SECONDARY_RE.test(t)) return null;        // never count secondary buttons
+    if (MAIN_DETECT_RE.test(t)) return 'detector';
+    if (MAIN_HUMANIZE_RE.test(t)) return 'humanizer';
+    return null;
+  }
+
+  // Short-lived intent: a recognised main click arms one billable request.
+  var INTENT_TTL = 6000;
+  var intent = { action: null, at: 0 };
+  function armIntent(action) { intent.action = action; intent.at = Date.now(); }
+  function takeIntent(urlAction) {
+    if (!intent.action || intent.action !== urlAction) return false;
+    if (Date.now() - intent.at > INTENT_TTL) { intent.action = null; return false; }
+    intent.action = null; // each main click counts at most once
+    return true;
+  }
+  // Capture-phase click listener: arm intent from the clicked control's label.
+  document.addEventListener('click', function (e) {
+    var n = e.target;
+    var ctrl = n && n.closest ? n.closest('button,[role="button"],a,input[type="submit"],input[type="button"]') : null;
+    if (!ctrl || (ctrl.closest && ctrl.closest('#genz-sw-widget'))) return;
+    var label = (ctrl.textContent || ctrl.value || ctrl.getAttribute('aria-label') || '').trim();
+    var action = classifyClick(label);
+    if (action) armIntent(action);
+  }, true);
+
   function consume(action) {
     return apiCall('/consume', { action: action }).then(function (r) {
       if (r.body && typeof r.body.secondsRemaining === 'number') { state.secondsRemaining = r.body.secondsRemaining; render(); }
@@ -145,7 +177,9 @@
       var url = (typeof input === 'string') ? input : (input && input.url) || '';
       if (url.indexOf(API) === 0) return origFetch(input, init);
       var action = actionFor(url);
-      if (!action) return origFetch(input, init);
+      // Count only when this request follows a MAIN-button click intent; otherwise
+      // (secondary button / background request) pass through free.
+      if (!action || !takeIntent(action)) return origFetch(input, init);
       return consume(action).then(function (ok) { if (!ok) return Promise.reject(new Error('GENZ_LIMIT_BLOCKED')); return origFetch(input, init); });
     };
   }
@@ -153,7 +187,11 @@
   if (X) {
     var oOpen = X.prototype.open, oSend = X.prototype.send;
     X.prototype.open = function (method, url) { this.__genzAction = (url && url.indexOf(API) !== 0) ? actionFor(url) : null; return oOpen.apply(this, arguments); };
-    X.prototype.send = function () { var self = this, args = arguments; if (!self.__genzAction) return oSend.apply(self, args); consume(self.__genzAction).then(function (ok) { if (ok) oSend.apply(self, args); else { try { self.abort(); } catch (e) {} } }); };
+    X.prototype.send = function () {
+      var self = this, args = arguments;
+      if (!self.__genzAction || !takeIntent(self.__genzAction)) return oSend.apply(self, args);
+      consume(self.__genzAction).then(function (ok) { if (ok) oSend.apply(self, args); else { try { self.abort(); } catch (e) {} } });
+    };
   }
 
   // ════════════════════════════════════════════════════════════════════════════
