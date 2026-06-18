@@ -10,12 +10,14 @@
  *    Humanizer. Result-area secondary actions (Humanize More, Rehumanize, Copy, Compare,
  *    Deep Scan, …) never consume usage.
  * 3) Account identity is replaced with the Gen Z Digital Store brand: wherever the
- *    StealthWriter account name / email is shown, the identity text is hidden and a
- *    "Gen Z Digital Store" label is shown instead. Plan / pricing / FAQ / support /
- *    Discord / affiliate / subscription UI and StealthWriter's own usage counters are
- *    hidden, so the sidebar shows only Dashboard / Humanizer / AI Detector. SPA-safe
- *    (MutationObserver + route hooks). Never hides the working area (textarea, Humanize,
- *    Check for AI). Raw upstream "Forbidden"/error text → friendly widget message.
+ *    StealthWriter account name / email / initials / avatar / profile-dropdown trigger
+ *    is shown (top-right AND the bottom-left sidebar account area), the identity is
+ *    hidden and a single "Gen Z Digital Store" label is shown instead. Plan / billing /
+ *    subscription / pricing / FAQ / support / Discord / affiliate / settings / log out
+ *    and StealthWriter's own usage counters are hidden, so the sidebar shows only
+ *    Dashboard / Humanizer / AI Detector. SPA-safe (MutationObserver + route hooks).
+ *    Never hides the working area (textarea, Humanize, Check for AI, result area).
+ *    Raw upstream "Forbidden"/error text → friendly widget message.
  *
  * This is purely cosmetic — it does NOT touch StealthWriter's backend, limits,
  * subscription, payment or login, and never logs cookies/secrets.
@@ -217,7 +219,7 @@
   // subscription UI and StealthWriter's own usage counters. SPA-safe. Cosmetic only.
   // ════════════════════════════════════════════════════════════════════════════
   // Hide these labels (exact-ish short text on links/buttons/nav items).
-  var HIDE_RE = /^(account|my account|account settings|profile|plans?\s*&?\s*pricing|pricing|faq|faqs|help|support|contact us|discord|community|affiliate|affiliate program|refer|refer a friend|invite friends|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|get more|starter plan|free plan|basic plan|pro plan|premium( plan)?|enterprise)$/i;
+  var HIDE_RE = /^(account|my account|account settings|account details|profile|my profile|settings|preferences|log\s?out|sign\s?out|logout|plans?\s*&?\s*pricing|pricing|faq|faqs|help|help center|support|contact us|discord|community|affiliate|affiliate program|refer|refer a friend|invite friends?|earn|rewards|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|get more|get started|starter plan|free plan|basic plan|pro plan|premium( plan)?|enterprise)$/i;
   // Hide StealthWriter's own usage/reset counters.
   var USAGE_RE = /(\d+\s*\/\s*\d+\s*(humaniz|scan|word|credit)|humanizations?\s+left|scans?\s+left|words?\s+left|credits?\s+left|resets?\s+(in|at|on|every|daily|tomorrow)|words?\s+remaining|usage\s+resets)/i;
   // Hide the StealthWriter account identity (email / signed-in user) shown in the
@@ -230,7 +232,7 @@
 
   function ownText(n) { var s = ''; for (var i = 0; i < n.childNodes.length; i++) { var c = n.childNodes[i]; if (c.nodeType === 3) s += c.nodeValue; } return s.trim(); }
   function hasEditor(n) { return !!(n.querySelector && n.querySelector('textarea,[contenteditable="true"],input')); }
-  function hide(n) { if (n && n.style) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
+  function hide(n) { if (n && n.style && !(n.getAttribute && n.getAttribute('data-genz-brand') === '1')) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
   function nearestControl(n) { var d = 0, c = n; while (c && d < 4) { var tag = (c.tagName || '').toLowerCase(); if (tag === 'a' || tag === 'button' || tag === 'li' || (c.getAttribute && c.getAttribute('role') === 'button')) return c; c = c.parentElement; d++; } return n; }
 
   // ── Account identity → "Gen Z Digital Store" branding ────────────────────────
@@ -238,21 +240,44 @@
   // text leaves and show the Gen Z Digital Store brand instead. Re-applied on every
   // sweep so it survives SPA re-renders. Never reads or logs the identity values.
   var BRAND = 'Gen Z Digital Store';
+  var AVATAR_SEL = '[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar],img,svg';
   var brandControls = [];
   function brandifyControl(ctrl) {
-    if (!ctrl) return;
+    if (!ctrl || hasEditor(ctrl)) return;       // never touch the editor/working area
     if (brandControls.indexOf(ctrl) === -1) brandControls.push(ctrl);
     enforceBranding();
+  }
+  // An account/identity trigger that has no visible email — detected by an avatar /
+  // initials element or an account/profile/user aria-label/title/testid. Lets us brand
+  // the bottom-left sidebar account area (name + initials, email only in the dropdown).
+  function isIdentityControl(n) {
+    if (!n || hasEditor(n)) return false;
+    // Strong trigger signal: it contains a user avatar / initials element.
+    if (n.querySelector && n.querySelector('[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar]')) return true;
+    var a = ((n.getAttribute && (n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('data-testid') || '')) || '').toLowerCase();
+    if (/(^|[\s_-])(user[\s_-]?menu|usermenu|avatar)([\s_-]|$)/.test(a)) return true;
+    // An account/profile control that opens a menu (the trigger, not a menu item).
+    if (n.getAttribute && n.getAttribute('aria-haspopup') && /(^|[\s_-])(account|profile|my[\s_-]?account)([\s_-]|$)/.test(a)) return true;
+    return false;
   }
   function enforceBranding() {
     for (var i = brandControls.length - 1; i >= 0; i--) {
       var ctrl = brandControls[i];
       if (!ctrl || !document.contains(ctrl)) { brandControls.splice(i, 1); continue; }
-      var leaves = ctrl.querySelectorAll('span,p,small,b,strong,div,a');
+      // Mark so the generic hiders (HIDE_RE / href CSS) keep this control visible —
+      // it must SHOW the brand, not be removed. Also undo any prior hide.
+      ctrl.setAttribute('data-genz-brand', '1');
+      if (ctrl.getAttribute('data-genz-hidden') === '1') { ctrl.style.removeProperty('display'); ctrl.removeAttribute('data-genz-hidden'); }
+      // Hide every identity visual inside the control: name/email text, avatar,
+      // initials, chevrons — leaving only the injected brand label.
+      var leaves = ctrl.querySelectorAll('span,p,small,b,strong,div,a,' + AVATAR_SEL);
       for (var j = 0; j < leaves.length; j++) {
         var lf = leaves[j];
         if (lf.className === 'genz-brand-tag' || (lf.querySelector && lf.querySelector('.genz-brand-tag'))) continue;
         if (hasEditor(lf)) continue;
+        var tagL = (lf.tagName || '').toLowerCase();
+        var cls = (lf.getAttribute && lf.getAttribute('class')) || '';
+        if (tagL === 'img' || tagL === 'svg' || /avatar|initial|userpic/i.test(cls)) { lf.style.setProperty('display', 'none', 'important'); continue; }
         var tx = ownText(lf);
         if (tx && !KEEP_RE.test(tx) && tx.length <= 80) lf.style.setProperty('display', 'none', 'important');
       }
@@ -278,6 +303,12 @@
       var n = nodes[i];
       if (n.__genz || n.id === 'genz-sw-widget' || (n.closest && n.closest('#genz-sw-widget'))) continue;
       n.__genz = true;
+      // Account/identity trigger (avatar/initials/aria) — brand even with no visible
+      // text. Only act on actual controls so nav items / working area are untouched.
+      var ctag = (n.tagName || '').toLowerCase();
+      if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) {
+        brandifyControl(n); continue;
+      }
       var t = ownText(n);
       if (!t || t.length > 60) continue;
       if (KEEP_RE.test(t)) continue;            // protect Dashboard/Humanizer/AI Detector/buttons
@@ -291,10 +322,12 @@
 
   // href / aria based hiding (robust against obfuscated class names) via injected CSS.
   function injectHideStyle() {
-    var css =
-      'a[href*="pricing"],a[href*="billing"],a[href*="account"],a[href*="affiliate"],a[href*="discord"],' +
-      'a[href*="/faq"],a[href*="support"],a[href*="subscription"],a[href*="upgrade"],a[href*="refer"],' +
-      'a[href*="plans"],[data-genz-hidden="1"]{display:none !important;}';
+    // Branded controls ([data-genz-brand]) are exempt — they must SHOW the brand.
+    var hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
+      'subscription', 'upgrade', 'refer', 'plans', '/settings', '/profile', '/me',
+      'logout', 'log-out', 'sign-out', 'signout'];
+    var css = hrefs.map(function (h) { return 'a[href*="' + h + '"]:not([data-genz-brand])'; }).join(',') +
+      ',[data-genz-hidden="1"]{display:none !important;}';
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
