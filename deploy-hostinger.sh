@@ -84,6 +84,18 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/stealth/gateway.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/stealth/gateway.js" \
   -T backend/cron/stealthScheduler.js            "sftp://${HOST}:${PORT}${API_ROOT}/cron/stealthScheduler.js" \
   -T backend/scripts/stealth-reset.js            "sftp://${HOST}:${PORT}${API_ROOT}/scripts/stealth-reset.js" \
+  -T backend/utils/proxy/tools.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/tools.js" \
+  -T backend/utils/proxy/vaultCrypto.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/vaultCrypto.js" \
+  -T backend/utils/proxy/lease.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/lease.js" \
+  -T backend/utils/proxy/accountSelect.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/accountSelect.js" \
+  -T backend/utils/proxy/cookies.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/cookies.js" \
+  -T backend/utils/proxy/verify.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verify.js" \
+  -T backend/models/proxy/ProxyClient.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyClient.js" \
+  -T backend/models/proxy/ProxyLease.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyLease.js" \
+  -T backend/models/proxy/ProxyAccount.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyAccount.js" \
+  -T backend/routes/admin/proxyTools.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
+  -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
   -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 

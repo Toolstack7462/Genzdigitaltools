@@ -105,6 +105,7 @@ import AdminAnalytics from './pages/admin/AdminAnalytics';
 import AdminSecurityAlerts from './pages/admin/AdminSecurityAlerts';
 import AdminToolWizard from './pages/admin/AdminToolWizard';
 import AdminStealthWriter from './pages/admin/AdminStealthWriter';
+import AdminProxyTools from './pages/admin/AdminProxyTools';
 
 // Client Pages
 import ClientRoute from './components/ClientRoute';
@@ -185,6 +186,7 @@ function App() {
             <Route path="/admin/analytics" element={<ErrorBoundary><AdminRoute><AdminAnalytics /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/security" element={<ErrorBoundary><AdminRoute><AdminSecurityAlerts /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/stealthwriter" element={<ErrorBoundary><AdminRoute><AdminStealthWriter /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/proxy-tools" element={<ErrorBoundary><AdminRoute><AdminProxyTools /></AdminRoute></ErrorBoundary>} />
 
             {/* ── Client Routes (untouched) ────────────────────── */}
             <Route path="/client/login"  element={<ClientLogin />} />

@@ -78,6 +78,16 @@ try {
   if (process.env.STEALTH_GATEWAY_URL) STEALTH_GATEWAY_ORIGIN = new URL(process.env.STEALTH_GATEWAY_URL).origin;
 } catch (_) { /* ignore malformed URL */ }
 
+// Proxy-Tools gateway origins (HIX / BypassGPT) — their injected overlays call the
+// backend gateway API cross-origin, so allow them in code (derived from the same
+// env the proxy module reads) without depending on ALLOWED_ORIGINS being edited.
+const PROXY_GATEWAY_ORIGINS = (() => {
+  const out = [];
+  try { const t = require('./utils/proxy/tools'); for (const k of t.TOOL_KEYS) { const b = t.gatewayBase(k); if (b) out.push(new URL(b).origin); } }
+  catch (_) { /* ignore */ }
+  return out;
+})();
+
 if (ALLOWED_ORIGINS.length === 0) {
   console.warn('⚠️  WARNING: ALLOWED_ORIGINS is not set. No browser origins will be permitted.');
   console.warn('   Set ALLOWED_ORIGINS in .env, e.g.: https://app.example.com,http://localhost:3000');
@@ -95,6 +105,11 @@ const corsOptions = {
 
     // StealthWriter gateway origin (first-party, fixed) — overlay → gateway API.
     if (STEALTH_GATEWAY_ORIGIN && origin === STEALTH_GATEWAY_ORIGIN) {
+      return callback(null, true);
+    }
+
+    // Proxy-Tools gateway origins (HIX / BypassGPT) — overlay → gateway API.
+    if (PROXY_GATEWAY_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
 
@@ -246,6 +261,10 @@ const adminStealthRoutes      = require('./routes/admin/stealth');
 const clientStealthRoutes     = require('./routes/client/stealth');
 const stealthGatewayRoutes    = require('./routes/stealth/gateway');
 const stealthScheduler        = require('./cron/stealthScheduler');
+// Proxy-Tools module (HIX AI / BypassGPT) — isolated
+const adminProxyToolsRoutes   = require('./routes/admin/proxyTools');
+const clientProxyToolsRoutes  = require('./routes/client/proxyTools');
+const proxyGatewayRoutes      = require('./routes/proxy/gateway');
 
 // Mount routes
 app.use('/api/crm/auth',             authRoutes);
@@ -268,6 +287,11 @@ app.use('/api/crm/client/extension', clientExtensionRoutes);
 app.use('/api/crm/admin/stealth',    adminStealthRoutes);
 app.use('/api/crm/client/stealth',   clientStealthRoutes);
 app.use('/api/crm/stealth/gateway',  stealthGatewayRoutes);
+// Proxy-Tools module (HIX AI / BypassGPT) — isolated mounts.
+// Admin route gets a higher body limit for cookie-bundle uploads.
+app.use('/api/crm/admin/proxy-tools', express.json({ limit: '10mb' }), adminProxyToolsRoutes);
+app.use('/api/crm/client/proxy-tools', clientProxyToolsRoutes);
+app.use('/api/crm/proxy/gateway',     proxyGatewayRoutes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check

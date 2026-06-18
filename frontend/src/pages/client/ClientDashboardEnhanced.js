@@ -16,6 +16,8 @@ import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 import StealthWriterCard from '../../components/StealthWriterCard';
 import { useStealthSummary } from '../../hooks/useStealthSummary';
+import ProxyToolCard from '../../components/ProxyToolCard';
+import { useProxyTools } from '../../hooks/useProxyTools';
 
 
 /* ─── Extension detection is handled by useExtension() bridge heartbeat.
@@ -171,6 +173,7 @@ const ClientDashboardEnhanced = () => {
   // no manual connect/reconnect step and no "connecting/disconnected" limbo.
   const { status: extConnStatus, bridgeReady, openTool, grantScanConsent, getScanStatus } = useExtension();
   const { stealth, loading: stealthLoading } = useStealthSummary(); // StealthWriter plan summary (shown as a tool card)
+  const { proxyTools } = useProxyTools(); // HIX AI / BypassGPT (shown as tool cards)
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -263,6 +266,14 @@ const ClientDashboardEnhanced = () => {
     const matchesFilter = activeFilter === 'All' || activeFilter === 'AI' || activeFilter === 'Text Humanizers';
     return matchesSearch && matchesFilter;
   })();
+
+  // HIX AI / BypassGPT appear as normal tool cards when assigned; respect search/filter.
+  const proxyMatches = (proxyTools || []).filter(pt => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || `${pt.name} ${pt.tagline || ''} humanizer ai detector`.toLowerCase().includes(q);
+    const matchesFilter = activeFilter === 'All' || activeFilter === 'AI' || activeFilter === 'Text Humanizers';
+    return matchesSearch && matchesFilter;
+  });
 
   /* ─── sanitizeError — maps raw extension/backend errors to user-safe messages ─ */
   const sanitizeError = (result) => {
@@ -755,7 +766,7 @@ const ClientDashboardEnhanced = () => {
           </div>
 
           {/* Tool Grid */}
-          {filteredTools.length === 0 && !stealthMatches && !stealthLoading ? (
+          {filteredTools.length === 0 && !stealthMatches && proxyMatches.length === 0 && !stealthLoading ? (
             <div className="gz-card text-center py-16 px-6">
               <div className="w-14 h-14 rounded-2xl bg-genz-bg flex items-center justify-center mx-auto mb-4">
                 <Package size={26} className="text-genz-muted" />
@@ -781,6 +792,7 @@ const ClientDashboardEnhanced = () => {
             <div className="grid gap-3"
                  style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 250px), 300px))', justifyContent: 'start' }}>
               {stealthMatches && <StealthWriterCard stealth={stealth} />}
+              {proxyMatches.map(pt => <ProxyToolCard key={pt.tool} tool={pt} />)}
               {filteredTools.map(tool => (
                 <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />
               ))}
