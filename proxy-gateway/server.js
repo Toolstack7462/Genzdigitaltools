@@ -57,6 +57,25 @@ const LEASE_COOKIE = 'pg_lease';
 // the backend verifier's UA (utils/proxy/verify.js) so an account that Verifies
 // "working" also opens cleanly through the gateway.
 const UPSTREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+// Client-hint headers pinned to MATCH UPSTREAM_UA (a UA that claims Chrome but ships
+// mismatched/absent sec-ch-ua is a Cloudflare bot tell).
+const UPSTREAM_CH_UA = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"';
+const UPSTREAM_CH_PLATFORM = '"Windows"';
+// Extra upstream origins (CDN / asset / API subdomains) the tool's pages reference
+// ABSOLUTELY — e.g. BypassGPT serves CSS/JS from https://cdn.bypassgpt.ai. Each is
+// proxied under ASSET_PREFIX/<index>/ and rewritten in HTML/CSS/JS so the browser loads
+// it same-origin THROUGH the gateway (no cross-origin/CORS/cookie loss). Configure per
+// tool via ASSET_ORIGINS, comma-separated. HIX needs none (assets are on hix.ai itself).
+const ASSET_ORIGINS = String(process.env.ASSET_ORIGINS || '')
+  .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+const ASSET_PREFIX = '/__pxo';
+// Proxy/hop headers LiteSpeed-Passenger injects that a real browser never sends — they
+// reveal the proxy to the tool's WAF, so they are stripped from every upstream request.
+const STRIP_REQ_HEADERS = [
+  'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port',
+  'x-forwarded-server', 'x-real-ip', 'x-client-ip', 'forwarded', 'via', 'cdn-loop',
+  'x-lsws-request-id', 'x-powered-by', 'x-passenger-request-id', 'proxy-connection',
+];
 const LEASE_TYPE = 'proxy_lease';
 
 if (!TARGET_ORIGIN) { console.error('FATAL: TARGET_ORIGIN is required'); process.exit(1); }
@@ -239,6 +258,42 @@ function sanitizeJsonBody(text) {
 const EMAIL_GLOBAL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 function redactHtmlIdentity(html) { try { return html.replace(EMAIL_GLOBAL_RE, BRAND_EMAIL); } catch (_) { return html; } }
 
+// ── Upstream URL rewriting ───────────────────────────────────────────────────
+// Map every upstream origin the page references to a gateway-served URL so the
+// browser fetches assets/scripts/API same-origin through the proxy:
+//   TARGET_ORIGIN           → PUBLIC_ORIGIN          (e.g. https://hix.ai → https://hix1…)
+//   ASSET_ORIGINS[i]        → PUBLIC_ORIGIN/__pxo/i  (e.g. https://cdn.bypassgpt.ai → …/__pxo/0)
+// Handled in plain (https://h), escaped-JSON (https:\/\/h, common in __NEXT_DATA__) and
+// protocol-relative (//h) forms. Literal split/join — no regex, no escaping pitfalls.
+const ORIGIN_REPLACEMENTS = (() => {
+  const reps = [];
+  if (PUBLIC_ORIGIN && TARGET_ORIGIN) reps.push([TARGET_ORIGIN, PUBLIC_ORIGIN]);
+  ASSET_ORIGINS.forEach((o, i) => { if (PUBLIC_ORIGIN) reps.push([o, `${PUBLIC_ORIGIN}${ASSET_PREFIX}/${i}`]); });
+  return reps;
+})();
+function rewriteUpstreamUrls(text) {
+  let applied = false;
+  for (const [from, to] of ORIGIN_REPLACEMENTS) {
+    if (!from) continue;
+    if (text.includes(from)) { text = text.split(from).join(to); applied = true; }
+    const esc = from.replace(/\//g, '\\/'), escTo = to.replace(/\//g, '\\/');
+    if (text.includes(esc)) { text = text.split(esc).join(escTo); applied = true; }
+    const pr = from.replace(/^https?:/i, ''), prTo = to.replace(/^https?:/i, '');
+    if (pr && text.includes(pr)) { text = text.split(pr).join(prTo); applied = true; }
+  }
+  return { text, applied };
+}
+// Drop in-document CSP/security <meta> tags — the proxied view loads assets/scripts
+// from the gateway origin, which a tool's own CSP would otherwise block.
+function stripSecurityMeta(html) {
+  return html.replace(/<meta[^>]+http-equiv=["']?(?:content-security-policy|x-frame-options)["']?[^>]*>/ig, '');
+}
+// Text bodies worth rewriting upstream origins inside (never images/fonts/streams).
+function isRewritableText(ct) {
+  return /(javascript|ecmascript|text\/css|application\/json|application\/manifest|text\/plain|application\/xml|text\/xml)/i.test(ct)
+    && !ct.includes('event-stream');
+}
+
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
@@ -299,81 +354,100 @@ function injectSessionBootstrap(html, session) {
   return script + html;
 }
 
+// ── Upstream request headers ─────────────────────────────────────────────────
+// The target sites sit behind Cloudflare bot management. The top-level document
+// navigation gets a MINIMAL, clean, consistent fingerprint (the shape that passes
+// Cloudflare — same as the backend verifier). Every other request (assets, XHR,
+// _next/data, API) FORWARDS the app's own headers so the SPA keeps working, but with
+// the UA + client-hints pinned and the proxy/hop headers stripped. UA is pinned
+// everywhere so a Cloudflare cf_clearance cookie (bound to its minting UA) stays valid.
+function buildUpstreamHeaders(req, upURL, session, minimal) {
+  let headers;
+  if (minimal) {
+    headers = {
+      host: upURL.host,
+      'user-agent': UPSTREAM_UA,
+      'sec-ch-ua': UPSTREAM_CH_UA, 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': UPSTREAM_CH_PLATFORM,
+      'upgrade-insecure-requests': '1',
+      'accept': req.headers['accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+      'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
+      'accept-encoding': 'identity',
+      'sec-fetch-dest': 'document', 'sec-fetch-mode': 'navigate', 'sec-fetch-site': 'none', 'sec-fetch-user': '?1',
+    };
+    for (const h of ['content-type', 'content-length', 'x-requested-with']) if (req.headers[h]) headers[h] = req.headers[h];
+  } else {
+    headers = { ...req.headers };
+    headers.host = upURL.host;
+    headers['user-agent'] = UPSTREAM_UA;
+    headers['sec-ch-ua'] = UPSTREAM_CH_UA; headers['sec-ch-ua-mobile'] = '?0'; headers['sec-ch-ua-platform'] = UPSTREAM_CH_PLATFORM;
+    for (const h of STRIP_REQ_HEADERS) delete headers[h];
+  }
+  // Overlay/rewriting need uncompressed bodies.
+  headers['accept-encoding'] = 'identity';
+  // Rewrite Origin/Referer to the upstream origin so CSRF/same-origin checks pass.
+  if (req.headers.origin) headers.origin = upURL.origin;
+  if (req.headers.referer) {
+    try { const rf = new URL(req.headers.referer); rf.protocol = upURL.protocol; rf.host = upURL.host; headers.referer = rf.toString(); }
+    catch (_) { headers.referer = upURL.origin + '/'; }
+  }
+  // Our lease cookie never goes upstream; inject the vault account's cookies (client
+  // lease) or pass the admin's own login cookies (capture). Asset/CDN origins get none.
+  delete headers.cookie;
+  if (session && session.cookieHeader) headers.cookie = session.cookieHeader;
+  else if (session && session.noAccount) { const p = stripLeaseCookie(req.headers.cookie); if (p) headers.cookie = p; }
+  return headers;
+}
+
 // ── Reverse proxy ──────────────────────────────────────────────────────────────
 function proxy(req, res, isHtmlNav, session, ctx) {
   ctx = ctx || {};
+  const upOrigin = ctx.upstreamOrigin || TARGET_ORIGIN;
+  let upURL; try { upURL = new URL(upOrigin); } catch (_) { upURL = targetUrl; }
+  const upLib = upURL.protocol === 'https:' ? https : http;
+  const upPath = ctx.upstreamPath || req.url;
+  const reqPathOnly = String(upPath).split('?')[0];
+  // Minimal fingerprint ONLY for the top-level document navigation (the Cloudflare-
+  // sensitive request); assets/XHR/API forward the app's headers.
+  const minimal = !!isHtmlNav && !ctx.asset;
+
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
     const bodyBuf = Buffer.concat(chunks);
-    // Build a CLEAN, browser-consistent upstream request. The target sites (hix.ai /
-    // bypassgpt.ai) sit behind Cloudflare bot management. Forwarding the visitor's raw
-    // header set — each browser's own User-Agent + sec-ch-ua client hints, plus the
-    // LiteSpeed/Passenger proxy headers (x-forwarded-*, x-real-ip, via, …) — makes the
-    // request look like a bot and Cloudflare returns 403 even when the account cookies
-    // are valid. The backend account verifier, which sends a fixed Chrome UA + a tiny
-    // header set, passes (200). So we mirror that shape here. The UA is PINNED so it is
-    // identical for capture and for every client open: a Cloudflare cf_clearance cookie
-    // is bound to the UA it was minted with, so consistency keeps it valid, and it
-    // matches the verifier's UA so an account that Verifies "working" also opens.
-    const headers = {
-      host: targetUrl.host,
-      'user-agent': UPSTREAM_UA,
-      'accept': req.headers['accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-      'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
-      // Overlay is injected into HTML, so keep upstream bodies uncompressed.
-      'accept-encoding': 'identity',
-    };
-    // Preserve only the headers the TOOL's own app needs for its API/XHR calls
-    // (Humanize / Check-for-AI POSTs) — never proxy or fingerprint headers.
-    for (const h of ['content-type', 'content-length', 'x-requested-with']) {
-      if (req.headers[h]) headers[h] = req.headers[h];
-    }
-    // Rewrite Origin/Referer to the upstream origin so the tool's CSRF/same-origin
-    // checks accept mutating POSTs made from the gateway host.
-    if (req.headers.origin) headers.origin = targetUrl.origin;
-    if (req.headers.referer) {
-      try { const rf = new URL(req.headers.referer); rf.protocol = targetUrl.protocol; rf.host = targetUrl.host; headers.referer = rf.toString(); }
-      catch (_) { headers.referer = targetUrl.origin + '/'; }
-    }
-    // Cookies: inject the vault account's cookies (client lease) or pass the admin's
-    // own login cookies (capture). Our lease cookie is never forwarded upstream.
-    if (session && session.cookieHeader) {
-      headers.cookie = session.cookieHeader;
-    } else if (session && session.noAccount) {
-      const passthru = stripLeaseCookie(req.headers.cookie);
-      if (passthru) headers.cookie = passthru;
-    }
+    const headers = buildUpstreamHeaders(req, upURL, session, minimal);
 
-    const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers }, (uRes) => {
+    const upstream = upLib.request(`${upURL.origin}${upPath}`, { method: req.method, headers }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
       const isHtml = ct.includes('text/html');
       const rawLoc = String(uRes.headers['location'] || '');
-      const redirectedToSignIn = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|log-?in|auth\/login)\b/i.test(rawLoc);
+      const redirectedToLogin = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|log-?in|auth\/login)\b/i.test(rawLoc);
       const upstreamForbidden = uRes.statusCode === 401 || uRes.statusCode === 403;
-      const errorSource = (redirectedToSignIn || upstreamForbidden) ? 'upstream' : null;
 
-      if (isHtmlNav) {
-        safeLog('proxy', {
-          request_path: String(req.url || '').split('?')[0],
+      // Safe debug — IDs/paths/status only, NEVER cookies/tokens/secrets. Logged for
+      // navigations and for any failing/asset-relevant response.
+      const logIt = (asset_rewrite_applied) => {
+        if (!(isHtmlNav || uRes.statusCode >= 400 || redirectedToLogin)) return;
+        safeLog(ctx.asset ? 'asset' : 'proxy', {
+          tool_code: TOOL_KEY,
+          request_path: reqPathOnly,
+          upstream_url: `${upURL.origin}${reqPathOnly}`,
+          upstream_status: uRes.statusCode,
+          content_type: ct.split(';')[0] || null,
+          asset_rewrite_applied: !!asset_rewrite_applied,
+          redirected_to_login: redirectedToLogin,
           lease_id: ctx.jti || null,
-          account_id: (session && session.accountId) || null,
-          has_session_cookie: !!(session && (session.hasSessionCookie || (session.cookieCount || 0) > 0)),
-          cookies_count_attached: (session && session.cookieCount) || 0,
-          response_status: uRes.statusCode,
-          error_source: errorSource,
-          redirected_to_sign_in: redirectedToSignIn,
         });
-        // On a real /sign-in redirect, flag the bound account session_expired so it
-        // is skipped for NEW leases. Not on a generic 401/403 (could be a WAF block).
-        if (redirectedToSignIn && !ctx.capture && session && session.accountId && ctx.token) {
-          gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
-        }
+      };
+
+      // A real login redirect on the main tool nav → flag the account session_expired
+      // so it is skipped for NEW leases (not on a generic 401/403 WAF block).
+      if (isHtmlNav && redirectedToLogin && !ctx.capture && session && session.accountId && ctx.token) {
+        gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
       }
 
-      // Never pass a raw upstream "Forbidden"/login document to the client.
-      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture) {
-        safeLog('forbidden_blocked', { request_path: String(req.url || '').split('?')[0], lease_id: ctx.jti || null, response_status: uRes.statusCode, reason: 'upstream_forbidden' });
+      // Never pass a raw upstream "Forbidden"/login document to the client (main view only).
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset) {
+        logIt(false);
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
@@ -382,37 +456,43 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       for (const [k, v] of Object.entries(uRes.headers)) {
         if (STRIP_RESP_HEADERS.has(k.toLowerCase())) continue;
         if (k.toLowerCase() === 'set-cookie') { outHeaders[k] = rewriteSetCookie(v); continue; }
-        if (k.toLowerCase() === 'location' && PUBLIC_ORIGIN && typeof v === 'string') { outHeaders[k] = v.replace(TARGET_ORIGIN, PUBLIC_ORIGIN); continue; }
+        if (k.toLowerCase() === 'location' && typeof v === 'string') { outHeaders[k] = rewriteUpstreamUrls(v).text; continue; }
         outHeaders[k] = v;
       }
 
-      // Identity JSON sanitization: only buffer identity/account routes, never an
-      // event-stream — so humanizer/detector responses (which may stream) pass through.
       const sanitizeJson = ctx.sanitizeBody && ct.includes('application/json') && !ct.includes('event-stream') && !ctx.capture;
+      const rewriteText = isRewritableText(ct);
 
       if (isHtml) {
         const buf = [];
         uRes.on('data', c => buf.push(c));
         uRes.on('end', () => {
           let html = Buffer.concat(buf).toString('utf8');
+          html = stripSecurityMeta(html);
+          const rw = rewriteUpstreamUrls(html); html = rw.text;
           if (!ctx.capture) html = redactHtmlIdentity(html);
           html = injectSessionBootstrap(html, session);
           html = injectOverlay(html, ctx.capture);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
+          logIt(rw.applied);
           res.writeHead(uRes.statusCode || 200, outHeaders);
           res.end(html);
         });
-      } else if (sanitizeJson) {
+      } else if (sanitizeJson || rewriteText) {
         const buf = [];
         uRes.on('data', c => buf.push(c));
         uRes.on('end', () => {
-          const out = sanitizeJsonBody(Buffer.concat(buf).toString('utf8'));
-          outHeaders['cache-control'] = 'no-store';
+          let body = Buffer.concat(buf).toString('utf8');
+          if (sanitizeJson) body = sanitizeJsonBody(body);
+          const rw = rewriteUpstreamUrls(body); body = rw.text;
+          if (sanitizeJson) outHeaders['cache-control'] = 'no-store';
+          logIt(rw.applied);
           res.writeHead(uRes.statusCode || 200, outHeaders);
-          res.end(out);
+          res.end(body);
         });
       } else {
+        logIt(false);
         res.writeHead(uRes.statusCode || 200, outHeaders);
         uRes.pipe(res);
       }
@@ -434,6 +514,24 @@ const server = http.createServer(async (req, res) => {
   if (pathName === '/__genz/overlay.css') {
     res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache' });
     return res.end(OVERLAY_CSS);
+  }
+
+  // Proxied CDN/asset/API origins (rewritten into the page as /__pxo/<i>/…). Served
+  // through the gateway so the browser loads them same-origin. Gated by a valid lease
+  // cookie so the gateway is never an open proxy; no per-asset backend call (perf) and
+  // no account cookies injected (these origins host public assets).
+  if (pathName === ASSET_PREFIX || pathName.startsWith(ASSET_PREFIX + '/')) {
+    const after = req.url.slice(ASSET_PREFIX.length).replace(/^\//, ''); // "<i>/path?query"
+    const mm = after.match(/^(\d+)(\/[\s\S]*)?$/);
+    const idx = mm ? parseInt(mm[1], 10) : -1;
+    const origin = ASSET_ORIGINS[idx];
+    const token = getLease(req);
+    if (!origin || !token || verifyLeaseLocal(token) === null) {
+      res.writeHead(404, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
+      return res.end('Not found');
+    }
+    const upstreamPath = (mm && mm[2]) ? mm[2] : '/';
+    return proxy(req, res, false, { noAccount: true }, { token, asset: true, upstreamOrigin: origin, upstreamPath });
   }
 
   // Entry point: capture the lease into a host-scoped cookie, redirect to the tool.
