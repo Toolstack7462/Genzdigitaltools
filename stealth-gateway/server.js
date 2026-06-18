@@ -326,6 +326,16 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     const bodyBuf = Buffer.concat(chunks);
     const headers = { ...req.headers };
     headers.host = targetUrl.host;
+    // Rewrite Origin/Referer to the upstream origin. The browser sends the gateway
+    // host here; StealthWriter's CSRF / same-origin check rejects mutating POSTs
+    // (Humanize / AI Detector) with a 403 Forbidden when Origin ≠ its own host —
+    // even though the Genz limit is fine. GET page loads carry no Origin, so they
+    // pass, which is why only the humanize/detect actions broke.
+    if (headers.origin) headers.origin = targetUrl.origin;
+    if (headers.referer) {
+      try { const rf = new URL(headers.referer); rf.protocol = targetUrl.protocol; rf.host = targetUrl.host; headers.referer = rf.toString(); }
+      catch (_) { headers.referer = targetUrl.origin + '/'; }
+    }
     delete headers['accept-encoding']; // ask upstream for identity so we can inject
     headers['accept-encoding'] = 'identity';
     delete headers.cookie; // never forward our lease cookie upstream
@@ -369,7 +379,17 @@ function proxy(req, res, isHtmlNav, session, ctx) {
 
       // Never pass a raw upstream "Forbidden"/login document through to the client.
       // Serve a clean page; the floating widget explains it in friendly terms.
-      if (isHtmlNav && upstreamForbidden && !ctx.capture) {
+      // Covers both top-level navigations and any HTML error doc the app fetches.
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture) {
+        // Safe log: status + source only — never cookies, tokens, headers or secrets.
+        safeLog('forbidden_blocked', {
+          request_path: String(req.url || '').split('?')[0],
+          lease_id: ctx.jti || null,
+          account_id: (session && session.accountId) || null,
+          response_status: uRes.statusCode,
+          reason: 'upstream_forbidden',
+          error_source: 'upstream',
+        });
         uRes.resume(); // drain
         return sendBlockPage(res, 'unavailable');
       }

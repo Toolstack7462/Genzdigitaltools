@@ -1,12 +1,15 @@
 /* Gen Z StealthWriter overlay — injected into the proxied StealthWriter app.
  *
  * 1) Bottom-right floating glass widget: "Gen Z Digital Store / StealthWriter",
- *    30-minute countdown, support button, clean friendly messages. No top bar,
- *    no usage counters, never covers the editor/buttons.
- * 2) Visual-only hiding of StealthWriter's account / plan / pricing / FAQ / support /
- *    Discord / affiliate / subscription UI and its original usage counters, so the
- *    sidebar shows only Dashboard / Humanizer / AI Detector. SPA-safe (MutationObserver
- *    + route hooks). Never hides the working area (textarea, Humanize, Check for AI).
+ *    Genz daily usage (Humanizer + AI Detector: limit / used / remaining), a
+ *    30-minute session countdown, support button and clean friendly messages.
+ *    No top bar, never covers the editor/buttons.
+ * 2) Visual-only hiding of StealthWriter's account identity (signed-in email/name),
+ *    plan / pricing / FAQ / support / Discord / affiliate / subscription UI and its
+ *    original usage counters, so the sidebar shows only Dashboard / Humanizer /
+ *    AI Detector. SPA-safe (MutationObserver + route hooks). Never hides the working
+ *    area (textarea, Humanize, Check for AI). Raw upstream "Forbidden"/error text is
+ *    replaced by a friendly widget message.
  *
  * This is purely cosmetic — it does NOT touch StealthWriter's backend, limits,
  * subscription, payment or login, and never logs cookies/secrets.
@@ -60,20 +63,50 @@
       '</div>' +
       '<div class="genz-sw-body">' +
         '<div class="genz-sw-sub">StealthWriter</div>' +
-        '<div class="genz-sw-row"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
+        '<div class="genz-sw-grp">' +
+          '<div class="genz-sw-grp-t">Humanizer</div>' +
+          '<div class="genz-sw-row"><span>Daily limit</span><b id="genz-h-limit">--</b></div>' +
+          '<div class="genz-sw-row"><span>Used today</span><b id="genz-h-used">--</b></div>' +
+          '<div class="genz-sw-row"><span>Remaining</span><b id="genz-h-rem">--</b></div>' +
+        '</div>' +
+        '<div class="genz-sw-grp">' +
+          '<div class="genz-sw-grp-t">AI Detector</div>' +
+          '<div class="genz-sw-row"><span>Daily limit</span><b id="genz-d-limit">--</b></div>' +
+          '<div class="genz-sw-row"><span>Used today</span><b id="genz-d-used">--</b></div>' +
+          '<div class="genz-sw-row"><span>Remaining</span><b id="genz-d-rem">--</b></div>' +
+        '</div>' +
+        '<div class="genz-sw-row genz-sw-cd"><span>Session resets in</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener">Contact support</a>' +
       '</div>';
     document.documentElement.appendChild(w);
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
+    el.hLimit = w.querySelector('#genz-h-limit'); el.hUsed = w.querySelector('#genz-h-used'); el.hRem = w.querySelector('#genz-h-rem');
+    el.dLimit = w.querySelector('#genz-d-limit'); el.dUsed = w.querySelector('#genz-d-used'); el.dRem = w.querySelector('#genz-d-rem');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
     el.min.addEventListener('click', toggleCollapse);
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
   function toggleCollapse() { state.collapsed = !state.collapsed; el.widget.classList.toggle('genz-sw-collapsed', state.collapsed); el.min.textContent = state.collapsed ? '+' : '–'; }
   function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); }
+
+  // Daily usage from the Genz backend. Limit -1 = unlimited; remaining null = unlimited.
+  function fmtLimit(n) { return (n == null || Number(n) < 0) ? '∞' : String(n); }
+  function fmtUsed(n) { return (n == null) ? '0' : String(Math.max(0, Number(n) || 0)); }
+  function updateUsage(plan) {
+    if (!el.widget || !plan) return;
+    var lim = plan.limits || {}, used = plan.used || {}, rem = plan.remaining || {};
+    if (el.hLimit) el.hLimit.textContent = fmtLimit(lim.humanizer);
+    if (el.hUsed) el.hUsed.textContent = fmtUsed(used.humanizer);
+    if (el.hRem) el.hRem.textContent = fmtLimit(rem.humanizer);
+    if (el.dLimit) el.dLimit.textContent = fmtLimit(lim.detector);
+    if (el.dUsed) el.dUsed.textContent = fmtUsed(used.detector);
+    if (el.dRem) el.dRem.textContent = fmtLimit(rem.detector);
+  }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
   function clearMessage() { if (el.msg) { el.msg.textContent = ''; el.msg.style.display = 'none'; } }
+  // Shown when a raw upstream "Forbidden"/error page slips into the client view.
+  function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }
   function toast(text) { var t = document.createElement('div'); t.className = 'genz-sw-toast'; t.textContent = text; document.documentElement.appendChild(t); setTimeout(function () { t.classList.add('genz-sw-toast-out'); }, 2800); setTimeout(function () { t.remove(); }, 3400); }
 
   function apiCall(endpoint, payload) {
@@ -84,7 +117,7 @@
   function validate() {
     if (state.terminal) return Promise.resolve();
     return apiCall('/validate', {}).then(function (r) {
-      if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; clearMessage(); render(); }
+      if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; updateUsage(r.body.plan); clearMessage(); render(); }
       else showMessage(friendly(r.body && r.body.code), true);
     }).catch(function () {});
   }
@@ -95,6 +128,12 @@
   function consume(action) {
     return apiCall('/consume', { action: action }).then(function (r) {
       if (r.body && typeof r.body.secondsRemaining === 'number') { state.secondsRemaining = r.body.secondsRemaining; render(); }
+      // Reflect the new remaining count live for the consumed action.
+      if (r.body && r.body.remaining) {
+        var rem = r.body.remaining;
+        if (action === 'humanizer' && el.hRem) el.hRem.textContent = fmtLimit(rem.humanizer);
+        if (action === 'detector' && el.dRem) el.dRem.textContent = fmtLimit(rem.detector);
+      }
       var allowed = !!(r.body && r.body.allowed);
       if (!allowed) { var code = r.body && r.body.code; if (code === 'limit_reached') toast(action === 'humanizer' ? MSG.limit_humanizer : MSG.limit_detector); else showMessage(friendly(code), code !== 'invalid_action'); }
       return allowed;
@@ -125,6 +164,11 @@
   var HIDE_RE = /^(account|my account|account settings|profile|plans?\s*&?\s*pricing|pricing|faq|faqs|help|support|contact us|discord|community|affiliate|affiliate program|refer|refer a friend|invite friends|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|get more|starter plan|free plan|basic plan|pro plan|premium( plan)?|enterprise)$/i;
   // Hide StealthWriter's own usage/reset counters.
   var USAGE_RE = /(\d+\s*\/\s*\d+\s*(humaniz|scan|word|credit)|humanizations?\s+left|scans?\s+left|words?\s+left|credits?\s+left|resets?\s+(in|at|on|every|daily|tomorrow)|words?\s+remaining|usage\s+resets)/i;
+  // Hide the StealthWriter account identity (email / signed-in user) shown in the
+  // top/right header so the client's own StealthWriter email/name is never visible.
+  var EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+  // Raw upstream error text that must never reach the client verbatim.
+  var FORBIDDEN_RE = /^(forbidden|403\s*forbidden|403|access denied|unauthorized|401)\.?$/i;
   // NEVER hide the working area / allowed nav.
   var KEEP_RE = /^(dashboard|humanizer|ai detector|ai-detector|humanize|check for ai|detect ai|paraphrase|input|output|copy|paste|new|history|home)$/i;
 
@@ -144,6 +188,8 @@
       if (!t || t.length > 60) continue;
       if (KEEP_RE.test(t)) continue;            // protect Dashboard/Humanizer/AI Detector/buttons
       if (hasEditor(n)) continue;               // never hide a container with the editor
+      if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); continue; } // raw upstream error → friendly
+      if (EMAIL_RE.test(t)) { hide(nearestControl(n)); continue; } // client email/account identity → hide the control
       if (HIDE_RE.test(t)) { hide(nearestControl(n)); continue; }   // account/plan/pricing/etc → hide the whole control
       if (USAGE_RE.test(t)) { hide(n); }         // StealthWriter usage/reset counters → hide the label
     }
