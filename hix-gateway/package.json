@@ -1,0 +1,13 @@
+{
+  "name": "hix-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HIX AI reverse-proxy gateway for hix1.genzdigitalstore.com (Gen Z Digital Store).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
