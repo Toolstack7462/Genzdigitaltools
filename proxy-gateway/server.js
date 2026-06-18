@@ -222,6 +222,13 @@ function safeLog(event, fields) {
 // ════════════════════════════════════════════════════════════════════════════
 const BRAND = 'Gen Z Digital Store';
 const BRAND_EMAIL = 'member@genzdigitalstore.com';
+// Identity/billing REDACTION of JSON API responses + account/billing nav blocking is
+// OPT-IN. It deep-redacts the tool's auth/session/user API payloads, which breaks
+// token-based SPAs (e.g. better-auth's /api/auth/session) → the app thinks it is
+// logged out and renders blank. Default OFF so the proxied tool renders + stays
+// authenticated; set IDENTITY_SHIELD=1 only once it is proven auth-safe. The
+// logout-block below is ALWAYS on (protects the shared account) and never redacts.
+const IDENTITY_SHIELD = process.env.IDENTITY_SHIELD === '1' || /^true$/i.test(process.env.IDENTITY_SHIELD || '');
 const LOGOUT_RE = /(^|\/)(logout|log-?out|sign-?out|signout)(\/|$)|auth\/(sign-?out|signout|logout)/i;
 const BLOCK_NAV_RE = /(^|\/)(billing|subscription|subscriptions|pricing|plans?|upgrade|checkout|account|account-settings|settings|profile|affiliate|refer|referral|invite|rewards|api-keys?|apikeys?)(\/|$)/i;
 const STUB_API_RE = /(^|\/)(billing|invoice|invoices|payment|payments|checkout|customer-portal|create-portal|portal|pricing|plans?|upgrade|affiliate|refer|referral|coupon|promo|api-keys?|apikeys?)(\/|$)/i;
@@ -229,7 +236,10 @@ const IDENTITY_ROUTE_RE = /(^|\/)(session|get-session|user|users|me|account|acco
 const KEY_NAME    = /^(name|fullname|full_name|displayname|display_name|firstname|first_name|lastname|last_name|username|user_name|nickname|handle)$/i;
 const KEY_EMAIL   = /^(email|emailaddress|email_address|e_mail|billingemail|billing_email)$/i;
 const KEY_NULLOUT = /^(avatar|avatarurl|avatar_url|image|imageurl|image_url|picture|photo|gravatar|phone|phonenumber|phone_number)$/i;
-const KEY_BILLING = /^(price|priceid|price_id|amount|subtotal|total|currency|interval|card|cardlast4|last4|paymentmethod|payment_method|invoice|invoices|customerid|customer_id|stripeid|stripe_id|stripecustomerid|nextbillingdate|next_billing_date|renewaldate|renewal_date|billingaddress|billing_address|address|taxid|tax_id|vat|apikey|api_key|apikeys|api_keys|token|secret)$/i;
+// NOTE: deliberately EXCLUDES token/secret/apikey — those are session credentials the
+// SPA needs to stay authenticated (the client already holds the session via the
+// injected cookies, so this is not a new leak). Blanking them logs the user out.
+const KEY_BILLING = /^(price|priceid|price_id|amount|subtotal|total|currency|interval|card|cardlast4|last4|paymentmethod|payment_method|invoice|invoices|customerid|customer_id|stripeid|stripe_id|stripecustomerid|nextbillingdate|next_billing_date|renewaldate|renewal_date|billingaddress|billing_address|address|taxid|tax_id|vat)$/i;
 
 function deepRedact(val, depth) {
   if (depth > 8 || val == null) return val;
@@ -426,7 +436,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       // Safe debug — IDs/paths/status only, NEVER cookies/tokens/secrets. Logged for
       // navigations and for any failing/asset-relevant response.
       const logIt = (asset_rewrite_applied) => {
-        if (!(isHtmlNav || uRes.statusCode >= 400 || redirectedToLogin)) return;
+        // Safe debug — log navigations and any failing/redirected response (set
+        // PROXY_LOG_ALL=1 to log every asset/XHR). Never cookies/tokens/secrets.
+        const verbose = process.env.PROXY_LOG_ALL === '1';
+        if (!(verbose || isHtmlNav || uRes.statusCode >= 400 || redirectedToLogin)) return;
         safeLog(ctx.asset ? 'asset' : 'proxy', {
           tool_code: TOOL_KEY,
           request_path: reqPathOnly,
@@ -435,6 +448,8 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           content_type: ct.split(';')[0] || null,
           asset_rewrite_applied: !!asset_rewrite_applied,
           redirected_to_login: redirectedToLogin,
+          cookies_attached: (session && session.cookieCount) || 0,
+          is_nav: !!isHtmlNav,
           lease_id: ctx.jti || null,
         });
       };
@@ -470,7 +485,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           let html = Buffer.concat(buf).toString('utf8');
           html = stripSecurityMeta(html);
           const rw = rewriteUpstreamUrls(html); html = rw.text;
-          if (!ctx.capture) html = redactHtmlIdentity(html);
+          if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
           html = injectSessionBootstrap(html, session);
           html = injectOverlay(html, ctx.capture);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
@@ -586,18 +601,18 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end('{}');
     }
-    if (isHtmlNav && BLOCK_NAV_RE.test(pathName)) {
+    if (IDENTITY_SHIELD && isHtmlNav && BLOCK_NAV_RE.test(pathName)) {
       safeLog('route_blocked', { request_path: pathName, kind: 'nav' });
       res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
       return res.end();
     }
-    if (!isHtmlNav && STUB_API_RE.test(pathName)) {
+    if (IDENTITY_SHIELD && !isHtmlNav && STUB_API_RE.test(pathName)) {
       safeLog('route_blocked', { request_path: pathName, kind: 'api_stub' });
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end('{}');
     }
   }
-  const sanitizeBody = !capture && IDENTITY_ROUTE_RE.test(pathName);
+  const sanitizeBody = IDENTITY_SHIELD && !capture && IDENTITY_ROUTE_RE.test(pathName);
 
   let session;
   if (capture) {
