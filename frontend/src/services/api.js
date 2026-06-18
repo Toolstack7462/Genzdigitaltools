@@ -50,8 +50,26 @@ function isClientPath(url) {
 api.interceptors.response.use(
   response => response,
   async error => {
-    const original = error.config;
+    const original = error.config || {};
     const url = original.url || '';
+
+    // ── SAFE failure diagnostics ─────────────────────────────────────────────
+    // Surface the failing endpoint + HTTP status so a "Route not found" / load
+    // failure is traceable. We log ONLY the method, the request PATH (query string
+    // stripped) and the status + the server's machine error code/string. Request
+    // and response bodies, headers, cookies, tokens and Authorization are NEVER
+    // logged. 401s are skipped here because they are handled by the silent
+    // token-refresh flow below (logging them would be misleading noise).
+    if (error.response && error.response.status !== 401) {
+      const method = String(original.method || 'get').toUpperCase();
+      const path = String(url).split('?')[0];
+      const status = error.response.status;
+      const code = error.response.data?.code || error.response.data?.error || '';
+      console.warn(`[API] ${method} ${path} → ${status}${code ? ` (${code})` : ''}`);
+    } else if (error.request && !error.response) {
+      const method = String(original.method || 'get').toUpperCase();
+      console.warn(`[API] ${method} ${String(url).split('?')[0]} → no response (network/CORS/server down)`);
+    }
 
     // Skip retry for login/refresh endpoints
     if (

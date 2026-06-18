@@ -58,7 +58,19 @@ const AdminProxyTools = () => {
       setAccounts(ac.data?.accounts || []);
       setClients(cl.data?.clients || []);
     } catch (e) {
-      showError(e.response?.data?.error || 'Failed to load');
+      // A raw backend "Route not found" here means the proxy-tools API is not
+      // mounted on the running server (typically a stale backend deploy), NOT a
+      // bug in this page. Make that explicit instead of echoing the cryptic
+      // server string. The api client logs the exact method + path safely.
+      const status = e.response?.status;
+      const serverMsg = e.response?.data?.error;
+      showError(
+        status === 404 || serverMsg === 'Route not found'
+          ? 'Failed to load Proxy Tools — the proxy-tools API route is unavailable (404). The backend may need to be redeployed.'
+          : status
+            ? `Failed to load Proxy Tools (HTTP ${status})${serverMsg ? ` — ${serverMsg}` : ''}`
+            : 'Failed to load Proxy Tools — could not reach the server.'
+      );
     } finally { setLoading(false); }
   }, [tool, showError]);
 

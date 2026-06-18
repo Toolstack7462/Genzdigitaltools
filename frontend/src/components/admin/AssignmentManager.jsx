@@ -243,7 +243,18 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
       const res = await api.get(`/admin/assignments?${params}`);
       setAssignments(res.data.assignments || []);
     } catch (e) {
-      showError('Failed to load assignments');
+      // Actionable, secret-free message: include the HTTP status so a missing
+      // backend route (404) is distinguishable from a real server error (500) or
+      // a network failure. The endpoint path is logged safely by the api client.
+      const status = e.response?.status;
+      const serverMsg = e.response?.data?.error;
+      showError(
+        status === 404
+          ? 'Failed to load assignments — the assignments API route is unavailable (404). The backend may need to be redeployed.'
+          : status
+            ? `Failed to load assignments (HTTP ${status})${serverMsg ? ` — ${serverMsg}` : ''}`
+            : 'Failed to load assignments — could not reach the server.'
+      );
     } finally {
       setLoading(false);
     }

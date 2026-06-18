@@ -328,9 +328,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler — SAFE diagnostics for "Route not found".
+// Logs only the HTTP METHOD and the request PATH. Query strings, request bodies,
+// headers, cookies, tokens and Authorization are NEVER logged, so a missing or
+// misrouted API path is visible in the server log without leaking any secret. The
+// same method + path are echoed in the JSON so the client can show exactly which
+// endpoint 404'd (helps tell "backend not redeployed" from a real bug).
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  console.warn(`[404] Route not found: ${req.method} ${req.path}`);
+  res.status(404).json({ error: 'Route not found', method: req.method, path: req.path });
 });
 
 const PORT = process.env.PORT || process.env.CRM_PORT || 8002;
