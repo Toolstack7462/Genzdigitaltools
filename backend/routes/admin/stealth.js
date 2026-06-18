@@ -526,27 +526,39 @@ router.post('/accounts/:id/verify', async (req, res) => {
     if (!account) return res.status(404).json({ error: 'Account not found' });
     if (!account.sessionEncrypted) return res.status(400).json({ error: 'No cookie bundle saved for this account' });
 
-    let cookieHeader = '';
-    try { cookieHeader = buildCookieHeader(JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)), TARGET_HOST); } catch (_) {}
+    let bundle = null, cookieHeader = '';
+    try { bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); cookieHeader = buildCookieHeader(bundle, TARGET_HOST); } catch (_) {}
+    const cookie_count = countCookies(bundle, TARGET_HOST);
+    const has_session_cookie = hasSessionCookie(bundle);
+
     if (!cookieHeader) {
+      // No attachable cookie at all → genuinely no session to test.
       account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
       account.status = 'session_expired';
       account.session_status = 'session_expired';
       account.lastVerifiedAt = new Date();
       await account.save();
-      return res.json({ success: true, account: presentAccount(account) });
+      console.log('[stealth] ' + JSON.stringify({ evt: 'verify', account_id: account._id, cookie_count, has_session_cookie: false, checked_path: process.env.STEALTH_VERIFY_PATH || '/dashboard/humanizer', upstream_status: 0, final_path: null, redirected_to_sign_in: true }));
+      return res.json({ success: true, account: presentAccount(account), result: 'session_expired' });
     }
 
     const v = await verifyAccountCookies(cookieHeader, account.expectedIdentifier);
+    // Safe debug (no cookie values).
+    console.log('[stealth] ' + JSON.stringify({
+      evt: 'verify', account_id: account._id, cookie_count, has_session_cookie,
+      checked_path: process.env.STEALTH_VERIFY_PATH || '/dashboard/humanizer',
+      upstream_status: v.httpStatus, final_path: v.finalPath, redirected_to_sign_in: v.redirectedToSignIn,
+    }));
+
     account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
     account.lastVerifiedAt = new Date();
 
-    // Sync status + session_status for clear-cut results so selection reacts immediately.
+    // Mark expired ONLY when the dashboard actually redirected to /sign-in.
     if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
-    else if (v.result === 'limit_reached') { account.status = 'limit_reached'; account.session_status = 'working'; }
-    else if (v.result === 'blocked') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
     else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
     else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
+    // 'unknown' (upstream unreachable/blocked): do NOT penalize — leave status as-is.
+    else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
 
     await account.save();
     await ActivityLog.log('ADMIN', req.userId, 'STEALTH_ACCOUNT_VERIFIED', { accountId: account._id, label: account.label, result: v.result, ip: getClientIp(req) });
