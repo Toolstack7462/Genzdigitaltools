@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Search, Package, User as UserIcon, Edit2, CalendarClock, CalendarX,
+  Search, Package, Edit2, CalendarClock, CalendarX,
   Ban, Trash2, Save, X, Mail, Inbox, Settings, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import api from '../../services/api';
@@ -410,6 +410,15 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               : scope === 'client' ? 'This client has no tools assigned yet.'
               : 'Try adjusting your filters.'}
           </p>
+          {scope === 'client' && clientId && (
+            <button
+              type="button"
+              onClick={() => navigate(`/admin/clients/${clientId}/assign`)}
+              className="btn-grad inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold mt-4"
+            >
+              <Package size={15} /> Assign tools
+            </button>
+          )}
         </div>
       ) : (
         <div className="border border-genz-border rounded-xl overflow-hidden">
@@ -424,26 +433,37 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
 
           <div className="divide-y divide-genz-border">
             {assignments.map(a => {
-              const primary = scope === 'client' ? a.tool : a.client;
-              const primaryName = scope === 'client' ? (a.tool?.name || 'Unknown tool') : (a.client?.fullName || 'Unknown client');
-              const primarySub = scope === 'client' ? (a.tool?.category || '') : (a.client?.email || '');
-              const PrimaryIcon = scope === 'client' ? Package : UserIcon;
+              const isToolPrimary = scope === 'client';
+              const primaryName = isToolPrimary ? (a.tool?.name || 'Unknown tool') : (a.client?.fullName || 'Unknown client');
+              const primarySub = isToolPrimary ? (a.tool?.category || '') : (a.client?.email || '');
               return (
                 <div key={a._id}
                   className="grid grid-cols-1 md:grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_auto] gap-2 md:gap-3 md:items-center px-4 py-3 hover:bg-genz-bg/60 transition-colors"
                   data-testid={`assignment-row-${a._id}`}>
                   {/* primary entity */}
                   <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 text-white"
-                      style={{ background: 'var(--gradient-cta)' }}>
-                      <PrimaryIcon size={15} />
-                    </span>
+                    {isToolPrimary ? (
+                      // Tool row (per-client view): tool glyph.
+                      <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-white"
+                        style={{ background: 'var(--gradient-cta)' }}>
+                        <Package size={16} />
+                      </span>
+                    ) : (
+                      // Client row (per-tool / global view): initials avatar, matching the
+                      // Members page so the client reads consistently across the admin.
+                      <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-white text-sm font-bold"
+                        style={{ background: 'var(--gradient-cta)' }}>
+                        {(a.client?.fullName || '?').charAt(0).toUpperCase()}
+                      </span>
+                    )}
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-genz-navy truncate">{primaryName}</p>
-                      {primarySub && (
+                      {primarySub ? (
                         <p className="text-xs text-genz-muted truncate flex items-center gap-1">
-                          {scope !== 'client' && <Mail size={10} />}{primarySub}
+                          {!isToolPrimary && <Mail size={10} className="flex-shrink-0" />}{primarySub}
                         </p>
+                      ) : (
+                        !isToolPrimary && <p className="text-xs text-genz-muted/70 italic truncate">No email on file</p>
                       )}
                     </div>
                   </div>

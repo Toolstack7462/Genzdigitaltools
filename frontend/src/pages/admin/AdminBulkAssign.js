@@ -15,7 +15,7 @@ const AdminBulkAssign = () => {
   const [saving, setSaving] = useState(false);
   const [tools, setTools] = useState([]);
   const [clients, setClients] = useState([]);
-  const [selectedTool, setSelectedTool] = useState(null);
+  const [selectedTools, setSelectedTools] = useState([]);
   const [selectedClients, setSelectedClients] = useState([]);
   const [toolSearch, setToolSearch] = useState('');
   const [clientSearch, setClientSearch] = useState('');
@@ -110,11 +110,29 @@ const AdminBulkAssign = () => {
     }
   };
 
+  const toggleTool = (tool) => {
+    setSelectedTools(prev =>
+      prev.some(t => t._id === tool._id)
+        ? prev.filter(t => t._id !== tool._id)
+        : [...prev, tool]
+    );
+  };
+
+  const selectAllTools = () => {
+    const filtered = filteredTools;
+    const allSelected = filtered.length > 0 && filtered.every(t => selectedTools.some(s => s._id === t._id));
+    if (allSelected) {
+      setSelectedTools(prev => prev.filter(t => !filtered.some(f => f._id === t._id)));
+    } else {
+      setSelectedTools(prev => [...prev, ...filtered.filter(t => !prev.some(p => p._id === t._id))]);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    if (!selectedTool) {
-      showError('Please select a tool');
+    if (selectedTools.length === 0) {
+      showError('Please select at least one tool');
       return;
     }
 
@@ -131,17 +149,35 @@ const AdminBulkAssign = () => {
     try {
       setSaving(true);
 
-      await api.post('/admin/assignments/bulk', {
-        toolId: selectedTool._id,
-        clientIds: selectedClients.map(c => c._id),
-        startDate: duration.startDate,
-        endDate: duration.endDate
-      });
+      const clientIds = selectedClients.map(c => c._id);
+      // The bulk endpoint assigns ONE tool to many clients; loop the selected tools
+      // so we can assign multiple tools to the same set of clients in one action.
+      const results = await Promise.allSettled(
+        selectedTools.map(tool =>
+          api.post('/admin/assignments/bulk', {
+            toolId: tool._id,
+            clientIds,
+            startDate: duration.startDate,
+            endDate: duration.endDate
+          })
+        )
+      );
 
-      showSuccess(`Tool assigned to ${selectedClients.length} client(s) successfully`);
-      navigate('/admin/clients');
+      const ok = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.length - ok;
+
+      if (ok > 0) {
+        showSuccess(
+          `Assigned ${ok} tool${ok === 1 ? '' : 's'} to ${selectedClients.length} client${selectedClients.length === 1 ? '' : 's'}` +
+          (failed ? ` — ${failed} failed` : '')
+        );
+        navigate('/admin/clients');
+      } else {
+        const firstErr = results.find(r => r.status === 'rejected');
+        showError(firstErr?.reason?.response?.data?.error || 'Failed to assign tools');
+      }
     } catch (error) {
-      showError(error.response?.data?.error || 'Failed to assign tool');
+      showError(error.response?.data?.error || 'Failed to assign tools');
     } finally {
       setSaving(false);
     }
@@ -187,16 +223,23 @@ const AdminBulkAssign = () => {
             <ArrowLeft size={16} />
             Back to Clients
           </button>
-          <h1 className="text-2xl font-extrabold text-genz-navy">Bulk Assign Tool</h1>
-          <p className="text-sm text-genz-muted mt-1">Assign one tool to multiple clients at once</p>
+          <h1 className="text-2xl font-extrabold text-genz-navy">Assign Tools</h1>
+          <p className="text-sm text-genz-muted mt-1">Assign one or more tools to one or more clients at once</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Step 1: Select Tool */}
           <div className="ds-card p-4">
-            <StepHead n={1} title="Select Tool">
-              {selectedTool && (
-                <span className="ds-badge ds-badge-teal ml-auto"><CheckCircle2 size={12} /> {selectedTool.name}</span>
+            <StepHead n={1} title="Select Tools">
+              <span className="ds-badge ds-badge-teal">{selectedTools.length} selected</span>
+              {filteredTools.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectAllTools}
+                  className="ml-auto text-sm font-medium text-genz-teal hover:underline"
+                >
+                  {filteredTools.every(t => selectedTools.some(s => s._id === t._id)) ? 'Deselect All' : 'Select All'}
+                </button>
               )}
             </StepHead>
 
@@ -211,14 +254,31 @@ const AdminBulkAssign = () => {
               />
             </div>
 
+            {/* Selected tools as removable chips */}
+            {selectedTools.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3 p-2.5 bg-genz-bg rounded-xl">
+                {selectedTools.map(tool => (
+                  <span
+                    key={tool._id}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-genz-teal/20 text-genz-teal text-xs font-medium rounded-full max-w-full"
+                  >
+                    <span className="truncate max-w-[200px]">{tool.name}</span>
+                    <button type="button" onClick={() => toggleTool(tool)} className="hover:text-genz-navy flex-shrink-0" aria-label={`Remove ${tool.name}`}>
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1">
               {filteredTools.map(tool => {
-                const isSelected = selectedTool?._id === tool._id;
+                const isSelected = selectedTools.some(t => t._id === tool._id);
                 return (
                   <button
                     key={tool._id}
                     type="button"
-                    onClick={() => setSelectedTool(tool)}
+                    onClick={() => toggleTool(tool)}
                     className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all ${
                       isSelected
                         ? 'border-genz-teal bg-genz-teal/10'
@@ -402,12 +462,14 @@ const AdminBulkAssign = () => {
             </button>
             <button
               type="submit"
-              disabled={saving || !selectedTool || selectedClients.length === 0}
+              disabled={saving || selectedTools.length === 0 || selectedClients.length === 0}
               className="flex items-center gap-2 px-5 py-2.5 btn-grad rounded-xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
               data-testid="bulk-assign-btn"
             >
               <Save size={16} />
-              {saving ? 'Assigning...' : `Assign to ${selectedClients.length} Client(s)`}
+              {saving
+                ? 'Assigning...'
+                : `Assign ${selectedTools.length} tool${selectedTools.length === 1 ? '' : 's'} to ${selectedClients.length} client${selectedClients.length === 1 ? '' : 's'}`}
             </button>
           </div>
         </form>
