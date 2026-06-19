@@ -69,6 +69,23 @@ const UPSTREAM_CH_PLATFORM = '"Windows"';
 const ASSET_ORIGINS = String(process.env.ASSET_ORIGINS || '')
   .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
 const ASSET_PREFIX = '/__pxo';
+// Captcha / challenge endpoint prefixes the tool loads from a THIRD-PARTY, DOMAIN-BOUND
+// provider (e.g. Google reCAPTCHA Enterprise on HIX). These keys are registered for the
+// tool's own domain, so on the gateway host the widget refuses to initialise. We proxy
+// just these endpoints and present the TOOL's origin to the provider (Origin/Referer +
+// the reCAPTCHA `co` origin param) so the REAL widget renders and the user solves it
+// manually — we never bypass, auto-solve, or alter the challenge itself. Configure per
+// tool via CAPTCHA_ORIGINS as full path-prefixes, e.g.
+// "https://www.google.com/recaptcha,https://www.gstatic.com/recaptcha,https://recaptcha.net/recaptcha".
+const CAPTCHA_ORIGINS = String(process.env.CAPTCHA_ORIGINS || '')
+  .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+// One indexed list proxied under ASSET_PREFIX/<i>/. Captcha entries get origin-spoofing.
+const PROXIED_ORIGINS = ASSET_ORIGINS.map(o => ({ base: o, captcha: false }))
+  .concat(CAPTCHA_ORIGINS.map(o => ({ base: o, captcha: true })));
+// [captchaPrefix, gatewayPrefix] pairs for the in-browser shim (runtime URL rewriting).
+const CAPTCHA_MAP_JSON = JSON.stringify(
+  PROXIED_ORIGINS.map((p, i) => (p.captcha ? [p.base, `${ASSET_PREFIX}/${i}`] : null)).filter(Boolean)
+);
 // Proxy/hop headers LiteSpeed-Passenger injects that a real browser never sends — they
 // reveal the proxy to the tool's WAF, so they are stripped from every upstream request.
 const STRIP_REQ_HEADERS = [
@@ -278,9 +295,28 @@ function redactHtmlIdentity(html) { try { return html.replace(EMAIL_GLOBAL_RE, B
 const ORIGIN_REPLACEMENTS = (() => {
   const reps = [];
   if (PUBLIC_ORIGIN && TARGET_ORIGIN) reps.push([TARGET_ORIGIN, PUBLIC_ORIGIN]);
-  ASSET_ORIGINS.forEach((o, i) => { if (PUBLIC_ORIGIN) reps.push([o, `${PUBLIC_ORIGIN}${ASSET_PREFIX}/${i}`]); });
+  // Asset + captcha origins share the /__pxo/<i>/ index space.
+  PROXIED_ORIGINS.forEach((p, i) => { if (PUBLIC_ORIGIN) reps.push([p.base, `${PUBLIC_ORIGIN}${ASSET_PREFIX}/${i}`]); });
   return reps;
 })();
+// reCAPTCHA reports the embedding origin in the `co` query param (base64url of
+// "https://host:port"). For a domain-bound key to render, that must encode the TOOL's
+// origin, not the gateway's — so we swap the gateway host for the target host. This only
+// makes the provider RENDER the challenge for the right key; the user still solves it.
+function rewriteCaptchaCo(qs) {
+  if (!qs) return qs;
+  return qs.replace(/([?&]co=)([^&]+)/i, (m, pfx, val) => {
+    try {
+      const b = val.replace(/-/g, '+').replace(/_/g, '/').replace(/\./g, '=');
+      let dec = Buffer.from(b, 'base64').toString('utf8');
+      if (!dec || !/^https?:\/\//i.test(dec)) return m;
+      const gwHost = new URL(PUBLIC_ORIGIN).host;
+      dec = dec.split(PUBLIC_ORIGIN).join(TARGET_ORIGIN).split(gwHost).join(targetUrl.host);
+      const enc = Buffer.from(dec, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '.');
+      return pfx + enc;
+    } catch (_) { return m; }
+  });
+}
 function rewriteUpstreamUrls(text) {
   let applied = false;
   for (const [from, to] of ORIGIN_REPLACEMENTS) {
@@ -302,6 +338,29 @@ function stripSecurityMeta(html) {
 function isRewritableText(ct) {
   return /(javascript|ecmascript|text\/css|application\/json|application\/manifest|text\/plain|application\/xml|text\/xml)/i.test(ct)
     && !ct.includes('event-stream');
+}
+
+// Captcha runtime-URL shim. reCAPTCHA libs build the provider URL at RUNTIME from a bare
+// host string (e.g. "recaptcha.net"+"/recaptcha/…"), so static body rewriting can't catch
+// it. This tiny script (injected FIRST in <head>) rewrites ONLY captcha-provider URLs at
+// the DOM/network layer (script/iframe src, fetch, XHR) to the gateway's /__pxo route so
+// the challenge loads through the proxy with the tool origin spoofed. Every non-captcha
+// URL is returned untouched, so the rest of the app is unaffected. Does NOT bypass or
+// auto-solve the captcha — the user still solves the real challenge.
+function injectCaptchaShim(html) {
+  if (!CAPTCHA_ORIGINS.length) return html;
+  const shim = '<script>(function(){try{var M=' + CAPTCHA_MAP_JSON + ',G=location.origin;' +
+    'function rw(u){try{if(typeof u!=="string"||!u)return u;for(var i=0;i<M.length;i++){var f=M[i][0],t=M[i][1];' +
+    'if(u.indexOf(f)===0)return G+t+u.slice(f.length);var p=f.replace(/^https?:/,"");if(u.indexOf(p)===0)return G+t+u.slice(p.length);}return u;}catch(e){return u;}}' +
+    '["HTMLScriptElement","HTMLIFrameElement"].forEach(function(T){try{var d=Object.getOwnPropertyDescriptor(window[T].prototype,"src");' +
+    'if(d&&d.set)Object.defineProperty(window[T].prototype,"src",{configurable:true,enumerable:d.enumerable,get:d.get,set:function(v){d.set.call(this,rw(v));}});}catch(e){}});' +
+    'var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){if((n==="src"||n==="href")&&typeof v==="string")v=rw(v);return sa.call(this,n,v);};' +
+    'if(window.fetch){var of=window.fetch;window.fetch=function(i,o){try{if(typeof i==="string")i=rw(i);else if(i&&i.url&&typeof Request!=="undefined")i=new Request(rw(i.url),i);}catch(e){}return of.call(this,i,o);};}' +
+    'var ox=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){try{arguments[1]=rw(u);}catch(e){}return ox.apply(this,arguments);};' +
+    '}catch(e){}})();</script>';
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + shim);
+  return shim + html;
 }
 
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
@@ -423,8 +482,21 @@ function proxy(req, res, isHtmlNav, session, ctx) {
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
-    const bodyBuf = Buffer.concat(chunks);
+    let bodyBuf = Buffer.concat(chunks);
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
+
+    // Captcha endpoints: present the TOOL's origin to the provider so a domain-bound
+    // widget renders for its key. Origin/Referer forced to the tool; the `co` origin in
+    // a form-encoded POST body is rewritten too (anchor/reload puts it in the query).
+    if (ctx.captcha) {
+      headers.origin = TARGET_ORIGIN;
+      headers.referer = TARGET_ORIGIN + '/';
+      if (bodyBuf.length && /application\/x-www-form-urlencoded/i.test(headers['content-type'] || '')) {
+        const rewritten = rewriteCaptchaCo('?' + bodyBuf.toString('utf8')).slice(1);
+        bodyBuf = Buffer.from(rewritten, 'utf8');
+        headers['content-length'] = Buffer.byteLength(bodyBuf);
+      }
+    }
 
     const upstream = upLib.request(`${upURL.origin}${upPath}`, { method: req.method, headers }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
@@ -485,9 +557,15 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           let html = Buffer.concat(buf).toString('utf8');
           html = stripSecurityMeta(html);
           const rw = rewriteUpstreamUrls(html); html = rw.text;
-          if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
-          html = injectSessionBootstrap(html, session);
-          html = injectOverlay(html, ctx.capture);
+          // Only the MAIN app view gets the overlay/identity treatment. Proxied
+          // asset/captcha HTML (e.g. the reCAPTCHA iframe document) is rewritten but
+          // left otherwise untouched so the challenge renders intact.
+          if (!ctx.asset) {
+            if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
+            html = injectSessionBootstrap(html, session);
+            html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
+            html = injectOverlay(html, ctx.capture);
+          }
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
           logIt(rw.applied);
@@ -539,14 +617,21 @@ const server = http.createServer(async (req, res) => {
     const after = req.url.slice(ASSET_PREFIX.length).replace(/^\//, ''); // "<i>/path?query"
     const mm = after.match(/^(\d+)(\/[\s\S]*)?$/);
     const idx = mm ? parseInt(mm[1], 10) : -1;
-    const origin = ASSET_ORIGINS[idx];
+    const entry = PROXIED_ORIGINS[idx];
     const token = getLease(req);
-    if (!origin || !token || verifyLeaseLocal(token) === null) {
+    if (!entry || !token || verifyLeaseLocal(token) === null) {
       res.writeHead(404, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
       return res.end('Not found');
     }
-    const upstreamPath = (mm && mm[2]) ? mm[2] : '/';
-    return proxy(req, res, false, { noAccount: true }, { token, asset: true, upstreamOrigin: origin, upstreamPath });
+    const baseUrl = new URL(entry.base);
+    let rest = (mm && mm[2]) ? mm[2] : '/';
+    // For captcha endpoints, encode the TOOL's origin in the reCAPTCHA `co` param so the
+    // domain-bound widget renders for the correct key (user still solves it manually).
+    if (entry.captcha) rest = rewriteCaptchaCo(rest);
+    const upstreamPath = baseUrl.pathname.replace(/\/$/, '') + rest;
+    return proxy(req, res, false, { noAccount: true }, {
+      token, asset: true, captcha: entry.captcha, upstreamOrigin: baseUrl.origin, upstreamPath,
+    });
   }
 
   // Entry point: capture the lease into a host-scoped cookie, redirect to the tool.
