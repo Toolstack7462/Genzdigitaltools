@@ -147,13 +147,47 @@
   function hide(n) { if (isCaptchaNode(n)) return; if (n && n.style && !(n.getAttribute && n.getAttribute('data-genz-brand') === '1')) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
   function nearestControl(n) { var d = 0, c = n; while (c && d < 4) { var tag = (c.tagName || '').toLowerCase(); if (tag === 'a' || tag === 'button' || tag === 'li' || (c.getAttribute && c.getAttribute('role') === 'button')) return c; c = c.parentElement; d++; } return n; }
   function brandifyControl(ctrl) { if (!ctrl || hasEditor(ctrl)) return; if (brandControls.indexOf(ctrl) === -1) brandControls.push(ctrl); enforceBranding(); }
+  // ChatGPT shows its real account at the BOTTOM-LEFT of the sidebar (avatar + name,
+  // opening a menu that can switch / log into / log out of the account). The client must
+  // never reach it, so for ChatGPT we HIDE the account control entirely and show our own
+  // "Gen Z Digital Store" card on the left instead of branding the control in place.
+  var CHATGPT = (CFG.tool === 'chatgpt');
+  function brandOrHide(n) { if (CHATGPT) hide(n); else brandifyControl(n); }
   function isIdentityControl(n) {
     if (!n || hasEditor(n)) return false;
     if (n.querySelector && n.querySelector('[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar]')) return true;
     var a = ((n.getAttribute && (n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('data-testid') || '')) || '').toLowerCase();
     if (/(^|[\s_-])(user[\s_-]?menu|usermenu|avatar)([\s_-]|$)/.test(a)) return true;
     if (n.getAttribute && n.getAttribute('aria-haspopup') && /(^|[\s_-])(account|profile|my[\s_-]?account)([\s_-]|$)/.test(a)) return true;
+    // ChatGPT: a bottom-left button/link carrying an avatar image is the account switcher.
+    if (CHATGPT && n.querySelector && n.querySelector('img')) {
+      try { var r = n.getBoundingClientRect(); if (r.width && r.left < 360 && r.top > window.innerHeight * 0.55) return true; } catch (e) {}
+    }
     return false;
+  }
+  // Hide ChatGPT's bottom-left account control (testid/aria + bottom-left-avatar heuristic).
+  function hideChatgptAccount() {
+    if (!CHATGPT) return;
+    try {
+      var marked = document.querySelectorAll('[data-testid*="account" i],[data-testid*="profile" i],[data-testid="accounts-profile-button"]');
+      for (var i = 0; i < marked.length; i++) { var c = marked[i].closest('button,[role="button"],a') || marked[i]; if (!c.closest('#genz-sw-widget,#genz-acct-card')) hide(c); }
+      var btns = document.querySelectorAll('button,[role="button"],a');
+      for (var j = 0; j < btns.length; j++) {
+        var b = btns[j];
+        if (b.closest('#genz-sw-widget,#genz-acct-card')) continue;
+        if (!(b.querySelector && b.querySelector('img'))) continue;
+        var r = b.getBoundingClientRect();
+        if (r.width && r.left < 360 && r.top > window.innerHeight * 0.6) hide(b);
+      }
+    } catch (e) {}
+  }
+  // The replacement: a clean, fixed "Gen Z Digital Store" card pinned bottom-left.
+  function buildChatgptAccountCard() {
+    if (!CHATGPT || document.getElementById('genz-acct-card')) return;
+    var c = document.createElement('div'); c.id = 'genz-acct-card';
+    c.innerHTML = '<span class="genz-acct-ava">G</span>' +
+      '<span class="genz-acct-txt"><b>Gen Z Digital Store</b><i>Member access</i></span>';
+    document.documentElement.appendChild(c);
   }
   function enforceBranding() {
     for (var i = brandControls.length - 1; i >= 0; i--) {
@@ -193,13 +227,13 @@
       if (isCaptchaNode(n)) continue;   // NEVER hide/brand a captcha/challenge widget (re-checked each sweep)
       n.__genz = true;
       var ctag = (n.tagName || '').toLowerCase();
-      if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) { brandifyControl(n); continue; }
+      if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) { brandOrHide(n); continue; }
       var t = ownText(n);
       if (!t || t.length > 60) continue;
       if (KEEP_RE.test(t)) continue;
       if (hasEditor(n)) continue;
       if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); continue; }
-      if (EMAIL_RE.test(t)) { brandifyControl(nearestControl(n)); continue; }
+      if (EMAIL_RE.test(t)) { brandOrHide(nearestControl(n)); continue; }
       if (HIDE_RE.test(t)) { hide(nearestControl(n)); continue; }
       if (USAGE_RE.test(t)) { hide(n); }
     }
@@ -213,12 +247,13 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); } catch (e) {} }
 
   function start() {
     if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
     if (CFG.capture) { buildCaptureUI(); return; }
     buildWidget();
+    buildChatgptAccountCard();
     injectHideStyle();
     runHiding();
     var mo = new MutationObserver(function () { runHiding(); });

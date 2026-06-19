@@ -53,3 +53,26 @@
   #genz-sw-widget{ right:10px; bottom:10px; width:174px; }
   .genz-sw-toast{ right:10px; bottom:150px; }
 }
+
+/* ChatGPT: clean "Gen Z Digital Store" card pinned bottom-left, replacing the real
+   account/avatar button (which is hidden). Sized to sit inside the sidebar. */
+#genz-acct-card{
+  position:fixed; left:8px; bottom:8px; z-index:2147483645;
+  display:flex; align-items:center; gap:10px; width:236px; max-width:calc(100vw - 16px);
+  padding:9px 11px; border-radius:12px; box-sizing:border-box;
+  background:linear-gradient(160deg, rgba(16,16,16,.97), rgba(15,27,46,.97));
+  border:1px solid rgba(6,182,212,.28); box-shadow:0 8px 26px -8px rgba(0,0,0,.6);
+  backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+  font:600 13px/1.2 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:#e6f6fb;
+}
+#genz-acct-card .genz-acct-ava{
+  flex:0 0 auto; width:30px; height:30px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-weight:800; font-size:14px; color:#fff;
+  background:linear-gradient(135deg,#2563EB,#06B6D4);
+}
+#genz-acct-card .genz-acct-txt{display:flex; flex-direction:column; min-width:0;}
+#genz-acct-card .genz-acct-txt b{font-size:13px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+#genz-acct-card .genz-acct-txt i{font-style:normal; margin-top:1px; font-size:9.5px; font-weight:700; letter-spacing:.14em; text-transform:uppercase; color:#7dd3fc;}
+/* Sidebar is hidden on narrow screens — don't float the card over the chat. */
+@media (max-width:767px){ #genz-acct-card{ display:none; } }
