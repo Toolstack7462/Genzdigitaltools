@@ -29,6 +29,25 @@ const MULTI_PART_TLDS = new Set([
 // config, so client sessions on our own properties are never wiped.
 const PROTECTED_SUFFIXES = ['genzdigitalstore.com'];
 
+// ── Curated allowlist of known EXTENSION-tool registrable domains ────────────
+// For these dedicated SaaS tools it is SAFE and DESIRED to broaden cleanup to the
+// whole domain family (apex + every subdomain), because the entire registrable
+// domain belongs to that one tool. This is what lets a tool configured as a
+// subdomain (e.g. app.jenni.ai) still clear apex/SSO cookies on .jenni.ai.
+//
+// A domain is added here ONLY when the whole registrable domain is owned by a
+// single tool — never a shared platform (so we never wipe a user's personal
+// session on a multi-tenant host). Unknown tools fall back to the strict
+// host-centric scope below.
+const KNOWN_EXTENSION_TOOL_BASES = new Set([
+  'hix.ai',
+  'paperpal.com',
+  'scispace.com',
+  'jenni.ai',
+  'chatgpt.com',
+  // add other dedicated extension-tool registrable domains here
+]);
+
 function getBaseDomain(hostname) {
   const parts = String(hostname || '').toLowerCase().split('.').filter(Boolean);
   if (parts.length <= 2) return parts.join('.');
@@ -62,25 +81,32 @@ function buildToolCleanupConfig(tool) {
   if (!base) return null;
   if (isProtected(host, base)) return null; // never clean our own properties
 
-  // SCOPE IS HOST-CENTRIC ON PURPOSE. We clean only the tool's own host and its
-  // subdomains — never the registrable parent. This matters for tools hosted on
-  // a subdomain of a shared platform (e.g. a tool on docs.<shared>.com must NOT
-  // wipe the user's personal session on <shared>.com). chrome.cookies.getAll
-  // ({domain: host}) already matches host + its subdomains and does NOT return
-  // parent-domain cookies, so a host-scoped filter is both sufficient and safe.
-  // For the dedicated SaaS tools in use (hix.ai, stealthwriter.ai, scispace.com,
-  // paperpal.com) the host IS the apex, so subdomains are still fully covered.
-  const domains = [host];
+  // Two scoping modes:
+  //  • KNOWN extension tool (registrable domain on the curated allowlist): clean
+  //    the WHOLE domain family (apex + all subdomains). This is how a tool
+  //    configured as app.jenni.ai still clears apex .jenni.ai SSO cookies, and
+  //    matches the required hix.ai/*.hix.ai, paperpal.com/*.paperpal.com,
+  //    scispace.com/*.scispace.com, jenni.ai/app.jenni.ai patterns.
+  //  • UNKNOWN tool: strict HOST-CENTRIC scope — only the tool's own host and its
+  //    subdomains, never the registrable parent. This protects a tool hosted on a
+  //    shared multi-tenant platform (e.g. docs.<shared>.com) from wiping the
+  //    user's personal session on <shared>.com. chrome.cookies.getAll({domain:
+  //    host}) matches host + subdomains and not the parent, so it's safe.
+  const known = KNOWN_EXTENSION_TOOL_BASES.has(base);
+  const scope = known ? base : host;
 
-  // Both the bare host and the leading-dot form, so host-only and subdomain
-  // (.host) cookie shapes are both removed.
-  const cookieDomains = [...new Set([host, '.' + host])];
+  const domains = [...new Set(known ? [base, host] : [host])];
 
-  const localStorageOrigins = [`https://${host}`];
+  // Both bare and leading-dot forms so host-only and subdomain (.scope) cookie
+  // shapes are both removed.
+  const cookieDomains = [...new Set([scope, '.' + scope, host])];
+
+  const localStorageOrigins = [...new Set([`https://${scope}`, `https://${host}`])];
 
   const tabUrlPatterns = [...new Set([
+    `*://${scope}/*`,
+    `*://*.${scope}/*`,
     `*://${host}/*`,
-    `*://*.${host}/*`,
   ])];
 
   return {
@@ -93,4 +119,14 @@ function buildToolCleanupConfig(tool) {
   };
 }
 
-module.exports = { buildToolCleanupConfig, getBaseDomain };
+// Access mode for a catalog tool, matching routes/admin/assignments.js:
+// direct-open only when admin explicitly enabled direct open AND dropped the
+// permission requirement; otherwise the tool uses the extension/cookie flow.
+// (Proxy/stealth tools are tagged 'proxy' elsewhere and never reach here.)
+function getToolAccessMode(tool) {
+  const es = tool && tool.extensionSettings;
+  if (es && es.directOpenEnabled === true && es.requirePermission === false) return 'direct';
+  return 'extension';
+}
+
+module.exports = { buildToolCleanupConfig, getBaseDomain, getToolAccessMode };

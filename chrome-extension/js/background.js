@@ -1202,6 +1202,10 @@ async function handleOpenTool(payload) {
     return { success: false, error: 'already_opening' };
   }
   isToolOpening = true;
+  // Sync assigned-tool status BEFORE opening any tool, so an expired/revoked tool
+  // that the user clicks gets its session wiped right away. Fire-and-forget so it
+  // never slows the open flow; the credential gate below still enforces access.
+  runCleanupSync('before_open').catch(() => {});
   try {
     return await _handleOpenToolInner(payload);
   } finally {
@@ -1687,7 +1691,7 @@ async function clearCookiesForDomain(targetUrl) {
 
 const CLEANUP_ALARM_NAME = 'genz-cleanup';
 const CLEANUP_INTERVAL_MINUTES = 2;          // periodic alarm (req: every 1–5 min)
-const KNOWN_TOOLS_KEY = 'cleanupKnownTools'; // { [toolId]: cleanupConfig }
+const KNOWN_TOOLS_KEY = 'cleanupKnownTools'; // { [toolId]: { cleanup, access_mode, expiry_date } }
 let cleanupInProgress = false;
 
 // Defence-in-depth: never clean our own properties even if a tool is
@@ -1706,6 +1710,23 @@ async function setKnownTools(map) {
   await setStorage({ [KNOWN_TOOLS_KEY]: map || {} });
 }
 
+// Build a cleanupToolSession entry from a stored registry record. Accepts BOTH
+// the current shape ({cleanup, access_mode, expiry_date}) and the older v3.9.0
+// flat shape (the cleanup config object itself), so an upgrade never breaks.
+function toKnownEntry(toolId, rec, reason) {
+  const cleanup = rec && rec.cleanup ? rec.cleanup : rec; // old shape = bare config
+  return {
+    toolId,
+    cleanup,
+    tool_code: (cleanup && cleanup.tool_code) || String(toolId),
+    status: reason,
+    reason,
+    access_mode: (rec && rec.access_mode) || null,
+    expiry_date: (rec && rec.expiry_date) || null,
+    is_expired: reason === 'removed' ? true : null,
+  };
+}
+
 // Derive the dashboard app origin (https://app.…) from the stored api origin so
 // the expired page's "Renew" button points at the right environment.
 async function getAppOrigin() {
@@ -1717,46 +1738,50 @@ async function getAppOrigin() {
   } catch (_) { return null; }
 }
 
-// Remove cookies for every cookie-domain in a tool's cleanup config. Uses the
-// SAME removal mechanics as clearCookiesForDomain but scoped to the tool's
-// domains only. Returns the number removed (no values are read or logged).
+// Remove cookies for every cookie-domain in a tool's cleanup config via
+// chrome.cookies.remove. Scoped strictly to the tool's domains. Returns
+// { removed, domainsChecked } (no cookie values are ever read or logged).
 async function clearCookiesForConfig(cleanup) {
   let removed = 0;
+  const domainsChecked = [];
   const domains = [...new Set([...(cleanup?.cookieDomains || []), ...(cleanup?.domains || [])])];
   for (let domain of domains) {
     domain = String(domain || '').replace(/^\./, '').toLowerCase();
-    if (!domain || isProtectedHost(domain)) continue;
+    if (!domain || isProtectedHost(domain) || domainsChecked.includes(domain)) continue;
+    domainsChecked.push(domain);
     try {
       const cookies = await chrome.cookies.getAll({ domain });
-      await Promise.allSettled((cookies || []).map(cookie => {
+      const results = await Promise.allSettled((cookies || []).map(cookie => {
         const host = cookie.domain.replace(/^\./, '');
-        if (isProtectedHost(host)) return Promise.resolve();
+        if (isProtectedHost(host)) return Promise.resolve(null);
         return chrome.cookies.remove({
           url: `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path}`,
           name: cookie.name,
         });
       }));
-      removed += (cookies || []).filter(c => !isProtectedHost(c.domain.replace(/^\./, ''))).length;
+      // Count only actually-removed cookies (remove resolves with details, or
+      // null when it couldn't remove — e.g. missing host permission).
+      removed += results.filter(r => r.status === 'fulfilled' && r.value).length;
     } catch (err) {
       logger.warn('Cleanup cookie clear failed', { domain, error: err.message });
     }
   }
-  return removed;
+  return { removed, domainsChecked };
 }
 
-// Find open tabs for a tool, wipe their localStorage/sessionStorage, then
-// redirect them to the friendly expired page so the live session cannot
-// continue. Returns the number of tabs redirected.
+// Find open tabs for a tool (chrome.tabs.query), clear their localStorage/
+// sessionStorage (chrome.scripting), then redirect them to the friendly expired
+// page so the live session cannot continue. Returns { redirected, storageCleared }.
 async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
   const patterns = (cleanup?.tabUrlPatterns || []).filter(Boolean);
-  if (!patterns.length) return 0;
+  if (!patterns.length) return { redirected: 0, storageCleared: false };
 
   let matched = [];
   try {
     matched = await chrome.tabs.query({ url: patterns });
   } catch (err) {
     logger.warn('Cleanup tab query failed', { error: err.message });
-    return 0;
+    return { redirected: 0, storageCleared: false };
   }
 
   const appOrigin = await getAppOrigin();
@@ -1765,6 +1790,7 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
   if (appOrigin) expiredUrl += `&app=${encodeURIComponent(appOrigin)}`;
 
   let redirected = 0;
+  let storageCleared = false;
   for (const tab of matched) {
     if (!tab.id || !tab.url) continue;
     let host = null;
@@ -1774,10 +1800,17 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
 
     // Clear page storage IN the tool origin before navigating away.
     try {
-      await chrome.scripting.executeScript({
+      const res = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => { try { localStorage.clear(); } catch (_) {} try { sessionStorage.clear(); } catch (_) {} },
+        func: () => {
+          let n = 0;
+          try { n += localStorage.length; localStorage.clear(); } catch (_) {}
+          try { n += sessionStorage.length; sessionStorage.clear(); } catch (_) {}
+          return n;
+        },
       });
+      storageCleared = true; // storage clear executed on at least one tool tab
+      void res;
     } catch (_) { /* protected/closed tab — ignore */ }
 
     try {
@@ -1787,15 +1820,21 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
       logger.warn('Cleanup tab redirect failed', { error: err.message });
     }
   }
-  return redirected;
+  return { redirected, storageCleared };
 }
 
 // Full per-tool cleanup: cookies + page storage + open tabs + local caches.
-async function cleanupToolSession(toolId, cleanup, reason) {
+// `entry` carries the manifest fields (toolId/cleanup/status/reason/expiry_date)
+// so the debug log can report assignment_status + expiry_date precisely.
+async function cleanupToolSession(entry) {
+  const cleanup = entry && entry.cleanup;
   if (!cleanup) return;
+  const toolId = entry.toolId;
+  const reason = entry.reason || entry.status || 'expired';
   const toolName = cleanup.name || 'this tool';
-  const cookiesRemoved = await clearCookiesForConfig(cleanup);
-  const tabsRedirected = await clearStorageAndRedirectTabs(cleanup, toolName, reason);
+
+  const { removed: cookiesRemoved, domainsChecked } = await clearCookiesForConfig(cleanup);
+  const { redirected: tabsClosed, storageCleared } = await clearStorageAndRedirectTabs(cleanup, toolName, reason);
 
   // Drop any cached decrypted session bundle + domain map entries for this tool.
   try { await removeStorage([sessionCacheKey(toolId)]); } catch (_) {}
@@ -1803,14 +1842,23 @@ async function cleanupToolSession(toolId, cleanup, reason) {
     if (t && String(t.id) === String(toolId)) domainToolMap.delete(host);
   }
 
+  // SAFE debug log — exactly the required fields. NEVER any cookie value, token,
+  // session, password, auth header, or secret; only ids/hostnames/counts/flags.
   logger.info('Tool session cleaned', {
-    toolId: String(toolId), reason,
-    domains: (cleanup.domains || []).length,
-    cookiesRemoved, tabsRedirected,
+    tool_code: entry.tool_code || cleanup.tool_code || String(toolId),
+    assignment_status: entry.status || reason,
+    expiry_date: entry.expiry_date || entry.endDate || null,
+    is_expired: entry.is_expired ?? null,
+    access_mode: entry.access_mode || null,
+    domains_checked: domainsChecked,
+    cookies_removed_count: cookiesRemoved,
+    tabs_closed_count: tabsClosed,
+    storage_cleared: storageCleared,
   });
 
-  // Notify only when there was an active session to stop (tabs were open).
-  if (tabsRedirected > 0) {
+  // Friendly notification only when there was an active session to stop (a tool
+  // tab was open). The redirected tab itself also shows the expired page.
+  if (tabsClosed > 0) {
     const verb =
       reason === 'revoked' ? 'has been revoked'
       : reason === 'removed' || reason === 'tool_removed' ? 'is no longer available'
@@ -1856,8 +1904,8 @@ async function runCleanupSync(reason = 'manual') {
       // Account disabled / device blocked → every known tool's access is gone.
       if (err?.status === 403 || code === 'device_blocked') {
         logger.warn('Cleanup manifest blocked — wiping all known tools', { reason, code });
-        for (const [toolId, cleanup] of Object.entries(known)) {
-          await cleanupToolSession(toolId, cleanup, 'blocked');
+        for (const [toolId, rec] of Object.entries(known)) {
+          await cleanupToolSession(toKnownEntry(toolId, rec, 'blocked'));
         }
         await setKnownTools({});
       } else {
@@ -1872,25 +1920,32 @@ async function runCleanupSync(reason = 'manual') {
     const revoked = Array.isArray(manifest?.revoked) ? manifest.revoked : [];
     const activeIds = new Set(active.map(t => String(t.toolId)));
 
-    // 1) Explicitly revoked/expired/removed tools from the backend.
+    // 1) Explicitly revoked/expired/removed/blocked tools from the backend.
     for (const entry of revoked) {
       if (activeIds.has(String(entry.toolId))) continue; // a valid row wins
-      await cleanupToolSession(entry.toolId, entry.cleanup, entry.reason || entry.status || 'expired');
+      await cleanupToolSession(entry);
     }
 
     // 2) Locally-known tools that vanished from `active` and weren't already
     //    handled above (assignment deleted / no longer synced).
     const revokedIds = new Set(revoked.map(t => String(t.toolId)));
-    for (const [toolId, cleanup] of Object.entries(known)) {
+    for (const [toolId, rec] of Object.entries(known)) {
       if (activeIds.has(toolId) || revokedIds.has(toolId)) continue;
-      await cleanupToolSession(toolId, cleanup, 'removed');
+      await cleanupToolSession(toKnownEntry(toolId, rec, 'removed'));
     }
 
     // 3) Refresh the registry to exactly the current active set so future syncs
-    //    can detect disappearance.
+    //    can detect disappearance. Store cleanup config + a little metadata so
+    //    a later "removed" cleanup can still log status/expiry/access_mode.
     const nextKnown = {};
     for (const entry of active) {
-      if (entry.cleanup) nextKnown[String(entry.toolId)] = entry.cleanup;
+      if (entry.cleanup) {
+        nextKnown[String(entry.toolId)] = {
+          cleanup: entry.cleanup,
+          access_mode: entry.access_mode || null,
+          expiry_date: entry.expiry_date || entry.endDate || null,
+        };
+      }
     }
     await setKnownTools(nextKnown);
 

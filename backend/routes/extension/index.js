@@ -10,7 +10,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
-const { buildToolCleanupConfig } = require('../../utils/toolCleanupConfig');
+const { buildToolCleanupConfig, getToolAccessMode } = require('../../utils/toolCleanupConfig');
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
 const ExtensionScan         = require('../../models/ExtensionScan');
@@ -1245,9 +1245,13 @@ router.get('/cleanup-manifest', verifyExtensionToken, async (req, res) => {
       active.push({
         toolId: toolKey,
         toolCode: cleanup.tool_code,
+        tool_code: cleanup.tool_code,
         name: tool.name || cleanup.name,
+        access_mode: getToolAccessMode(tool),
         status: 'active',
         endDate: assignment.endDate || null,
+        expiry_date: assignment.endDate || null,
+        is_expired: false,
         cleanup,
       });
     }
@@ -1257,12 +1261,18 @@ router.get('/cleanup-manifest', verifyExtensionToken, async (req, res) => {
       if (activeByTool.has(toolKey)) continue; // a still-valid row wins — never clean
       const cleanup = buildToolCleanupConfig(info.tool);
       if (!cleanup) continue;
+      const isExpired = ToolAssignment.isAssignmentExpired(info.assignment, now);
       revoked.push({
         toolId: toolKey,
         toolCode: cleanup.tool_code,
+        tool_code: cleanup.tool_code,
         name: info.tool.name || cleanup.name,
+        access_mode: getToolAccessMode(info.tool),
         status: info.status,
         reason: info.reason,
+        endDate: info.assignment.endDate || null,
+        expiry_date: info.assignment.endDate || null,
+        is_expired: isExpired,
         cleanup,
       });
     }
