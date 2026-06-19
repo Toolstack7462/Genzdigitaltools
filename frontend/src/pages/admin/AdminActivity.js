@@ -23,7 +23,22 @@ const AdminActivity = () => {
 
   useEffect(() => {
     loadActivities();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pagination.page, filters.role, filters.action, filters.startDate, filters.endDate]);
+
+  // Debounce free-text search so it queries the server (covers ALL records, not just
+  // the current page) without firing a request on every keystroke. Reset to page 1.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (pagination.page !== 1) {
+        setPagination(prev => ({ ...prev, page: 1 }));
+      } else {
+        loadActivities();
+      }
+    }, 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.search]);
 
   const loadActivities = async () => {
     try {
@@ -32,12 +47,13 @@ const AdminActivity = () => {
         page: pagination.page,
         limit: pagination.limit
       });
-      
+
       if (filters.role) params.append('role', filters.role);
       if (filters.action) params.append('action', filters.action);
       if (filters.startDate) params.append('startDate', filters.startDate);
       if (filters.endDate) params.append('endDate', filters.endDate);
-      
+      if (filters.search) params.append('search', filters.search.trim());
+
       const res = await api.get(`/admin/activity?${params}`);
       setActivities(res.data.activities || []);
       setPagination(prev => ({ ...prev, total: res.data.total || 0 }));
@@ -167,7 +183,7 @@ const AdminActivity = () => {
               <span className="font-medium">Filters</span>
             </div>
             <div className="flex items-center gap-2">
-              {(filters.role || filters.action || filters.startDate || filters.endDate) && (
+              {(filters.role || filters.action || filters.startDate || filters.endDate || filters.search) && (
                 <button
                   onClick={clearFilters}
                   className="text-xs text-genz-teal hover:underline"
@@ -308,9 +324,7 @@ const AdminActivity = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {activities
-                    .filter(a => !filters.search || JSON.stringify(a.meta || {}).toLowerCase().includes(filters.search.toLowerCase()))
-                    .map((activity) => (
+                  {activities.map((activity) => (
                     <tr key={activity._id} className="border-b border-genz-border hover:bg-genz-bg transition-colors">
                       <td className="px-6 py-4 text-sm text-genz-muted whitespace-nowrap">
                         {formatDate(activity.createdAt)}

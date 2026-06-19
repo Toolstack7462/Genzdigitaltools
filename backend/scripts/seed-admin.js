@@ -10,7 +10,11 @@ async function main() {
   await mysqlAdapter.connect();
   const User = require('../models/User');
   const email = (process.env.INITIAL_ADMIN_EMAIL || 'admin@genzdigitalstore.com').trim().toLowerCase();
-  const password = process.env.INITIAL_ADMIN_PASSWORD || 'ChangeMeStrongPassword123!';
+  // No insecure default: refuse to seed an admin with a publicly-known password.
+  const password = process.env.INITIAL_ADMIN_PASSWORD;
+  if (!password || password.length < 12) {
+    throw new Error('INITIAL_ADMIN_PASSWORD env var is required (min 12 chars) to seed an admin.');
+  }
   const fullName = process.env.INITIAL_ADMIN_NAME || 'Super Admin';
 
   const existing = await User.findOne({ email });

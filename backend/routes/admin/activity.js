@@ -36,13 +36,14 @@ router.get('/', async (req, res) => {
       action,
       role,
       startDate,
-      endDate
+      endDate,
+      search
     } = req.query;
-    
+
     const query = {};
     if (action) query.action = action;
     if (role) query.actorRole = role;
-    
+
     // Date range filter
     if (startDate || endDate) {
       query.createdAt = {};
@@ -55,22 +56,42 @@ router.get('/', async (req, res) => {
         query.createdAt.$lte = end;
       }
     }
-    
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const activities = await ActivityLog.find(query)
+
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.max(1, parseInt(limit) || 20);
+    const term = String(search || '').trim().toLowerCase();
+
+    // Fetch the structured-filter matches, then apply free-text search across the
+    // FULL result set (action / role / actor email+name / meta) before paginating —
+    // otherwise search would only match the current page. The table is bounded by the
+    // 7-day retention, so a full scan here is cheap. Never exposes secrets (meta only).
+    let matched = await ActivityLog.find(query)
       .populate('actorId', 'fullName email role')
-      .sort({ createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip(skip);
-    
-    const total = await ActivityLog.countDocuments(query);
-    
-    res.json({ 
+      .sort({ createdAt: -1 });
+
+    if (term) {
+      matched = matched.filter((a) => {
+        const actor = a.actorId && typeof a.actorId === 'object' ? a.actorId : null;
+        const haystack = [
+          a.action,
+          a.actorRole,
+          actor?.email,
+          actor?.fullName,
+          a.meta ? JSON.stringify(a.meta) : '',
+        ].join(' ').toLowerCase();
+        return haystack.includes(term);
+      });
+    }
+
+    const total = matched.length;
+    const skip = (pageNum - 1) * limitNum;
+    const activities = matched.slice(skip, skip + limitNum);
+
+    res.json({
       activities,
       total,
-      page: parseInt(page),
-      limit: parseInt(limit)
+      page: pageNum,
+      limit: limitNum
     });
   } catch (error) {
     console.error('Get activity logs error:', error);
