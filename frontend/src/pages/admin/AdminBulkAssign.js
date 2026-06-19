@@ -11,6 +11,7 @@ const AdminBulkAssign = () => {
   const { showSuccess, showError } = useToast();
 
   const [loading, setLoading] = useState(true);
+  const [clientsLoading, setClientsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [tools, setTools] = useState([]);
   const [clients, setClients] = useState([]);
@@ -25,31 +26,52 @@ const AdminBulkAssign = () => {
   });
 
   useEffect(() => {
-    loadData();
+    loadInitial();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadData = async () => {
+  // Server-side client search (debounced) so the picker can reach EVERY client —
+  // not just the first page — exactly like the Members list. Matches name OR email.
+  useEffect(() => {
+    const t = setTimeout(() => { loadClients(clientSearch); }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientSearch]);
+
+  const loadClients = async (search = '') => {
+    try {
+      setClientsLoading(true);
+      const params = new URLSearchParams({ status: 'active', limit: '100' });
+      if (search.trim()) params.append('search', search.trim());
+      const res = await api.get(`/admin/clients?${params}`);
+      setClients(res.data.clients || []);
+    } catch (_) {
+      // Best-effort: keep whatever was already loaded so the picker never goes blank.
+    } finally {
+      setClientsLoading(false);
+    }
+  };
+
+  const loadInitial = async () => {
     try {
       setLoading(true);
-      const [toolsRes, clientsRes] = await Promise.all([
-        api.get('/admin/tools'),
-        api.get('/admin/clients')
-      ]);
+      const toolsRes = await api.get('/admin/tools?limit=100');
       setTools(toolsRes.data.tools?.filter(t => t.status === 'active') || []);
-      setClients(clientsRes.data.clients?.filter(c => c.status === 'active') || []);
 
-      // If clientId is provided, pre-select that client
+      // Pre-select the scoped client by id — fetched directly so it always resolves
+      // (with name + email) even if it falls outside the first page of the list.
       if (clientId) {
-        const client = clientsRes.data.clients?.find(c => c._id === clientId);
-        if (client) {
-          setSelectedClients([client]);
-        }
+        try {
+          const r = await api.get(`/admin/clients/${clientId}`);
+          if (r.data?.client) setSelectedClients([r.data.client]);
+        } catch (_) { /* client may have been removed — leave unselected */ }
       }
     } catch (error) {
       showError('Failed to load data');
     } finally {
       setLoading(false);
     }
+    // Clients load via the debounced search effect (fires once on mount with no term).
   };
 
   const handlePresetChange = (days) => {
@@ -129,10 +151,9 @@ const AdminBulkAssign = () => {
     t.name.toLowerCase().includes(toolSearch.toLowerCase())
   );
 
-  const filteredClients = clients.filter(c =>
-    c.fullName?.toLowerCase().includes(clientSearch.toLowerCase()) ||
-    c.email?.toLowerCase().includes(clientSearch.toLowerCase())
-  );
+  // Search is performed server-side (by name OR email) in loadClients, so the fetched
+  // list is already the matching set — no client-side re-filtering needed.
+  const filteredClients = clients;
 
   // Compact step header
   const StepHead = ({ n, title, children }) => (
@@ -248,10 +269,13 @@ const AdminBulkAssign = () => {
                 {selectedClients.map(client => (
                   <span
                     key={client._id}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-genz-teal/20 text-genz-teal text-xs font-medium rounded-full"
+                    className="inline-flex items-center gap-1 px-2.5 py-1 bg-genz-teal/20 text-genz-teal text-xs font-medium rounded-full max-w-full"
+                    title={client.email ? `${client.fullName} — ${client.email}` : client.fullName}
                   >
-                    {client.fullName}
-                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-genz-navy" aria-label={`Remove ${client.fullName}`}>
+                    <span className="truncate max-w-[220px]">
+                      {client.fullName}{client.email ? <span className="opacity-70"> — {client.email}</span> : null}
+                    </span>
+                    <button type="button" onClick={() => toggleClient(client)} className="hover:text-genz-navy flex-shrink-0" aria-label={`Remove ${client.fullName}`}>
                       <X size={12} />
                     </button>
                   </span>
@@ -259,37 +283,56 @@ const AdminBulkAssign = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
-              {filteredClients.map(client => {
-                const isSelected = selectedClients.some(c => c._id === client._id);
-                return (
-                  <button
-                    key={client._id}
-                    type="button"
-                    onClick={() => toggleClient(client)}
-                    className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all ${
-                      isSelected
-                        ? 'border-genz-teal bg-genz-teal/10'
-                        : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
-                    }`}
-                    data-testid={`select-client-${client._id}`}
-                  >
-                    <span className={`w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${isSelected ? '' : 'opacity-80'}`}
-                          style={{ background: 'var(--gradient-cta)' }}>
-                      {client.fullName?.charAt(0) || '?'}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-genz-navy truncate">{client.fullName}</p>
-                      <p className="text-xs text-genz-muted truncate">{client.email}</p>
+            {clientsLoading && filteredClients.length === 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2" aria-busy="true" aria-label="Loading clients">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-2.5 px-3 py-2 rounded-lg border border-genz-border bg-genz-bg animate-pulse">
+                    <span className="w-7 h-7 rounded-md bg-genz-navy/10 flex-shrink-0" />
+                    <div className="flex-1 min-w-0 space-y-1.5">
+                      <div className="h-3 w-2/3 rounded bg-genz-navy/10" />
+                      <div className="h-2.5 w-4/5 rounded bg-genz-navy/10" />
                     </div>
-                    {isSelected && <CheckCircle2 size={16} className="text-genz-teal flex-shrink-0" />}
-                  </button>
-                );
-              })}
-            </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-56 overflow-y-auto pr-1">
+                {filteredClients.map(client => {
+                  const isSelected = selectedClients.some(c => c._id === client._id);
+                  return (
+                    <button
+                      key={client._id}
+                      type="button"
+                      onClick={() => toggleClient(client)}
+                      className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left transition-all ${
+                        isSelected
+                          ? 'border-genz-teal bg-genz-teal/10'
+                          : 'border-genz-border bg-genz-bg hover:border-genz-teal/50'
+                      }`}
+                      data-testid={`select-client-${client._id}`}
+                    >
+                      <span className={`w-7 h-7 rounded-md flex items-center justify-center text-white text-xs font-bold flex-shrink-0 ${isSelected ? '' : 'opacity-80'}`}
+                            style={{ background: 'var(--gradient-cta)' }}>
+                        {client.fullName?.charAt(0) || '?'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-genz-navy truncate">{client.fullName}</p>
+                        <p className="text-xs text-genz-muted truncate">{client.email}</p>
+                      </div>
+                      {isSelected && <CheckCircle2 size={16} className="text-genz-teal flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
-            {filteredClients.length === 0 && (
-              <p className="text-center text-sm text-genz-muted py-3">No active clients found</p>
+            {!clientsLoading && filteredClients.length === 0 && (
+              <p className="text-center text-sm text-genz-muted py-3">
+                {clientSearch.trim() ? 'No clients match your search' : 'No active clients found'}
+              </p>
+            )}
+            {!clientsLoading && clients.length >= 100 && (
+              <p className="text-center text-[11px] text-genz-muted pt-2">Showing the first 100 matches — refine your search to narrow the list.</p>
             )}
           </div>
 
