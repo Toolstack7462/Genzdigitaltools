@@ -296,10 +296,10 @@ const AdminActivity = () => {
             </div>
             {Array.from({ length: 8 }).map((_, i) => (
               <div key={i} className="grid grid-cols-2 sm:grid-cols-4 gap-4 px-6 py-4 border-b border-genz-border animate-pulse">
-                <div className="h-3 w-24 rounded bg-white" />
-                <div className="h-5 w-16 rounded-full bg-white" />
-                <div className="h-5 w-24 rounded-full bg-genz-bg" />
-                <div className="h-3 w-3/4 rounded bg-white" />
+                <div className="h-3 w-24 rounded bg-genz-navy/10" />
+                <div className="h-5 w-16 rounded-full bg-genz-navy/10" />
+                <div className="h-5 w-24 rounded-full bg-genz-navy/10" />
+                <div className="h-3 w-3/4 rounded bg-genz-navy/10" />
               </div>
             ))}
           </div>

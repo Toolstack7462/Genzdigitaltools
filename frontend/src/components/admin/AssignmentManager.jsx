@@ -342,8 +342,8 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
     <div className="space-y-4">
       {/* Filters */}
       {showFilters && (
-        <div className="flex flex-col lg:flex-row lg:items-center gap-2.5">
-          <div className="relative flex-1 min-w-0">
+        <div className="flex flex-col md:flex-row md:flex-wrap md:items-center gap-2.5">
+          <div className="relative flex-1 min-w-0 md:min-w-[220px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted" size={15} />
             <input
               type="text" value={search} placeholder="Search client or tool…"
@@ -352,7 +352,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               data-testid="assignment-search"
             />
           </div>
-          <div className="lg:w-60" data-testid="assignment-client-filter">
+          <div className="w-full md:w-52 lg:w-60" data-testid="assignment-client-filter">
             <ClientSearchSelect
               id="assignment-client-filter"
               clients={clients}

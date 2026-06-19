@@ -15,7 +15,10 @@ const crypto = require('crypto');
 function vaultKey() {
   const hex = process.env.PROXY_VAULT_KEY;
   if (hex && /^[0-9a-fA-F]{64}$/.test(hex)) return Buffer.from(hex, 'hex');
-  return crypto.createHmac('sha256', process.env.JWT_SECRET || '').update('proxytools:vault:v1').digest();
+  // Never derive a key from an empty secret — fail loudly on misconfiguration.
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new Error('PROXY_VAULT_KEY or JWT_SECRET is required to derive the vault key');
+  return crypto.createHmac('sha256', secret).update('proxytools:vault:v1').digest();
 }
 
 function encrypt(plaintext) {

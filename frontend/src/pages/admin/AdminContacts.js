@@ -118,26 +118,26 @@ const AdminContacts = () => {
       <AdminLayout>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading messages">
           <div className="mb-8 space-y-2 animate-pulse">
-            <div className="h-7 w-56 rounded bg-genz-bg" />
-            <div className="h-4 w-72 rounded bg-white" />
+            <div className="h-7 w-56 rounded bg-genz-navy/10" />
+            <div className="h-4 w-72 rounded bg-genz-navy/10" />
           </div>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
             {Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="bg-genz-bg border border-genz-border rounded-xl p-4 text-center animate-pulse">
-                <div className="h-7 w-10 mx-auto mb-2 rounded bg-genz-bg" />
-                <div className="h-3 w-14 mx-auto rounded bg-white" />
+                <div className="h-7 w-10 mx-auto mb-2 rounded bg-genz-navy/10" />
+                <div className="h-3 w-14 mx-auto rounded bg-genz-navy/10" />
               </div>
             ))}
           </div>
           <div className="space-y-3">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="bg-genz-bg border border-genz-border rounded-xl p-4 flex items-center gap-4 animate-pulse">
-                <div className="w-10 h-10 rounded-full bg-genz-bg flex-shrink-0" />
+                <div className="w-10 h-10 rounded-full bg-genz-navy/10 flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-4 w-1/3 rounded bg-genz-bg" />
-                  <div className="h-3 w-2/3 rounded bg-white" />
+                  <div className="h-4 w-1/3 rounded bg-genz-navy/10" />
+                  <div className="h-3 w-2/3 rounded bg-genz-navy/10" />
                 </div>
-                <div className="h-5 w-16 rounded-full bg-white" />
+                <div className="h-5 w-16 rounded-full bg-genz-navy/10" />
               </div>
             ))}
           </div>

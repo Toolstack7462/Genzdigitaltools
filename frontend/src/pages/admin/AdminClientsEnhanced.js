@@ -13,7 +13,9 @@ import {
   Clock,
   UserPlus,
   TrendingUp,
-  Package
+  Package,
+  MoreHorizontal,
+  X
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
@@ -29,6 +31,7 @@ const AdminClientsEnhanced = () => {
   const [selectedStatus, setSelectedStatus] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 20, totalPages: 0, total: 0 });
   const [manageClient, setManageClient] = useState(null);
+  const [actionsOpenId, setActionsOpenId] = useState(null); // mobile: which card's overflow menu is open
 
   useEffect(() => {
     loadClients();
@@ -109,6 +112,7 @@ const AdminClientsEnhanced = () => {
       teal:   'text-genz-teal hover:bg-genz-teal/10',
       amber:  'text-amber-500 hover:bg-amber-500/10',
       red:    'text-red-500 hover:bg-red-500/10',
+      slate:  'text-genz-muted hover:bg-genz-navy/5',
     };
     return (
       <button
@@ -235,13 +239,13 @@ const AdminClientsEnhanced = () => {
           <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 space-y-3`} aria-busy="true" aria-label="Loading clients">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="flex items-center gap-3 animate-pulse">
-                <div className="w-9 h-9 rounded-lg bg-genz-bg flex-shrink-0" />
+                <div className="w-9 h-9 rounded-lg bg-genz-navy/10 flex-shrink-0" />
                 <div className="flex-1 space-y-2">
-                  <div className="h-3 w-1/4 rounded bg-genz-bg" />
-                  <div className="h-2.5 w-1/3 rounded bg-white" />
+                  <div className="h-3 w-1/4 rounded bg-genz-navy/10" />
+                  <div className="h-2.5 w-1/3 rounded bg-genz-navy/10" />
                 </div>
-                <div className="h-5 w-16 rounded-full bg-genz-bg" />
-                <div className="h-8 w-28 rounded-lg bg-white" />
+                <div className="h-5 w-16 rounded-full bg-genz-navy/10" />
+                <div className="h-8 w-28 rounded-lg bg-genz-navy/10" />
               </div>
             ))}
           </div>
@@ -316,21 +320,36 @@ const AdminClientsEnhanced = () => {
                       </div>
                     </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-1.5 mt-3 pt-3 border-t border-genz-border">
-                    <ActionBtn tone="blue" icon={Edit2} label="Edit" title="Edit client"
-                               onClick={() => navigate(`/admin/clients/${client._id}/edit`)} />
-                    <ActionBtn tone="teal" icon={Package} label="Tools" title="Manage assigned tools"
-                               onClick={() => setManageClient(client)} />
-                    <ActionBtn tone="teal" icon={TrendingUp} label="Assign" title="Assign tools"
-                               onClick={() => navigate(`/admin/clients/${client._id}/assign`)} />
-                    {client.isDeviceLocked && (
-                      <ActionBtn tone="amber" icon={ShieldOff} label="Reset" title="Reset device"
-                                 onClick={() => handleDeviceReset(client._id, client.fullName)} />
+                  <div className="mt-3 pt-3 border-t border-genz-border">
+                    {/* Primary actions stay visible; secondary ones collapse behind "More"
+                        so the card never wraps into a cramped multi-row button block. */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <ActionBtn tone="blue" icon={Edit2} label="Edit" title="Edit client"
+                                 onClick={() => navigate(`/admin/clients/${client._id}/edit`)} />
+                      <ActionBtn tone="teal" icon={Package} label="Tools" title="Manage assigned tools"
+                                 onClick={() => setManageClient(client)} />
+                      <ActionBtn tone="teal" icon={TrendingUp} label="Assign" title="Assign tools"
+                                 onClick={() => navigate(`/admin/clients/${client._id}/assign`)} />
+                      <ActionBtn
+                        tone="slate"
+                        icon={actionsOpenId === client._id ? X : MoreHorizontal}
+                        label={actionsOpenId === client._id ? 'Less' : 'More'}
+                        title={actionsOpenId === client._id ? 'Hide actions' : 'More actions'}
+                        onClick={() => setActionsOpenId(prev => (prev === client._id ? null : client._id))}
+                      />
+                    </div>
+                    {actionsOpenId === client._id && (
+                      <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                        {client.isDeviceLocked && (
+                          <ActionBtn tone="amber" icon={ShieldOff} label="Reset" title="Reset device"
+                                     onClick={() => handleDeviceReset(client._id, client.fullName)} />
+                        )}
+                        <ActionBtn tone="amber" icon={LogOut} label="Logout" title="Force logout"
+                                   onClick={() => handleForceLogout(client._id, client.fullName)} />
+                        <ActionBtn tone="red" icon={Trash2} label="Delete" title="Delete client"
+                                   onClick={() => handleDelete(client._id, client.fullName)} />
+                      </div>
                     )}
-                    <ActionBtn tone="amber" icon={LogOut} label="Logout" title="Force logout"
-                               onClick={() => handleForceLogout(client._id, client.fullName)} />
-                    <ActionBtn tone="red" icon={Trash2} label="Delete" title="Delete client"
-                               onClick={() => handleDelete(client._id, client.fullName)} />
                   </div>
                 </div>
               ))}

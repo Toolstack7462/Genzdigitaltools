@@ -92,20 +92,20 @@ const AdminBlog = () => {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8" aria-busy="true" aria-label="Loading posts">
           <div className="flex justify-between items-center gap-4 mb-8 animate-pulse">
             <div className="space-y-2">
-              <div className="h-7 w-40 rounded bg-genz-bg" />
-              <div className="h-4 w-52 rounded bg-white" />
+              <div className="h-7 w-40 rounded bg-genz-navy/10" />
+              <div className="h-4 w-52 rounded bg-genz-navy/10" />
             </div>
-            <div className="h-11 w-32 rounded-full bg-genz-bg" />
+            <div className="h-11 w-32 rounded-full bg-genz-navy/10" />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {Array.from({ length: 6 }).map((_, i) => (
               <div key={i} className="bg-genz-bg border border-genz-border rounded-2xl overflow-hidden animate-pulse">
-                <div className="h-40 bg-white" />
+                <div className="h-40 bg-genz-navy/10" />
                 <div className="p-5 space-y-3">
-                  <div className="h-5 w-20 rounded-full bg-genz-bg" />
-                  <div className="h-4 w-4/5 rounded bg-genz-bg" />
-                  <div className="h-3 w-full rounded bg-white" />
-                  <div className="h-3 w-2/3 rounded bg-white" />
+                  <div className="h-5 w-20 rounded-full bg-genz-navy/10" />
+                  <div className="h-4 w-4/5 rounded bg-genz-navy/10" />
+                  <div className="h-3 w-full rounded bg-genz-navy/10" />
+                  <div className="h-3 w-2/3 rounded bg-genz-navy/10" />
                 </div>
               </div>
             ))}
