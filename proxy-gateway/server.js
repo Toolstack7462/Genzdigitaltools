@@ -79,6 +79,11 @@ const ASSET_PREFIX = '/__pxo';
 // "https://www.google.com/recaptcha,https://www.gstatic.com/recaptcha,https://recaptcha.net/recaptcha".
 const CAPTCHA_ORIGINS = String(process.env.CAPTCHA_ORIGINS || '')
   .split(',').map(s => s.trim().replace(/\/+$/, '')).filter(Boolean);
+// Captcha request paths — many tools (HIX) SELF-PROXY reCAPTCHA under their own domain
+// at /recaptcha/…, so the challenge requests come back to the gateway on the MAIN origin
+// (not a third-party CAPTCHA_ORIGINS host). These also need the `co` origin rewritten and
+// the tool origin presented, and their (minified Google) bodies must be left untouched.
+const CAPTCHA_PATH_RE = /(^|\/)recaptcha\//i;
 // One indexed list proxied under ASSET_PREFIX/<i>/. Captcha entries get origin-spoofing.
 const PROXIED_ORIGINS = ASSET_ORIGINS.map(o => ({ base: o, captcha: false }))
   .concat(CAPTCHA_ORIGINS.map(o => ({ base: o, captcha: true })));
@@ -478,6 +483,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
   // Minimal fingerprint ONLY for the top-level document navigation (the Cloudflare-
   // sensitive request); assets/XHR/API forward the app's headers.
   const minimal = !!isHtmlNav && !ctx.asset;
+  // A captcha request is either a proxied third-party provider origin (ctx.captcha) OR a
+  // same-origin self-proxied path like hix.ai/recaptcha/… . Both need the `co` origin and
+  // Origin/Referer presented as the TOOL, and their bodies left intact (no rewrite/overlay).
+  const isCaptchaReq = !!ctx.captcha || CAPTCHA_PATH_RE.test(reqPathOnly);
+  // Rewrite the reCAPTCHA `co` (embedding origin) param in the query: gateway host → tool.
+  const effUpPath = isCaptchaReq ? rewriteCaptchaCo(upPath) : upPath;
 
   const chunks = [];
   req.on('data', c => chunks.push(c));
@@ -485,10 +496,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     let bodyBuf = Buffer.concat(chunks);
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
 
-    // Captcha endpoints: present the TOOL's origin to the provider so a domain-bound
-    // widget renders for its key. Origin/Referer forced to the tool; the `co` origin in
-    // a form-encoded POST body is rewritten too (anchor/reload puts it in the query).
-    if (ctx.captcha) {
+    // Captcha: present the TOOL's origin so a domain-bound widget renders for its key
+    // (the user still solves it). Origin/Referer forced to the tool; the `co` origin in a
+    // form-encoded POST body (anchor/reload) is rewritten too.
+    if (isCaptchaReq) {
       headers.origin = TARGET_ORIGIN;
       headers.referer = TARGET_ORIGIN + '/';
       if (bodyBuf.length && /application\/x-www-form-urlencoded/i.test(headers['content-type'] || '')) {
@@ -498,7 +509,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
     }
 
-    const upstream = upLib.request(`${upURL.origin}${upPath}`, { method: req.method, headers }, (uRes) => {
+    const upstream = upLib.request(`${upURL.origin}${effUpPath}`, { method: req.method, headers }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
       const isHtml = ct.includes('text/html');
       const rawLoc = String(uRes.headers['location'] || '');
@@ -532,8 +543,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
       }
 
-      // Never pass a raw upstream "Forbidden"/login document to the client (main view only).
-      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset) {
+      // Never pass a raw upstream "Forbidden"/login document to the client (main view
+      // only — captcha sub-responses handle their own errors).
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset && !isCaptchaReq) {
         logIt(false);
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
@@ -548,7 +560,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
 
       const sanitizeJson = ctx.sanitizeBody && ct.includes('application/json') && !ct.includes('event-stream') && !ctx.capture;
-      const rewriteText = isRewritableText(ct);
+      // Never rewrite captcha JS/JSON bodies — Google's minified reCAPTCHA code must be
+      // served byte-for-byte intact (the in-browser shim + co-rewrite handle routing).
+      const rewriteText = isRewritableText(ct) && !isCaptchaReq;
 
       if (isHtml) {
         const buf = [];
@@ -557,10 +571,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           let html = Buffer.concat(buf).toString('utf8');
           html = stripSecurityMeta(html);
           const rw = rewriteUpstreamUrls(html); html = rw.text;
-          // Only the MAIN app view gets the overlay/identity treatment. Proxied
-          // asset/captcha HTML (e.g. the reCAPTCHA iframe document) is rewritten but
-          // left otherwise untouched so the challenge renders intact.
-          if (!ctx.asset) {
+          // Only the MAIN app view gets the overlay/identity treatment. Proxied asset and
+          // captcha HTML (e.g. the reCAPTCHA iframe document) is rewritten but otherwise
+          // left intact so the challenge renders and works.
+          if (!ctx.asset && !isCaptchaReq) {
             if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
             html = injectSessionBootstrap(html, session);
             html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
@@ -624,10 +638,7 @@ const server = http.createServer(async (req, res) => {
       return res.end('Not found');
     }
     const baseUrl = new URL(entry.base);
-    let rest = (mm && mm[2]) ? mm[2] : '/';
-    // For captcha endpoints, encode the TOOL's origin in the reCAPTCHA `co` param so the
-    // domain-bound widget renders for the correct key (user still solves it manually).
-    if (entry.captcha) rest = rewriteCaptchaCo(rest);
+    const rest = (mm && mm[2]) ? mm[2] : '/'; // proxy() applies the reCAPTCHA `co` rewrite
     const upstreamPath = baseUrl.pathname.replace(/\/$/, '') + rest;
     return proxy(req, res, false, { noAccount: true }, {
       token, asset: true, captcha: entry.captcha, upstreamOrigin: baseUrl.origin, upstreamPath,
