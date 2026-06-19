@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../Toast';
+import ClientSearchSelect from './ClientSearchSelect';
 
 // Access-mode badge: how the client reaches the tool (kept separate per access mode).
 const ACCESS_META = {
@@ -239,6 +240,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
   const [clientFilter, setClientFilter] = useState('');
   const [tools, setTools] = useState([]);
   const [clients, setClients] = useState([]);
+  const [listsLoading, setListsLoading] = useState(false);
   const [editing, setEditing] = useState(null);
   const [extending, setExtending] = useState(null);
   const [page, setPage] = useState(1);
@@ -289,6 +291,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
     if (!showFilters) return;
     (async () => {
       try {
+        setListsLoading(true);
         const [t, c] = await Promise.all([
           api.get('/admin/tools?limit=100'),
           api.get('/admin/clients?limit=100'),
@@ -296,6 +299,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
         setTools(t.data.tools || []);
         setClients(c.data.clients || []);
       } catch (_) { /* filters are best-effort */ }
+      finally { setListsLoading(false); }
     })();
   }, [showFilters]);
 
@@ -348,10 +352,18 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               data-testid="assignment-search"
             />
           </div>
-          <select value={clientFilter} onChange={(e) => setClientFilter(e.target.value)} className={selectCls} aria-label="Filter by client" data-testid="assignment-client-filter">
-            <option value="">All clients</option>
-            {clients.map(c => <option key={c._id} value={c._id}>{c.fullName}</option>)}
-          </select>
+          <div className="lg:w-60" data-testid="assignment-client-filter">
+            <ClientSearchSelect
+              id="assignment-client-filter"
+              clients={clients}
+              value={clientFilter}
+              onChange={(id) => setClientFilter(id)}
+              loading={listsLoading}
+              placeholder="All clients"
+              ariaLabel="Filter by client"
+              className="bg-genz-bg border-genz-border text-genz-navy focus:border-genz-teal"
+            />
+          </div>
           <select value={toolFilter} onChange={(e) => setToolFilter(e.target.value)} className={selectCls} aria-label="Filter by tool" data-testid="assignment-tool-filter">
             <option value="">All tools</option>
             {tools.map(t => <option key={t._id} value={t._id}>{t.name}</option>)}

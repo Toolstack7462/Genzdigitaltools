@@ -7,6 +7,7 @@ import {
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
 import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
+import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
 const toDateInput = (d) => { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10); };
@@ -35,6 +36,7 @@ const AdminProxyTools = () => {
   const [accounts, setAccounts] = useState([]);
   const [clients, setClients] = useState([]);
   const [crmClients, setCrmClients] = useState([]);
+  const [crmLoading, setCrmLoading] = useState(true);
 
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editAccount, setEditAccount] = useState(null);
@@ -79,7 +81,10 @@ const AdminProxyTools = () => {
   useEffect(() => {
     // CRM client list for the "grant access" dropdown — stable list, cached + coalesced
     // so navigating between proxy-tool/StealthWriter admin pages doesn't refetch it.
-    cachedGet('/admin/clients?limit=100').then(d => setCrmClients(d?.clients || [])).catch(() => {});
+    cachedGet('/admin/clients?limit=100')
+      .then(d => setCrmClients(d?.clients || []))
+      .catch(() => {})
+      .finally(() => setCrmLoading(false));
   }, []);
 
   const currentName = (toolDefs.find(t => t.tool === tool) || {}).name || tool;
@@ -177,7 +182,7 @@ const AdminProxyTools = () => {
 
       {showAccountModal && <AccountModal account={editAccount} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
       {showSessionModal && <SessionModal account={showSessionModal} onClose={() => setShowSessionModal(null)} onSave={saveSession} />}
-      {showClientModal && <ClientModal client={editClient} crmClients={crmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
+      {showClientModal && <ClientModal client={editClient} crmClients={crmClients} crmLoading={crmLoading} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
     </AdminLayoutEnhanced>
   );
 };
@@ -338,7 +343,7 @@ const SessionModal = ({ account, onClose, onSave }) => {
   );
 };
 
-const ClientModal = ({ client, crmClients, existing, onClose, onSave }) => {
+const ClientModal = ({ client, crmClients, crmLoading, existing, onClose, onSave }) => {
   const [f, setF] = useState({
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
   });
@@ -355,10 +360,15 @@ const ClientModal = ({ client, crmClients, existing, onClose, onSave }) => {
           <p className="text-sm text-genz-navy font-semibold">{client.user?.fullName} <span className="text-genz-muted font-normal">{client.user?.email}</span></p>
         ) : (
           <div><label className={labelCls}>Client</label>
-            <select className={field} value={f.userId} onChange={e => setF({ ...f, userId: e.target.value })}>
-              <option value="">Select a client…</option>
-              {options.map(c => <option key={c._id} value={c._id}>{c.fullName} — {c.email}</option>)}
-            </select>
+            <ClientSearchSelect
+              id="proxy-crm-client"
+              clients={options}
+              value={f.userId}
+              onChange={(id) => setF({ ...f, userId: id })}
+              loading={crmLoading}
+              placeholder="Search client by name or email…"
+              className="bg-genz-bg border-genz-border text-genz-navy focus:border-genz-teal"
+            />
           </div>
         )}
         <div><label className={labelCls}>Plan name (optional)</label><input className={field} value={f.planName} onChange={e => setF({ ...f, planName: e.target.value })} /></div>

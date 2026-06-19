@@ -26,7 +26,7 @@ const AdminToolsEnhanced = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
-  const [pagination, setPagination] = useState({ page: 1, limit: 12, totalPages: 0 });
+  const [pagination, setPagination] = useState({ page: 1, limit: 16, totalPages: 0 });
   const [manageTool, setManageTool] = useState(null);
 
   const categories =['AI', 'Academic', 'SEO', 'Productivity', 'Graphics & SEO', 'Text Humanizers', 'Career-Oriented', 'Miscellaneous', 'Other'];
@@ -79,31 +79,31 @@ const AdminToolsEnhanced = () => {
     <AdminLayoutEnhanced>
       <div className="max-w-7xl mx-auto space-y-6" data-testid="admin-tools-page">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <h1 className="font-heading text-[28px] sm:text-[32px] font-extrabold text-genz-navy mb-1.5 flex items-center gap-2.5">
-              <span className="ds-icon-grad w-10 h-10 rounded-xl flex items-center justify-center"><Sparkles size={20} /></span>
+            <h1 className="font-heading text-[22px] sm:text-[26px] font-extrabold text-genz-navy mb-0.5 flex items-center gap-2.5">
+              <span className="ds-icon-grad w-9 h-9 rounded-xl flex items-center justify-center"><Sparkles size={18} /></span>
               Tools Management
             </h1>
-            <p className="text-genz-muted">Manage your tool library</p>
+            <p className="text-genz-muted text-sm">Manage your tool library</p>
           </div>
           <button
             onClick={() => navigate('/admin/tools/new')}
-            className="btn-grad flex items-center gap-2 px-5 py-3 rounded-[14px] text-[15px] font-bold"
+            className="btn-grad flex items-center gap-2 px-4 py-2.5 rounded-[14px] text-sm font-bold"
             data-testid="create-tool-btn"
           >
-            <Plus size={18} />
+            <Plus size={16} />
             <span>Create Tool</span>
           </button>
         </div>
         
         {/* Filters */}
-        <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-6 space-y-4`}>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 space-y-3`}>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             {/* Search */}
             <div className="md:col-span-2">
               <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-genz-muted" size={18} />
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-genz-muted" size={16} />
                 <input
                   type="text"
                   placeholder="Search tools by name or description..."
@@ -111,7 +111,7 @@ const AdminToolsEnhanced = () => {
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                  className="w-full pl-11 pr-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder:text-genz-muted focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all"
+                  className="w-full pl-10 pr-4 py-2.5 bg-genz-bg border border-genz-border rounded-xl text-sm text-genz-navy placeholder:text-genz-muted focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all"
                   data-testid="search-input"
                 />
               </div>
@@ -122,7 +122,7 @@ const AdminToolsEnhanced = () => {
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
               aria-label="Filter tools by category"
-              className="px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
+              className="px-4 py-2.5 bg-genz-bg border border-genz-border rounded-xl text-sm text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="category-filter"
             >
@@ -137,7 +137,7 @@ const AdminToolsEnhanced = () => {
               value={selectedStatus}
               onChange={(e) => setSelectedStatus(e.target.value)}
               aria-label="Filter tools by status"
-              className="px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
+              className="px-4 py-2.5 bg-genz-bg border border-genz-border rounded-xl text-sm text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '0.65rem' }}
               data-testid="status-filter"
             >
@@ -149,7 +149,7 @@ const AdminToolsEnhanced = () => {
           
           <button
             onClick={handleSearch}
-            className="btn-grad w-full md:w-auto px-6 py-3 rounded-[14px] text-[15px] font-bold"
+            className="btn-grad w-full md:w-auto px-5 py-2.5 rounded-[14px] text-sm font-bold"
           >
             Apply Filters
           </button>
@@ -157,23 +157,24 @@ const AdminToolsEnhanced = () => {
         
         {/* Tools Grid */}
         {loading ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" aria-busy="true" aria-label="Loading tools">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-6 animate-pulse`}>
-                <div className="flex items-start gap-3 mb-4">
-                  <div className="w-12 h-12 rounded-xl bg-genz-bg flex-shrink-0" />
-                  <div className="flex-1 space-y-2 pt-1">
-                    <div className="h-4 w-3/5 rounded bg-genz-bg" />
-                    <div className="h-3 w-2/5 rounded bg-white" />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4" aria-busy="true" aria-label="Loading tools">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <div key={i} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 animate-pulse`}>
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <div className="w-9 h-9 rounded-lg bg-genz-bg flex-shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3.5 w-3/5 rounded bg-genz-bg" />
+                    <div className="h-2.5 w-2/5 rounded bg-white" />
                   </div>
                 </div>
-                <div className="space-y-2 mb-5">
-                  <div className="h-3 w-full rounded bg-white" />
-                  <div className="h-3 w-4/5 rounded bg-white" />
+                <div className="space-y-1.5 mb-3">
+                  <div className="h-2.5 w-full rounded bg-white" />
+                  <div className="h-2.5 w-4/5 rounded bg-white" />
                 </div>
+                <div className="h-8 w-full rounded-lg bg-white mb-2" />
                 <div className="flex gap-2">
-                  <div className="h-9 flex-1 rounded-xl bg-white" />
-                  <div className="h-9 flex-1 rounded-xl bg-white" />
+                  <div className="h-8 flex-1 rounded-lg bg-white" />
+                  <div className="h-8 flex-1 rounded-lg bg-white" />
                 </div>
               </div>
             ))}
@@ -194,90 +195,93 @@ const AdminToolsEnhanced = () => {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {tools.map(tool => {
                 const theme = getAdminCategoryTheme(tool.category);
                 return (
                   <div
                     key={tool._id}
-                    className="ds-card ds-stat group relative overflow-hidden"
+                    className="ds-card ds-stat group relative overflow-hidden flex flex-col"
                     data-testid={`tool-card-${tool._id}`}
                   >
                     <div className={`absolute inset-x-0 top-0 h-1 bg-gradient-to-r ${theme.gradient}`} />
 
-                    <div className="relative p-6">
-                      <div className="flex items-start justify-between mb-4">
-                        <div className={`w-12 h-12 bg-gradient-to-br ${theme.gradient} rounded-xl flex items-center justify-center shadow-md`}>
-                          <Package size={22} className="text-white" />
+                    <div className="relative p-4 flex flex-col flex-1">
+                      {/* Title row: icon + name + category */}
+                      <div className="flex items-center gap-2.5 mb-2.5">
+                        <div className={`w-9 h-9 shrink-0 bg-gradient-to-br ${theme.gradient} rounded-lg flex items-center justify-center shadow-sm`}>
+                          <Package size={16} className="text-white" />
                         </div>
-                        <span className={`px-3 py-1 ${theme.bg} ${theme.text} rounded-full text-xs font-semibold`}>
-                          {tool.category}
-                        </span>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-[14px] font-bold text-genz-navy truncate group-hover:text-genz-teal transition-colors" title={tool.name}>
+                            {tool.name}
+                          </h3>
+                          <span className={`inline-block mt-0.5 px-2 py-0.5 ${theme.bg} ${theme.text} rounded-full text-[10px] font-semibold`}>
+                            {tool.category}
+                          </span>
+                        </div>
                       </div>
-                      
-                      <h3 className="text-lg font-bold text-genz-navy mb-2 group-hover:text-genz-teal transition-colors">
-                        {tool.name}
-                      </h3>
-                      <p className="text-sm text-genz-muted line-clamp-2 mb-4 min-h-[40px]">
+
+                      {/* Description */}
+                      <p className="text-[12px] text-genz-muted line-clamp-2 mb-2.5 min-h-[32px]">
                         {tool.description || 'No description'}
                       </p>
-                      
-                      <div className="flex items-center gap-3 mb-4">
+
+                      {/* Status + assigned count */}
+                      <div className="flex items-center justify-between gap-2 mb-3">
                         <span className={`ds-badge ${tool.status === 'active' ? 'ds-badge-success' : 'ds-badge-neutral'}`}>
                           <span className="dot" /> {tool.status}
                         </span>
-                        {tool.assignmentCount !== undefined && (
-                          <button
-                            type="button"
-                            onClick={() => setManageTool(tool)}
-                            className="flex items-center gap-1 text-xs text-genz-muted hover:text-genz-teal transition-colors"
-                            title="View assigned clients"
-                          >
-                            <TrendingUp size={12} />
-                            <span>{tool.assignmentCount} assigned</span>
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setManageTool(tool)}
+                          className="flex items-center gap-1 text-[11px] text-genz-muted hover:text-genz-teal transition-colors"
+                          title="View assigned clients"
+                        >
+                          <TrendingUp size={12} />
+                          <span>{tool.assignmentCount ?? 0} assigned</span>
+                        </button>
                       </div>
-                      
-                      {tool.targetUrl && (
-                        <a
-                          href={tool.targetUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 text-sm text-genz-teal hover:underline mb-4"
-                        >
-                          <ExternalLink size={14} />
-                          <span className="truncate">View Tool</span>
-                        </a>
-                      )}
-                      
-                      <button
-                        onClick={() => setManageTool(tool)}
-                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 mb-2 bg-genz-teal/10 text-genz-teal rounded-xl hover:bg-genz-teal/20 transition-colors text-sm font-semibold"
-                        data-testid={`manage-assignments-${tool._id}`}
-                      >
-                        <Users size={16} />
-                        <span>Manage Assignments</span>
-                        <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-genz-teal/20 text-[11px] font-bold">{tool.assignmentCount ?? 0}</span>
-                      </button>
 
-                      <div className="flex items-center gap-2 pt-4 border-t border-genz-border">
+                      {/* Actions (kept: Manage Assignments, Edit, Delete, View Tool) */}
+                      <div className="mt-auto space-y-2">
                         <button
-                          onClick={() => navigate(`/admin/tools/${tool._id}/edit`)}
-                          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-500/20 text-blue-500 rounded-xl hover:bg-blue-500/30 transition-colors"
-                          data-testid={`edit-tool-${tool._id}`}
+                          onClick={() => setManageTool(tool)}
+                          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-genz-teal/10 text-genz-teal rounded-lg hover:bg-genz-teal/20 transition-colors text-[13px] font-semibold"
+                          data-testid={`manage-assignments-${tool._id}`}
                         >
-                          <Edit2 size={16} />
-                          <span className="text-sm font-medium">Edit</span>
+                          <Users size={14} />
+                          <span>Manage</span>
+                          <span className="px-1.5 py-0.5 rounded-full bg-genz-teal/20 text-[10px] font-bold">{tool.assignmentCount ?? 0}</span>
                         </button>
-                        <button
-                          onClick={() => handleDelete(tool._id, tool.name)}
-                          className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-red-500/20 text-red-500 rounded-xl hover:bg-red-500/30 transition-colors"
-                          data-testid={`delete-tool-${tool._id}`}
-                        >
-                          <Trash2 size={16} />
-                          <span className="text-sm font-medium">Delete</span>
-                        </button>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => navigate(`/admin/tools/${tool._id}/edit`)}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 bg-blue-500/15 text-blue-500 rounded-lg hover:bg-blue-500/25 transition-colors text-xs font-medium"
+                            data-testid={`edit-tool-${tool._id}`}
+                          >
+                            <Edit2 size={14} /> Edit
+                          </button>
+                          <button
+                            onClick={() => handleDelete(tool._id, tool.name)}
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 bg-red-500/15 text-red-500 rounded-lg hover:bg-red-500/25 transition-colors text-xs font-medium"
+                            data-testid={`delete-tool-${tool._id}`}
+                          >
+                            <Trash2 size={14} /> Delete
+                          </button>
+                          {tool.targetUrl && (
+                            <a
+                              href={tool.targetUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 flex items-center justify-center gap-1.5 px-2 py-2 bg-genz-bg text-genz-navy rounded-lg hover:bg-genz-teal/10 hover:text-genz-teal transition-colors text-xs font-medium"
+                              title="Open tool in new tab"
+                            >
+                              <ExternalLink size={14} /> View
+                            </a>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -287,21 +291,21 @@ const AdminToolsEnhanced = () => {
             
             {/* Pagination */}
             {pagination.totalPages > 1 && (
-              <div className="flex items-center justify-center gap-4 mt-8">
+              <div className="flex items-center justify-center gap-3 mt-6">
                 <button
                   onClick={() => setPagination(prev => ({ ...prev, page: Math.max(1, prev.page - 1) }))}
                   disabled={pagination.page === 1}
-                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
+                  className={`px-4 py-2 text-sm font-semibold ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
                 >
                   Previous
                 </button>
-                <span className="text-genz-muted">
+                <span className="text-genz-muted text-sm tabular-nums">
                   Page {pagination.page} of {pagination.totalPages}
                 </span>
                 <button
                   onClick={() => setPagination(prev => ({ ...prev, page: Math.min(prev.totalPages, prev.page + 1) }))}
                   disabled={pagination.page >= pagination.totalPages}
-                  className={`px-6 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
+                  className={`px-4 py-2 text-sm font-semibold ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors`}
                 >
                   Next
                 </button>

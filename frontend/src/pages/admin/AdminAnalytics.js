@@ -38,12 +38,12 @@ const AdminAnalytics = () => {
   if (loading) {
     return (
       <AdminLayoutEnhanced>
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl animate-pulse`}>
-              <div className="h-4 w-4 rounded bg-genz-bg mb-3" />
-              <div className="h-7 w-12 rounded bg-genz-bg" />
-              <div className="h-3 w-20 rounded bg-genz-bg mt-2" />
+            <div key={i} className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-xl animate-pulse`}>
+              <div className="h-4 w-4 rounded bg-genz-bg mb-2.5" />
+              <div className="h-6 w-12 rounded bg-genz-bg" />
+              <div className="h-3 w-20 rounded bg-genz-bg mt-1.5" />
             </div>
           ))}
         </div>
@@ -53,11 +53,11 @@ const AdminAnalytics = () => {
 
   return (
     <AdminLayoutEnhanced>
-      <div className="space-y-6">
+      <div className="space-y-5">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-black text-genz-navy">Analytics</h1>
-            <p className="text-genz-muted text-sm">Live overview of tools, assignments, clients and activity</p>
+            <h1 className="text-xl font-black text-genz-navy">Analytics</h1>
+            <p className="text-genz-muted text-[13px]">Live overview of tools, assignments, clients and activity</p>
           </div>
           <button onClick={load}
                   className="p-2 rounded-xl border border-genz-border text-genz-muted hover:text-genz-teal hover:border-genz-teal/30 transition-all"
@@ -67,20 +67,20 @@ const AdminAnalytics = () => {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {statCards.map(({ icon: Icon, label, value, color }) => (
-            <div key={label} className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
-              <Icon size={18} className={`${color} mb-3`} />
-              <div className="text-2xl font-black text-genz-navy">{value}</div>
-              <div className="text-xs text-genz-muted mt-0.5">{label}</div>
+            <div key={label} className={`${ADMIN_CARD_VARIANTS.default} ds-stat p-4 rounded-xl`}>
+              <Icon size={17} className={`${color} mb-2.5`} />
+              <div className="text-xl font-black text-genz-navy tabular-nums leading-none">{value}</div>
+              <div className="text-[12px] text-genz-muted mt-1.5">{label}</div>
             </div>
           ))}
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Top Tools */}
-          <div className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
-            <h2 className="font-bold text-genz-navy mb-4 flex items-center gap-2">
+          <div className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-2xl`}>
+            <h2 className="text-[15px] font-bold text-genz-navy mb-3 flex items-center gap-2">
               <BarChart3 size={16} className="text-genz-teal" /> Top Accessed Tools
             </h2>
             {data?.topTools?.length ? (
@@ -106,13 +106,13 @@ const AdminAnalytics = () => {
           </div>
 
           {/* Recent Activity */}
-          <div className={`${ADMIN_CARD_VARIANTS.default} p-5 rounded-2xl`}>
-            <h2 className="font-bold text-genz-navy mb-4 flex items-center gap-2">
+          <div className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-2xl`}>
+            <h2 className="text-[15px] font-bold text-genz-navy mb-3 flex items-center gap-2">
               <Clock size={16} className="text-genz-teal" /> Recent Activity
             </h2>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {data?.recentActivity?.length ? data.recentActivity.map((log) => (
-                <div key={log._id} className="flex items-center gap-3 p-2.5 rounded-lg bg-white text-sm">
+                <div key={log._id} className="flex items-center gap-3 p-2 rounded-lg bg-white text-[13px]">
                   <div className="w-1.5 h-1.5 rounded-full flex-shrink-0 bg-genz-teal" />
                   <span className="text-genz-muted w-36 flex-shrink-0 text-xs font-mono">
                     {new Date(log.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
