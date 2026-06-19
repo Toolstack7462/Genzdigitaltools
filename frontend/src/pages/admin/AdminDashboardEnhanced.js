@@ -40,11 +40,11 @@ function getActionIcon(action) {
 ───────────────────────────────────────────────────────────────── */
 function SkeletonCard() {
   return (
-    <div className="rounded-2xl p-4 border border-genz-border bg-white animate-pulse">
+    <div className="rounded-2xl p-4 pt-[18px] border border-genz-border bg-white animate-pulse">
       <div className="flex items-center justify-between mb-3">
-        <div className="w-9 h-9 rounded-lg bg-genz-bg" />
+        <div className="w-10 h-10 rounded-xl bg-genz-bg" />
       </div>
-      <div className="h-6 w-14 bg-genz-bg rounded mb-2" />
+      <div className="h-7 w-14 bg-genz-bg rounded mb-2" />
       <div className="h-3 w-20 bg-genz-bg rounded" />
     </div>
   );
@@ -238,16 +238,17 @@ const AdminDashboardEnhanced = () => {
           {statCards.map((stat, i) => {
             const Icon = stat.icon;
             return (
-              <div key={i} className="ds-card ds-stat p-4">
+              <div key={i} className="ds-card ds-stat relative overflow-hidden p-4 pt-[18px]">
+                <span className="absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, ${stat.hex}, ${stat.hex}66)` }} />
                 <div className="flex items-center justify-between mb-3">
-                  <span className="w-9 h-9 rounded-lg flex items-center justify-center"
+                  <span className="w-10 h-10 rounded-xl flex items-center justify-center"
                         style={{ background: `${stat.hex}14`, color: stat.hex, border: `1px solid ${stat.hex}26` }}>
-                    <Icon size={17} />
+                    <Icon size={18} />
                   </span>
                   <span className="ds-badge ds-badge-neutral">{stat.sublabel}</span>
                 </div>
-                <div className="font-heading text-[24px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
-                <div className="text-[12px] text-genz-muted mt-1">{stat.label}</div>
+                <div className="font-heading text-[28px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
+                <div className="text-[12px] font-medium text-genz-muted mt-1.5">{stat.label}</div>
               </div>
             );
           })}

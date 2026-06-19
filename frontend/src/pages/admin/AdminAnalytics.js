@@ -25,14 +25,14 @@ const AdminAnalytics = () => {
 
   const s = data?.stats || {};
   const statCards = data ? [
-    { icon: Package,       label: 'Total Tools',         value: s.totalTools ?? 0,         color: 'text-genz-teal' },
-    { icon: CheckCircle2,  label: 'Active Tools',        value: s.activeTools ?? 0,        color: 'text-green-500' },
-    { icon: Puzzle,        label: 'Extension Tools',     value: s.extensionTools ?? 0,     color: 'text-blue-500' },
-    { icon: Boxes,         label: 'Proxy Tools',         value: s.proxyTools ?? 0,         color: 'text-purple-500' },
-    { icon: ClipboardList, label: 'Total Assignments',   value: s.totalAssignments ?? 0,   color: 'text-genz-navy' },
-    { icon: CheckCircle2,  label: 'Active Assignments',  value: s.activeAssignments ?? 0,  color: 'text-green-500' },
-    { icon: XCircle,       label: 'Expired Assignments', value: s.expiredAssignments ?? 0, color: 'text-red-500' },
-    { icon: Users,         label: 'Active Clients',      value: s.activeClients ?? 0,      color: 'text-amber-500' },
+    { icon: Package,       label: 'Total Tools',         value: s.totalTools ?? 0,         hex: '#06B6D4' },
+    { icon: CheckCircle2,  label: 'Active Tools',        value: s.activeTools ?? 0,        hex: '#16A34A' },
+    { icon: Puzzle,        label: 'Extension Tools',     value: s.extensionTools ?? 0,     hex: '#2563EB' },
+    { icon: Boxes,         label: 'Proxy Tools',         value: s.proxyTools ?? 0,         hex: '#7C3AED' },
+    { icon: ClipboardList, label: 'Total Assignments',   value: s.totalAssignments ?? 0,   hex: '#0EA5E9' },
+    { icon: CheckCircle2,  label: 'Active Assignments',  value: s.activeAssignments ?? 0,  hex: '#16A34A' },
+    { icon: XCircle,       label: 'Expired Assignments', value: s.expiredAssignments ?? 0, hex: '#DC2626' },
+    { icon: Users,         label: 'Active Clients',      value: s.activeClients ?? 0,      hex: '#D97706' },
   ] : [];
 
   if (loading) {
@@ -40,9 +40,9 @@ const AdminAnalytics = () => {
       <AdminLayoutEnhanced>
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className={`${ADMIN_CARD_VARIANTS.default} p-4 rounded-xl animate-pulse`}>
-              <div className="h-4 w-4 rounded bg-genz-bg mb-2.5" />
-              <div className="h-6 w-12 rounded bg-genz-bg" />
+            <div key={i} className={`${ADMIN_CARD_VARIANTS.default} p-4 pt-[18px] rounded-xl animate-pulse`}>
+              <div className="w-10 h-10 rounded-xl bg-genz-bg mb-3" />
+              <div className="h-7 w-12 rounded bg-genz-bg" />
               <div className="h-3 w-20 rounded bg-genz-bg mt-1.5" />
             </div>
           ))}
@@ -68,11 +68,15 @@ const AdminAnalytics = () => {
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {statCards.map(({ icon: Icon, label, value, color }) => (
-            <div key={label} className={`${ADMIN_CARD_VARIANTS.default} ds-stat p-4 rounded-xl`}>
-              <Icon size={17} className={`${color} mb-2.5`} />
-              <div className="text-xl font-black text-genz-navy tabular-nums leading-none">{value}</div>
-              <div className="text-[12px] text-genz-muted mt-1.5">{label}</div>
+          {statCards.map(({ icon: Icon, label, value, hex }) => (
+            <div key={label} className={`${ADMIN_CARD_VARIANTS.default} ds-stat relative overflow-hidden p-4 pt-[18px] rounded-xl`}>
+              <span className="absolute inset-x-0 top-0 h-1" style={{ background: `linear-gradient(90deg, ${hex}, ${hex}66)` }} />
+              <span className="w-10 h-10 rounded-xl flex items-center justify-center mb-3"
+                    style={{ background: `${hex}14`, color: hex, border: `1px solid ${hex}26` }}>
+                <Icon size={18} />
+              </span>
+              <div className="text-[28px] font-extrabold text-genz-navy tabular-nums leading-none">{value}</div>
+              <div className="text-[12px] font-medium text-genz-muted mt-1.5">{label}</div>
             </div>
           ))}
         </div>

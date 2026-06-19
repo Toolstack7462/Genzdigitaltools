@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import { Search, ChevronDown, X, Loader2, Check, Users } from 'lucide-react';
+import { Search, ChevronDown, X, Loader2, Check } from 'lucide-react';
 
 /**
  * ClientSearchSelect — accessible searchable combobox for picking ONE CRM client.
@@ -144,7 +144,7 @@ export default function ClientSearchSelect({
         onKeyDown={onTriggerKeyDown}
         className={`${triggerLayout} ${triggerSurface} ${disabled ? '' : 'cursor-pointer'}`}
       >
-        <Users size={15} className="shrink-0 text-slate-400" />
+        <Search size={15} className="shrink-0 text-slate-400" />
         <span className={`flex-1 min-w-0 truncate ${selected ? '' : 'text-slate-400'}`}>
           {selected ? (
             <>
