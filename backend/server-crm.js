@@ -78,6 +78,16 @@ try {
   if (process.env.STEALTH_GATEWAY_URL) STEALTH_GATEWAY_ORIGIN = new URL(process.env.STEALTH_GATEWAY_URL).origin;
 } catch (_) { /* ignore malformed URL */ }
 
+// Proxy-Tools gateway origins (HIX / BypassGPT) — their injected overlays call the
+// backend gateway API cross-origin, so allow them in code (derived from the same
+// env the proxy module reads) without depending on ALLOWED_ORIGINS being edited.
+const PROXY_GATEWAY_ORIGINS = (() => {
+  const out = [];
+  try { const t = require('./utils/proxy/tools'); for (const k of t.TOOL_KEYS) { const b = t.gatewayBase(k); if (b) out.push(new URL(b).origin); } }
+  catch (_) { /* ignore */ }
+  return out;
+})();
+
 if (ALLOWED_ORIGINS.length === 0) {
   console.warn('⚠️  WARNING: ALLOWED_ORIGINS is not set. No browser origins will be permitted.');
   console.warn('   Set ALLOWED_ORIGINS in .env, e.g.: https://app.example.com,http://localhost:3000');
@@ -95,6 +105,11 @@ const corsOptions = {
 
     // StealthWriter gateway origin (first-party, fixed) — overlay → gateway API.
     if (STEALTH_GATEWAY_ORIGIN && origin === STEALTH_GATEWAY_ORIGIN) {
+      return callback(null, true);
+    }
+
+    // Proxy-Tools gateway origins (HIX / BypassGPT) — overlay → gateway API.
+    if (PROXY_GATEWAY_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
 
@@ -232,6 +247,7 @@ const adminToolsRoutes        = require('./routes/admin/toolsEnhanced');
 const adminClientsRoutes      = require('./routes/admin/clientsEnhanced');
 const adminAssignmentsRoutes  = require('./routes/admin/assignments');
 const adminActivityRoutes     = require('./routes/admin/activity');
+const adminAnalyticsRoutes    = require('./routes/admin/analytics');
 const adminBlogRoutes         = require('./routes/admin/blog');
 const adminContactsRoutes     = require('./routes/admin/contacts');
 const adminSecurityAlertsRoutes = require('./routes/admin/securityAlerts');
@@ -246,6 +262,10 @@ const adminStealthRoutes      = require('./routes/admin/stealth');
 const clientStealthRoutes     = require('./routes/client/stealth');
 const stealthGatewayRoutes    = require('./routes/stealth/gateway');
 const stealthScheduler        = require('./cron/stealthScheduler');
+// Proxy-Tools module (HIX AI / BypassGPT) — isolated
+const adminProxyToolsRoutes   = require('./routes/admin/proxyTools');
+const clientProxyToolsRoutes  = require('./routes/client/proxyTools');
+const proxyGatewayRoutes      = require('./routes/proxy/gateway');
 
 // Mount routes
 app.use('/api/crm/auth',             authRoutes);
@@ -257,6 +277,7 @@ app.use('/api/crm/admin/tools', express.json({ limit: '10mb' }), adminToolsRoute
 app.use('/api/crm/admin/clients',    adminClientsRoutes);
 app.use('/api/crm/admin/assignments',adminAssignmentsRoutes);
 app.use('/api/crm/admin/activity',   adminActivityRoutes);
+app.use('/api/crm/admin/analytics',  adminAnalyticsRoutes);
 app.use('/api/crm/admin/blog',       adminBlogRoutes);
 app.use('/api/crm/admin/contacts',       adminContactsRoutes);
 app.use('/api/crm/admin/security-alerts', adminSecurityAlertsRoutes);
@@ -268,6 +289,11 @@ app.use('/api/crm/client/extension', clientExtensionRoutes);
 app.use('/api/crm/admin/stealth',    adminStealthRoutes);
 app.use('/api/crm/client/stealth',   clientStealthRoutes);
 app.use('/api/crm/stealth/gateway',  stealthGatewayRoutes);
+// Proxy-Tools module (HIX AI / BypassGPT) — isolated mounts.
+// Admin route gets a higher body limit for cookie-bundle uploads.
+app.use('/api/crm/admin/proxy-tools', express.json({ limit: '10mb' }), adminProxyToolsRoutes);
+app.use('/api/crm/client/proxy-tools', clientProxyToolsRoutes);
+app.use('/api/crm/proxy/gateway',     proxyGatewayRoutes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check
@@ -304,9 +330,15 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler — SAFE diagnostics for "Route not found".
+// Logs only the HTTP METHOD and the request PATH. Query strings, request bodies,
+// headers, cookies, tokens and Authorization are NEVER logged, so a missing or
+// misrouted API path is visible in the server log without leaking any secret. The
+// same method + path are echoed in the JSON so the client can show exactly which
+// endpoint 404'd (helps tell "backend not redeployed" from a real bug).
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  console.warn(`[404] Route not found: ${req.method} ${req.path}`);
+  res.status(404).json({ error: 'Route not found', method: req.method, path: req.path });
 });
 
 const PORT = process.env.PORT || process.env.CRM_PORT || 8002;

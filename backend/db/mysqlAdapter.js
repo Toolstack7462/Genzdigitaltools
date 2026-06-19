@@ -42,6 +42,10 @@ const tableNames = {
   StealthUsageLog: 'stealth_usage_logs',
   StealthSettings: 'stealth_settings',
   StealthAccount: 'stealth_accounts',
+  // ── Proxy-Tools module (HIX AI / BypassGPT) — isolated, tool-tagged ─────────
+  ProxyClient: 'proxy_clients',
+  ProxyLease: 'proxy_leases',
+  ProxyAccount: 'proxy_accounts',
 };
 
 const populateModelByPath = {

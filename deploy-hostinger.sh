@@ -57,6 +57,11 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/authEnhanced.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEnhanced.js" \
   -T backend/middleware/validation.js         "sftp://${HOST}:${PORT}${API_ROOT}/middleware/validation.js" \
   -T backend/routes/admin/clientsEnhanced.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/clientsEnhanced.js" \
+  -T backend/routes/admin/assignments.js      "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/assignments.js" \
+  -T backend/routes/admin/activity.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/activity.js" \
+  -T backend/routes/admin/analytics.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/analytics.js" \
+  -T backend/models/ActivityLog.js            "sftp://${HOST}:${PORT}${API_ROOT}/models/ActivityLog.js" \
+  -T backend/utils/proxyAssignments.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxyAssignments.js" \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
@@ -83,6 +88,18 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/stealth/gateway.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/stealth/gateway.js" \
   -T backend/cron/stealthScheduler.js            "sftp://${HOST}:${PORT}${API_ROOT}/cron/stealthScheduler.js" \
   -T backend/scripts/stealth-reset.js            "sftp://${HOST}:${PORT}${API_ROOT}/scripts/stealth-reset.js" \
+  -T backend/utils/proxy/tools.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/tools.js" \
+  -T backend/utils/proxy/vaultCrypto.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/vaultCrypto.js" \
+  -T backend/utils/proxy/lease.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/lease.js" \
+  -T backend/utils/proxy/accountSelect.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/accountSelect.js" \
+  -T backend/utils/proxy/cookies.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/cookies.js" \
+  -T backend/utils/proxy/verify.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verify.js" \
+  -T backend/models/proxy/ProxyClient.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyClient.js" \
+  -T backend/models/proxy/ProxyLease.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyLease.js" \
+  -T backend/models/proxy/ProxyAccount.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyAccount.js" \
+  -T backend/routes/admin/proxyTools.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
+  -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
   -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 
@@ -98,19 +115,24 @@ echo "    backend upload complete; Passenger restart triggered."
 #           own no-redirect SPA rule, or /client/* redirects loop forever.
 #       The build also contains downloads/genz-digital-store-extension.zip, so
 #       this step publishes the latest extension zip too. ─────────────────────
-FRONT_ARGS=()
+# Build a curl config file (-K) of upload-file/url pairs instead of one giant
+# argv. Code-splitting produces ~100 hashed chunk files; passing them all inline
+# overflows the OS command-line limit ("Argument list too long"). The credential
+# stays on the command line (-u), never written to the config file.
+FRONT_CFG="$(mktemp)"
 while IFS= read -r rel; do
   rel="${rel#./}"
-  FRONT_ARGS+=( -T "${BUILD_DIR}/${rel}" "sftp://${HOST}:${PORT}${MAIN_WEB}/${rel}" )
+  printf 'upload-file = "%s"\nurl = "sftp://%s:%s%s/%s"\n' "${BUILD_DIR}/${rel}" "${HOST}" "${PORT}" "${MAIN_WEB}" "${rel}" >> "${FRONT_CFG}"
   if [[ "${rel}" != ".htaccess" ]]; then
-    FRONT_ARGS+=( -T "${BUILD_DIR}/${rel}" "sftp://${HOST}:${PORT}${APP_WEB}/${rel}" )
+    printf 'upload-file = "%s"\nurl = "sftp://%s:%s%s/%s"\n' "${BUILD_DIR}/${rel}" "${HOST}" "${PORT}" "${APP_WEB}" "${rel}" >> "${FRONT_CFG}"
   fi
 done < <(cd "${BUILD_DIR}" && find . -type f ! -name '*.map')
 
-echo "==> [2/3] Uploading frontend build to main + app roots"
+echo "==> [2/3] Uploading frontend build to main + app roots ($(grep -c upload-file "${FRONT_CFG}") transfers)"
 curl --fail-with-body --ftp-create-dirs \
   -u "${USER}:${SFTP_PASS}" \
-  "${FRONT_ARGS[@]}"
+  -K "${FRONT_CFG}"
+rm -f "${FRONT_CFG}"
 echo "    frontend upload complete (extension zip included)."
 
 # ── 3) VERIFY backend is live: an authenticated extension route with NO token

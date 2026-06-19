@@ -57,6 +57,91 @@ const GATEWAY_KEY = process.env.STEALTH_GATEWAY_KEY || ''; // shared key for the
 const LEASE_COOKIE = 'sw_lease';
 const LEASE_TYPE = 'stealth_lease';
 
+// Optional: extra CSS selectors (comma-separated) for StealthWriter's exact top-bar
+// and bottom account-area containers. These are added to the critical hide CSS that
+// is injected into <head> BEFORE first paint, so they never flash. Use this to hide
+// StealthWriter's structural chrome (e.g. ".sidebar-account, header.topbar") that the
+// generic href/attribute rules can't target by class alone. Editor/working area must
+// NOT be matched here.
+const EXTRA_HIDE_SELECTORS = String(process.env.STEALTH_HIDE_SELECTORS || '')
+  .split(',').map(s => s.trim()).filter(Boolean);
+
+// ════════════════════════════════════════════════════════════════════════════
+// SERVER-SIDE IDENTITY / ACCOUNT / BILLING SHIELD
+// The browser overlay (overlay.js) is now only a cosmetic *backup*. The real
+// account name / email / plan / billing / logout are blocked or sanitized HERE,
+// at the proxy, so they do not reach the browser in the first place.
+// ════════════════════════════════════════════════════════════════════════════
+const BRAND = 'Gen Z Digital Store';
+const BRAND_EMAIL = 'member@genzdigitalstore.com';
+
+// Logout / sign-out — must NEVER reach upstream: it would destroy the injected
+// vault session for everyone. Navigations bounce to the editor; API calls are
+// answered with a benign no-op so the app's own session token is left intact.
+const LOGOUT_RE = /(^|\/)(logout|log-?out|sign-?out|signout)(\/|$)|auth\/(sign-?out|signout|logout)/i;
+
+// Page navigations the member should never be able to open — bounced to the
+// editor. (Matched on pathname only; the editor lives at /dashboard/* so it is
+// never caught.)
+const BLOCK_NAV_RE = /(^|\/)(billing|subscription|subscriptions|pricing|plans?|upgrade|checkout|account|account-settings|settings|profile|affiliate|refer|referral|invite|rewards)(\/|$)/i;
+
+// Pure billing / payment / pricing API calls the editor never needs — answered
+// with an empty stub instead of proxying, so no billing data reaches the browser.
+const STUB_API_RE = /(^|\/)(billing|invoice|invoices|payment|payments|checkout|customer-portal|create-portal|portal|pricing|plans?|upgrade|affiliate|refer|referral|coupon|promo)(\/|$)/i;
+
+// Responses on these routes may carry account identity / plan — their JSON bodies
+// are deep-redacted (identity replaced with the brand; billing detail neutralized)
+// while auth/session structure is preserved so the app stays logged in & working.
+const IDENTITY_ROUTE_RE = /(^|\/)(session|get-session|user|users|me|account|accounts|profile|customer|subscription|subscriptions|membership)(\/|$|\.)|auth\/(session|get-session)/i;
+
+// JSON key classes for deep redaction.
+const KEY_NAME    = /^(name|fullname|full_name|displayname|display_name|firstname|first_name|lastname|last_name|username|user_name|nickname|handle)$/i;
+const KEY_EMAIL   = /^(email|emailaddress|email_address|e_mail|billingemail|billing_email)$/i;
+const KEY_NULLOUT = /^(avatar|avatarurl|avatar_url|image|imageurl|image_url|picture|photo|gravatar|phone|phonenumber|phone_number)$/i;
+// Billing/financial detail — neutralized in type. Plan/tier/status are KEPT so
+// the upstream app's own gating (which decides if Humanizer is usable) still works.
+const KEY_BILLING = /^(price|priceid|price_id|amount|subtotal|total|currency|interval|card|cardlast4|last4|paymentmethod|payment_method|invoice|invoices|customerid|customer_id|stripeid|stripe_id|stripecustomerid|nextbillingdate|next_billing_date|renewaldate|renewal_date|billingaddress|billing_address|address|taxid|tax_id|vat)$/i;
+
+function deepRedact(val, depth) {
+  if (depth > 8 || val == null) return val;
+  if (Array.isArray(val)) { for (let i = 0; i < val.length; i++) val[i] = deepRedact(val[i], depth + 1); return val; }
+  if (typeof val === 'object') {
+    for (const k of Object.keys(val)) {
+      const v = val[k];
+      if (KEY_EMAIL.test(k) && typeof v === 'string') val[k] = BRAND_EMAIL;
+      else if (KEY_NAME.test(k) && typeof v === 'string') val[k] = BRAND;
+      else if (KEY_NULLOUT.test(k)) val[k] = null;
+      else if (KEY_BILLING.test(k)) {
+        if (typeof v === 'string') val[k] = '';
+        else if (typeof v === 'number') val[k] = 0;
+        else if (Array.isArray(v)) val[k] = [];
+        else if (v && typeof v === 'object') val[k] = deepRedact(v, depth + 1);
+        else val[k] = null;
+      } else {
+        val[k] = deepRedact(v, depth + 1);
+      }
+    }
+    return val;
+  }
+  return val; // primitives untouched
+}
+
+// Sanitize a JSON response body string. Fails safe: on any parse error the body
+// is returned UNCHANGED so a non-identity payload is never corrupted.
+function sanitizeJsonBody(text) {
+  try { return JSON.stringify(deepRedact(JSON.parse(text), 0)); }
+  catch (_) { return text; }
+}
+
+// Redact email addresses anywhere in an HTML / SSR payload (e.g. Next.js
+// __NEXT_DATA__ / RSC flight data) so the real account email is never shipped.
+// Names are intentionally NOT regex-replaced in HTML (too many false positives in
+// framework state) — they are handled by the JSON session redaction + overlay.
+const EMAIL_GLOBAL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+function redactHtmlIdentity(html) {
+  try { return html.replace(EMAIL_GLOBAL_RE, BRAND_EMAIL); } catch (_) { return html; }
+}
+
 if (!TARGET_ORIGIN) { console.error('FATAL: STEALTH_TARGET_ORIGIN is required'); process.exit(1); }
 if (!API_BASE) { console.error('FATAL: STEALTH_API_BASE is required'); process.exit(1); }
 if (!LEASE_SECRET || LEASE_SECRET.length < 32) {
@@ -294,15 +379,50 @@ function rewriteSetCookie(values) {
   return [].concat(values || []).map(v => v.replace(/;\s*Domain=[^;]+/ig, ''));
 }
 
+// ── Critical hide CSS (injected into <head>, applies before first paint) ────────
+// This is the #1 fix for the "hidden UI flashes for 1–2s" problem: the static
+// account / billing / pricing / support / plan / logout hiding rules are shipped in
+// the initial HTML <head> so the browser never paints them, instead of being added
+// by JS after the React app has already rendered. The overlay's MutationObserver is
+// only a backup for text-matched / SPA-rerendered nodes (see overlay.js).
+function buildCriticalCss() {
+  // href-based (robust against obfuscated class names).
+  const hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
+    'subscription', 'upgrade', 'refer', '/plans', '/settings', '/profile', '/me',
+    'logout', 'log-out', 'sign-out', 'signout'];
+  const sel = hrefs.map(h => `a[href*="${h}" i]`);
+  // aria-label / data-testid based (account, profile, user-menu, billing, upgrade…).
+  const attrs = ['account', 'profile', 'user menu', 'usermenu', 'user-menu', 'avatar',
+    'upgrade', 'billing', 'subscription', 'affiliate', 'log out', 'logout', 'sign out'];
+  attrs.forEach(a => { sel.push(`[aria-label*="${a}" i]`); sel.push(`[data-testid*="${a}" i]`); });
+  // Operator-supplied exact selectors for StealthWriter's top bar / bottom account area.
+  EXTRA_HIDE_SELECTORS.forEach(s => sel.push(s));
+  // Anything the overlay JS marks for hiding.
+  sel.push('[data-genz-hidden="1"]');
+  return `/* genz critical hide */\n${sel.join(',')}{display:none !important;}`;
+}
+
 // ── Overlay injection ─────────────────────────────────────────────────────────
+// Everything is injected into <head> so hiding applies before the app paints. The
+// overlay JS is inlined (not an external <script src>) so it executes during head
+// parse with zero extra network round-trip — its MutationObserver is registered
+// before <body> content is inserted, eliminating the flash for text-matched nodes
+// too. Building the floating widget still waits for DOMContentLoaded (see overlay.js).
+const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
 function injectOverlay(html, capture) {
   const cfg = JSON.stringify({ api: API_BASE, capture: !!capture });
+  // Capture (admin) mode must NOT hide account UI — the operator needs to log in and
+  // reach account pages to capture a session — so the critical hide CSS is omitted.
+  const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
+    critical +
     `<link rel="stylesheet" href="/__genz/overlay.css">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
-    `<script src="/__genz/overlay.js" defer></script>`;
+    `<script id="genz-overlay">${OVERLAY_JS_INLINE}</script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + tags);
+  // No <head> (rare / fragment) — fall back to before </body> or append.
   if (html.includes('</body>')) return html.replace('</body>', tags + '</body>');
-  if (html.includes('</html>')) return html.replace('</html>', tags + '</html>');
   return html + tags;
 }
 
@@ -326,6 +446,16 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     const bodyBuf = Buffer.concat(chunks);
     const headers = { ...req.headers };
     headers.host = targetUrl.host;
+    // Rewrite Origin/Referer to the upstream origin. The browser sends the gateway
+    // host here; StealthWriter's CSRF / same-origin check rejects mutating POSTs
+    // (Humanize / AI Detector) with a 403 Forbidden when Origin ≠ its own host —
+    // even though the Genz limit is fine. GET page loads carry no Origin, so they
+    // pass, which is why only the humanize/detect actions broke.
+    if (headers.origin) headers.origin = targetUrl.origin;
+    if (headers.referer) {
+      try { const rf = new URL(headers.referer); rf.protocol = targetUrl.protocol; rf.host = targetUrl.host; headers.referer = rf.toString(); }
+      catch (_) { headers.referer = targetUrl.origin + '/'; }
+    }
     delete headers['accept-encoding']; // ask upstream for identity so we can inject
     headers['accept-encoding'] = 'identity';
     delete headers.cookie; // never forward our lease cookie upstream
@@ -369,7 +499,17 @@ function proxy(req, res, isHtmlNav, session, ctx) {
 
       // Never pass a raw upstream "Forbidden"/login document through to the client.
       // Serve a clean page; the floating widget explains it in friendly terms.
-      if (isHtmlNav && upstreamForbidden && !ctx.capture) {
+      // Covers both top-level navigations and any HTML error doc the app fetches.
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture) {
+        // Safe log: status + source only — never cookies, tokens, headers or secrets.
+        safeLog('forbidden_blocked', {
+          request_path: String(req.url || '').split('?')[0],
+          lease_id: ctx.jti || null,
+          account_id: (session && session.accountId) || null,
+          response_status: uRes.statusCode,
+          reason: 'upstream_forbidden',
+          error_source: 'upstream',
+        });
         uRes.resume(); // drain
         return sendBlockPage(res, 'unavailable');
       }
@@ -384,17 +524,32 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         outHeaders[k] = v;
       }
 
+      // JSON identity sanitization: only buffer+rewrite identity/account routes,
+      // and never an event-stream — so humanizer/detector responses (which may
+      // stream) pipe straight through untouched and usage counting is unaffected.
+      const sanitizeJson = ctx.sanitizeBody && ct.includes('application/json') && !ct.includes('event-stream') && !ctx.capture;
+
       if (isHtml) {
         const buf = [];
         uRes.on('data', c => buf.push(c));
         uRes.on('end', () => {
           let html = Buffer.concat(buf).toString('utf8');
+          if (!ctx.capture) html = redactHtmlIdentity(html); // strip account emails from SSR/state
           html = injectSessionBootstrap(html, session);
           html = injectOverlay(html, ctx.capture);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
           res.writeHead(uRes.statusCode || 200, outHeaders);
           res.end(html);
+        });
+      } else if (sanitizeJson) {
+        const buf = [];
+        uRes.on('data', c => buf.push(c));
+        uRes.on('end', () => {
+          const out = sanitizeJsonBody(Buffer.concat(buf).toString('utf8'));
+          outHeaders['cache-control'] = 'no-store';
+          res.writeHead(uRes.statusCode || 200, outHeaders);
+          res.end(out);
         });
       } else {
         res.writeHead(uRes.statusCode || 200, outHeaders);
@@ -474,6 +629,34 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ── Server-side account/billing/logout shield ──────────────────────────────
+  // Applied to real client leases only. Capture (admin) leases are exempt so the
+  // operator can log in and reach account pages to capture a fresh session.
+  if (!capture) {
+    // 1) Logout / sign-out: never proxied — it would kill the shared vault session.
+    if (LOGOUT_RE.test(pathName)) {
+      safeLog('route_blocked', { request_path: pathName, kind: 'logout', is_nav: isHtmlNav });
+      if (isHtmlNav) { res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' }); return res.end(); }
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end('{}');
+    }
+    // 2) Account / billing / subscription / pricing PAGE loads → bounce to editor.
+    if (isHtmlNav && BLOCK_NAV_RE.test(pathName)) {
+      safeLog('route_blocked', { request_path: pathName, kind: 'nav' });
+      res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
+      return res.end();
+    }
+    // 3) Pure billing / payment / pricing API → empty stub, never proxied.
+    if (!isHtmlNav && STUB_API_RE.test(pathName)) {
+      safeLog('route_blocked', { request_path: pathName, kind: 'api_stub' });
+      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end('{}');
+    }
+  }
+  // 4) Identity/account/subscription responses get their JSON bodies deep-redacted
+  //    (and HTML emails stripped) so real name/email/billing never reach the browser.
+  const sanitizeBody = !capture && IDENTITY_ROUTE_RE.test(pathName);
+
   // Capture mode: do NOT inject the stored bundle — let the admin log in fresh so
   // the gateway can capture a session valid in the proxy context.
   let session;
@@ -484,7 +667,7 @@ const server = http.createServer(async (req, res) => {
     if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
   }
 
-  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture });
+  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody });
 });
 
 server.listen(PORT, () => {

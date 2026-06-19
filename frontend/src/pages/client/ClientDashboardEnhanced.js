@@ -14,6 +14,10 @@ import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME } from '../../lib/extension';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
+import StealthWriterCard from '../../components/StealthWriterCard';
+import { useStealthSummary } from '../../hooks/useStealthSummary';
+import ProxyToolCard from '../../components/ProxyToolCard';
+import { useProxyTools } from '../../hooks/useProxyTools';
 
 
 /* ─── Extension detection is handled by useExtension() bridge heartbeat.
@@ -168,6 +172,8 @@ const ClientDashboardEnhanced = () => {
   // The secure session is fetched on-demand when Access is clicked, so there is
   // no manual connect/reconnect step and no "connecting/disconnected" limbo.
   const { status: extConnStatus, bridgeReady, openTool, grantScanConsent, getScanStatus } = useExtension();
+  const { stealth, loading: stealthLoading } = useStealthSummary(); // StealthWriter plan summary (shown as a tool card)
+  const { proxyTools } = useProxyTools(); // HIX AI / BypassGPT (shown as tool cards)
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
 
@@ -225,6 +231,12 @@ const ClientDashboardEnhanced = () => {
   // Derive stats
   const activeTools   = tools.filter(t => t.status !== 'expired');
   const expiredTools  = tools.filter(t => t.status === 'expired');
+  // Proxy tools (HIX/BypassGPT/ChatGPT/Ryne/WriteHuman) and StealthWriter are assigned
+  // tools too — count their ACTIVE ones in the Active Tools total so the number matches
+  // what the member actually sees as tool cards.
+  const proxyActiveCount = (proxyTools || []).filter(pt => pt && pt.active).length;
+  const stealthActiveCount = (stealth?.hasPlan && (stealth.plan ? (stealth.plan.active !== false && !stealth.plan.expired) : true)) ? 1 : 0;
+  const totalActiveTools = activeTools.length + proxyActiveCount + stealthActiveCount;
   const featuredTools = tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4);
 
   // Expiring Soon — computed from real assignment data (backend daysUntilExpiry,
@@ -249,6 +261,23 @@ const ClientDashboardEnhanced = () => {
       t.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       t.shortDescription?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesFilter = activeFilter === 'All' || t.category === activeFilter;
+    return matchesSearch && matchesFilter;
+  });
+
+  // StealthWriter appears as a normal tool card when assigned; respect search/filter.
+  const stealthMatches = (() => {
+    if (!stealth?.hasPlan) return false;
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || 'stealthwriter humanizer ai detector humanize'.includes(q);
+    const matchesFilter = activeFilter === 'All' || activeFilter === 'AI' || activeFilter === 'Text Humanizers';
+    return matchesSearch && matchesFilter;
+  })();
+
+  // HIX AI / BypassGPT appear as normal tool cards when assigned; respect search/filter.
+  const proxyMatches = (proxyTools || []).filter(pt => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || `${pt.name} ${pt.tagline || ''} humanizer ai detector`.toLowerCase().includes(q);
+    const matchesFilter = activeFilter === 'All' || activeFilter === 'AI' || activeFilter === 'Text Humanizers';
     return matchesSearch && matchesFilter;
   });
 
@@ -486,7 +515,7 @@ const ClientDashboardEnhanced = () => {
                   {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
                   <span className="ml-2 inline-flex items-center gap-1 align-middle px-2 py-[3px] rounded-md text-[10.5px] font-bold text-genz-cyan"
                         style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
-                    <Package size={10} /> {activeTools.length} tools
+                    <Package size={10} /> {totalActiveTools} tools
                   </span>
                 </h1>
               </div>
@@ -534,7 +563,7 @@ const ClientDashboardEnhanced = () => {
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
-              { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
+              { icon: CheckCircle2, kind: 'num',    value: totalActiveTools,     label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
               { icon: Clock,        kind: 'num',    value: expiringSoon.length,  label: 'Expiring Soon',   sub: nearestExpiry ? `Soonest ${fmtExpiry(nearestExpiry.endDate)}` : 'Within 7 days', color: '#D97706' },
               { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership',        color: accountActive ? '#16A34A' : '#EF4444' },
               { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal',     label: 'Device Security', sub: 'Encrypted bridge',  color: '#06B6D4' },
@@ -743,7 +772,7 @@ const ClientDashboardEnhanced = () => {
           </div>
 
           {/* Tool Grid */}
-          {filteredTools.length === 0 ? (
+          {filteredTools.length === 0 && !stealthMatches && proxyMatches.length === 0 && !stealthLoading ? (
             <div className="gz-card text-center py-16 px-6">
               <div className="w-14 h-14 rounded-2xl bg-genz-bg flex items-center justify-center mx-auto mb-4">
                 <Package size={26} className="text-genz-muted" />
@@ -768,6 +797,8 @@ const ClientDashboardEnhanced = () => {
           ) : (
             <div className="grid gap-3"
                  style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 250px), 300px))', justifyContent: 'start' }}>
+              {stealthMatches && <StealthWriterCard stealth={stealth} />}
+              {proxyMatches.map(pt => <ProxyToolCard key={pt.tool} tool={pt} />)}
               {filteredTools.map(tool => (
                 <ToolCard key={tool._id || tool.toolId} tool={tool} onOpen={handleOpenTool} openState={toolOpenStates[tool._id || tool.toolId]} />
               ))}

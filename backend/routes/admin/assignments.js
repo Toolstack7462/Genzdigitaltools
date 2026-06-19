@@ -5,6 +5,7 @@ const Tool = require('../../models/Tool');
 const User = require('../../models/User');
 const ActivityLog = require('../../models/ActivityLog');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
+const { buildProxyAssignmentDTOs } = require('../../utils/proxyAssignments');
 
 // Apply auth middleware - accept all admin roles
 router.use(requireAuth);
@@ -14,6 +15,135 @@ router.use((req, res, next) => {
     return res.status(403).json({ error: 'Insufficient permissions' });
   }
   next();
+});
+
+// ---------------------------------------------------------------------------
+// Helper: derive the human-facing assignment status + remaining days from the
+// stored row. Uses the SAME inclusive end-of-day boundary as access validation
+// (ToolAssignment.effectiveEndBoundary) so what admins see matches what clients
+// actually get. Returns: 'active' | 'expiring' | 'expired' | 'revoked'.
+// "expiring" = active and within EXPIRING_SOON_DAYS of expiry.
+// ---------------------------------------------------------------------------
+const EXPIRING_SOON_DAYS = 7;
+
+function computeAssignmentStatus(a, now = new Date()) {
+  const boundary = ToolAssignment.effectiveEndBoundary(a.endDate);
+  const remainingDays = boundary
+    ? Math.ceil((boundary.getTime() - now.getTime()) / 86400000)
+    : null;
+
+  let effectiveStatus;
+  if (a.status === 'revoked') {
+    effectiveStatus = 'revoked';
+  } else if (a.status === 'expired') {
+    effectiveStatus = 'expired';
+  } else if (boundary && boundary.getTime() < now.getTime()) {
+    // Active in DB but the boundary has passed (lazy expiry — the sweep job may
+    // not have run yet). Show it as expired so the admin view is never stale.
+    effectiveStatus = 'expired';
+  } else if (boundary && remainingDays <= EXPIRING_SOON_DAYS) {
+    effectiveStatus = 'expiring';
+  } else {
+    effectiveStatus = 'active';
+  }
+
+  return { effectiveStatus, remainingDays };
+}
+
+// Shape a populated assignment row into a flat DTO for the admin UI.
+function toAssignmentDTO(a) {
+  const obj = typeof a.toObject === 'function' ? a.toObject() : a;
+  const tool = obj.toolId && typeof obj.toolId === 'object' ? obj.toolId : null;
+  const client = obj.clientId && typeof obj.clientId === 'object' ? obj.clientId : null;
+  const { effectiveStatus, remainingDays } = computeAssignmentStatus(obj);
+  // Access mode: catalog tools go through the extension/cookie flow unless the tool
+  // is explicitly direct-open only. Proxy/stealth tools are tagged 'proxy' elsewhere.
+  const accessMode = tool && tool.extensionSettings && tool.extensionSettings.directOpenEnabled === true && tool.extensionSettings.requirePermission === false
+    ? 'direct' : 'extension';
+
+  return {
+    _id: obj._id,
+    accessMode,
+    readOnly: false,
+    status: obj.status,
+    effectiveStatus,
+    remainingDays,
+    startDate: obj.startDate || null,
+    endDate: obj.endDate || null,
+    durationDays: obj.durationDays || null,
+    notes: obj.notes || null,
+    assignedAt: obj.assignedAt || obj.createdAt || null,
+    revokedAt: obj.revokedAt || null,
+    createdAt: obj.createdAt || null,
+    updatedAt: obj.updatedAt || null,
+    tool: tool ? { _id: tool._id, name: tool.name, category: tool.category, status: tool.status, targetUrl: tool.targetUrl } : null,
+    toolId: tool ? tool._id : obj.toolId,
+    client: client ? { _id: client._id, fullName: client.fullName, email: client.email, status: client.status } : null,
+    clientId: client ? client._id : obj.clientId
+  };
+}
+
+// GET / - Central, filterable list of assignments (powers the Assignments page,
+// the per-tool "Manage Assignments" modal, and the per-client tools modal).
+// Query: toolId, clientId, status (active|expiring|expired|revoked), search.
+router.get('/', async (req, res) => {
+  try {
+    const { toolId, clientId, status, search } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+
+    // Narrow at the DB level by the indexed foreign keys when provided.
+    const query = {};
+    if (clientId) query.clientId = clientId;
+    if (toolId) query.toolId = toolId;
+
+    const rows = await ToolAssignment.find(query)
+      .populate('toolId', 'name category status targetUrl extensionSettings')
+      .populate('clientId', 'fullName email status')
+      .sort({ createdAt: -1 });
+
+    let items = rows.map(toAssignmentDTO);
+
+    // Merge proxy + StealthWriter tools as assignment rows so they appear like normal
+    // assigned tools. Skipped when filtering by a specific toolId (proxy tools have no
+    // Tool row); respects a clientId filter. Fails safe (helper returns [] on error).
+    if (!toolId) {
+      const proxyItems = await buildProxyAssignmentDTOs({ clientId: clientId || undefined });
+      items = items.concat(proxyItems);
+    }
+
+    // Status filter is computed (covers lazy expiry + "expiring soon"), so apply
+    // it after enrichment.
+    if (status && status !== 'all') {
+      items = items.filter(i => i.effectiveStatus === status);
+    }
+
+    // Free-text search across client name/email and tool name.
+    if (search && String(search).trim()) {
+      const q = String(search).trim().toLowerCase();
+      items = items.filter(i =>
+        (i.client?.fullName || '').toLowerCase().includes(q) ||
+        (i.client?.email || '').toLowerCase().includes(q) ||
+        (i.tool?.name || '').toLowerCase().includes(q)
+      );
+    }
+
+    const counts = items.reduce((acc, i) => {
+      acc[i.effectiveStatus] = (acc[i.effectiveStatus] || 0) + 1;
+      return acc;
+    }, {});
+
+    // Keep proxy/stealth interleaved by recency with normal assignments.
+    items.sort((a, b) => new Date(b.assignedAt || b.createdAt || 0) - new Date(a.assignedAt || a.createdAt || 0));
+
+    const total = items.length;
+    const paged = items.slice((page - 1) * limit, (page - 1) * limit + limit);
+
+    res.json({ success: true, assignments: paged, total, page, limit, counts });
+  } catch (error) {
+    console.error('List assignments error:', error);
+    res.status(500).json({ error: 'Failed to list assignments' });
+  }
 });
 
 // ============================================================================
@@ -234,6 +364,108 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Delete assignment error:', error);
     res.status(500).json({ error: 'Failed to delete assignment' });
+  }
+});
+
+// POST /api/admin/assignments/:id/extend - Extend an assignment's expiry.
+// Body: { durationDays } (added on top of the current expiry, or today if later)
+//   or { endDate } (set an explicit new expiry). Re-activates an expired row.
+router.post('/:id/extend', async (req, res) => {
+  try {
+    const { durationDays, endDate } = req.body;
+
+    const assignment = await ToolAssignment.findById(req.params.id);
+    if (!assignment) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    let newEndDate;
+    if (endDate) {
+      newEndDate = new Date(endDate);
+    } else if (durationDays) {
+      const days = parseInt(durationDays, 10);
+      if (!days || days <= 0) {
+        return res.status(400).json({ error: 'durationDays must be a positive number' });
+      }
+      // Extend from the current (still-future) expiry, otherwise from now.
+      const now = new Date();
+      const current = assignment.endDate ? new Date(assignment.endDate) : null;
+      const base = current && current.getTime() > now.getTime() ? current : now;
+      newEndDate = new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
+    } else {
+      return res.status(400).json({ error: 'Provide durationDays or endDate' });
+    }
+
+    if (isNaN(newEndDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid date' });
+    }
+
+    assignment.endDate = newEndDate;
+    assignment.status = 'active'; // extending re-activates an expired/active row
+    assignment.revokedAt = null;
+    await assignment.save();
+
+    await ActivityLog.log('ADMIN', req.userId, 'ASSIGNMENT_EXTENDED', {
+      assignmentId: assignment._id,
+      clientId: assignment.clientId,
+      toolId: assignment.toolId,
+      endDate: newEndDate
+    });
+
+    res.json({ success: true, assignment: toAssignmentDTO(assignment) });
+  } catch (error) {
+    console.error('Extend assignment error:', error);
+    res.status(500).json({ error: 'Failed to extend assignment' });
+  }
+});
+
+// POST /api/admin/assignments/:id/expire - Expire an assignment immediately.
+router.post('/:id/expire', async (req, res) => {
+  try {
+    const assignment = await ToolAssignment.findById(req.params.id);
+    if (!assignment) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    assignment.status = 'expired';
+    assignment.endDate = new Date(); // boundary now in the past → access denied
+    await assignment.save();
+
+    await ActivityLog.log('ADMIN', req.userId, 'ASSIGNMENT_EXPIRED', {
+      assignmentId: assignment._id,
+      clientId: assignment.clientId,
+      toolId: assignment.toolId
+    });
+
+    res.json({ success: true, assignment: toAssignmentDTO(assignment) });
+  } catch (error) {
+    console.error('Expire assignment error:', error);
+    res.status(500).json({ error: 'Failed to expire assignment' });
+  }
+});
+
+// POST /api/admin/assignments/:id/revoke - Revoke access (keeps the row for audit).
+router.post('/:id/revoke', async (req, res) => {
+  try {
+    const assignment = await ToolAssignment.findById(req.params.id);
+    if (!assignment) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    assignment.status = 'revoked';
+    assignment.revokedAt = new Date();
+    await assignment.save();
+
+    await ActivityLog.log('ADMIN', req.userId, 'ASSIGNMENT_REVOKED', {
+      assignmentId: assignment._id,
+      clientId: assignment.clientId,
+      toolId: assignment.toolId
+    });
+
+    res.json({ success: true, assignment: toAssignmentDTO(assignment) });
+  } catch (error) {
+    console.error('Revoke assignment error:', error);
+    res.status(500).json({ error: 'Failed to revoke assignment' });
   }
 });
 

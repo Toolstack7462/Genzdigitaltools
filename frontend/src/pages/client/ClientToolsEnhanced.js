@@ -15,10 +15,16 @@ import {
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { daysUntilExpiry as expiryDays } from '../../utils/expiry';
+import StealthWriterCard from '../../components/StealthWriterCard';
+import { useStealthSummary } from '../../hooks/useStealthSummary';
+import ProxyToolCard from '../../components/ProxyToolCard';
+import { useProxyTools } from '../../hooks/useProxyTools';
 
 const ClientToolsEnhanced = () => {
   const navigate = useNavigate();
   const { showError } = useToast();
+  const { stealth, loading: stealthLoading } = useStealthSummary(); // StealthWriter plan summary (shown as a tool card)
+  const { proxyTools } = useProxyTools(); // HIX AI / BypassGPT (shown as tool cards)
   const [tools, setTools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -83,6 +89,25 @@ const ClientToolsEnhanced = () => {
   
   // FIX26: Filtering done server-side; tools is already filtered
   const filteredTools = tools;
+
+  // StealthWriter appears as a normal tool card when assigned; respect search/category.
+  const stealthMatches = (() => {
+    if (!stealth?.hasPlan) return false;
+    const q = searchTerm.toLowerCase();
+    const matchesSearch = !q || 'stealthwriter humanizer ai detector humanize'.includes(q);
+    const matchesCategory = !selectedCategory || selectedCategory === 'All'
+      || selectedCategory === 'AI' || selectedCategory === 'Text Humanizers';
+    return matchesSearch && matchesCategory;
+  })();
+
+  // HIX AI / BypassGPT appear as normal tool cards when assigned; respect search/category.
+  const proxyMatches = (proxyTools || []).filter(pt => {
+    const q = searchTerm.toLowerCase();
+    const matchesSearch = !q || `${pt.name} ${pt.tagline || ''} humanizer ai detector`.toLowerCase().includes(q);
+    const matchesCategory = !selectedCategory || selectedCategory === 'All'
+      || selectedCategory === 'AI' || selectedCategory === 'Text Humanizers';
+    return matchesSearch && matchesCategory;
+  });
   
   if (loading) {
     return (
@@ -141,7 +166,7 @@ const ClientToolsEnhanced = () => {
         </div>
 
         {/* Tools Grid */}
-        {filteredTools.length === 0 ? (
+        {filteredTools.length === 0 && !stealthMatches && proxyMatches.length === 0 && !stealthLoading ? (
           <div className="gz-card p-8 text-center">
             <div className="w-12 h-12 rounded-xl bg-genz-bg flex items-center justify-center mx-auto mb-3">
               <Package size={24} className="text-genz-muted" />
@@ -151,6 +176,8 @@ const ClientToolsEnhanced = () => {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {stealthMatches && <StealthWriterCard stealth={stealth} />}
+            {proxyMatches.map(pt => <ProxyToolCard key={pt.tool} tool={pt} />)}
             {filteredTools.map(tool => {
               const daysLeft = getDaysLeft(tool.endDate, tool.daysUntilExpiry);
               const statusColor = getStatusColor(daysLeft);

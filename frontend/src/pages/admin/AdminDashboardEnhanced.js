@@ -40,12 +40,11 @@ function getActionIcon(action) {
 ───────────────────────────────────────────────────────────────── */
 function SkeletonCard() {
   return (
-    <div className="rounded-2xl p-6 border border-genz-border bg-white animate-pulse">
-      <div className="flex items-center justify-between mb-5">
-        <div className="w-12 h-12 rounded-xl bg-genz-bg" />
+    <div className="rounded-2xl p-4 border border-genz-border bg-white animate-pulse">
+      <div className="flex items-center justify-between mb-3">
+        <div className="w-9 h-9 rounded-lg bg-genz-bg" />
       </div>
-      <div className="h-8 w-16 bg-genz-bg rounded mb-2" />
-      <div className="h-4 w-24 bg-genz-bg rounded mb-1" />
+      <div className="h-6 w-14 bg-genz-bg rounded mb-2" />
       <div className="h-3 w-20 bg-genz-bg rounded" />
     </div>
   );
@@ -169,14 +168,14 @@ const AdminDashboardEnhanced = () => {
     return (
       <AdminLayoutEnhanced>
         <SecurityBanner />
-        <div className="max-w-7xl mx-auto space-y-8">
-          <div className="h-10 w-48 bg-genz-bg rounded-xl animate-pulse mb-2" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="max-w-7xl mx-auto space-y-5">
+          <div className="h-8 w-48 bg-genz-bg rounded-xl animate-pulse mb-2" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {[0,1,2,3].map(i => <SkeletonCard key={i} />)}
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="rounded-2xl border border-genz-border bg-white p-6 h-56 animate-pulse" />
-            <div className="rounded-2xl border border-genz-border bg-white p-6 h-56 animate-pulse" />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <div className="rounded-2xl border border-genz-border bg-white p-5 h-48 animate-pulse" />
+            <div className="rounded-2xl border border-genz-border bg-white p-5 h-48 animate-pulse" />
           </div>
         </div>
       </AdminLayoutEnhanced>
@@ -209,18 +208,18 @@ const AdminDashboardEnhanced = () => {
   /* ── Main render ── */
   return (
     <AdminLayoutEnhanced>
-      <div className="max-w-7xl mx-auto space-y-6">
+      <div className="max-w-7xl mx-auto space-y-5">
 
         <SecurityBanner />
 
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-black text-genz-navy flex items-center gap-3">
-              <Sparkles className="text-genz-teal" size={26} />
+            <h1 className="text-xl sm:text-2xl font-black text-genz-navy flex items-center gap-2.5">
+              <Sparkles className="text-genz-teal" size={22} />
               Welcome back
             </h1>
-            <p className="text-genz-muted text-sm mt-1 flex items-center gap-1.5">
+            <p className="text-genz-muted text-[13px] mt-0.5 flex items-center gap-1.5">
               <Calendar size={13} />
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </p>
@@ -235,20 +234,20 @@ const AdminDashboardEnhanced = () => {
         </div>
 
         {/* Stat Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {statCards.map((stat, i) => {
             const Icon = stat.icon;
             return (
-              <div key={i} className="ds-card ds-stat p-5">
-                <div className="flex items-start justify-between mb-4">
-                  <span className="w-11 h-11 rounded-xl flex items-center justify-center"
+              <div key={i} className="ds-card ds-stat p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="w-9 h-9 rounded-lg flex items-center justify-center"
                         style={{ background: `${stat.hex}14`, color: stat.hex, border: `1px solid ${stat.hex}26` }}>
-                    <Icon size={20} />
+                    <Icon size={17} />
                   </span>
                   <span className="ds-badge ds-badge-neutral">{stat.sublabel}</span>
                 </div>
-                <div className="font-heading text-[30px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
-                <div className="text-[13px] text-genz-muted mt-1.5">{stat.label}</div>
+                <div className="font-heading text-[24px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
+                <div className="text-[12px] text-genz-muted mt-1">{stat.label}</div>
               </div>
             );
           })}
@@ -256,21 +255,21 @@ const AdminDashboardEnhanced = () => {
 
         {/* Quick Actions */}
         <div>
-          <h2 className="font-heading text-[18px] font-bold text-genz-navy mb-4">Quick Actions</h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <h2 className="font-heading text-[16px] font-bold text-genz-navy mb-3">Quick Actions</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {quickActions.map((action, i) => {
               const Icon = action.icon;
               return (
                 <button key={i} onClick={action.action}
-                        className="ds-card ds-stat group p-5 text-left">
-                  <div className={`w-12 h-12 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center mb-4 shadow-md`}>
-                    <Icon size={22} className="text-white" />
+                        className="ds-card ds-stat group p-4 text-left flex items-center gap-3.5">
+                  <div className={`w-10 h-10 shrink-0 bg-gradient-to-br ${action.gradient} rounded-xl flex items-center justify-center shadow-md`}>
+                    <Icon size={18} className="text-white" />
                   </div>
-                  <h3 className="text-[16px] font-bold text-genz-navy mb-1 group-hover:text-genz-blue transition-colors">{action.title}</h3>
-                  <p className="text-[13px] text-genz-muted mb-3">{action.description}</p>
-                  <span className="inline-flex items-center gap-1.5 text-[13px] text-genz-blue font-semibold">
-                    Get Started <ArrowRight size={13} className="group-hover:translate-x-1 transition-transform" />
-                  </span>
+                  <div className="min-w-0">
+                    <h3 className="text-[14px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{action.title}</h3>
+                    <p className="text-[12px] text-genz-muted truncate">{action.description}</p>
+                  </div>
+                  <ArrowRight size={15} className="ml-auto shrink-0 text-genz-blue group-hover:translate-x-1 transition-transform" />
                 </button>
               );
             })}
@@ -278,11 +277,11 @@ const AdminDashboardEnhanced = () => {
         </div>
 
         {/* Recent Members + Recent Activity */}
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
 
           {/* Recent Members table */}
           <div className="lg:col-span-3 ds-card overflow-hidden">
-            <div className="ds-panel-head flex items-center justify-between px-5 py-4">
+            <div className="ds-panel-head flex items-center justify-between px-5 py-3.5">
               <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
                 <Users size={16} className="text-genz-blue" /> Recent Members
               </h2>
@@ -339,7 +338,7 @@ const AdminDashboardEnhanced = () => {
 
           {/* Recent Activity feed */}
           <div className="lg:col-span-2 ds-card overflow-hidden">
-            <div className="ds-panel-head flex items-center justify-between px-5 py-4">
+            <div className="ds-panel-head flex items-center justify-between px-5 py-3.5">
               <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
                 <ActivityIcon size={16} className="text-genz-blue" /> Recent Activity
               </h2>

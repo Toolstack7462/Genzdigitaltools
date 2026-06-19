@@ -1,0 +1,13 @@
+{
+  "name": "genz-proxy-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Generic Gen Z reverse-proxy gateway for HIX AI / BypassGPT (one deployment per tool/subdomain).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -122,6 +122,46 @@ Lazy reset is the safety net, so the exact cron time is not critical.
 
 ## 5. Security notes
 
+### Account/identity hiding — defence in depth (server-side first)
+
+Account, profile, billing, subscription, pricing, logout and user-info are hidden
+**at the proxy/gateway**, not only in the browser. The overlay's MutationObserver
+is now just a cosmetic *backup* for SPA soft-navigations.
+
+Layers, in order:
+1. **Route blocking** (`stealth-gateway/server.js`, real client leases only):
+   - **Logout / sign-out** is never proxied (it would destroy the shared vault
+     session) — page loads bounce to the editor, API calls get a no-op `{}`.
+   - **Account / billing / subscription / pricing / settings / profile / affiliate**
+     page navigations are 302-redirected to the humanizer editor (`BLOCK_NAV_RE`).
+   - **Billing / invoice / payment / checkout / portal / pricing / plan** API calls
+     are answered with an empty `{}` stub, never proxied (`STUB_API_RE`).
+2. **Response sanitizing** (`IDENTITY_ROUTE_RE`): JSON bodies on
+   session/user/me/account/profile/customer/subscription routes are deep-redacted —
+   `name`→“Gen Z Digital Store”, `email`→`member@genzdigitalstore.com`,
+   avatar/image/phone→null, and billing detail (price, card, invoice, customerId,
+   nextBillingDate…) neutralized. **Auth structure and `plan.tier/status` are kept**
+   so the app stays logged in and the Humanizer/AI-Detector gating still works.
+   HTML/SSR payloads have email addresses stripped. Humanizer/AI-Detector and any
+   non-identity/streaming responses are **never buffered or altered**, so usage
+   counting, cookie injection and the lease flow are untouched.
+3. **Critical hide CSS in `<head>`** (`buildCriticalCss` in `server.js`): the static
+   account / billing / pricing / plan / support / logout hiding rules ship in the
+   initial HTML `<head>` (href + aria-label/data-testid selectors, plus any operator
+   `STEALTH_HIDE_SELECTORS`), so the browser never paints them — **this kills the
+   1–2 s flash of hidden UI on load.**
+4. **Browser overlay** (`overlay.js`): inlined in `<head>` so its `MutationObserver`
+   starts hiding text-matched nodes before `<body>` paints, then stays as a backup for
+   SPA re-renders. The top account/branding bar and bottom sidebar account area are
+   hidden **completely** (no longer re-branded) — the “Gen Z Digital Store” label
+   appears only in the bottom-right floating widget; the sidebar keeps just
+   Dashboard / Humanizer / AI Detector and the editor/buttons/result area are untouched.
+
+Sanitization **fails safe**: any JSON that doesn't parse is passed through
+unchanged, so a non-identity payload can never be corrupted. No new layer logs
+cookies, tokens, sessions, passwords, authorization headers or secrets — the
+block/sanitize logs carry only `request_path` + a `kind` flag.
+
 - Backend re-validates client status, plan expiry and limits on **every** action
   (`/validate` and `/consume`) — independent of the lease timer and the overlay.
 - Disabling the fixed lease (admin setting) only removes the countdown; status,

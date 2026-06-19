@@ -6,8 +6,9 @@ import {
   KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
-import api from '../../services/api';
+import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
+import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
 const fmtLimit = (used, remaining, limit) => limit < 0 ? `${used} (∞)` : `${used}/${limit} · ${remaining} left`;
@@ -27,6 +28,7 @@ const AdminStealthWriter = () => {
   const [stats, setStats] = useState(null);
   const [clients, setClients] = useState([]);
   const [crmClients, setCrmClients] = useState([]);
+  const [crmLoading, setCrmLoading] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -56,9 +58,12 @@ const AdminStealthWriter = () => {
 
   const loadCrmClients = async () => {
     try {
-      const res = await api.get('/admin/clients?limit=100');
-      setCrmClients(res.data.clients || []);
+      setCrmLoading(true);
+      // Stable list — cached + coalesced across admin pages (see services/apiCache).
+      const data = await cachedGet('/admin/clients?limit=100');
+      setCrmClients(data.clients || []);
     } catch { /* non-fatal */ }
+    finally { setCrmLoading(false); }
   };
 
   const saveSettings = async () => {
@@ -286,7 +291,7 @@ const AdminStealthWriter = () => {
         </>
       )}
 
-      {showCreate && <CreateModal crmClients={crmClients} onClose={() => setShowCreate(false)}
+      {showCreate && <CreateModal crmClients={crmClients} crmLoading={crmLoading} onClose={() => setShowCreate(false)}
         onCreated={() => { setShowCreate(false); load(); }} showError={showError} showSuccess={showSuccess} />}
       {editing && <EditModal client={editing} onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); load(); }} showError={showError} showSuccess={showSuccess} />}
@@ -352,7 +357,7 @@ const Field = ({ label, children }) => (
 );
 const inputCls = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm';
 
-const CreateModal = ({ crmClients, onClose, onCreated, showError, showSuccess }) => {
+const CreateModal = ({ crmClients, crmLoading, onClose, onCreated, showError, showSuccess }) => {
   const [form, setForm] = useState({ userId: '', planName: 'StealthWriter', dailyHumanizerLimit: 50, dailyDetectorLimit: 50, expiryDate: '', status: 'active' });
   const [saving, setSaving] = useState(false);
   const submit = async () => {
@@ -370,10 +375,14 @@ const CreateModal = ({ crmClients, onClose, onCreated, showError, showSuccess })
   return (
     <Modal title="Add StealthWriter client" onClose={onClose}>
       <Field label="CRM client">
-        <select value={form.userId} onChange={(e) => setForm({ ...form, userId: e.target.value })} className={inputCls}>
-          <option value="">Select a client…</option>
-          {crmClients.map((u) => <option key={u._id} value={u._id}>{u.fullName} — {u.email}</option>)}
-        </select>
+        <ClientSearchSelect
+          id="sw-crm-client"
+          clients={crmClients}
+          value={form.userId}
+          onChange={(id) => setForm({ ...form, userId: id })}
+          loading={crmLoading}
+          placeholder="Search client by name or email…"
+        />
       </Field>
       <Field label="Plan name"><input className={inputCls} value={form.planName} onChange={(e) => setForm({ ...form, planName: e.target.value })} /></Field>
       <div className="grid grid-cols-2 gap-3">

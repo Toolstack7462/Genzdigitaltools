@@ -3,6 +3,19 @@ const router = express.Router();
 const ActivityLog = require('../../models/ActivityLog');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
 
+// 7-day retention for routine activity, applied lazily (throttled to once/hour) so the
+// log table never grows unbounded — important security/payment/account/credential
+// audit logs are preserved (see ActivityLog.purgeOld). Runs in the background; never
+// blocks or fails the request.
+const RETENTION_DAYS = Number(process.env.ACTIVITY_RETENTION_DAYS || 7);
+let lastPurgeAt = 0;
+function maybePurge() {
+  const now = Date.now();
+  if (now - lastPurgeAt < 60 * 60 * 1000) return;
+  lastPurgeAt = now;
+  Promise.resolve().then(() => ActivityLog.purgeOld(RETENTION_DAYS)).catch(() => {});
+}
+
 // Apply auth middleware - accept all admin roles
 router.use(requireAuth);
 router.use((req, res, next) => {
@@ -16,13 +29,14 @@ router.use((req, res, next) => {
 // GET /api/admin/activity - Get activity logs
 router.get('/', async (req, res) => {
   try {
-    const { 
-      limit = 20, 
-      page = 1, 
-      action, 
+    maybePurge(); // lazy 7-day retention (throttled, non-blocking)
+    const {
+      limit = 20,
+      page = 1,
+      action,
       role,
       startDate,
-      endDate 
+      endDate
     } = req.query;
     
     const query = {};

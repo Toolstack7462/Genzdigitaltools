@@ -21,6 +21,18 @@ backend/admin/client/extension code — deploy it as its **own** Node.js app.
    humanize / AI-detector calls, hiding pricing/billing UI, and stripping
    frame-blocking headers. Serves a block page once the lease is invalid/expired.
 
+### No-flash hiding
+
+The account / branding / billing / pricing / plan / logout chrome is hidden with
+**critical CSS injected into `<head>`** and the overlay script is **inlined in
+`<head>`** (its `MutationObserver` starts before `<body>` paints), so the hidden UI
+never flashes on load. The top account/branding bar and the bottom sidebar account
+area are hidden **completely** — the Gen Z brand appears only in the small
+bottom-right floating widget. The sidebar keeps only Dashboard / Humanizer /
+AI Detector; the editor, Humanize and Check-for-AI buttons and result area are never
+touched. If StealthWriter wraps those chrome areas in obfuscated classes the generic
+href/aria rules can't reach, list their exact selectors in `STEALTH_HIDE_SELECTORS`.
+
 ## Run
 
 ```bash
@@ -40,6 +52,7 @@ There are **no dependencies** — `npm install` is a no-op. `npm start` runs
 | `STEALTH_API_BASE` | Gen Z backend gateway API, e.g. `https://api.genzdigitalstore.com/api/crm/stealth/gateway`. |
 | `GATEWAY_PUBLIC_ORIGIN` | This gateway's public origin, e.g. `https://stealth1.genzdigitalstore.com`. |
 | `STEALTH_LEASE_SECRET` | Must match the backend's `STEALTH_LEASE_SECRET` so leases verify locally (min 32 chars). |
+| `STEALTH_HIDE_SELECTORS` | Optional. Comma-separated CSS selectors for StealthWriter's exact top-bar / bottom account-area containers, added to the critical hide CSS in `<head>`. Never include the editor area. |
 
 Never commit the real `.env` — it is git-ignored. Only `.env.example` is tracked.
 
