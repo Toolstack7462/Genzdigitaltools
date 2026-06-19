@@ -34,25 +34,47 @@ export default function ClientSearchSelect({
   id,
   ariaLabel = 'Search and select a client',
   className = '',
+  // Optional server-side search: when provided, the parent supplies the matching
+  // `clients` and this component calls onSearch(term) (debounced) instead of
+  // filtering locally — so the picker can reach EVERY client, not just a page.
+  onSearch,
+  searching = false,
 }) {
+  const isServer = typeof onSearch === 'function';
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
+  const [cache, setCache] = useState(null); // retains the chosen client for display
   const rootRef = useRef(null);
   const inputRef = useRef(null);
   const listRef = useRef(null);
+  const onSearchRef = useRef(onSearch);
+  onSearchRef.current = onSearch;
   const listboxId = `${id || 'client'}-listbox`;
 
-  const selected = useMemo(
+  // Resolve the selected client from the current list, falling back to a cached copy
+  // so the trigger keeps showing "Name — Email" even after the list changes (e.g. the
+  // user searched for someone else after picking).
+  const fromList = useMemo(
     () => clients.find((c) => String(c._id) === String(value)) || null,
     [clients, value]
   );
+  useEffect(() => { if (fromList) setCache(fromList); }, [fromList]);
+  const selected = fromList || (cache && String(cache._id) === String(value) ? cache : null);
 
   const filtered = useMemo(() => {
+    if (isServer) return clients; // parent already returns the matching set
     const q = norm(query).trim();
     if (!q) return clients;
     return clients.filter((c) => norm(c.fullName).includes(q) || norm(c.email).includes(q));
-  }, [clients, query]);
+  }, [clients, query, isServer]);
+
+  // Debounced server-side search on query change (server mode only).
+  useEffect(() => {
+    if (!isServer) return undefined;
+    const t = setTimeout(() => { onSearchRef.current?.(query); }, 250);
+    return () => clearTimeout(t);
+  }, [query, isServer]);
 
   // Close on outside click.
   useEffect(() => {
@@ -84,6 +106,7 @@ export default function ClientSearchSelect({
 
   const choose = useCallback((c) => {
     if (!c) return;
+    setCache(c); // remember so display survives later list/search changes
     onChange?.(String(c._id));
     setOpen(false);
   }, [onChange]);
@@ -188,13 +211,13 @@ export default function ClientSearchSelect({
           </div>
 
           <ul ref={listRef} role="listbox" id={listboxId} className="max-h-56 overflow-y-auto py-1">
-            {loading ? (
+            {(loading || (isServer && searching)) ? (
               <li className="flex items-center gap-2 px-3 py-3 text-sm text-slate-400">
                 <Loader2 size={15} className="animate-spin" /> Loading clients…
               </li>
             ) : filtered.length === 0 ? (
               <li className="px-3 py-3 text-sm text-slate-400">
-                {clients.length === 0 ? 'No clients available' : 'No clients match your search'}
+                {query.trim() ? 'No clients match your search' : (clients.length === 0 ? 'No clients available' : 'No clients match your search')}
               </li>
             ) : (
               filtered.map((c, idx) => {

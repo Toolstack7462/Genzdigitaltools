@@ -29,6 +29,7 @@ const AdminStealthWriter = () => {
   const [clients, setClients] = useState([]);
   const [crmClients, setCrmClients] = useState([]);
   const [crmLoading, setCrmLoading] = useState(false);
+  const [crmSearching, setCrmSearching] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -56,14 +57,17 @@ const AdminStealthWriter = () => {
 
   useEffect(() => { load(); }, [load]);
 
-  const loadCrmClients = async () => {
+  // Doubles as the picker's server-side search: no term → first 100 (cached);
+  // a term queries the DB by name OR email so every client is reachable.
+  const loadCrmClients = async (term = '') => {
     try {
-      setCrmLoading(true);
-      // Stable list — cached + coalesced across admin pages (see services/apiCache).
-      const data = await cachedGet('/admin/clients?limit=100');
+      term ? setCrmSearching(true) : setCrmLoading(true);
+      const params = new URLSearchParams({ limit: '100' });
+      if (term && term.trim()) params.append('search', term.trim());
+      const data = await cachedGet(`/admin/clients?${params}`);
       setCrmClients(data.clients || []);
     } catch { /* non-fatal */ }
-    finally { setCrmLoading(false); }
+    finally { term ? setCrmSearching(false) : setCrmLoading(false); }
   };
 
   const saveSettings = async () => {
@@ -291,7 +295,7 @@ const AdminStealthWriter = () => {
         </>
       )}
 
-      {showCreate && <CreateModal crmClients={crmClients} crmLoading={crmLoading} onClose={() => setShowCreate(false)}
+      {showCreate && <CreateModal crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={loadCrmClients} onClose={() => setShowCreate(false)}
         onCreated={() => { setShowCreate(false); load(); }} showError={showError} showSuccess={showSuccess} />}
       {editing && <EditModal client={editing} onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); load(); }} showError={showError} showSuccess={showSuccess} />}
@@ -357,7 +361,7 @@ const Field = ({ label, children }) => (
 );
 const inputCls = 'w-full border border-slate-200 rounded-lg px-3 py-2 text-sm';
 
-const CreateModal = ({ crmClients, crmLoading, onClose, onCreated, showError, showSuccess }) => {
+const CreateModal = ({ crmClients, crmLoading, crmSearching, onSearchClients, onClose, onCreated, showError, showSuccess }) => {
   const [form, setForm] = useState({ userId: '', planName: 'StealthWriter', dailyHumanizerLimit: 50, dailyDetectorLimit: 50, expiryDate: '', status: 'active' });
   const [saving, setSaving] = useState(false);
   const submit = async () => {
@@ -381,6 +385,8 @@ const CreateModal = ({ crmClients, crmLoading, onClose, onCreated, showError, sh
           value={form.userId}
           onChange={(id) => setForm({ ...form, userId: id })}
           loading={crmLoading}
+          onSearch={onSearchClients}
+          searching={crmSearching}
           placeholder="Search client by name or email…"
         />
       </Field>

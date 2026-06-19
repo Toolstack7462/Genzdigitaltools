@@ -37,6 +37,7 @@ const AdminProxyTools = () => {
   const [clients, setClients] = useState([]);
   const [crmClients, setCrmClients] = useState([]);
   const [crmLoading, setCrmLoading] = useState(true);
+  const [crmSearching, setCrmSearching] = useState(false);
 
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editAccount, setEditAccount] = useState(null);
@@ -85,6 +86,19 @@ const AdminProxyTools = () => {
       .then(d => setCrmClients(d?.clients || []))
       .catch(() => {})
       .finally(() => setCrmLoading(false));
+  }, []);
+
+  // Server-side client search for the "grant access" picker so it can reach every
+  // client (name OR email), not just the first 100. Cached per term.
+  const searchCrmClients = useCallback(async (term) => {
+    try {
+      setCrmSearching(true);
+      const params = new URLSearchParams({ limit: '100' });
+      if (term && term.trim()) params.append('search', term.trim());
+      const d = await cachedGet(`/admin/clients?${params}`);
+      setCrmClients(d?.clients || []);
+    } catch (_) { /* keep current list */ }
+    finally { setCrmSearching(false); }
   }, []);
 
   const currentName = (toolDefs.find(t => t.tool === tool) || {}).name || tool;
@@ -182,7 +196,7 @@ const AdminProxyTools = () => {
 
       {showAccountModal && <AccountModal account={editAccount} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
       {showSessionModal && <SessionModal account={showSessionModal} onClose={() => setShowSessionModal(null)} onSave={saveSession} />}
-      {showClientModal && <ClientModal client={editClient} crmClients={crmClients} crmLoading={crmLoading} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
+      {showClientModal && <ClientModal client={editClient} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={searchCrmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
     </AdminLayoutEnhanced>
   );
 };
@@ -343,7 +357,7 @@ const SessionModal = ({ account, onClose, onSave }) => {
   );
 };
 
-const ClientModal = ({ client, crmClients, crmLoading, existing, onClose, onSave }) => {
+const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchClients, existing, onClose, onSave }) => {
   const [f, setF] = useState({
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
   });
@@ -366,6 +380,8 @@ const ClientModal = ({ client, crmClients, crmLoading, existing, onClose, onSave
               value={f.userId}
               onChange={(id) => setF({ ...f, userId: id })}
               loading={crmLoading}
+              onSearch={onSearchClients}
+              searching={crmSearching}
               placeholder="Search client by name or email…"
               className="bg-genz-bg border-genz-border text-genz-navy focus:border-genz-teal"
             />

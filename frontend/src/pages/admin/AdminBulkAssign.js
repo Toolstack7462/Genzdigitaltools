@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import AdminLayout from '../../components/AdminLayout';
-import { ArrowLeft, Save, Package, Users, Calendar, CheckCircle2, Search, X } from 'lucide-react';
+import { ArrowLeft, Save, Package, Calendar, CheckCircle2, Search, X, Loader2 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 
@@ -10,19 +10,33 @@ const AdminBulkAssign = () => {
   const { clientId } = useParams(); // If editing a specific client's assignments
   const { showSuccess, showError } = useToast();
 
+  const CLIENT_PAGE_SIZE = 40;
+
   const [loading, setLoading] = useState(true);
-  const [clientsLoading, setClientsLoading] = useState(true);
+  const [clientsLoading, setClientsLoading] = useState(true);   // first page / search
+  const [clientsLoadingMore, setClientsLoadingMore] = useState(false); // "Load more"
   const [saving, setSaving] = useState(false);
   const [tools, setTools] = useState([]);
-  const [clients, setClients] = useState([]);
+  const [clients, setClients] = useState([]);          // accumulated, paged client list
+  const [clientPage, setClientPage] = useState(1);
+  const [clientHasMore, setClientHasMore] = useState(false);
+  const [clientTotal, setClientTotal] = useState(0);
   const [selectedTools, setSelectedTools] = useState([]);
   const [selectedClients, setSelectedClients] = useState([]);
   const [toolSearch, setToolSearch] = useState('');
   const [clientSearch, setClientSearch] = useState('');
-  const [duration, setDuration] = useState({
-    startDate: new Date().toISOString().split('T')[0],
-    endDate: '',
-    preset: '30'
+  const [duration, setDuration] = useState(() => {
+    // Default to the "1 Month" preset WITH a real endDate so an admin can assign
+    // immediately without first touching the duration controls (otherwise the empty
+    // endDate fails validation and the assign silently does nothing).
+    const start = new Date();
+    const end = new Date();
+    end.setDate(end.getDate() + 30);
+    return {
+      startDate: start.toISOString().split('T')[0],
+      endDate: end.toISOString().split('T')[0],
+      preset: '30',
+    };
   });
 
   useEffect(() => {
@@ -31,26 +45,39 @@ const AdminBulkAssign = () => {
   }, []);
 
   // Server-side client search (debounced) so the picker can reach EVERY client —
-  // not just the first page — exactly like the Members list. Matches name OR email.
+  // the search hits the DB (name OR email), not just the rows already loaded. Each
+  // new term resets to page 1. Selections persist across searches/pages (they live
+  // in selectedClients, independent of the loaded list).
   useEffect(() => {
-    const t = setTimeout(() => { loadClients(clientSearch); }, 300);
+    const t = setTimeout(() => { loadClients(clientSearch, 1, false); }, 300);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientSearch]);
 
-  const loadClients = async (search = '') => {
+  const loadClients = async (search = '', page = 1, append = false) => {
     try {
-      setClientsLoading(true);
-      const params = new URLSearchParams({ status: 'active', limit: '100' });
+      append ? setClientsLoadingMore(true) : setClientsLoading(true);
+      const params = new URLSearchParams({
+        status: 'active',
+        page: String(page),
+        limit: String(CLIENT_PAGE_SIZE),
+      });
       if (search.trim()) params.append('search', search.trim());
       const res = await api.get(`/admin/clients?${params}`);
-      setClients(res.data.clients || []);
+      const list = res.data.clients || [];
+      const pg = res.data.pagination || {};
+      setClients(prev => (append ? [...prev, ...list] : list));
+      setClientPage(pg.page || page);
+      setClientHasMore(typeof pg.hasMore === 'boolean' ? pg.hasMore : list.length === CLIENT_PAGE_SIZE);
+      setClientTotal(typeof pg.totalCount === 'number' ? pg.totalCount : list.length);
     } catch (_) {
       // Best-effort: keep whatever was already loaded so the picker never goes blank.
     } finally {
-      setClientsLoading(false);
+      append ? setClientsLoadingMore(false) : setClientsLoading(false);
     }
   };
+
+  const loadMoreClients = () => loadClients(clientSearch, clientPage + 1, true);
 
   const loadInitial = async () => {
     try {
@@ -303,13 +330,16 @@ const AdminBulkAssign = () => {
           <div className="ds-card p-4">
             <StepHead n={2} title="Select Clients">
               <span className="ds-badge ds-badge-teal">{selectedClients.length} selected</span>
-              <button
-                type="button"
-                onClick={selectAllClients}
-                className="ml-auto text-sm font-medium text-genz-teal hover:underline"
-              >
-                {filteredClients.length > 0 && filteredClients.every(c => selectedClients.some(s => s._id === c._id)) ? 'Deselect All' : 'Select All'}
-              </button>
+              {filteredClients.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectAllClients}
+                  className="ml-auto text-sm font-medium text-genz-teal hover:underline whitespace-nowrap"
+                  title="Selects only the clients currently loaded below"
+                >
+                  {filteredClients.every(c => selectedClients.some(s => s._id === c._id)) ? 'Deselect loaded' : 'Select all loaded'}
+                </button>
+              )}
             </StepHead>
 
             <div className="relative mb-3">
@@ -391,8 +421,26 @@ const AdminBulkAssign = () => {
                 {clientSearch.trim() ? 'No clients match your search' : 'No active clients found'}
               </p>
             )}
-            {!clientsLoading && clients.length >= 100 && (
-              <p className="text-center text-[11px] text-genz-muted pt-2">Showing the first 100 matches — refine your search to narrow the list.</p>
+
+            {!clientsLoading && filteredClients.length > 0 && (
+              <div className="flex items-center justify-between gap-3 pt-3">
+                <span className="text-[11px] text-genz-muted">
+                  Showing {filteredClients.length}{clientTotal ? ` of ${clientTotal}` : ''} client{filteredClients.length === 1 ? '' : 's'}
+                  {clientSearch.trim() ? ' matching your search' : ''}
+                </span>
+                {clientHasMore && (
+                  <button
+                    type="button"
+                    onClick={loadMoreClients}
+                    disabled={clientsLoadingMore}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-genz-border bg-genz-bg text-sm font-medium text-genz-navy hover:border-genz-teal/50 transition-colors disabled:opacity-50"
+                    data-testid="load-more-clients"
+                  >
+                    {clientsLoadingMore && <Loader2 size={14} className="animate-spin" />}
+                    {clientsLoadingMore ? 'Loading…' : 'Load more'}
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
