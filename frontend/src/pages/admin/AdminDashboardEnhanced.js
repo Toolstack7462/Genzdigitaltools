@@ -67,6 +67,7 @@ const AdminDashboardEnhanced = () => {
   const [loading, setLoading] = useState(true);
   const [dashboardError, setDashboardError] = useState(null);
   const [securityAlertCount, setSecurityAlertCount] = useState(0);
+  const [expiringCount, setExpiringCount] = useState(0);
 
   useEffect(() => {
     loadDashboard();
@@ -83,11 +84,14 @@ const AdminDashboardEnhanced = () => {
     setLoading(true);
     setDashboardError(null);
     try {
-      const [toolsRes, clientsRes, clientStatsRes, activityRes] = await Promise.all([
+      const [toolsRes, clientsRes, clientStatsRes, activityRes, expiringRes] = await Promise.all([
         api.get('/admin/tools/stats').catch(() => ({ data: {} })),
         api.get('/admin/clients?limit=5').catch(() => ({ data: {} })),
         api.get('/admin/clients/stats').catch(() => ({ data: {} })),
         api.get('/admin/activity?limit=10').catch(() => ({ data: {} })),
+        // "Expiring soon" = active assignments within the 7-day window. total is the
+        // full count (computed server-side); we only need 1 row back.
+        api.get('/admin/assignments?status=expiring&limit=1').catch(() => ({ data: {} })),
       ]);
 
       const toolStats    = toolsRes.data?.stats       || {};
@@ -112,6 +116,7 @@ const AdminDashboardEnhanced = () => {
 
       setRecentClients(Array.isArray(clientStats.recentClients) ? clientStats.recentClients : []);
       setRecentActivity(Array.isArray(activities) ? activities : []);
+      setExpiringCount(Number(expiringRes.data?.total) || 0);
     } catch (err) {
       console.error('Dashboard load error:', err);
       setDashboardError('Could not load dashboard data. Check your connection and try again.');
@@ -163,6 +168,18 @@ const AdminDashboardEnhanced = () => {
     </Link>
   ) : null;
 
+  /* ── Expiring-soon banner (renewal prompt) ── */
+  const ExpiringBanner = () => expiringCount > 0 ? (
+    <Link to="/admin/assignments"
+          className="flex items-center gap-3 p-3.5 mb-6 rounded-xl border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/15 transition-all">
+      <Clock size={16} className="text-amber-600 flex-shrink-0" />
+      <span className="text-amber-700 text-sm font-semibold flex-1">
+        {expiringCount} assignment{expiringCount !== 1 ? 's' : ''} expiring within 7 days
+      </span>
+      <span className="text-xs text-amber-600/70">Review &amp; renew →</span>
+    </Link>
+  ) : null;
+
   /* ── Loading state ── */
   if (loading) {
     return (
@@ -211,6 +228,7 @@ const AdminDashboardEnhanced = () => {
       <div className="max-w-7xl mx-auto space-y-5">
 
         <SecurityBanner />
+        <ExpiringBanner />
 
         {/* Header */}
         <div className="flex items-center justify-between">
