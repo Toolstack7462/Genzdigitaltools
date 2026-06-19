@@ -1,10 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Search, Package, User as UserIcon, Edit2, CalendarClock, CalendarX,
-  Ban, Trash2, Save, X, Mail, Inbox
+  Ban, Trash2, Save, X, Mail, Inbox, Settings, ChevronLeft, ChevronRight
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../Toast';
+
+// Access-mode badge: how the client reaches the tool (kept separate per access mode).
+const ACCESS_META = {
+  extension: { label: 'Extension', cls: 'bg-blue-500/10 text-blue-600' },
+  proxy:     { label: 'Proxy',     cls: 'bg-purple-500/10 text-purple-600' },
+  direct:    { label: 'Direct',    cls: 'bg-genz-teal/10 text-genz-teal' },
+};
+const AccessBadge = ({ mode }) => {
+  const meta = ACCESS_META[mode] || ACCESS_META.extension;
+  return <span className={`inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full ${meta.cls}`}>{meta.label}</span>;
+};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const fmtDate = (d) => {
@@ -216,6 +228,7 @@ const Act = ({ onClick, title, tone, icon: Icon, testId }) => {
  */
 const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged }) => {
   const { showSuccess, showError } = useToast();
+  const navigate = useNavigate();
   const scope = toolId ? 'tool' : clientId ? 'client' : 'global';
 
   const [assignments, setAssignments] = useState([]);
@@ -228,6 +241,9 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
   const [clients, setClients] = useState([]);
   const [editing, setEditing] = useState(null);
   const [extending, setExtending] = useState(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const PAGE_SIZE = 50;
 
   const load = useCallback(async () => {
     try {
@@ -239,9 +255,12 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
       else if (clientFilter) params.append('clientId', clientFilter);
       if (statusFilter) params.append('status', statusFilter);
       if (search.trim()) params.append('search', search.trim());
+      params.append('page', String(page));
+      params.append('limit', String(PAGE_SIZE));
 
       const res = await api.get(`/admin/assignments?${params}`);
       setAssignments(res.data.assignments || []);
+      setTotal(res.data.total || 0);
     } catch (e) {
       // Actionable, secret-free message: include the HTTP status so a missing
       // backend route (404) is distinguishable from a real server error (500) or
@@ -258,9 +277,12 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
     } finally {
       setLoading(false);
     }
-  }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search, showError]);
+  }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search, page, showError]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Reset to page 1 whenever a filter/search changes so results aren't on a stale page.
+  useEffect(() => { setPage(1); }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search]);
 
   // Load tool/client lists for the global-view filter dropdowns.
   useEffect(() => {
@@ -414,9 +436,10 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
                     </div>
                   </div>
 
-                  {/* status */}
+                  {/* status + access mode */}
                   <div className="flex md:block items-center gap-2">
                     <StatusBadge status={a.effectiveStatus} />
+                    <div className="mt-1"><AccessBadge mode={a.accessMode} /></div>
                   </div>
 
                   {/* assigned date */}
@@ -433,15 +456,29 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
 
                   {/* actions */}
                   <div className="flex items-center justify-start md:justify-end gap-1.5 pt-1 md:pt-0">
-                    <Act tone="blue" icon={Edit2} title="Edit assignment" onClick={() => setEditing(a)} testId={`edit-${a._id}`} />
-                    <Act tone="teal" icon={CalendarClock} title="Extend expiry" onClick={() => setExtending(a)} testId={`extend-${a._id}`} />
-                    {a.effectiveStatus !== 'expired' && (
-                      <Act tone="amber" icon={CalendarX} title="Expire now" onClick={() => expireNow(a)} testId={`expire-${a._id}`} />
+                    {a.readOnly ? (
+                      // Proxy / StealthWriter tools are managed on their dedicated admin
+                      // page (separate lease/gateway flow — never the assignment CRUD).
+                      <button type="button"
+                        onClick={() => navigate(a.manageUrl || '/admin/proxy-tools')}
+                        title="Manage on its tool page"
+                        className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-genz-border bg-genz-bg text-genz-teal hover:bg-genz-teal/10 transition-colors text-xs font-semibold"
+                        data-testid={`manage-${a._id}`}>
+                        <Settings size={13} /> Manage
+                      </button>
+                    ) : (
+                      <>
+                        <Act tone="blue" icon={Edit2} title="Edit assignment" onClick={() => setEditing(a)} testId={`edit-${a._id}`} />
+                        <Act tone="teal" icon={CalendarClock} title="Extend expiry" onClick={() => setExtending(a)} testId={`extend-${a._id}`} />
+                        {a.effectiveStatus !== 'expired' && (
+                          <Act tone="amber" icon={CalendarX} title="Expire now" onClick={() => expireNow(a)} testId={`expire-${a._id}`} />
+                        )}
+                        {a.effectiveStatus !== 'revoked' && (
+                          <Act tone="amber" icon={Ban} title="Revoke access" onClick={() => revoke(a)} testId={`revoke-${a._id}`} />
+                        )}
+                        <Act tone="red" icon={Trash2} title="Remove assignment" onClick={() => remove(a)} testId={`remove-${a._id}`} />
+                      </>
                     )}
-                    {a.effectiveStatus !== 'revoked' && (
-                      <Act tone="amber" icon={Ban} title="Revoke access" onClick={() => revoke(a)} testId={`revoke-${a._id}`} />
-                    )}
-                    <Act tone="red" icon={Trash2} title="Remove assignment" onClick={() => remove(a)} testId={`remove-${a._id}`} />
                   </div>
                 </div>
               );
@@ -450,8 +487,23 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
         </div>
       )}
 
-      {!loading && assignments.length > 0 && (
-        <p className="text-xs text-genz-muted">{assignments.length} assignment{assignments.length === 1 ? '' : 's'}</p>
+      {!loading && total > 0 && (
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-genz-muted">{total} assignment{total === 1 ? '' : 's'}</p>
+          {total > PAGE_SIZE && (
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+                className="p-1.5 rounded-lg border border-genz-border text-genz-muted hover:text-genz-navy disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Previous page">
+                <ChevronLeft size={16} />
+              </button>
+              <span className="text-xs text-genz-muted">Page {page} of {Math.ceil(total / PAGE_SIZE)}</span>
+              <button type="button" onClick={() => setPage(p => (p < Math.ceil(total / PAGE_SIZE) ? p + 1 : p))} disabled={page >= Math.ceil(total / PAGE_SIZE)}
+                className="p-1.5 rounded-lg border border-genz-border text-genz-muted hover:text-genz-navy disabled:opacity-40 disabled:cursor-not-allowed" aria-label="Next page">
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {editing && <EditModal assignment={editing} onClose={() => setEditing(null)} onSaved={() => afterMutation('Assignment updated')} />}

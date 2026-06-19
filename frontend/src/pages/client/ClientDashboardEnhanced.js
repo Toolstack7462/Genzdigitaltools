@@ -231,6 +231,12 @@ const ClientDashboardEnhanced = () => {
   // Derive stats
   const activeTools   = tools.filter(t => t.status !== 'expired');
   const expiredTools  = tools.filter(t => t.status === 'expired');
+  // Proxy tools (HIX/BypassGPT/ChatGPT/Ryne/WriteHuman) and StealthWriter are assigned
+  // tools too — count their ACTIVE ones in the Active Tools total so the number matches
+  // what the member actually sees as tool cards.
+  const proxyActiveCount = (proxyTools || []).filter(pt => pt && pt.active).length;
+  const stealthActiveCount = (stealth?.hasPlan && (stealth.plan ? (stealth.plan.active !== false && !stealth.plan.expired) : true)) ? 1 : 0;
+  const totalActiveTools = activeTools.length + proxyActiveCount + stealthActiveCount;
   const featuredTools = tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4);
 
   // Expiring Soon — computed from real assignment data (backend daysUntilExpiry,
@@ -509,7 +515,7 @@ const ClientDashboardEnhanced = () => {
                   {user?.fullName ? user.fullName.split(' ')[0] : 'Member'}'s Dashboard
                   <span className="ml-2 inline-flex items-center gap-1 align-middle px-2 py-[3px] rounded-md text-[10.5px] font-bold text-genz-cyan"
                         style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
-                    <Package size={10} /> {activeTools.length} tools
+                    <Package size={10} /> {totalActiveTools} tools
                   </span>
                 </h1>
               </div>
@@ -557,7 +563,7 @@ const ClientDashboardEnhanced = () => {
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
             const cards = [
-              { icon: CheckCircle2, kind: 'num',    value: activeTools.length,   label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
+              { icon: CheckCircle2, kind: 'num',    value: totalActiveTools,     label: 'Active Tools',    sub: 'Ready to use',      color: '#16A34A' },
               { icon: Clock,        kind: 'num',    value: expiringSoon.length,  label: 'Expiring Soon',   sub: nearestExpiry ? `Soonest ${fmtExpiry(nearestExpiry.endDate)}` : 'Within 7 days', color: '#D97706' },
               { icon: ShieldCheck,  kind: 'status', value: accountActive ? 'Active' : 'Expired', badge: accountActive ? 'ds-badge-success' : 'ds-badge-danger', label: 'Account Status', sub: 'Membership',        color: accountActive ? '#16A34A' : '#EF4444' },
               { icon: Shield,       kind: 'status', value: 'Secured', badge: 'ds-badge-teal',     label: 'Device Security', sub: 'Encrypted bridge',  color: '#06B6D4' },

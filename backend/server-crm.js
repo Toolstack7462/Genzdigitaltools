@@ -247,6 +247,7 @@ const adminToolsRoutes        = require('./routes/admin/toolsEnhanced');
 const adminClientsRoutes      = require('./routes/admin/clientsEnhanced');
 const adminAssignmentsRoutes  = require('./routes/admin/assignments');
 const adminActivityRoutes     = require('./routes/admin/activity');
+const adminAnalyticsRoutes    = require('./routes/admin/analytics');
 const adminBlogRoutes         = require('./routes/admin/blog');
 const adminContactsRoutes     = require('./routes/admin/contacts');
 const adminSecurityAlertsRoutes = require('./routes/admin/securityAlerts');
@@ -276,6 +277,7 @@ app.use('/api/crm/admin/tools', express.json({ limit: '10mb' }), adminToolsRoute
 app.use('/api/crm/admin/clients',    adminClientsRoutes);
 app.use('/api/crm/admin/assignments',adminAssignmentsRoutes);
 app.use('/api/crm/admin/activity',   adminActivityRoutes);
+app.use('/api/crm/admin/analytics',  adminAnalyticsRoutes);
 app.use('/api/crm/admin/blog',       adminBlogRoutes);
 app.use('/api/crm/admin/contacts',       adminContactsRoutes);
 app.use('/api/crm/admin/security-alerts', adminSecurityAlertsRoutes);

@@ -58,6 +58,10 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/middleware/validation.js         "sftp://${HOST}:${PORT}${API_ROOT}/middleware/validation.js" \
   -T backend/routes/admin/clientsEnhanced.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/clientsEnhanced.js" \
   -T backend/routes/admin/assignments.js      "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/assignments.js" \
+  -T backend/routes/admin/activity.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/activity.js" \
+  -T backend/routes/admin/analytics.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/analytics.js" \
+  -T backend/models/ActivityLog.js            "sftp://${HOST}:${PORT}${API_ROOT}/models/ActivityLog.js" \
+  -T backend/utils/proxyAssignments.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxyAssignments.js" \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \

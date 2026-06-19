@@ -5,6 +5,7 @@ const Tool = require('../../models/Tool');
 const User = require('../../models/User');
 const ActivityLog = require('../../models/ActivityLog');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
+const { buildProxyAssignmentDTOs } = require('../../utils/proxyAssignments');
 
 // Apply auth middleware - accept all admin roles
 router.use(requireAuth);
@@ -55,9 +56,15 @@ function toAssignmentDTO(a) {
   const tool = obj.toolId && typeof obj.toolId === 'object' ? obj.toolId : null;
   const client = obj.clientId && typeof obj.clientId === 'object' ? obj.clientId : null;
   const { effectiveStatus, remainingDays } = computeAssignmentStatus(obj);
+  // Access mode: catalog tools go through the extension/cookie flow unless the tool
+  // is explicitly direct-open only. Proxy/stealth tools are tagged 'proxy' elsewhere.
+  const accessMode = tool && tool.extensionSettings && tool.extensionSettings.directOpenEnabled === true && tool.extensionSettings.requirePermission === false
+    ? 'direct' : 'extension';
 
   return {
     _id: obj._id,
+    accessMode,
+    readOnly: false,
     status: obj.status,
     effectiveStatus,
     remainingDays,
@@ -82,6 +89,8 @@ function toAssignmentDTO(a) {
 router.get('/', async (req, res) => {
   try {
     const { toolId, clientId, status, search } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
 
     // Narrow at the DB level by the indexed foreign keys when provided.
     const query = {};
@@ -89,11 +98,19 @@ router.get('/', async (req, res) => {
     if (toolId) query.toolId = toolId;
 
     const rows = await ToolAssignment.find(query)
-      .populate('toolId', 'name category status targetUrl')
+      .populate('toolId', 'name category status targetUrl extensionSettings')
       .populate('clientId', 'fullName email status')
       .sort({ createdAt: -1 });
 
     let items = rows.map(toAssignmentDTO);
+
+    // Merge proxy + StealthWriter tools as assignment rows so they appear like normal
+    // assigned tools. Skipped when filtering by a specific toolId (proxy tools have no
+    // Tool row); respects a clientId filter. Fails safe (helper returns [] on error).
+    if (!toolId) {
+      const proxyItems = await buildProxyAssignmentDTOs({ clientId: clientId || undefined });
+      items = items.concat(proxyItems);
+    }
 
     // Status filter is computed (covers lazy expiry + "expiring soon"), so apply
     // it after enrichment.
@@ -116,7 +133,13 @@ router.get('/', async (req, res) => {
       return acc;
     }, {});
 
-    res.json({ success: true, assignments: items, total: items.length, counts });
+    // Keep proxy/stealth interleaved by recency with normal assignments.
+    items.sort((a, b) => new Date(b.assignedAt || b.createdAt || 0) - new Date(a.assignedAt || a.createdAt || 0));
+
+    const total = items.length;
+    const paged = items.slice((page - 1) * limit, (page - 1) * limit + limit);
+
+    res.json({ success: true, assignments: paged, total, page, limit, counts });
   } catch (error) {
     console.error('List assignments error:', error);
     res.status(500).json({ error: 'Failed to list assignments' });
