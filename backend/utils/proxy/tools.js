@@ -39,6 +39,19 @@ const TOOLS = {
     defaultPath: '/ai-humanizer',
     verifyPathEnv: 'BYPASSGPT_VERIFY_PATH',
   },
+  chatgpt: {
+    key: 'chatgpt',
+    name: 'ChatGPT',
+    category: 'AI',
+    tagline: 'OpenAI ChatGPT',
+    targetOriginEnv: 'CHATGPT_TARGET_ORIGIN',
+    defaultTargetOrigin: 'https://chatgpt.com',
+    gatewayUrlEnv: 'CHATGPT_GATEWAY_URL',
+    defaultGatewayUrl: 'https://chatgpt1.genzdigitalstore.com',
+    defaultPathEnv: 'CHATGPT_DEFAULT_PATH',
+    defaultPath: '/',
+    verifyPathEnv: 'CHATGPT_VERIFY_PATH',
+  },
 };
 
 const TOOL_KEYS = Object.keys(TOOLS);

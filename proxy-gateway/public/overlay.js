@@ -104,6 +104,44 @@
   var AVATAR_SEL = '[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar],img,svg';
   var brandControls = [];
 
+  // ── Captcha / challenge PROTECTION ──────────────────────────────────────────
+  // The tool shows a real captcha (Google reCAPTCHA / hCaptcha / Turnstile /
+  // Cloudflare challenge) before sensitive actions. The user must solve it manually.
+  // The cleanup sweep below must NEVER hide, brandify, or remove these widgets or
+  // their containers/iframes — doing so would make the captcha disappear.
+  var CAPTCHA_SEL = [
+    'iframe[src*="recaptcha"]', 'iframe[src*="hcaptcha"]', 'iframe[src*="turnstile"]',
+    'iframe[src*="challenges.cloudflare.com"]', 'iframe[src*="/recaptcha/"]',
+    '.g-recaptcha', '#g-recaptcha', '.grecaptcha-badge', '.h-captcha', '.cf-turnstile',
+    '[class*="recaptcha" i]', '[id*="recaptcha" i]', '[class*="captcha" i]', '[id*="captcha" i]',
+    '[class*="turnstile" i]', '[class*="hcaptcha" i]', '[class*="challenge" i]', '[data-sitekey]'
+  ].join(',');
+  function isCaptchaNode(n) {
+    if (!n || n.nodeType !== 1) return false;
+    try {
+      if (n.matches && n.matches(CAPTCHA_SEL)) return true;
+      if (n.closest && n.closest(CAPTCHA_SEL)) return true;   // inside a captcha container
+      if (n.querySelector && n.querySelector(CAPTCHA_SEL)) return true; // wraps a captcha
+    } catch (e) {}
+    return false;
+  }
+  // Friendly, persistent hint shown while a captcha is on screen (separate from the
+  // widget's status line so the lease countdown never clears it).
+  function captchaHint(show) {
+    var id = 'genz-captcha-hint', e = document.getElementById(id);
+    if (show) {
+      if (!e) {
+        e = document.createElement('div'); e.id = id;
+        e.textContent = 'Please complete the verification to continue.';
+        e.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:2147483646;' +
+          'background:#111a2e;color:#e2e8f0;border:1px solid rgba(6,182,212,.45);padding:10px 16px;border-radius:10px;' +
+          'font:600 13px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.35);pointer-events:none;';
+        document.documentElement.appendChild(e);
+      }
+    } else if (e) { e.remove(); }
+  }
+  function checkCaptcha() { try { captchaHint(!!document.querySelector(CAPTCHA_SEL)); } catch (e) {} }
+
   function ownText(n) { var s = ''; for (var i = 0; i < n.childNodes.length; i++) { var c = n.childNodes[i]; if (c.nodeType === 3) s += c.nodeValue; } return s.trim(); }
   function hasEditor(n) { return !!(n.querySelector && n.querySelector('textarea,[contenteditable="true"],input')); }
   function hide(n) { if (n && n.style && !(n.getAttribute && n.getAttribute('data-genz-brand') === '1')) { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-hidden', '1'); } }
@@ -152,6 +190,7 @@
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
       if (n.__genz || n.id === 'genz-sw-widget' || (n.closest && n.closest('#genz-sw-widget'))) continue;
+      if (isCaptchaNode(n)) continue;   // NEVER hide/brand a captcha/challenge widget (re-checked each sweep)
       n.__genz = true;
       var ctag = (n.tagName || '').toLowerCase();
       if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) { brandifyControl(n); continue; }
@@ -174,7 +213,7 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); } catch (e) {} }
 
   function start() {
     if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }

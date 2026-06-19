@@ -1,4 +1,4 @@
-# Gen Z Proxy-Tool Gateway (HIX AI / BypassGPT)
+# Gen Z Proxy-Tool Gateway (HIX AI / BypassGPT / ChatGPT)
 
 A standalone, **dependency-free** Node.js (core `http`) reverse proxy. The SAME code
 is deployed **once per tool**, each on its own subdomain with its own `.env`:
@@ -7,8 +7,9 @@ is deployed **once per tool**, each on its own subdomain with its own `.env`:
 |------|-----------|---------------|--------------|
 | HIX AI | `hix1.genzdigitalstore.com` | `https://hix.ai` | `/app/bypass-ai-detection/dashboard` |
 | BypassGPT | `bypassgpt1.genzdigitalstore.com` | `https://www.bypassgpt.ai` | `/ai-humanizer` |
+| ChatGPT | `chatgpt1.genzdigitalstore.com` | `https://chatgpt.com` | `/` |
 
-The two deployments are **fully independent**: separate origins, separate cookie
+Each deployment is **fully independent**: separate origins, separate cookie
 vaults (the backend scopes accounts by the lease's `tool`), separate lease cookies.
 This is isolated from StealthWriter and from the existing extension/cookie tools.
 
@@ -37,7 +38,7 @@ No dependencies — `npm install` is a no-op.
 | Var | Purpose |
 |-----|---------|
 | `PORT` | Listen port (Passenger injects it; default 3000). |
-| `TOOL_KEY` | `hix` or `bypassgpt` — the lease's `tool` must match. |
+| `TOOL_KEY` | `hix`, `bypassgpt` or `chatgpt` — the lease's `tool` must match. |
 | `TOOL_NAME` | Display name in the widget / block pages. |
 | `TARGET_ORIGIN` | Real tool origin to proxy. |
 | `DEFAULT_PATH` | Where a client lease lands after the cookie is set. |
@@ -50,10 +51,23 @@ No dependencies — `npm install` is a no-op.
 Never commit the real `.env` — only the `*.example` files are tracked.
 
 ## Hostinger Node.js app setup (per tool)
-1. Create the subdomain (`hix1` / `bypassgpt1`).
-2. Setup Node.js App → Application root: `proxy-gateway`, URL: the subdomain,
+1. Create the subdomain (`hix1` / `bypassgpt1` / `chatgpt1`).
+2. Setup Node.js App → Application root: the tool's gateway folder (e.g.
+   `chatgpt-gateway`, a copy of `proxy-gateway`), URL: the subdomain,
    Startup file: `server.js`, Node 18+, Production.
 3. Set the `.env` values above (lease secret + gateway key must equal the backend's),
    then Start.
+
+### Adding ChatGPT (or any new tool)
+1. Register the tool in `backend/utils/proxy/tools.js` (key, name, target origin,
+   gateway URL) and deploy that file to the API app.
+2. Create the subdomain + Node app as above; on the server, copy `proxy-gateway/`
+   to `~/<tool>-gateway/` and drop in `.env` (from `.env.<tool>.example`).
+3. In Admin → Proxy Tools, pick the new tool, add an account to its vault (paste or
+   "Refresh Through Proxy"), then grant client access. No frontend change is needed —
+   the tool list is registry-driven.
+
+ChatGPT specifics live in `.env.chatgpt.example` (streaming, Cloudflare/cf_clearance,
+assets, why `IDENTITY_SHIELD` stays off).
 
 See `../STEALTHWRITER_MODULE.md` for the shared design rationale.
