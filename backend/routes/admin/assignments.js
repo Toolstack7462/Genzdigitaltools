@@ -88,7 +88,7 @@ function toAssignmentDTO(a) {
 // Query: toolId, clientId, status (active|expiring|expired|revoked), search.
 router.get('/', async (req, res) => {
   try {
-    const { toolId, clientId, status, search } = req.query;
+    const { toolId, clientId, status, search, accessMode, expiringInDays } = req.query;
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
 
@@ -125,6 +125,20 @@ router.get('/', async (req, res) => {
         (i.client?.fullName || '').toLowerCase().includes(q) ||
         (i.client?.email || '').toLowerCase().includes(q) ||
         (i.tool?.name || '').toLowerCase().includes(q)
+      );
+    }
+
+    // Advanced filters (optional, additive). Applied after enrichment because
+    // accessMode/remainingDays are computed on the DTO, not stored columns.
+    if (accessMode && ['extension', 'proxy', 'direct'].includes(String(accessMode))) {
+      items = items.filter(i => i.accessMode === String(accessMode));
+    }
+    const expDays = parseInt(expiringInDays, 10);
+    if (!Number.isNaN(expDays) && expDays > 0) {
+      // Active/expiring rows whose remaining days fall within the window (incl. today).
+      items = items.filter(i =>
+        (i.effectiveStatus === 'active' || i.effectiveStatus === 'expiring') &&
+        i.remainingDays != null && i.remainingDays >= 0 && i.remainingDays <= expDays
       );
     }
 

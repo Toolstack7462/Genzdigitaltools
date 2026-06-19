@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, Package, Edit2, CalendarClock, CalendarX,
-  Ban, Trash2, Save, X, Mail, Inbox, Settings, ChevronLeft, ChevronRight
+  Ban, Trash2, Save, X, Mail, Inbox, Settings, ChevronLeft, ChevronRight, FileText
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../Toast';
@@ -203,6 +203,48 @@ const ExtendModal = ({ assignment, onClose, onSaved }) => {
   );
 };
 
+// ── Bulk "extend expiry" modal — applies one new expiry to every selected row ──
+const BulkExtendModal = ({ count, onClose, onApply }) => {
+  const [preset, setPreset] = useState('30');
+  const [customDate, setCustomDate] = useState('');
+  const presets = [['7', '+1 week'], ['30', '+1 month'], ['90', '+3 months'], ['365', '+1 year']];
+  const apply = () => {
+    if (customDate) onApply({ endDate: customDate });
+    else onApply({ durationDays: parseInt(preset, 10) });
+  };
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-genz-navy/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-white border border-genz-border rounded-2xl shadow-2xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="text-base font-bold text-genz-navy">Extend {count} assignment{count === 1 ? '' : 's'}</h3>
+          <button onClick={onClose} className="text-genz-muted hover:text-genz-navy" aria-label="Close"><X size={18} /></button>
+        </div>
+        <p className="text-xs text-genz-muted mb-4">Each selected assignment's expiry extends from its current expiry (or today if already past).</p>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {presets.map(([days, label]) => (
+            <button key={days} type="button" onClick={() => { setPreset(days); setCustomDate(''); }}
+              className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all ${!customDate && preset === days ? 'btn-grad' : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-genz-navy mb-1">Or set an exact date</label>
+          <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)}
+            className="w-full px-3 py-2 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal" />
+        </div>
+        <div className="flex justify-end gap-2 mt-5">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-genz-muted hover:text-genz-navy">Cancel</button>
+          <button onClick={apply} className="btn-grad inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold">
+            <CalendarClock size={15} /> Extend
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ── Action icon button ───────────────────────────────────────────────────────
 const Act = ({ onClick, title, tone, icon: Icon, testId }) => {
   const tones = {
@@ -238,6 +280,8 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
   const [statusFilter, setStatusFilter] = useState('');
   const [toolFilter, setToolFilter] = useState('');
   const [clientFilter, setClientFilter] = useState('');
+  const [accessFilter, setAccessFilter] = useState('');   // extension | proxy | direct
+  const [expiryFilter, setExpiryFilter] = useState('');    // '7' | '30' | '90' (expiring within N days)
   const [tools, setTools] = useState([]);
   const [clients, setClients] = useState([]);
   const [listsLoading, setListsLoading] = useState(false);
@@ -246,6 +290,11 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const PAGE_SIZE = 50;
+  // Phase 2: bulk multi-select (read-only proxy/stealth rows are excluded — they have
+  // no assignment-CRUD endpoints and are managed on their own pages).
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkExtendOpen, setBulkExtendOpen] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -257,12 +306,15 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
       else if (clientFilter) params.append('clientId', clientFilter);
       if (statusFilter) params.append('status', statusFilter);
       if (search.trim()) params.append('search', search.trim());
+      if (accessFilter) params.append('accessMode', accessFilter);
+      if (expiryFilter) params.append('expiringInDays', expiryFilter);
       params.append('page', String(page));
       params.append('limit', String(PAGE_SIZE));
 
       const res = await api.get(`/admin/assignments?${params}`);
       setAssignments(res.data.assignments || []);
       setTotal(res.data.total || 0);
+      setSelected(new Set()); // clear stale selection on any (re)load
     } catch (e) {
       // Actionable, secret-free message: include the HTTP status so a missing
       // backend route (404) is distinguishable from a real server error (500) or
@@ -279,12 +331,12 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
     } finally {
       setLoading(false);
     }
-  }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search, page, showError]);
+  }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search, accessFilter, expiryFilter, page, showError]);
 
   useEffect(() => { load(); }, [load]);
 
   // Reset to page 1 whenever a filter/search changes so results aren't on a stale page.
-  useEffect(() => { setPage(1); }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search]);
+  useEffect(() => { setPage(1); }, [toolId, clientId, toolFilter, clientFilter, statusFilter, search, accessFilter, expiryFilter]);
 
   // Load tool/client lists for the global-view filter dropdowns.
   useEffect(() => {
@@ -336,6 +388,39 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
     } catch (e) { showError(e.response?.data?.error || 'Failed to remove assignment'); }
   };
 
+  // ── Bulk selection helpers ───────────────────────────────────────────────────
+  const selectableIds = assignments.filter(a => !a.readOnly).map(a => a._id);
+  const allPageSelected = selectableIds.length > 0 && selectableIds.every(id => selected.has(id));
+  const toggleSelect = (id) => setSelected(prev => {
+    const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n;
+  });
+  const toggleSelectAll = () => setSelected(prev => {
+    if (selectableIds.length && selectableIds.every(id => prev.has(id))) {
+      const n = new Set(prev); selectableIds.forEach(id => n.delete(id)); return n;
+    }
+    return new Set([...prev, ...selectableIds]);
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  // Apply a per-id endpoint across all selected rows; report combined result. Reuses
+  // the existing single-assignment endpoints (no new backend) via allSettled so one
+  // failure doesn't abort the batch. afterMutation reloads + clears the selection.
+  const runBulk = async (fn, verb) => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    setBulkBusy(true);
+    const results = await Promise.allSettled(ids.map(fn));
+    setBulkBusy(false);
+    const ok = results.filter(r => r.status === 'fulfilled').length;
+    const failed = results.length - ok;
+    if (ok) afterMutation(`${verb} ${ok} assignment${ok === 1 ? '' : 's'}${failed ? ` — ${failed} failed` : ''}`);
+    else showError(`Bulk action failed for all ${ids.length} assignment${ids.length === 1 ? '' : 's'}`);
+  };
+  const bulkRevoke = () => { if (!window.confirm(`Revoke ${selected.size} assignment(s)? Clients lose access immediately.`)) return; runBulk(id => api.post(`/admin/assignments/${id}/revoke`), 'Revoked'); };
+  const bulkExpire = () => { if (!window.confirm(`Expire ${selected.size} assignment(s) now?`)) return; runBulk(id => api.post(`/admin/assignments/${id}/expire`), 'Expired'); };
+  const bulkDelete = () => { if (!window.confirm(`Permanently delete ${selected.size} assignment(s)? This cannot be undone.`)) return; runBulk(id => api.delete(`/admin/assignments/${id}`), 'Removed'); };
+  const bulkExtendApply = (payload) => { setBulkExtendOpen(false); runBulk(id => api.post(`/admin/assignments/${id}/extend`, payload), 'Extended'); };
+
   const selectCls = "px-3 py-2 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal appearance-none cursor-pointer";
 
   return (
@@ -375,6 +460,18 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
             <option value="expired">Expired</option>
             <option value="revoked">Revoked</option>
           </select>
+          <select value={accessFilter} onChange={(e) => setAccessFilter(e.target.value)} className={selectCls} aria-label="Filter by access mode" data-testid="assignment-access-filter">
+            <option value="">All access</option>
+            <option value="extension">Extension</option>
+            <option value="proxy">Proxy</option>
+            <option value="direct">Direct</option>
+          </select>
+          <select value={expiryFilter} onChange={(e) => setExpiryFilter(e.target.value)} className={selectCls} aria-label="Filter by expiry window" data-testid="assignment-expiry-filter">
+            <option value="">Any expiry</option>
+            <option value="7">Expiring ≤ 7 days</option>
+            <option value="30">Expiring ≤ 30 days</option>
+            <option value="90">Expiring ≤ 90 days</option>
+          </select>
         </div>
       )}
 
@@ -389,6 +486,35 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               {s === '' ? 'All' : STATUS_META[s].label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* Bulk action bar (appears when rows are selected) */}
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl bg-genz-teal/10 border border-genz-teal/30" data-testid="bulk-action-bar">
+          <span className="text-sm font-semibold text-genz-navy">{selected.size} selected</span>
+          <div className="flex flex-wrap items-center gap-1.5 ml-auto">
+            <button type="button" disabled={bulkBusy} onClick={() => setBulkExtendOpen(true)}
+              className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-genz-border bg-white text-genz-teal hover:bg-genz-teal/10 text-xs font-semibold disabled:opacity-50">
+              <CalendarClock size={13} /> Extend
+            </button>
+            <button type="button" disabled={bulkBusy} onClick={bulkExpire}
+              className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-genz-border bg-white text-amber-600 hover:bg-amber-500/10 text-xs font-semibold disabled:opacity-50">
+              <CalendarX size={13} /> Expire
+            </button>
+            <button type="button" disabled={bulkBusy} onClick={bulkRevoke}
+              className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-genz-border bg-white text-amber-600 hover:bg-amber-500/10 text-xs font-semibold disabled:opacity-50">
+              <Ban size={13} /> Revoke
+            </button>
+            <button type="button" disabled={bulkBusy} onClick={bulkDelete}
+              className="inline-flex items-center gap-1.5 px-2.5 h-8 rounded-lg border border-genz-border bg-white text-red-500 hover:bg-red-500/10 text-xs font-semibold disabled:opacity-50">
+              <Trash2 size={13} /> Delete
+            </button>
+            <button type="button" disabled={bulkBusy} onClick={clearSelection}
+              className="inline-flex items-center px-2.5 h-8 rounded-lg text-xs font-medium text-genz-muted hover:text-genz-navy disabled:opacity-50">
+              Clear
+            </button>
+          </div>
         </div>
       )}
 
@@ -424,7 +550,13 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
         <div className="border border-genz-border rounded-xl overflow-hidden">
           {/* header (desktop) */}
           <div className="hidden md:grid grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_auto] gap-3 px-4 py-2.5 bg-genz-bg text-[11px] font-semibold uppercase tracking-wide text-genz-muted">
-            <span>{scope === 'client' ? 'Tool' : 'Client'}</span>
+            <span className="flex items-center gap-2">
+              {selectableIds.length > 0 && (
+                <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll}
+                  className="w-4 h-4 accent-genz-teal cursor-pointer" aria-label="Select all on this page" data-testid="bulk-select-all" />
+              )}
+              {scope === 'client' ? 'Tool' : 'Client'}
+            </span>
             <span>Status</span>
             <span>Assigned</span>
             <span>Expiry</span>
@@ -442,6 +574,13 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
                   data-testid={`assignment-row-${a._id}`}>
                   {/* primary entity */}
                   <div className="flex items-center gap-2.5 min-w-0">
+                    {a.readOnly ? (
+                      <span className="w-4 flex-shrink-0" aria-hidden="true" />
+                    ) : (
+                      <input type="checkbox" checked={selected.has(a._id)} onChange={() => toggleSelect(a._id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-4 h-4 accent-genz-teal flex-shrink-0 cursor-pointer" aria-label="Select assignment" />
+                    )}
                     {isToolPrimary ? (
                       // Tool row (per-client view): tool glyph.
                       <span className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 text-white"
@@ -465,6 +604,11 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
                       ) : (
                         !isToolPrimary && <p className="text-xs text-genz-muted/70 italic truncate">No email on file</p>
                       )}
+                      {a.notes ? (
+                        <p className="text-[11px] text-genz-muted/80 truncate flex items-center gap-1 mt-0.5" title={a.notes}>
+                          <FileText size={10} className="flex-shrink-0" />{a.notes}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
 
@@ -540,6 +684,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
 
       {editing && <EditModal assignment={editing} onClose={() => setEditing(null)} onSaved={() => afterMutation('Assignment updated')} />}
       {extending && <ExtendModal assignment={extending} onClose={() => setExtending(null)} onSaved={() => afterMutation('Expiry extended')} />}
+      {bulkExtendOpen && <BulkExtendModal count={selected.size} onClose={() => setBulkExtendOpen(false)} onApply={bulkExtendApply} />}
     </div>
   );
 };
