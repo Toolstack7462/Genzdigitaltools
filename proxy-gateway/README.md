@@ -1,4 +1,4 @@
-# Gen Z Proxy-Tool Gateway (HIX AI / BypassGPT / ChatGPT)
+# Gen Z Proxy-Tool Gateway (HIX AI / BypassGPT / ChatGPT / Ryne AI / WriteHuman)
 
 A standalone, **dependency-free** Node.js (core `http`) reverse proxy. The SAME code
 is deployed **once per tool**, each on its own subdomain with its own `.env`:
@@ -8,6 +8,8 @@ is deployed **once per tool**, each on its own subdomain with its own `.env`:
 | HIX AI | `hix1.genzdigitalstore.com` | `https://hix.ai` | `/app/bypass-ai-detection/dashboard` |
 | BypassGPT | `bypassgpt1.genzdigitalstore.com` | `https://www.bypassgpt.ai` | `/ai-humanizer` |
 | ChatGPT | `chatgpt1.genzdigitalstore.com` | `https://chatgpt.com` | `/` |
+| Ryne AI | `ryne1.genzdigitalstore.com` | `https://ryne.ai` | `/` |
+| WriteHuman | `writehuman1.genzdigitalstore.com` | `https://writehuman.ai` | `/` |
 
 Each deployment is **fully independent**: separate origins, separate cookie
 vaults (the backend scopes accounts by the lease's `tool`), separate lease cookies.
@@ -38,7 +40,7 @@ No dependencies — `npm install` is a no-op.
 | Var | Purpose |
 |-----|---------|
 | `PORT` | Listen port (Passenger injects it; default 3000). |
-| `TOOL_KEY` | `hix`, `bypassgpt` or `chatgpt` — the lease's `tool` must match. |
+| `TOOL_KEY` | `hix`, `bypassgpt`, `chatgpt`, `ryne` or `writehuman` — the lease's `tool` must match. |
 | `TOOL_NAME` | Display name in the widget / block pages. |
 | `TARGET_ORIGIN` | Real tool origin to proxy. |
 | `DEFAULT_PATH` | Where a client lease lands after the cookie is set. |

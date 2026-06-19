@@ -52,6 +52,32 @@ const TOOLS = {
     defaultPath: '/',
     verifyPathEnv: 'CHATGPT_VERIFY_PATH',
   },
+  ryne: {
+    key: 'ryne',
+    name: 'Ryne AI',
+    category: 'AI',
+    tagline: 'AI Essay Writer & Humanizer',
+    targetOriginEnv: 'RYNE_TARGET_ORIGIN',
+    defaultTargetOrigin: 'https://ryne.ai',
+    gatewayUrlEnv: 'RYNE_GATEWAY_URL',
+    defaultGatewayUrl: 'https://ryne1.genzdigitalstore.com',
+    defaultPathEnv: 'RYNE_DEFAULT_PATH',
+    defaultPath: '/',
+    verifyPathEnv: 'RYNE_VERIFY_PATH',
+  },
+  writehuman: {
+    key: 'writehuman',
+    name: 'WriteHuman',
+    category: 'AI',
+    tagline: 'Undetectable AI Humanizer',
+    targetOriginEnv: 'WRITEHUMAN_TARGET_ORIGIN',
+    defaultTargetOrigin: 'https://writehuman.ai',
+    gatewayUrlEnv: 'WRITEHUMAN_GATEWAY_URL',
+    defaultGatewayUrl: 'https://writehuman1.genzdigitalstore.com',
+    defaultPathEnv: 'WRITEHUMAN_DEFAULT_PATH',
+    defaultPath: '/',
+    verifyPathEnv: 'WRITEHUMAN_VERIFY_PATH',
+  },
 };
 
 const TOOL_KEYS = Object.keys(TOOLS);
