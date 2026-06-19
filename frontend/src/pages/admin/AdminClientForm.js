@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import AdminLayout from '../../components/AdminLayout';
-import { ArrowLeft, Save, User, Mail, Lock, Shield } from 'lucide-react';
+import { ArrowLeft, Save, User, Mail, Lock, Shield, FileText } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import PasswordInput from '../../components/PasswordInput';
@@ -19,7 +19,8 @@ const AdminClientForm = () => {
     email: '',
     password: '',
     status: 'active',
-    devicePolicyEnabled: true
+    devicePolicyEnabled: true,
+    notes: ''
   });
 
   useEffect(() => {
@@ -37,7 +38,8 @@ const AdminClientForm = () => {
         email: client.email || '',
         password: '', // Don't show password
         status: client.status || 'active',
-        devicePolicyEnabled: client.devicePolicy?.enabled !== false
+        devicePolicyEnabled: client.devicePolicy?.enabled !== false,
+        notes: client.notes || ''
       });
     } catch (error) {
       showError('Failed to load client');
@@ -68,7 +70,10 @@ const AdminClientForm = () => {
         email: formData.email.trim(),
         status: formData.status,
         // Always a real boolean true/false (never a string or masked value).
-        devicePolicyEnabled: formData.devicePolicyEnabled === true
+        devicePolicyEnabled: formData.devicePolicyEnabled === true,
+        // Internal admin notes (incl. payment/renewal). Backend already accepts this
+        // (validation: max 500). Free-text; never shown to the client.
+        notes: (formData.notes || '').slice(0, 500)
       };
 
       // Only include password if the admin actually typed a new one. Never send
@@ -244,6 +249,26 @@ const AdminClientForm = () => {
                 onChange={handleChange}
                 className="w-5 h-5 rounded"
               />
+            </div>
+
+            {/* Internal notes (incl. payment / renewal) — admin-only */}
+            <div>
+              <label htmlFor="notes" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
+                <FileText size={16} className="text-genz-teal" />
+                Internal Notes <span className="text-genz-muted font-normal">(payment / renewal — admin-only)</span>
+              </label>
+              <textarea
+                id="notes"
+                name="notes"
+                value={formData.notes}
+                onChange={handleChange}
+                rows={3}
+                maxLength={500}
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors resize-none"
+                placeholder="e.g. Paid via PayPal on 12 Jun, renews monthly. Never shown to the client."
+                data-testid="client-notes-input"
+              />
+              <p className="text-xs text-genz-muted mt-1 text-right">{(formData.notes || '').length}/500</p>
             </div>
           </div>
 

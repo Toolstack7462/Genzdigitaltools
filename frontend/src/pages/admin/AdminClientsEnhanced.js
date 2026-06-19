@@ -21,6 +21,7 @@ import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import AdminModal from '../../components/admin/AdminModal';
 import AssignmentManager from '../../components/admin/AssignmentManager';
+import ClientDetailPanel from '../../components/admin/ClientDetailPanel';
 
 const AdminClientsEnhanced = () => {
   const navigate = useNavigate();
@@ -31,7 +32,11 @@ const AdminClientsEnhanced = () => {
   const [selectedStatus, setSelectedStatus] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 20, totalPages: 0, total: 0 });
   const [manageClient, setManageClient] = useState(null);
+  const [modalTab, setModalTab] = useState('tools'); // per-client modal: 'tools' | 'profile'
   const [actionsOpenId, setActionsOpenId] = useState(null); // mobile: which card's overflow menu is open
+
+  // Always open the client modal on the Tools tab.
+  useEffect(() => { if (manageClient) setModalTab('tools'); }, [manageClient]);
 
   useEffect(() => {
     loadClients();
@@ -380,17 +385,46 @@ const AdminClientsEnhanced = () => {
           </>
         )}
 
-        {/* Manage assigned tools modal */}
+        {/* Per-client modal: assigned tools + profile/timeline */}
         <AdminModal
           isOpen={!!manageClient}
           onClose={() => setManageClient(null)}
-          title={manageClient ? `${manageClient.fullName} — Assigned Tools` : 'Assigned Tools'}
+          title={manageClient ? manageClient.fullName : 'Client'}
           subtitle={manageClient?.email}
-          icon={Package}
+          icon={Users}
           maxWidth="max-w-4xl"
         >
           {manageClient && (
-            <AssignmentManager clientId={manageClient._id} onChanged={loadClients} />
+            <>
+              <div className="flex items-center gap-1.5 mb-4 border-b border-genz-border">
+                {[
+                  { key: 'tools', label: 'Assigned Tools', Icon: Package },
+                  { key: 'profile', label: 'Profile & Timeline', Icon: Clock },
+                ].map(({ key, label, Icon }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setModalTab(key)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium -mb-px border-b-2 transition-colors ${
+                      modalTab === key
+                        ? 'border-genz-teal text-genz-navy'
+                        : 'border-transparent text-genz-muted hover:text-genz-navy'
+                    }`}
+                    data-testid={`client-modal-tab-${key}`}
+                  >
+                    <Icon size={15} /> {label}
+                  </button>
+                ))}
+              </div>
+              {modalTab === 'tools' ? (
+                <AssignmentManager clientId={manageClient._id} onChanged={loadClients} />
+              ) : (
+                <ClientDetailPanel
+                  clientId={manageClient._id}
+                  onEdit={(c) => navigate(`/admin/clients/${c._id}/edit`)}
+                />
+              )}
+            </>
           )}
         </AdminModal>
       </div>
