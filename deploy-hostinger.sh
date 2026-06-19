@@ -50,6 +50,7 @@ echo "==> [1/3] Uploading backend files + restart trigger"
 curl --fail-with-body --ftp-create-dirs \
   -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/getClientAccessibleTool.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/getClientAccessibleTool.js" \
+  -T backend/utils/toolCleanupConfig.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/toolCleanupConfig.js" \
   -T backend/routes/extension/index.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/extension/index.js" \
   -T backend/routes/client/tools.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/tools.js" \
   -T backend/routes/admin/toolsEnhanced.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/toolsEnhanced.js" \
@@ -148,7 +149,7 @@ for i in 1 2 3 4 5 6; do
   if echo "${BODY}" | grep -q 'extension_token_invalid'; then
     echo "==> SUCCESS: backend live, frontend + extension published."
     echo "    Site:      https://genzdigitalstore.com  /  https://app.genzdigitalstore.com"
-    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.8.7)"
+    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.9.0)"
     echo "    Reminder:  installed users must RELOAD the extension to pick up popup/background changes."
     exit 0
   fi

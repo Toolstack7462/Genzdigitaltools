@@ -10,6 +10,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
+const { buildToolCleanupConfig } = require('../../utils/toolCleanupConfig');
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
 const ExtensionScan         = require('../../models/ExtensionScan');
@@ -1166,6 +1167,116 @@ router.get('/profile', verifyExtensionToken, async (req, res) => {
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// GET /api/crm/extension/cleanup-manifest — authoritative per-tool session
+// cleanup directive for this client.
+//
+// Returns BOTH:
+//   active[]  — tools whose assignment is currently valid (must NOT be cleaned),
+//   revoked[] — tools the client was assigned but that are now expired, revoked,
+//               blocked, or whose Tool was deactivated/removed (MUST be cleaned).
+//
+// Each entry carries a per-tool `cleanup` config (tool_code, domains,
+// cookieDomains, localStorageOrigins, tabUrlPatterns) derived from the tool's own
+// domain — so the extension knows EXACTLY which cookies/storage/tabs to wipe and
+// never touches unrelated tools or personal sites. The extension treats this as
+// the source of truth: anything in `revoked`, plus any locally-known tool no
+// longer present in `active`, gets its browser session cleared immediately.
+//
+// Privacy: returns hostname/pattern metadata + assignment status only — never
+// cookies, tokens, sessions, or any secret value.
+router.get('/cleanup-manifest', verifyExtensionToken, async (req, res) => {
+  try {
+    // Flip any newly-past assignments to 'expired' first so classification below
+    // matches the credentials/open gate exactly.
+    await ToolAssignment.updateExpiredAssignments();
+
+    // ALL assignments for this client, every status — we need the invalid ones.
+    const assignments = await ToolAssignment.find({ clientId: req.clientId }).populate('toolId');
+    const now = new Date();
+
+    // Per tool: keep the "best" row. A tool is ACTIVE if ANY of its assignments
+    // is currently valid; otherwise it is reported in `revoked` with the reason
+    // from its most-recent invalid row.
+    const activeByTool = new Map();   // toolId -> { tool, assignment }
+    const invalidByTool = new Map();  // toolId -> { tool, assignment, reason, status }
+
+    for (const a of assignments || []) {
+      const tool = a && a.toolId;
+      if (!tool) continue; // assignment with a hard-deleted tool — nothing to scope
+      const toolKey = String(tool._id || tool);
+
+      const toolRemoved   = tool.status !== 'active';
+      const notStarted    = a.startDate && new Date(a.startDate) > now;
+      const expired       = ToolAssignment.isAssignmentExpired(a, now);
+      const revoked       = a.status === 'revoked';
+      const inactiveRow   = a.status !== 'active'; // expired/revoked/other
+
+      const isValid = a.status === 'active' && !notStarted && !expired && !toolRemoved;
+
+      if (isValid) {
+        // Latest valid boundary wins (mirror getClientAccessibleTool dedup).
+        const prev = activeByTool.get(toolKey);
+        const ab = ToolAssignment.effectiveEndBoundary(a.endDate)?.getTime() ?? Number.POSITIVE_INFINITY;
+        const pb = prev ? (ToolAssignment.effectiveEndBoundary(prev.assignment.endDate)?.getTime() ?? Number.POSITIVE_INFINITY) : -1;
+        if (!prev || ab > pb) activeByTool.set(toolKey, { tool, assignment: a });
+        continue;
+      }
+
+      // Invalid row — record a precise reason (revoked > tool_removed > expired).
+      let reason = 'expired';
+      let status = 'expired';
+      if (revoked)            { reason = 'revoked';      status = 'revoked'; }
+      else if (toolRemoved)   { reason = 'tool_removed'; status = 'removed'; }
+      else if (expired || inactiveRow) { reason = 'expired'; status = 'expired'; }
+      const prevInv = invalidByTool.get(toolKey);
+      // Prefer the most recently-updated invalid row for the reason.
+      const at = new Date(a.revokedAt || a.updatedAt || a.endDate || 0).getTime();
+      const pt = prevInv ? new Date(prevInv.assignment.revokedAt || prevInv.assignment.updatedAt || prevInv.assignment.endDate || 0).getTime() : -1;
+      if (!prevInv || at >= pt) invalidByTool.set(toolKey, { tool, assignment: a, reason, status });
+    }
+
+    const active = [];
+    for (const [toolKey, { tool, assignment }] of activeByTool) {
+      const cleanup = buildToolCleanupConfig(tool);
+      if (!cleanup) continue;
+      active.push({
+        toolId: toolKey,
+        toolCode: cleanup.tool_code,
+        name: tool.name || cleanup.name,
+        status: 'active',
+        endDate: assignment.endDate || null,
+        cleanup,
+      });
+    }
+
+    const revoked = [];
+    for (const [toolKey, info] of invalidByTool) {
+      if (activeByTool.has(toolKey)) continue; // a still-valid row wins — never clean
+      const cleanup = buildToolCleanupConfig(info.tool);
+      if (!cleanup) continue;
+      revoked.push({
+        toolId: toolKey,
+        toolCode: cleanup.tool_code,
+        name: info.tool.name || cleanup.name,
+        status: info.status,
+        reason: info.reason,
+        cleanup,
+      });
+    }
+
+    res.json({
+      success: true,
+      accountActive: req.client?.status !== 'disabled',
+      active,
+      revoked,
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Cleanup manifest error:', error);
+    res.status(500).json({ error: 'Failed to build cleanup manifest' });
   }
 });
 
