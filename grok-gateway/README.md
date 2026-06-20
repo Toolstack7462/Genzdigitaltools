@@ -69,6 +69,7 @@ No dependencies — `npm install` is a no-op.
    SetEnv SIGNIN_PATH /
    SetEnv GATEWAY_PUBLIC_ORIGIN https://grok1.genzdigitalstore.com
    SetEnv API_BASE https://api.genzdigitalstore.com/api/crm/proxy/gateway
+   SetEnv CF_CHALLENGE_PASSTHROUGH 1
    SetEnv LEASE_SECRET <SAME AS BACKEND PROXY_LEASE_SECRET>
    SetEnv GATEWAY_KEY <SAME AS BACKEND PROXY_GATEWAY_KEY>
    ```

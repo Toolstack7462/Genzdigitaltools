@@ -103,6 +103,53 @@ const STRIP_REQ_HEADERS = [
 ];
 const LEASE_TYPE = 'proxy_lease';
 
+// ── Cloudflare "managed challenge" pass-through (opt-in per gateway) ──────────
+// Some upstreams (e.g. grok.com) gate their app behind a Cloudflare managed/JS
+// challenge. From a datacenter IP the upstream answers 403 with an interactive
+// "Verifying you are human" page whose cf_clearance is bound to the IP + UA that
+// SOLVES it — so a cf_clearance captured in a normal browser is invalid here. When
+// CF_CHALLENGE_PASSTHROUGH=1 the gateway:
+//   (a) passes that challenge page THROUGH to the client (instead of our block page)
+//       so the user solves the REAL challenge in-browser. Every request egresses this
+//       server's single IP + pinned UA, so the cf_clearance Cloudflare then mints is
+//       valid for the proxy.
+//   (b) forwards the browser's Cloudflare cookies (cf_clearance / __cf_bm / cf_chl*)
+//       UPSTREAM alongside the vault account cookies, so the challenge flow completes
+//       and the cleared session reaches the app.
+// It never bypasses, auto-solves or alters the challenge. Default OFF → every other
+// tool's behavior is byte-for-byte unchanged.
+const CF_CHALLENGE_PASSTHROUGH = process.env.CF_CHALLENGE_PASSTHROUGH === '1' || /^true$/i.test(process.env.CF_CHALLENGE_PASSTHROUGH || '');
+const CF_COOKIE_RE = /^(cf_clearance|__cf_bm|__cflb|cf_chl|__cf_chl|__cf_waf)/i;
+
+function isCloudflareChallenge(statusCode, headers) {
+  if (!(statusCode === 403 || statusCode === 503 || statusCode === 429)) return false;
+  if (String(headers['cf-mitigated'] || '').toLowerCase().includes('challenge')) return true;
+  // A managed/JS-challenge interstitial is served by Cloudflare (cf-ray present) as
+  // text/html. A hard WAF deny is also cloudflare+cf-ray, so this is only consulted
+  // when pass-through is explicitly enabled for this gateway (opt-in).
+  const server = String(headers['server'] || '').toLowerCase();
+  const ct = String(headers['content-type'] || '').toLowerCase();
+  return server.includes('cloudflare') && !!headers['cf-ray'] && ct.includes('text/html');
+}
+
+// Pull ONLY Cloudflare-managed cookies out of a raw browser Cookie header (never the
+// lease cookie) so they can be forwarded upstream next to the vault session.
+function extractCfCookies(rawCookieHeader) {
+  return String(rawCookieHeader || '').split(';').map(s => s.trim()).filter(Boolean)
+    .filter(p => { const i = p.indexOf('='); const name = (i < 0 ? p : p.slice(0, i)).trim(); return name !== LEASE_COOKIE && CF_COOKIE_RE.test(name); })
+    .join('; ');
+}
+// Merge two "a=b; c=d" cookie headers; the second wins on a name clash.
+function mergeCookieHeaders(a, b) {
+  const map = new Map();
+  for (const part of [a, b]) {
+    String(part || '').split(';').map(s => s.trim()).filter(Boolean).forEach(p => {
+      const i = p.indexOf('='); if (i < 0) return; map.set(p.slice(0, i).trim(), p.slice(i + 1));
+    });
+  }
+  return [...map.entries()].map(([n, v]) => `${n}=${v}`).join('; ');
+}
+
 if (!TARGET_ORIGIN) { console.error('FATAL: TARGET_ORIGIN is required'); process.exit(1); }
 if (!API_BASE) { console.error('FATAL: API_BASE is required'); process.exit(1); }
 if (!LEASE_SECRET || LEASE_SECRET.length < 32) {
@@ -533,7 +580,16 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
   // Our lease cookie never goes upstream; inject the vault account's cookies (client
   // lease) or pass the admin's own login cookies (capture). Asset/CDN origins get none.
   delete headers.cookie;
-  if (session && session.cookieHeader) headers.cookie = session.cookieHeader;
+  if (session && session.cookieHeader) {
+    headers.cookie = session.cookieHeader;
+    // CF pass-through: also forward the browser's Cloudflare cookies (cf_clearance /
+    // __cf_bm / cf_chl*) so a challenge solved through THIS gateway reaches the upstream
+    // together with the vault session. Only Cloudflare-managed cookies are forwarded.
+    if (CF_CHALLENGE_PASSTHROUGH) {
+      const cf = extractCfCookies(req.headers.cookie);
+      if (cf) headers.cookie = mergeCookieHeaders(headers.cookie, cf);
+    }
+  }
   else if (session && session.noAccount) { const p = stripLeaseCookie(req.headers.cookie); if (p) headers.cookie = p; }
   return headers;
 }
@@ -581,6 +637,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       const rawLoc = String(uRes.headers['location'] || '');
       const redirectedToLogin = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|log-?in|auth\/login)\b/i.test(rawLoc);
       const upstreamForbidden = uRes.statusCode === 401 || uRes.statusCode === 403;
+      // A genuine Cloudflare challenge (opt-in) is passed through to the client to solve
+      // — NOT replaced by our block page — and gets no overlay/identity injection.
+      const cfChallenge = CF_CHALLENGE_PASSTHROUGH && !ctx.capture && !ctx.asset && !isCaptchaReq
+        && isCloudflareChallenge(uRes.statusCode, uRes.headers);
 
       // Safe debug — IDs/paths/status only, NEVER cookies/tokens/secrets. Logged for
       // navigations and for any failing/asset-relevant response.
@@ -620,12 +680,14 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
 
       // Never pass a raw upstream "Forbidden"/login document to the client (main view
-      // only — captcha sub-responses handle their own errors).
-      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset && !isCaptchaReq) {
+      // only — captcha sub-responses handle their own errors). EXCEPTION: a genuine
+      // Cloudflare challenge is passed through (cfChallenge) so the user can solve it.
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset && !isCaptchaReq && !cfChallenge) {
         logIt(false);
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
+      if (cfChallenge) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav });
 
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
@@ -649,9 +711,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           html = stripSecurityMeta(html);
           const rw = rewriteUpstreamUrls(html); html = rw.text;
           // Only the MAIN app view gets the overlay/identity treatment. Proxied asset and
-          // captcha HTML (e.g. the reCAPTCHA iframe document) is rewritten but otherwise
-          // left intact so the challenge renders and works.
-          if (!ctx.asset && !isCaptchaReq) {
+          // captcha HTML (e.g. the reCAPTCHA iframe document), and a passed-through
+          // Cloudflare challenge page, are rewritten for same-origin loading but otherwise
+          // left intact so the challenge renders and solves cleanly.
+          if (!ctx.asset && !isCaptchaReq && !cfChallenge) {
             if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
             html = injectSessionBootstrap(html, session);
             html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
