@@ -284,9 +284,9 @@ const Join = () => {
             initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6, ease: EASE_OUT, delay: 0.08 }}
             className="w-full max-w-md mx-auto lg:mx-0"
           >
-            {/* compact brand header (logo always; tagline focuses the form) */}
+            {/* Brand header — the navbar already shows the logo, so the form leads
+                straight with the heading (no redundant small logo). */}
             <div className="text-center lg:text-left mb-6">
-              <Link to="/" className="inline-block mb-4"><GenZDigitalStoreLogo className="h-11" /></Link>
               <h1 className="text-2xl sm:text-3xl font-extrabold text-genz-navy tracking-tight mb-1.5" data-testid="join-page-heading">
                 Create your account
               </h1>
