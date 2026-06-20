@@ -13,6 +13,7 @@ const ACCESS_META = {
   extension: { label: 'Extension', cls: 'bg-blue-500/10 text-blue-600' },
   proxy:     { label: 'Proxy',     cls: 'bg-purple-500/10 text-purple-600' },
   direct:    { label: 'Direct',    cls: 'bg-genz-teal/10 text-genz-teal' },
+  api:       { label: 'API',       cls: 'bg-amber-500/10 text-amber-600' },
 };
 const AccessBadge = ({ mode }) => {
   const meta = ACCESS_META[mode] || ACCESS_META.extension;
@@ -423,6 +424,15 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
 
   const selectCls = "px-3 py-2 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal appearance-none cursor-pointer";
 
+  // The global Assignments view shows BOTH a Client and a dedicated Tool column (a
+  // client can have many tools). The per-tool / per-client modals omit the redundant
+  // column because the other entity is implied by the modal's context.
+  // NOTE: both grid class strings are written as literals so Tailwind's JIT detects them.
+  const showToolCol = scope === 'global';
+  const gridClass = showToolCol
+    ? 'md:grid-cols-[1.5fr_1.3fr_0.8fr_0.85fr_0.95fr_200px]'
+    : 'md:grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_200px]';
+
   return (
     <div className="space-y-4">
       {/* Filters */}
@@ -549,7 +559,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
       ) : (
         <div className="border border-genz-border rounded-xl overflow-hidden">
           {/* header (desktop) */}
-          <div className="hidden md:grid grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_200px] gap-3 px-4 py-2.5 bg-genz-bg text-[11px] font-semibold uppercase tracking-wide text-genz-muted">
+          <div className={`hidden md:grid ${gridClass} gap-3 px-4 py-2.5 bg-genz-bg text-[11px] font-semibold uppercase tracking-wide text-genz-muted`}>
             <span className="flex items-center gap-2">
               {selectableIds.length > 0 && (
                 <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll}
@@ -557,6 +567,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               )}
               {scope === 'client' ? 'Tool' : 'Client'}
             </span>
+            {showToolCol && <span>Tool</span>}
             <span>Status</span>
             <span>Assigned</span>
             <span>Expiry</span>
@@ -570,7 +581,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               const primarySub = isToolPrimary ? (a.tool?.category || '') : (a.client?.email || '');
               return (
                 <div key={a._id}
-                  className="grid grid-cols-1 md:grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_200px] gap-2 md:gap-3 md:items-center px-4 py-3 hover:bg-genz-bg/60 transition-colors"
+                  className={`grid grid-cols-1 ${gridClass} gap-2 md:gap-3 md:items-center px-4 py-3 hover:bg-genz-bg/60 transition-colors`}
                   data-testid={`assignment-row-${a._id}`}>
                   {/* primary entity */}
                   <div className="flex items-center gap-2.5 min-w-0">
@@ -612,10 +623,27 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
                     </div>
                   </div>
 
-                  {/* status + access mode */}
+                  {/* tool column (global view only) — makes it obvious which tool this
+                      assignment row is, when a client has several. */}
+                  {showToolCol && (
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 text-genz-teal bg-genz-teal/10" aria-hidden="true">
+                        <Package size={14} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-genz-navy truncate" title={a.tool?.name || ''}>
+                          <span className="md:hidden text-genz-muted font-normal mr-1">Tool:</span>
+                          {a.tool?.name || 'Unknown tool'}
+                        </p>
+                        <div className="mt-0.5"><AccessBadge mode={a.accessMode} /></div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* status (access badge lives in the Tool column in global view) */}
                   <div className="flex md:block items-center gap-2">
                     <StatusBadge status={a.effectiveStatus} />
-                    <div className="mt-1"><AccessBadge mode={a.accessMode} /></div>
+                    {!showToolCol && <div className="mt-1"><AccessBadge mode={a.accessMode} /></div>}
                   </div>
 
                   {/* assigned date */}
