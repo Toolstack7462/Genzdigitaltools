@@ -19,6 +19,29 @@ const logger = new Logger('Background');
 // Constants
 const SYNC_INTERVAL_MINUTES = 15;
 const ALARM_NAME = 'genz-sync';
+// One-shot backoff retry alarm for a failed sync. Survives service-worker
+// restarts (unlike setTimeout). Cleared on the next successful sync.
+const SYNC_RETRY_ALARM = 'genz-sync-retry';
+const SYNC_RETRY_BASE_MINUTES = 1;   // first retry after ~1 min
+const SYNC_RETRY_MAX_MINUTES = 15;   // cap backoff at the normal interval
+
+// Extract SAFE, readable error details for logging — never secrets. Works for
+// Error instances, fetch failures, and plain thrown objects/strings so logs
+// never show "[object Object]". `step`/`endpoint` name the sync stage.
+function describeError(error, ctx = {}) {
+  let message = 'Unknown error';
+  if (error instanceof Error) message = error.message || error.name || 'Error';
+  else if (typeof error === 'string') message = error;
+  else if (error && typeof error === 'object') message = error.message || error.error || JSON.stringify(error).slice(0, 300);
+  return {
+    step: ctx.step || null,
+    endpoint: ctx.endpoint || null,
+    status: error?.status ?? ctx.status ?? null,
+    code: error?.payload?.code || error?.code || null,
+    message,
+    retry: ctx.retry ?? null,
+  };
+}
 
 // State
 let orchestrator = null;
@@ -476,17 +499,53 @@ async function checkForUpdates() {
     // Update cached tool mappings
     await loadCachedData();
 
-    await setStorage({ lastSync: new Date().toISOString() });
+    await setStorage({
+      lastSync: new Date().toISOString(),
+      syncStatus: 'ok',
+      syncRetryCount: 0,
+      lastSyncError: null,
+    });
+    // Successful sync → cancel any pending backoff retry.
+    try { await chrome.alarms.clear(SYNC_RETRY_ALARM); } catch (_) {}
 
     // Reconcile expired/revoked tool sessions alongside the version sync.
     runCleanupSync('version_sync').catch(() => {});
 
   } catch (error) {
-    logger.error('Sync check failed', { error: error.message });
-    
-    if (error.message.includes('token') || error.message.includes('401')) {
+    // ── Safe, readable failure handling. Never throws, never breaks tool
+    // access (assigned tools stay cached + usable), never logs secrets. ──
+    const prev = await getStorage(['syncRetryCount']);
+    const retry = (Number(prev.syncRetryCount) || 0) + 1;
+    const info = describeError(error, { step: 'checkForUpdates', endpoint: '/tools', retry });
+    const isAuth = info.status === 401 || /token|unauthor|401/i.test(info.message || '');
+    const isNetwork = info.status == null && /fetch|network|failed to fetch|load failed|timeout|offline/i.test(info.message || '');
+
+    logger.warn('Sync check failed', info);
+
+    // Friendly status for popup/dashboard — assigned tools remain usable.
+    await setStorage({
+      syncStatus: isAuth ? 'auth' : (isNetwork ? 'offline' : 'error'),
+      syncRetryCount: retry,
+      lastSyncError: { message: info.message, status: info.status, code: info.code, at: new Date().toISOString() },
+    });
+
+    // Only an auth failure changes the badge; a transient network/backend hiccup
+    // must NOT alarm the user or block tool access.
+    if (isAuth) {
       chrome.action.setBadgeText({ text: '!' });
       chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+    }
+
+    // Exponential backoff retry (1,2,4,8… capped), via a one-shot alarm that
+    // survives a service-worker shutdown. The 15-min periodic alarm is the
+    // ultimate fallback if even this is lost.
+    const delay = Math.min(SYNC_RETRY_BASE_MINUTES * Math.pow(2, retry - 1), SYNC_RETRY_MAX_MINUTES);
+    try {
+      await chrome.alarms.clear(SYNC_RETRY_ALARM);
+      chrome.alarms.create(SYNC_RETRY_ALARM, { delayInMinutes: delay });
+      logger.debug('Scheduled sync retry', { step: 'retry_backoff', retry, delayMinutes: delay });
+    } catch (e) {
+      logger.debug('Could not schedule sync retry', describeError(e, { step: 'retry_backoff', retry }));
     }
   }
 }
@@ -2213,6 +2272,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   } else if (alarm.name === CLEANUP_ALARM_NAME) {
     logger.debug('Running scheduled cleanup sync');
     runCleanupSync('alarm');
+  } else if (alarm.name === SYNC_RETRY_ALARM) {
+    logger.debug('Running sync backoff retry');
+    checkForUpdates();
   }
 });
 
@@ -2370,7 +2432,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_EXTENSION_STATUS':
-      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate']).then(async d => {
+      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate', 'syncStatus']).then(async d => {
         const expired = d.tokenExpiresAt && Date.parse(d.tokenExpiresAt) <= Date.now();
         if (expired) {
           await clearExtensionAuthSession('stored_token_expired');
@@ -2397,6 +2459,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           expiresInDays,
           version: chrome.runtime.getManifest().version,
           extensionUpdate: d.extensionUpdate || null,
+          syncStatus: d.syncStatus || null,
         });
       });
       return true;

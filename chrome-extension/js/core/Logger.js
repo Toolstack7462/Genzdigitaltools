@@ -29,6 +29,33 @@ const SENSITIVE_KEYS = [
 // Global debug mode state
 let debugModeEnabled = false;
 
+// Render any value to a readable, circular-safe, length-capped string so logs
+// NEVER show "[object Object]". Errors are reduced to name+message (their fields
+// are non-enumerable, so a plain stringify would lose them). No secrets here:
+// the caller's data is already run through sanitize() before this.
+function safeStringify(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value;
+  const seen = new WeakSet();
+  let out;
+  try {
+    out = JSON.stringify(value, (k, v) => {
+      if (v instanceof Error) return { name: v.name, message: v.message };
+      if (typeof v === 'bigint') return String(v);
+      if (typeof v === 'function') return '[fn]';
+      if (typeof v === 'object' && v !== null) {
+        if (seen.has(v)) return '[Circular]';
+        seen.add(v);
+      }
+      return v;
+    });
+  } catch (_) {
+    try { out = String(value); } catch (_2) { out = '[Unserializable]'; }
+  }
+  if (typeof out !== 'string') out = String(out);
+  return out.length > 2000 ? out.slice(0, 2000) + '…' : out;
+}
+
 // Log history for diagnostics
 const logHistory = [];
 const MAX_HISTORY_SIZE = 100;
@@ -101,8 +128,12 @@ export class Logger {
     const prefix = `[${this.context}]`;
     const levelPrefix = this.getLevelPrefix(level);
 
-    if (sanitizedData) {
-      console[this.getConsoleMethod(level)](`${levelPrefix} ${prefix} ${message}`, sanitizedData);
+    // Render the data into the message string (readable, never "[object
+    // Object]") AND pass the object as a second arg so DevTools can still expand
+    // it. The string form is what shows in captured/SW console output.
+    if (sanitizedData !== null && sanitizedData !== undefined) {
+      const formatted = safeStringify(sanitizedData);
+      console[this.getConsoleMethod(level)](`${levelPrefix} ${prefix} ${message}${formatted ? ' ' + formatted : ''}`, sanitizedData);
     } else {
       console[this.getConsoleMethod(level)](`${levelPrefix} ${prefix} ${message}`);
     }
@@ -119,6 +150,12 @@ export class Logger {
     // Handle primitive types
     if (typeof data !== 'object') {
       return data;
+    }
+
+    // Errors: name + message are non-enumerable, so Object.entries() would drop
+    // them and the error would log as "[object Object]"/"{}". Surface them here.
+    if (data instanceof Error) {
+      return { name: data.name, message: data.message };
     }
 
     // Handle arrays

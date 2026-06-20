@@ -154,7 +154,7 @@ for i in 1 2 3 4 5 6; do
   if echo "${BODY}" | grep -q 'extension_token_invalid'; then
     echo "==> SUCCESS: backend live, frontend + extension published."
     echo "    Site:      https://genzdigitalstore.com  /  https://app.genzdigitalstore.com"
-    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.9.2)"
+    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.9.3)"
     echo "    Reminder:  installed users must RELOAD the extension to pick up popup/background changes."
     exit 0
   fi
