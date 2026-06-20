@@ -11,7 +11,8 @@ import {
 const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
-import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl } from '../../lib/extension';
+import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
+import { isOlder } from '../../lib/semver';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 import StealthWriterCard from '../../components/StealthWriterCard';
@@ -179,6 +180,30 @@ const ClientDashboardEnhanced = () => {
   const { proxyTools } = useProxyTools(); // HIX AI / BypassGPT (shown as tool cards)
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
+  const [extInfo, setExtInfo] = useState(null); // backend version-info (latest/min/forceUpdate)
+
+  // Detect outdated extension at the DASHBOARD level (works for ALL installed
+  // versions, including old builds that lack heartbeat update-awareness). Fetch
+  // the latest published version + policy, passing the installed version so the
+  // backend returns a ready decision.
+  const installedExtVersion = extConnStatus?.version || null;
+  useEffect(() => {
+    let alive = true;
+    getLatestExtension(installedExtVersion).then(info => { if (alive) setExtInfo(info); }).catch(() => {});
+    return () => { alive = false; };
+  }, [installedExtVersion]);
+
+  // Recompute the decision client-side too, so it's correct regardless of which
+  // installed version the backend saw (semantic compare — never string compare).
+  const extLatest = extInfo?.latest || null;
+  const extOutdated = !!(installedExtVersion && extLatest && isOlder(installedExtVersion, extLatest));
+  const extMustUpdate = !!(
+    extInfo && installedExtVersion && (
+      extInfo.updateRequired ||
+      (extInfo.forceUpdate && extOutdated) ||
+      (extInfo.minVersion && isOlder(installedExtVersion, extInfo.minVersion))
+    )
+  );
 
   const loadData = useCallback(async () => {
     try {
@@ -304,6 +329,10 @@ const ClientDashboardEnhanced = () => {
         || /access expired|assignment has expired|Tool access expired|revoked/i.test(raw)) {
       return 'Access expired. Contact admin.';
     }
+    // Extension is below the required minimum version — must update first.
+    if (result?.error === 'extension_update_required' || /extension is outdated|update.*extension/i.test(raw)) {
+      return 'Your extension is outdated. Please download and install the latest version to continue.';
+    }
     // Never surface popup references to the user.
     if (/popup|reconnect from/i.test(raw)) {
       return 'Could not open tool. Please refresh the dashboard and try again.';
@@ -335,6 +364,14 @@ const ClientDashboardEnhanced = () => {
     // pointless round-trip and shows a clear message.
     if (tool.status === 'expired') {
       setToolOpenStates(prev => ({ ...prev, [toolId]: { error: 'Access expired. Contact admin to renew.' } }));
+      return;
+    }
+
+    // Forced-update gate: if the installed extension is below the required
+    // minimum (or update_required is set), block opening until they update. The
+    // backend credentials endpoint enforces this too (defense-in-depth).
+    if (extMustUpdate) {
+      setToolOpenStates(prev => ({ ...prev, [toolId]: { error: 'Your extension is outdated. Please download and install the latest version to continue.' } }));
       return;
     }
 
@@ -477,30 +514,31 @@ const ClientDashboardEnhanced = () => {
           </div>
         )}
 
-        {/* ── Extension update banner (download latest from the existing link) ── */}
-        {extConnStatus?.extensionUpdate && (extConnStatus.extensionUpdate.updateAvailable || extConnStatus.extensionUpdate.updateRequired) && (
+        {/* ── Extension update banner (dashboard-detected; works for every
+            installed version). Downloads the latest from the EXISTING link with
+            a versioned save-as filename. ── */}
+        {extOutdated && (
           <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl"
                style={{
-                 background: extConnStatus.extensionUpdate.updateRequired
+                 background: extMustUpdate
                    ? 'linear-gradient(120deg, rgba(127,29,29,0.34), rgba(127,29,29,0.18))'
                    : 'linear-gradient(120deg, rgba(120,53,15,0.32), rgba(120,53,15,0.18))',
-                 border: extConnStatus.extensionUpdate.updateRequired ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(251,191,36,0.30)',
+                 border: extMustUpdate ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(251,191,36,0.30)',
                }}>
-            <RefreshCw size={13} className={extConnStatus.extensionUpdate.updateRequired ? 'text-red-300 flex-shrink-0' : 'text-amber-300 flex-shrink-0'} />
+            <RefreshCw size={13} className={extMustUpdate ? 'text-red-300 flex-shrink-0' : 'text-amber-300 flex-shrink-0'} />
             <div className="flex-1 min-w-0">
-              <span className={(extConnStatus.extensionUpdate.updateRequired ? 'text-red-200' : 'text-amber-200') + ' font-semibold text-[12px]'}>
-                {extConnStatus.extensionUpdate.updateRequired ? 'Extension update required' : 'Extension update available'}
+              <span className={(extMustUpdate ? 'text-red-200' : 'text-amber-200') + ' font-semibold text-[12px]'}>
+                New extension version v{extLatest} is available. Please download and update.
               </span>
-              <span className={(extConnStatus.extensionUpdate.updateRequired ? 'text-red-200/70' : 'text-amber-200/70') + ' text-[11px] ml-2'}>
-                {extConnStatus.extensionUpdate.updateRequired
-                  ? '· Tool access is paused until you update.'
-                  : (extConnStatus.extensionUpdate.latest ? `· v${extConnStatus.extensionUpdate.latest} is available` : '')}
+              <span className={(extMustUpdate ? 'text-red-200/70' : 'text-amber-200/70') + ' text-[11px] ml-2'}>
+                · Installed v{installedExtVersion || '—'} → Latest v{extLatest}
+                {extMustUpdate ? ' · Tool access is paused until you update.' : ''}
               </span>
             </div>
-            <a href={extZipUrl(extConnStatus.extensionUpdate.latest)} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer"
-               className="flex-shrink-0 text-[11px] font-semibold text-white px-2.5 py-1 rounded-lg"
+            <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+               className="flex-shrink-0 text-[11px] font-semibold text-white px-2.5 py-1 rounded-lg whitespace-nowrap"
                style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
-              Download latest
+              Download Latest Extension
             </a>
           </div>
         )}
@@ -696,7 +734,7 @@ const ClientDashboardEnhanced = () => {
               {/* action */}
               <div className="flex-shrink-0 sm:self-center">
                 {!extConnStatus?.checking ? (
-                  <a href={EXT_ZIP_URL} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer"
+                  <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                      onClick={verifyExtensionDownload}
                      data-testid="ext-banner-install"
                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
@@ -890,7 +928,7 @@ const ClientDashboardEnhanced = () => {
         {/* ── Quick actions ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: Chrome, title: 'Extension Setup',  desc: 'Download the Chrome extension for one-click tool access.', to: EXT_ZIP_URL,       cta: 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true },
+            { icon: Chrome, title: 'Extension Setup',  desc: 'Download the Chrome extension for one-click tool access.', to: extZipUrl(extLatest), cta: 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true },
             { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',         to: '/client/profile', cta: 'Manage',   grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
             { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',          to: '/pricing',        cta: 'Upgrade',  grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
           ].map(({ icon: Icon, title, desc, to, cta, grad, download }) => {
@@ -910,7 +948,7 @@ const ClientDashboardEnhanced = () => {
             // The extension entry downloads the static ZIP directly (new tab),
             // so it never routes through the auth-gated /chrome-extension page.
             return download ? (
-              <a key={title} href={to} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer" onClick={verifyExtensionDownload} className={cardClass}>
+              <a key={title} href={to} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer" onClick={verifyExtensionDownload} className={cardClass}>
                 {inner}
               </a>
             ) : (

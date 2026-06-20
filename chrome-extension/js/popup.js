@@ -145,15 +145,19 @@ function renderUpdateBanner(update, apiUrl) {
   const detail = $('update-detail');
   const link = $('update-link');
   if (title) title.textContent = required ? 'Update required' : 'Update available';
+  const installed = chrome.runtime.getManifest().version;
   if (detail) {
     detail.textContent = required
-      ? 'Your access is paused until you update to the latest extension.'
-      : `A newer version (${update.latest || 'latest'}) is available. Please update.`;
+      ? `Your access is paused until you update. Installed v${installed} → Latest v${update.latest || '—'}.`
+      : `New extension version v${update.latest || '—'} is available (installed v${installed}). Please download and update.`;
   }
   if (link) {
     const origin = appOriginFromApiUrl(apiUrl);
     const v = update.latest ? `?v=${encodeURIComponent(update.latest)}` : '';
     link.href = `${origin}${update.downloadPath || '/downloads/genz-digital-store-extension.zip'}${v}`;
+    // Versioned save-as filename (no '+'), avoids the "(12).zip" duplicate suffix.
+    if (update.filename) link.setAttribute('download', update.filename);
+    link.textContent = 'Download Latest Extension';
   }
   banner.classList.remove('hidden');
 }

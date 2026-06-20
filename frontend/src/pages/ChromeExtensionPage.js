@@ -6,7 +6,7 @@ import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import BrandLogo from '../components/BrandLogo';
-import { getLatestExtension, EXT_ZIP_PATH } from '../lib/extension';
+import { getLatestExtension, EXT_ZIP_PATH, versionedZipName } from '../lib/extension';
 
 // Version is read live from the backend (admin uploads the latest ZIP; the
 // backend extracts the version from the ZIP manifest). The download path is the
@@ -98,7 +98,7 @@ const ChromeExtensionPage = () => {
                 </div>
               </div>
 
-              <a href={ext.downloadUrl} download
+              <a href={ext.downloadUrl} download={versionedZipName(ext.latest)}
                  className="btn-grad inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-bold whitespace-nowrap hover:-translate-y-0.5 transition-transform">
                 <Download size={18} /> Download ZIP
               </a>

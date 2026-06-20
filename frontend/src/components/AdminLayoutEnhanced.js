@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, Users, Activity, LogOut, FileText, Mail,
-  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap
+  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import api from '../services/api';
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { to: '/admin/assignments', icon: Activity,      label: 'Assignments', group: 'Manage'   },
   { to: '/admin/stealthwriter', icon: Sparkles,    label: 'StealthWriter', group: 'Manage' },
   { to: '/admin/proxy-tools', icon: Zap,           label: 'Proxy Tools',   group: 'Manage' },
+  { to: '/admin/extension', icon: Chrome,          label: 'Extension',     group: 'Manage' },
   { to: '/admin/activity',  icon: Activity,        label: 'Activity',    group: 'Insights' },
   { to: '/admin/blog',      icon: FileText,        label: 'Blog',        group: 'Content'  },
   { to: '/admin/contacts',  icon: Mail,            label: 'Contacts',    group: 'Content'  },

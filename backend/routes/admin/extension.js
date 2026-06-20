@@ -5,9 +5,10 @@ const router = express.Router();
 const { requireAuth } = require('../../middleware/authEnhanced');
 const ActivityLog = require('../../models/ActivityLog');
 const ExtensionRelease = require('../../models/ExtensionRelease');
+const User = require('../../models/User');
 const { readManifestFromZip } = require('../../utils/zipManifest');
-const { writeExtensionZip, ZIP_FILENAME } = require('../../utils/extensionDownloads');
-const { isValidVersion, compareVersions } = require('../../utils/semver');
+const { writeExtensionZip, ZIP_FILENAME, readDiskExtensionVersion, versionedFilename } = require('../../utils/extensionDownloads');
+const { isValidVersion, compareVersions, isOlder } = require('../../utils/semver');
 
 // Admin auth — same pattern as the other admin routers.
 router.use(requireAuth);
@@ -19,21 +20,56 @@ router.use((req, res, next) => {
   next();
 });
 
-// GET /api/crm/admin/extension/release — current published release + min version.
+// GET /api/crm/admin/extension/release — latest version (from the on-disk ZIP),
+// admin policy, and per-client installed versions for admin visibility.
 router.get('/release', async (req, res) => {
   try {
     const rel = await ExtensionRelease.getLatest();
+    const diskVersion = readDiskExtensionVersion();
+    const dbVersion = rel ? rel.version : null;
+    let latest = diskVersion || dbVersion || null;
+    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+    const minVersion = rel ? (rel.minVersion || null) : null;
+    const forceUpdate = rel ? !!rel.updateRequired : false;
+    const effectiveMin = minVersion || (forceUpdate ? latest : null);
+
+    // Per-client installed versions (only clients that have synced at least once).
+    let clients = [];
+    try {
+      const users = await User.find({ role: 'CLIENT' })
+        .select('email fullName extensionVersion extensionLastSyncAt');
+      clients = (users || [])
+        .filter(u => u.extensionVersion || u.extensionLastSyncAt)
+        .map(u => {
+          const installed = u.extensionVersion || null;
+          return {
+            clientId: String(u._id),
+            email: u.email || null,
+            name: u.fullName || null,
+            installedVersion: installed,
+            lastSyncAt: u.extensionLastSyncAt || null,
+            isOutdated: !!(latest && installed && isOlder(installed, latest)),
+            updateRequired: !!(effectiveMin && installed && isOlder(installed, effectiveMin)),
+            status: (latest && installed && isOlder(installed, latest)) ? 'outdated' : (installed ? 'up_to_date' : 'unknown'),
+          };
+        })
+        .sort((a, b) => new Date(b.lastSyncAt || 0) - new Date(a.lastSyncAt || 0));
+    } catch (_) {}
+
     res.json({
       success: true,
-      release: rel ? {
-        version: rel.version,
-        minVersion: rel.minVersion || null,
-        filename: rel.filename || ZIP_FILENAME,
-        size: rel.size || 0,
-        manifestName: rel.manifestName || null,
-        publishedAt: rel.publishedAt || null,
-      } : null,
+      latestVersion: latest,
+      minimumRequiredVersion: minVersion,
+      effectiveMinimum: effectiveMin,
+      updateRequired: forceUpdate,
+      filename: versionedFilename(latest),
+      stableFilename: ZIP_FILENAME,
+      size: rel ? (rel.size || 0) : 0,
+      uploadedAt: rel ? (rel.publishedAt || null) : null,
+      diskVersion,
+      dbVersion,
       downloadPath: `/downloads/${ZIP_FILENAME}`,
+      clients,
     });
   } catch (err) {
     console.error('Get extension release error:', err.message);
@@ -117,28 +153,48 @@ router.post('/upload',
   }
 );
 
-// PUT /api/crm/admin/extension/min-version — set/clear forced-update floor.
-router.put('/min-version', express.json({ limit: '10kb' }), async (req, res) => {
+// PUT /api/crm/admin/extension/policy — set the forced-update policy.
+// Body: { minVersion?, updateRequired? }. Works even if no ZIP was uploaded via
+// the endpoint (auto-creates the release row from the on-disk ZIP version).
+async function handleSetPolicy(req, res) {
   try {
-    const { minVersion } = req.body || {};
+    const body = req.body || {};
+    const minVersion = body.minVersion;
+    const updateRequired = body.updateRequired;
     if (minVersion != null && minVersion !== '' && !isValidVersion(minVersion)) {
       return res.status(400).json({ error: 'minVersion is not a valid version' });
     }
-    const latest = await ExtensionRelease.getLatest();
-    if (!latest) return res.status(409).json({ error: 'No extension uploaded yet' });
+
+    // Ensure a release row exists — seed from the on-disk ZIP if needed.
+    let latest = await ExtensionRelease.getLatest();
+    if (!latest) {
+      const diskVersion = readDiskExtensionVersion();
+      if (!diskVersion) return res.status(409).json({ error: 'No extension ZIP available yet' });
+      latest = await ExtensionRelease.publish({
+        version: diskVersion, filename: ZIP_FILENAME, size: 0,
+        manifestName: 'auto (from existing download)',
+        publishedBy: req.userId || (req.user && req.user._id) || null,
+      });
+    }
     if (minVersion && compareVersions(minVersion, latest.version) > 0) {
       return res.status(400).json({ error: 'minVersion cannot be greater than the published version' });
     }
-    const doc = await ExtensionRelease.setMinVersion(minVersion, req.userId || (req.user && req.user._id));
-    await ActivityLog.log('ADMIN', req.userId || (req.user && req.user._id), 'EXTENSION_MIN_VERSION_SET', {
-      minVersion: doc.minVersion || null,
+
+    const doc = await ExtensionRelease.setPolicy({ minVersion, updateRequired }, req.userId || (req.user && req.user._id));
+    await ActivityLog.log('ADMIN', req.userId || (req.user && req.user._id), 'EXTENSION_POLICY_SET', {
       version: doc.version,
+      minVersion: doc.minVersion || null,
+      updateRequired: !!doc.updateRequired,
     });
-    res.json({ success: true, version: doc.version, minVersion: doc.minVersion || null });
+    res.json({ success: true, version: doc.version, minVersion: doc.minVersion || null, updateRequired: !!doc.updateRequired });
   } catch (err) {
-    console.error('Set min version error:', err.message);
-    res.status(500).json({ error: 'Failed to set minimum version' });
+    console.error('Set extension policy error:', err.message);
+    res.status(500).json({ error: 'Failed to set policy' });
   }
-});
+}
+
+router.put('/policy', express.json({ limit: '10kb' }), handleSetPolicy);
+// Backward-compatible alias (minVersion only).
+router.put('/min-version', express.json({ limit: '10kb' }), handleSetPolicy);
 
 module.exports = router;

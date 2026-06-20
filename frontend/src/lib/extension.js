@@ -19,18 +19,34 @@ export function extZipUrl(version) {
   return version ? `${EXT_ZIP_PATH}?v=${encodeURIComponent(version)}` : EXT_ZIP_PATH;
 }
 
+// Suggested SAVE-AS filename including the version, e.g.
+// genz-digital-store-extension-v3.9.3.zip. The file on disk keeps its stable
+// name (existing link) — only the browser's download name is versioned, which
+// also avoids the confusing "extension (12).zip" duplicate-name suffix.
+export function versionedZipName(version) {
+  const v = String(version || '').trim().replace(/^v/i, '');
+  return v ? `genz-digital-store-extension-v${v}.zip` : EXT_ZIP_FILENAME;
+}
+
 // Fetch the latest published extension metadata from the backend. Public,
 // non-secret version info only. Falls back to the plain download path on error.
-export async function getLatestExtension() {
+export async function getLatestExtension(installed) {
   try {
-    const { data } = await api.get('/extension/version-info');
+    const qs = installed ? `?installed=${encodeURIComponent(installed)}` : '';
+    const { data } = await api.get(`/extension/version-info${qs}`);
     return {
       latest: data?.latest || null,
       minVersion: data?.minVersion || null,
+      forceUpdate: !!data?.forceUpdate,
+      isOutdated: !!data?.isOutdated,
+      updateAvailable: !!data?.updateAvailable,
+      updateRequired: !!data?.updateRequired,
+      filename: data?.filename || versionedZipName(data?.latest),
       downloadPath: data?.downloadPath || EXT_ZIP_PATH,
       downloadUrl: extZipUrl(data?.latest),
+      publishedAt: data?.publishedAt || null,
     };
   } catch (_) {
-    return { latest: null, minVersion: null, downloadPath: EXT_ZIP_PATH, downloadUrl: EXT_ZIP_PATH };
+    return { latest: null, minVersion: null, forceUpdate: false, isOutdated: false, updateAvailable: false, updateRequired: false, filename: EXT_ZIP_FILENAME, downloadPath: EXT_ZIP_PATH, downloadUrl: EXT_ZIP_PATH };
   }
 }

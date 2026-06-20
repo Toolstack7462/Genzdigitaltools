@@ -12,8 +12,40 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { readManifestFromZip } = require('./zipManifest');
 
 const ZIP_FILENAME = 'genz-digital-store-extension.zip';
+
+// Versioned download name, e.g. genz-digital-store-extension-v3.9.3.zip.
+// The file on disk keeps its stable name (existing link); this is only the
+// suggested SAVE-AS name the browser uses via the HTML download attribute.
+function versionedFilename(version) {
+  const v = String(version || '').trim().replace(/^v/i, '');
+  return v ? `genz-digital-store-extension-v${v}.zip` : ZIP_FILENAME;
+}
+
+// Read the ACTUAL version of the ZIP currently served from /downloads by parsing
+// its manifest.json. This is the true "latest" clients can download — derived,
+// never hardcoded. Cached by file mtime so the 5 MB zip isn't re-read per call.
+let _diskCache = { version: null, mtimeMs: 0, path: null };
+function readDiskExtensionVersion() {
+  for (const dir of targetDirs()) {
+    const p = path.join(dir, ZIP_FILENAME);
+    try {
+      const st = fs.statSync(p);
+      if (_diskCache.path === p && _diskCache.mtimeMs === st.mtimeMs && _diskCache.version) {
+        return _diskCache.version;
+      }
+      const buf = fs.readFileSync(p);
+      const m = readManifestFromZip(buf);
+      if (m && m.version) {
+        _diskCache = { version: m.version, mtimeMs: st.mtimeMs, path: p };
+        return m.version;
+      }
+    } catch (_) { /* try next dir */ }
+  }
+  return null;
+}
 
 // Default existing download folders (main site, app subdomain, api docroot).
 const DEFAULT_DIRS = [
@@ -51,4 +83,4 @@ function writeExtensionZip(buf) {
   return { written, skipped };
 }
 
-module.exports = { writeExtensionZip, targetDirs, ZIP_FILENAME, DEFAULT_DIRS };
+module.exports = { writeExtensionZip, targetDirs, ZIP_FILENAME, DEFAULT_DIRS, versionedFilename, readDiskExtensionVersion };

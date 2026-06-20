@@ -43,6 +43,24 @@ const ExtensionRelease = createModel('ExtensionRelease', {
       await latest.save();
       return latest;
     },
+
+    // Set the forced-update policy: an explicit minimum version and/or an
+    // updateRequired flag (when true with no minVersion, everyone below the
+    // latest version is required to update). Either field may be omitted.
+    async setPolicy({ minVersion, updateRequired }, by) {
+      const latest = await this.getLatest();
+      if (!latest) return null;
+      if (minVersion !== undefined) {
+        latest.minVersion = minVersion != null && minVersion !== '' ? String(minVersion) : null;
+      }
+      if (updateRequired !== undefined) {
+        latest.updateRequired = !!updateRequired;
+      }
+      latest.policyUpdatedBy = by || null;
+      latest.policyUpdatedAt = new Date();
+      await latest.save();
+      return latest;
+    },
   },
 });
 
