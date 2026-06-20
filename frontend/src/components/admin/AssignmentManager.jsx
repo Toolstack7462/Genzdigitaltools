@@ -549,7 +549,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
       ) : (
         <div className="border border-genz-border rounded-xl overflow-hidden">
           {/* header (desktop) */}
-          <div className="hidden md:grid grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_auto] gap-3 px-4 py-2.5 bg-genz-bg text-[11px] font-semibold uppercase tracking-wide text-genz-muted">
+          <div className="hidden md:grid grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_200px] gap-3 px-4 py-2.5 bg-genz-bg text-[11px] font-semibold uppercase tracking-wide text-genz-muted">
             <span className="flex items-center gap-2">
               {selectableIds.length > 0 && (
                 <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll}
@@ -570,7 +570,7 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
               const primarySub = isToolPrimary ? (a.tool?.category || '') : (a.client?.email || '');
               return (
                 <div key={a._id}
-                  className="grid grid-cols-1 md:grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_auto] gap-2 md:gap-3 md:items-center px-4 py-3 hover:bg-genz-bg/60 transition-colors"
+                  className="grid grid-cols-1 md:grid-cols-[1.6fr_0.9fr_0.9fr_0.9fr_200px] gap-2 md:gap-3 md:items-center px-4 py-3 hover:bg-genz-bg/60 transition-colors"
                   data-testid={`assignment-row-${a._id}`}>
                   {/* primary entity */}
                   <div className="flex items-center gap-2.5 min-w-0">
@@ -630,8 +630,10 @@ const AssignmentManager = ({ toolId, clientId, showFilters = false, onChanged })
                     <div className="mt-0.5"><RemainingPill a={a} /></div>
                   </div>
 
-                  {/* actions */}
-                  <div className="flex items-center justify-start md:justify-end gap-1.5 pt-1 md:pt-0">
+                  {/* actions — fixed-width column (see grid template) so every row's
+                      actions right-align identically whether it's 5 icon buttons or a
+                      single proxy "Manage" pill. */}
+                  <div className="flex flex-nowrap items-center justify-start md:justify-end gap-1.5 pt-1 md:pt-0">
                     {a.readOnly ? (
                       // Proxy / StealthWriter tools are managed on their dedicated admin
                       // page (separate lease/gateway flow — never the assignment CRUD).
