@@ -14,7 +14,7 @@ const OFFER = [
 ];
 
 const VALUES = [
-  { t: 'Quality over quantity', s: 'Every deliverable — whether a tool, a website, or a piece of content — is held to a high standard.' },
+  { t: 'Quality over quantity', s: 'Every deliverable, whether a tool, a website, or a piece of content, is held to a high standard.' },
   { t: 'Security first',        s: 'Our tool access system is built with security at the core. No credential exposure, ever.' },
   { t: 'Transparency',          s: 'Clear communication, honest pricing, and no hidden surprises at any stage.' },
   { t: 'Client success',        s: 'We measure our success by the real results our clients achieve with our tools and services.' },
@@ -30,7 +30,7 @@ const About = () => {
       <PageHero
         eyebrow="About Us"
         title={<>Built to power your <span className="text-grad-brand">digital growth</span></>}
-        subtitle="Gen Z Digital Store is a premium digital platform combining secure tool access with professional creative and technical services — built for individuals, creators, and businesses ready to grow."
+        subtitle="Gen Z Digital Store is a premium digital platform combining secure tool access with professional creative and technical services, built for individuals, creators, and businesses ready to grow."
       />
 
       {/* Mission / Vision */}
@@ -45,7 +45,7 @@ const About = () => {
               <h3 className="text-genz-navy font-bold text-[22px] mb-3">Our Mission</h3>
               <p className="text-genz-muted text-[15px] leading-relaxed">
                 To make premium digital tools and professional services accessible to every creator,
-                entrepreneur, and business — through a secure, well-designed, and reliable platform.
+                entrepreneur, and business, through a secure, well-designed, and reliable platform.
               </p>
             </div>
             <div className="gz-tint-card" style={{ '--tint': 'linear-gradient(135deg, rgba(37,99,235,0.14), rgba(20,184,166,0.10))' }}>
@@ -55,7 +55,7 @@ const About = () => {
               </div>
               <h3 className="text-genz-navy font-bold text-[22px] mb-3">Our Vision</h3>
               <p className="text-genz-muted text-[15px] leading-relaxed">
-                To be the go-to digital growth partner for the next generation of online businesses —
+                To be the go-to digital growth partner for the next generation of online businesses,
                 delivering tools, creativity, and technology under one unified brand.
               </p>
             </div>
@@ -71,7 +71,7 @@ const About = () => {
             <h2 className="font-heading text-genz-navy font-extrabold text-3xl sm:text-4xl mb-3">
               Six core service lines, <span className="text-grad-brand">one platform</span>
             </h2>
-            <p className="text-genz-muted">Everything your digital brand needs — premium tools and creative services delivered to a high standard.</p>
+            <p className="text-genz-muted">Everything your digital brand needs: premium tools and creative services delivered to a high standard.</p>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 max-w-6xl mx-auto">
             {OFFER.map(({ icon: Icon, color, title, desc }) => (

@@ -22,7 +22,7 @@ const Portfolio = () => {
       <PageHero
         eyebrow="Featured Work"
         title={<>Our Work & <span className="text-grad-brand">Concepts</span></>}
-        subtitle="Premium digital case studies — dashboards, landing pages, SaaS platforms, brand kits, web apps and client portals — all built with the same craft we bring to every Gen Z Digital Store project."
+        subtitle="Premium digital case studies: dashboards, landing pages, SaaS platforms, brand kits, web apps and client portals, all built with the same craft we bring to every Gen Z Digital Store project."
       />
 
       {/* Filters */}

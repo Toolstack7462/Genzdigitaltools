@@ -32,7 +32,7 @@ const ADDONS = [
 
 const FAQS = [
   { q: 'Are the prices fixed?', a: 'Prices vary depending on the scope, scale, and specific requirements of your project. Contact us for a tailored quote based on exactly what you need.' },
-  { q: 'Can I mix services across plans?', a: 'Yes — our Custom plan is fully flexible. You can combine any services from across our offering. Contact us to build your ideal package.' },
+  { q: 'Can I mix services across plans?', a: 'Yes. Our Custom plan is fully flexible. You can combine any services from across our offering. Contact us to build your ideal package.' },
   { q: 'Is there a trial or free consultation?', a: 'We offer a free initial consultation to understand your requirements before providing a proposal. Contact us via WhatsApp to get started.' },
   { q: 'How are projects billed?', a: 'We typically bill monthly for ongoing services, and per-project for one-time work like websites and apps. Payment terms are agreed before work begins.' },
   { q: 'What happens after I contact you?', a: 'We will discuss your requirements, send a detailed proposal within 24 hours, and agree on scope and pricing before any work begins.' },
@@ -48,7 +48,7 @@ const Pricing = () => {
       <PageHero
         eyebrow="Pricing"
         title={<>Transparent, <span className="text-grad-brand">flexible</span> pricing</>}
-        subtitle="Every project is scoped individually. Contact us for a custom quote — we don't do one-size-fits-all."
+        subtitle="Every project is scoped individually. Contact us for a custom quote. We don't do one-size-fits-all."
       />
 
       {/* Plans */}

@@ -4,7 +4,7 @@ import {
 } from './ShowcaseMocks';
 
 /**
- * Canonical Showcase items — used by the Portfolio page and the
+ * Canonical Showcase items: used by the Portfolio page and the
  * Home Featured Work preview. Order matters; first 4 appear on Home.
  */
 const SHOWCASE_ITEMS = [
@@ -22,7 +22,7 @@ const SHOWCASE_ITEMS = [
     id: 'saas-landing',
     title: 'Digital Tools SaaS Landing Page',
     tag: 'SaaS',
-    description: 'High-conversion SaaS landing for the Gen Z platform — animated hero, gradient CTAs, feature grid and trust band.',
+    description: 'High-conversion SaaS landing for the Gen Z platform: animated hero, gradient CTAs, feature grid and trust band.',
     accent: '#2563EB',
     tags: ['React', 'Tailwind', 'Marketing', 'Animation'],
     Mock: SaaSLandingMock,
@@ -32,7 +32,7 @@ const SHOWCASE_ITEMS = [
     id: 'ai-tools-platform',
     title: 'AI Tools Access Platform',
     tag: 'Platform',
-    description: 'A unified 90+ tools marketplace — members-only access, category filters, and live tool access status.',
+    description: 'A unified 90+ tools marketplace: members-only access, category filters, and live tool access status.',
     accent: '#14B8A6',
     tags: ['Full-Stack', 'Access', 'Auth', 'CRM'],
     Mock: ToolsPlatformMock,
@@ -42,7 +42,7 @@ const SHOWCASE_ITEMS = [
     id: 'brand-kit',
     title: 'Social Media Brand Kit',
     tag: 'Branding',
-    description: 'Complete identity system — Instagram feed concept, brand colour palette, typography pair and template grid.',
+    description: 'Complete identity system: Instagram feed concept, brand colour palette, typography pair and template grid.',
     accent: '#0891B2',
     tags: ['Branding', 'Social', 'Design System'],
     Mock: BrandKitMock,
@@ -52,7 +52,7 @@ const SHOWCASE_ITEMS = [
     id: 'chrome-extension-workflow',
     title: 'Secure Tool Access Flow',
     tag: 'Workflow',
-    description: 'A premium member access flow — one-click tool launch, live connection status and a clean, secure experience.',
+    description: 'A premium member access flow: one-click tool launch, live connection status and a clean, secure experience.',
     accent: '#06B6D4',
     tags: ['UX', 'Security', 'Workflow'],
     Mock: ExtensionMock,
@@ -72,7 +72,7 @@ const SHOWCASE_ITEMS = [
     id: 'admin-panel',
     title: 'Admin Panel Concept',
     tag: 'Web App',
-    description: 'Internal admin console — KPI strip, recent activity table, role-aware sidebar and live-status indicators.',
+    description: 'Internal admin console: KPI strip, recent activity table, role-aware sidebar and live-status indicators.',
     accent: '#14B8A6',
     tags: ['Admin', 'Tables', 'Permissions'],
     Mock: AdminPanelMock,
@@ -82,7 +82,7 @@ const SHOWCASE_ITEMS = [
     id: 'whatsapp-portal',
     title: 'WhatsApp Support / Client Portal Flow',
     tag: 'Client Portal',
-    description: 'End-to-end client support journey — WhatsApp first-touch, portal sync, secure access and resolution log.',
+    description: 'End-to-end client support journey: WhatsApp first-touch, portal sync, secure access and resolution log.',
     accent: '#10B981',
     tags: ['Support', 'Workflow', 'WhatsApp API'],
     Mock: WhatsAppPortalMock,

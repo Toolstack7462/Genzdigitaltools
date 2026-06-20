@@ -31,7 +31,7 @@ const ServiceBranding = () => {
             A brand identity that <span className="text-grad-brand">stands out</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
-            From logo design and brand guidelines to social media creatives and print materials —
+            From logo design and brand guidelines to social media creatives and print materials,
             we create visual identities that make your brand impossible to ignore.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"

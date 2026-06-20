@@ -32,7 +32,7 @@ const ServiceAppDev = () => {
             Custom apps, built <span className="text-grad-brand">to scale</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
-            Whether you need a web app, mobile app, admin system, or automation tool —
+            Whether you need a web app, mobile app, admin system, or automation tool,
             we build functional, scalable software tailored exactly to your requirements.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"

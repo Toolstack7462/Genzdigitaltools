@@ -5,7 +5,7 @@ import { useReveal } from '../../hooks/useReveal';
 
 const CTASection = ({
   headline = 'Ready to build your digital presence?',
-  sub = 'Talk to us today — tools, services, or a fully custom solution.',
+  sub = 'Talk to us today about tools, services, or a fully custom solution.',
 }) => {
   const [ref, visible] = useReveal();
 

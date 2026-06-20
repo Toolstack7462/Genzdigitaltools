@@ -95,15 +95,15 @@ const PublicFooter = () => {
 
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
-            <FooterLink to="/" className="inline-flex items-center gap-3 mb-4" aria-label="Gen Z Digital Store — home">
+            <FooterLink to="/" className="inline-flex items-center gap-3 mb-4" aria-label="Gen Z Digital Store home">
               <BrandLogo size="footer" glow />
               <span className="text-white font-extrabold text-lg leading-tight tracking-tight">
                 Gen Z Digital Store
               </span>
             </FooterLink>
             <p className="text-white/55 text-sm leading-relaxed mb-4 max-w-xs">
-              Premium digital tools access, creative services, and smart web solutions
-              — all from one platform built for creators, businesses, and digital professionals.
+              Premium digital tools access, creative services, and smart web solutions,
+              all from one platform built for creators, businesses, and digital professionals.
             </p>
             <a
               href="mailto:admin@genzdigitalstore.com"
@@ -196,7 +196,7 @@ const PublicFooter = () => {
         {/* Disclaimer */}
         <p className="text-white/55 text-xs text-center leading-relaxed mb-6 max-w-3xl mx-auto">
           Services are provided for educational, productivity and professional support purposes.
-          All tools accessed under authorized licensing — membership is for authorized use only.
+          All tools accessed under authorized licensing. Membership is for authorized use only.
         </p>
 
         {/* Bottom bar */}

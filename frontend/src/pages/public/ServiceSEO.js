@@ -32,7 +32,7 @@ const ServiceSEO = () => {
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             Data-driven SEO strategies that improve your search rankings, increase organic traffic,
-            and turn visitors into customers — with measurable results.
+            and turn visitors into customers, with measurable results.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
             className="btn-grad inline-flex items-center gap-2 px-7 py-3.5 rounded-[14px] text-[15px] font-bold">

@@ -7,11 +7,11 @@ import PageHero from '../../components/public/PageHero';
 const SERVICES = [
   { icon: Cpu,        color: '#06B6D4', title: 'Digital Tools Access',       sub: 'Secure access to AI, SEO, design and productivity tools via your client dashboard.',   to: '/services/digital-tools',
     bullets: ['90+ premium tools', 'Encrypted bridge', 'Admin-managed access'], badge: 'Most Popular' },
-  { icon: Instagram,  color: '#DB2777', title: 'Social Media Management',    sub: 'Full social media management — content, design, strategy, and growth reporting.',       to: '/services/social-media-management',
+  { icon: Instagram,  color: '#DB2777', title: 'Social Media Management',    sub: 'Full social media management: content, design, strategy, and growth reporting.',       to: '/services/social-media-management',
     bullets: ['Content calendars', 'Reels & posts', 'Growth reporting'] },
   { icon: PenTool,    color: '#7C3AED', title: 'Writing Services',           sub: 'Website copy, blog articles, business writing, academic support and proofreading.',    to: '/services/writing-services',
     bullets: ['Blog & web copy', 'Research support', 'Proofreading'] },
-  { icon: Globe,      color: '#2563EB', title: 'Web Design & Development',   sub: 'Animated, responsive websites — landing pages, business sites, and dashboards.',        to: '/services/web-design-development',
+  { icon: Globe,      color: '#2563EB', title: 'Web Design & Development',   sub: 'Animated, responsive websites: landing pages, business sites, and dashboards.',        to: '/services/web-design-development',
     bullets: ['Responsive & fast', 'Animated UIs', 'SEO-ready'] },
   { icon: Smartphone, color: '#14B8A6', title: 'App Development',            sub: 'Web apps, mobile apps, admin panels, booking systems, and automation tools.',           to: '/services/app-development',
     bullets: ['iOS & Android', 'Admin panels', 'Booking & CRM'] },
@@ -31,7 +31,7 @@ const Services = () => {
       <PageHero
         eyebrow="What We Offer"
         title={<>All Our <span className="text-grad-brand">Digital Services</span></>}
-        subtitle="From secure premium tool access to complete creative and technical services — Gen Z Digital Store is your full digital growth partner."
+        subtitle="From secure premium tool access to complete creative and technical services, Gen Z Digital Store is your full digital growth partner."
       />
 
       {/* Services grid */}

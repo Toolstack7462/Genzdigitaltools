@@ -35,7 +35,7 @@ const ServiceWebDesign = () => {
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
             We design and develop animated, responsive, high-performance websites that
-            represent your brand at its absolute best — built to convert.
+            represent your brand at its absolute best, built to convert.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-7 py-3.5 rounded-full text-sm font-bold text-white transition-all hover:opacity-90"

@@ -36,7 +36,7 @@ const ServiceSocialMedia = () => {
             Your brand, consistently <span className="text-grad-brand">showing up</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
-            We manage your entire social media presence — strategy, content, design, scheduling, and reporting —
+            We manage your entire social media presence: strategy, content, design, scheduling, and reporting,
             so you can focus on growing your business.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"

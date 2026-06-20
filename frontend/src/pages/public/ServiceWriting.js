@@ -32,7 +32,7 @@ const ServiceWriting = () => {
             Words that convert, inform, <span className="text-grad-brand">and build authority</span>
           </h1>
           <p className="text-genz-muted text-base sm:text-lg leading-relaxed mb-8">
-            Professional writing services across every format — from persuasive website copy to
+            Professional writing services across every format, from persuasive website copy to
             detailed research articles, business documents, and academic support.
           </p>
           <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
@@ -84,7 +84,7 @@ const ServiceWriting = () => {
           <h2 className="text-2xl font-bold text-genz-navy text-center mb-10">How it works</h2>
           <div className="space-y-4">
             {[
-              { n:'01', t:'Share your brief',    s:'Tell us what you need — topic, tone, audience, length, and any key details.' },
+              { n:'01', t:'Share your brief',    s:'Tell us what you need: topic, tone, audience, length, and any key details.' },
               { n:'02', t:'Research & planning', s:'We research the topic and create a structured outline for your approval.' },
               { n:'03', t:'Writing',             s:'First draft delivered within the agreed timeline.' },
               { n:'04', t:'Revisions',           s:'We refine based on your feedback until you are fully satisfied.' },

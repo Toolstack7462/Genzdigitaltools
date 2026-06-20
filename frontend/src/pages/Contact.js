@@ -30,7 +30,7 @@ const Contact = () => {
       <PageHero
         eyebrow="Contact Us"
         title={<>Let&apos;s build something <span className="text-grad-brand">great together</span></>}
-        subtitle="Reach out via WhatsApp for the fastest response, or use the form below — we reply within a few hours."
+        subtitle="Reach out via WhatsApp for the fastest response, or use the form below. We reply within a few hours."
       />
 
       <section className="gz-section px-5 pt-0 -mt-10">
@@ -128,7 +128,7 @@ const Contact = () => {
                 </div>
                 <div>
                   <div className="text-genz-navy font-bold text-[15.5px]">Chat on WhatsApp</div>
-                  <div className="text-genz-muted text-[13px] mt-0.5">Fastest response — usually within minutes.</div>
+                  <div className="text-genz-muted text-[13px] mt-0.5">Fastest response, usually within minutes.</div>
                 </div>
               </a>
 

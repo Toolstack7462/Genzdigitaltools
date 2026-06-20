@@ -136,7 +136,7 @@ const StatBadge = ({ n, label }) => (
 /* ───────────────────────── DATA ───────────────────────── */
 const FEATURED = {
   icon: Cpu, color: '#06B6D4', title: 'Premium Digital Tools', badge: 'Most Popular',
-  desc: 'Members-only access to 90+ professional AI, SEO, design and productivity tools — all opened securely from one premium dashboard with a single click.',
+  desc: 'Members-only access to 90+ professional AI, SEO, design and productivity tools, all opened securely from one premium dashboard with a single click.',
   bullets: ['One-click secure access', 'Assigned per membership', 'Members-only premium tools', '90+ tools across 8 categories'],
   to: '/services/digital-tools',
 };
@@ -146,7 +146,7 @@ const SERVICES = [
     desc: 'Animated landing pages, business sites, web apps, dashboards and mobile apps.',
     bullets: ['Responsive & animated', 'Dashboards & portals', 'SEO-ready builds'], to: '/services/web-design-development' },
   { icon: Palette, color: '#4F46E5', title: 'Graphic Design & Branding',
-    desc: 'Complete brand identity — logos, social creatives, flyers and pitch decks.',
+    desc: 'Complete brand identity: logos, social creatives, flyers and pitch decks.',
     bullets: ['Logo & identity', 'Social creatives', 'Presentation decks'], to: '/services/branding-design' },
   { icon: Instagram, color: '#0891B2', title: 'Social Media Marketing', badge: 'New',
     desc: 'Content calendars, post design, Reels strategy and monthly growth reports.',
@@ -184,14 +184,14 @@ const STEPS = [
   { icon: Search,   t: 'Discover',  s: 'We learn your goals, brand and exact requirements.' },
   { icon: FileText, t: 'Proposal',  s: 'You get a clear plan, scope and quote within 24 hours.' },
   { icon: Palette,  t: 'Design',    s: 'We craft premium concepts aligned to your brand.' },
-  { icon: Rocket,   t: 'Deliver',   s: 'We build, revise and ship — on time, polished.' },
+  { icon: Rocket,   t: 'Deliver',   s: 'We build, revise and ship on time, polished.' },
   { icon: TrendingUp, t: 'Grow',    s: 'Ongoing support, tools and optimisation as you scale.' },
 ];
 
 const FAQS = [
   { q: 'What is Gen Z Digital Store?', a: 'Gen Z Digital Store is a premium digital platform offering secure access to professional tools, plus creative services including social media management, writing, web design, app development, branding, and SEO.' },
-  { q: 'Do you only provide tools?', a: 'No. While we offer admin-managed access to premium digital tools, we also deliver a full range of digital services — from content creation and web design to mobile apps and business automation.' },
-  { q: 'How does tool access work?', a: 'Your assigned tools are added to your account by our team. You simply log in to your member dashboard and open any assigned tool in one click — securely, with nothing to set up.' },
+  { q: 'Do you only provide tools?', a: 'No. While we offer admin-managed access to premium digital tools, we also deliver a full range of digital services, from content creation and web design to mobile apps and business automation.' },
+  { q: 'How does tool access work?', a: 'Your assigned tools are added to your account by our team. You simply log in to your member dashboard and open any assigned tool in one click. Everything is secure, with nothing to set up.' },
   { q: 'Is my access secure?', a: 'Yes. Access is members-only and fully managed by our team, so your premium tools open safely every time. Our other digital services are delivered directly by our team.' },
   { q: 'Can you build a website or app?', a: 'Absolutely. We build animated landing pages, business websites, web apps, mobile apps, admin dashboards, CRM systems, client portals, and custom automation tools.' },
   { q: 'How do I order a service?', a: 'Contact us on WhatsApp or fill out our contact form. We will understand your requirements, send a proposal, and get started after confirmation.' },
@@ -248,7 +248,7 @@ const Home = () => {
               </h1>
               <p className="type-body-large text-genz-muted mb-9 max-w-xl">
                 Premium digital tools, websites, research support, branding, social media designs,
-                documents and presentations — everything you need from one trusted digital platform.
+                documents and presentations. Everything you need from one trusted digital platform.
               </p>
               {/* Primary actions — one clear CTA (Get Started → signup), one subordinate */}
               <div className="flex flex-col sm:flex-row flex-wrap gap-3">
@@ -314,7 +314,7 @@ const Home = () => {
           <div className="text-center max-w-2xl mx-auto mb-12">
             <Eyebrow label="Our Services" />
             <h2 className="type-section-title text-genz-navy mb-4">Everything your digital brand needs</h2>
-            <p className="text-genz-muted text-[16px]">Six core service lines — delivered to a premium standard from one trusted platform.</p>
+            <p className="text-genz-muted text-[16px]">Six core service lines, delivered to a premium standard from one trusted platform.</p>
           </div>
 
           {/* Featured spotlight */}
@@ -391,7 +391,7 @@ const Home = () => {
                 <Eyebrow label="Tools Marketplace" light />
                 <h2 className="type-section-title text-white mb-4 leading-tight">90+ premium tools, one secure dashboard</h2>
                 <p className="text-white/70 text-[16px] leading-relaxed mb-7">
-                  Members get access to professional tools across every category — opened
+                  Members get access to professional tools across every category, opened
                   securely from your dashboard in one click.
                 </p>
                 <div className="flex flex-wrap gap-3">
@@ -427,7 +427,7 @@ const Home = () => {
               <Eyebrow label="Featured Work" />
               <h2 className="type-section-title text-genz-navy mb-4">Premium digital case studies</h2>
               <p className="text-genz-muted text-[16px]">
-                A look at the dashboards, platforms, brand kits and SaaS experiences we build —
+                A look at the dashboards, platforms, brand kits and SaaS experiences we build,
                 each piece crafted with the same attention you&apos;d expect from a world-class product team.
               </p>
             </div>
@@ -454,7 +454,7 @@ const Home = () => {
           <div className="text-center max-w-xl mx-auto mb-12">
             <Eyebrow label="Why Gen Z Digital Store" />
             <h2 className="type-section-title text-genz-navy mb-4" style={{ textWrap: 'balance' }}>A clear step above generic providers</h2>
-            <p className="text-genz-muted text-[15px] leading-relaxed">The same goals — handled with premium care, security and real support, not pieced together from disconnected tools.</p>
+            <p className="text-genz-muted text-[15px] leading-relaxed">The same goals, handled with premium care, security and real support, not pieced together from disconnected tools.</p>
           </div>
 
           <MotionConfig reducedMotion="user">
