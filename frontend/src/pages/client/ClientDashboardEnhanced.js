@@ -166,7 +166,6 @@ const ClientDashboardEnhanced = () => {
   }, [showError]);
   const [tools, setTools] = useState([]);
   const [expiringTools, setExpiringTools] = useState([]);
-  const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -211,14 +210,12 @@ const ClientDashboardEnhanced = () => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [toolsRes, expiringRes, activityRes] = await Promise.all([
+      const [toolsRes, expiringRes] = await Promise.all([
         api.get('/client/tools'),
-        api.get('/client/assignments/expiring'),
-        api.get('/client/activity?limit=12').catch(() => ({ data: {} }))
+        api.get('/client/assignments/expiring')
       ]);
       setTools(toolsRes.data.tools || []);
       setExpiringTools(expiringRes.data.expiring || []);
-      setActivity(Array.isArray(activityRes.data?.activity) ? activityRes.data.activity : []);
       if (expiringRes.data.expiring?.length > 0) {
         const dismissed = localStorage.getItem('expiry_warning_dismissed');
         const dismissedTime = dismissed ? new Date(dismissed) : null;
@@ -909,41 +906,6 @@ const ClientDashboardEnhanced = () => {
             </div>
           </div>
         )}
-
-        {/* ── Your recent activity ── own logins + tool opens (transparency) ── */}
-        {activity.length > 0 && (() => {
-          const toolNameById = {};
-          tools.forEach(t => { toolNameById[String(t._id || t.toolId)] = t.name; });
-          const fmtWhen = (d) => { const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
-          const describe = (a) => {
-            const ac = String(a.action || '').toUpperCase();
-            if (ac.includes('LOGIN') && (ac.includes('FAIL') || ac.includes('BLOCK'))) return { Icon: AlertTriangle, tone: 'text-amber-500', text: 'Blocked or failed sign-in' };
-            if (ac.includes('LOGIN')) return { Icon: CheckCircle2, tone: 'text-green-500', text: 'Signed in' };
-            if (ac.includes('DEVICE')) return { Icon: Shield, tone: 'text-cyan-500', text: 'Device updated' };
-            if (ac.includes('TOOL_OPEN') || ac.includes('TOOL_ACCESS')) return { Icon: Package, tone: 'text-genz-blue', text: `Opened ${toolNameById[String(a.toolId)] || 'a tool'}` };
-            return { Icon: Clock, tone: 'text-genz-muted', text: ac.replace(/_/g, ' ').toLowerCase() };
-          };
-          return (
-            <div className="ds-card overflow-hidden">
-              <div className="flex items-center gap-2 px-4 py-3 border-b border-genz-border">
-                <Clock size={15} className="text-genz-blue" />
-                <h3 className="text-[13.5px] font-bold text-genz-navy">Your recent activity</h3>
-              </div>
-              <ul className="divide-y divide-genz-border">
-                {activity.slice(0, 8).map(a => {
-                  const { Icon, tone, text } = describe(a);
-                  return (
-                    <li key={a._id} className="flex items-center gap-3 px-4 py-2.5">
-                      <span className="w-7 h-7 rounded-lg bg-genz-bg flex items-center justify-center flex-shrink-0"><Icon size={13} className={tone} /></span>
-                      <span className="flex-1 min-w-0 text-[13px] text-genz-navy truncate">{text}</span>
-                      <span className="text-[11px] text-genz-muted flex-shrink-0">{fmtWhen(a.createdAt)}</span>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          );
-        })()}
 
         {/* ── WhatsApp Support banner ── */}
         <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"

@@ -121,6 +121,7 @@ const ClientDashboardEnhanced = lazy(() => import('./pages/client/ClientDashboar
 const ClientToolsEnhanced = lazy(() => import('./pages/client/ClientToolsEnhanced'));
 const ClientToolDetail = lazy(() => import('./pages/client/ClientToolDetail'));
 const ClientProfile = lazy(() => import('./pages/client/ClientProfile'));
+const ClientActivity = lazy(() => import('./pages/client/ClientActivity'));
 const ClientStealthWriter = lazy(() => import('./pages/client/ClientStealthWriter'));
 
 // Public layout wrapper
@@ -204,6 +205,7 @@ function App() {
             <Route path="/client/tools/:id" element={<ErrorBoundary><ClientRoute><ClientToolDetail /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/stealthwriter" element={<ErrorBoundary><ClientRoute><ClientStealthWriter /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/profile" element={<ErrorBoundary><ClientRoute><ClientProfile /></ClientRoute></ErrorBoundary>} />
+            <Route path="/client/activity" element={<ErrorBoundary><ClientRoute><ClientActivity /></ClientRoute></ErrorBoundary>} />
 
             {/* ── 404 ─────────────────────────────────────────── */}
             <Route path="*" element={<NotFound />} />

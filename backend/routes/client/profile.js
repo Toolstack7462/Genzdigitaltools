@@ -3,6 +3,7 @@ const router = express.Router();
 const User = require('../../models/User');
 const DeviceBinding = require('../../models/DeviceBinding');
 const ActivityLog = require('../../models/ActivityLog');
+const Tool = require('../../models/Tool');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
 
 // Apply auth middleware
@@ -39,14 +40,26 @@ router.get('/device-info', async (req, res) => {
 // returns another user's data, and the payload carries no cookies/tokens/secrets.
 router.get('/activity', async (req, res) => {
   try {
-    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit, 10) || 15));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
     const rows = await ActivityLog.find({ actorId: req.userId }).sort({ createdAt: -1 }).limit(limit);
-    const activity = (rows || []).map(l => ({
-      _id: l._id,
-      action: l.action,
-      createdAt: l.createdAt,
-      toolId: (l.meta && l.meta.toolId) || null,
-    }));
+    // Resolve tool names for TOOL_OPENED entries (one bounded lookup), so the client
+    // sees "Opened HIX AI" rather than a raw id. No secrets in the payload.
+    const toolIds = [...new Set((rows || []).map(l => l.meta && l.meta.toolId).filter(Boolean).map(String))];
+    const nameById = {};
+    if (toolIds.length) {
+      const tools = await Tool.find({ _id: { $in: toolIds } }).select('name').catch(() => []);
+      (tools || []).forEach(t => { nameById[String(t._id)] = t.name; });
+    }
+    const activity = (rows || []).map(l => {
+      const tid = (l.meta && l.meta.toolId) || null;
+      return {
+        _id: l._id,
+        action: l.action,
+        createdAt: l.createdAt,
+        toolId: tid,
+        toolName: tid ? (nameById[String(tid)] || null) : null,
+      };
+    });
     res.json({ success: true, activity });
   } catch (error) {
     console.error('Get client activity error:', error);

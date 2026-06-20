@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, User, LogOut, Menu, X,
-  HelpCircle, ChevronRight, MessageCircle, ExternalLink
+  HelpCircle, ChevronRight, MessageCircle, ExternalLink, Activity
 } from 'lucide-react';
 import { authService } from '../services/authService';
 import { useToast } from './Toast';
@@ -88,6 +88,7 @@ const ClientLayoutEnhanced = ({ children }) => {
   const navItems = [
     { to: '/client/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/client/tools',     icon: Package,         label: 'My Tools'  },
+    { to: '/client/activity',  icon: Activity,        label: 'Activity'  },
     { to: '/client/profile',   icon: User,            label: 'Profile'   },
   ];
 
