@@ -187,6 +187,15 @@ const STEPS = [
   { icon: Rocket,   t: 'Deliver',   s: 'We build, revise and ship on time, polished.' },
   { icon: TrendingUp, t: 'Grow',    s: 'Ongoing support, tools and optimisation as you scale.' },
 ];
+// Accent ramp across the journey: blue → sky → cyan → teal → green ("launch/grow").
+// [light, deep] per step — keeps the navy/teal/blue identity, ends on growth-green.
+const STEP_ACCENTS = [
+  ['#3B82F6', '#2563EB'],
+  ['#0EA5E9', '#0284C7'],
+  ['#22D3EE', '#06B6D4'],
+  ['#2DD4BF', '#0D9488'],
+  ['#34D399', '#10B981'],
+];
 
 const FAQS = [
   { q: 'What is Gen Z Digital Store?', a: 'Gen Z Digital Store is a premium digital platform offering secure access to professional tools, plus creative services including social media management, writing, web design, app development, branding, and SEO.' },
@@ -547,32 +556,50 @@ const Home = () => {
           </div>
           <MotionConfig reducedMotion="user">
             <motion.div
-              className="relative grid grid-cols-1 lg:grid-cols-5 gap-8 lg:gap-5 max-w-md lg:max-w-none mx-auto"
+              className="grid grid-cols-1 lg:grid-cols-5 gap-5 lg:gap-6 max-w-md lg:max-w-none mx-auto"
               variants={mStagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}
             >
-              {/* desktop gradient connector (behind the icon row) */}
-              <div className="hidden lg:block absolute top-9 left-[12%] right-[12%] h-[3px] rounded-full"
-                   style={{ background: 'linear-gradient(90deg, transparent, rgba(37,99,235,0.28) 14%, rgba(6,182,212,0.6) 50%, rgba(20,184,166,0.28) 86%, transparent)' }} />
-              {/* mobile/tablet vertical gradient connector (through the icon centers) */}
-              <div className="lg:hidden absolute left-9 top-10 bottom-10 w-[3px] rounded-full"
-                   style={{ background: 'linear-gradient(180deg, rgba(37,99,235,0.28), rgba(6,182,212,0.55), rgba(20,184,166,0.28))' }} />
-              {STEPS.map(({ icon: Icon, t, s }, i) => (
-                <motion.div key={t} variants={mFadeUp}
-                  className="group relative flex items-start gap-4 text-left lg:block lg:text-center">
-                  <div className="relative z-10 flex-shrink-0 lg:mx-auto lg:mb-5">
-                    <div className="relative w-[72px] h-[72px] rounded-2xl flex items-center justify-center text-white transition-transform duration-300 group-hover:-translate-y-1 group-hover:scale-[1.05]"
-                         style={{ background: 'var(--gradient-cta)', boxShadow: '0 14px 30px -10px rgba(6,182,212,0.55)' }}>
-                      <span className="absolute inset-0 rounded-2xl pointer-events-none" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.28), transparent 46%)' }} />
-                      <Icon size={26} className="relative" />
+              {STEPS.map(({ icon: Icon, t, s }, i) => {
+                const [aLight, aDeep] = STEP_ACCENTS[i] || STEP_ACCENTS[0];
+                const isLast = i === STEPS.length - 1;
+                return (
+                  <motion.div key={t} variants={mFadeUp} className="group relative h-full">
+                    <div
+                      className="relative h-full overflow-hidden rounded-2xl bg-white p-6 transition-all duration-300 hover:-translate-y-1.5
+                                 shadow-[0_12px_34px_-20px_rgba(7,27,51,0.30)] hover:shadow-[0_26px_52px_-22px_rgba(7,27,51,0.34)]"
+                    >
+                      {/* accent wash that warms on hover */}
+                      <div className="absolute inset-x-0 top-0 h-1 rounded-t-2xl" style={{ background: `linear-gradient(90deg, ${aLight}, ${aDeep})` }} />
+                      <div className="absolute -top-16 -right-12 w-40 h-40 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                           style={{ background: `radial-gradient(circle, ${aLight}22, transparent 70%)` }} />
+                      {/* large ghost number = the order cue (real sequence) */}
+                      <span className="absolute top-2 right-4 font-heading font-extrabold leading-none select-none pointer-events-none"
+                            style={{ fontSize: '58px', color: aDeep, opacity: 0.1 }}>{i + 1}</span>
+
+                      <div className="relative">
+                        <div className="mb-5 w-12 h-12 rounded-xl flex items-center justify-center text-white transition-transform duration-300 group-hover:scale-[1.06]"
+                             style={{ background: `linear-gradient(150deg, ${aLight}, ${aDeep})`, boxShadow: `0 12px 24px -10px ${aDeep}99` }}>
+                          <Icon size={22} />
+                        </div>
+                        <h3 className="text-genz-navy font-bold text-[16.5px] mb-1.5 tracking-tight">{t}</h3>
+                        <p className="text-genz-muted text-[13.5px] leading-relaxed">{s}</p>
+                      </div>
                     </div>
-                    <span className="absolute -top-2.5 -right-2.5 w-7 h-7 rounded-full bg-white text-[12px] font-extrabold text-genz-blue flex items-center justify-center shadow-md ring-1 ring-genz-border">{i + 1}</span>
-                  </div>
-                  <div className="flex-1 pt-2 lg:pt-0">
-                    <h3 className="text-genz-navy font-bold text-[16px] mb-1.5">{t}</h3>
-                    <p className="text-genz-muted text-[13px] leading-relaxed lg:max-w-[200px] lg:mx-auto">{s}</p>
-                  </div>
-                </motion.div>
-              ))}
+
+                    {/* flow chevron to the next step */}
+                    {!isLast && (
+                      <>
+                        <span className="hidden lg:flex absolute top-1/2 -right-4 -translate-y-1/2 z-10 w-7 h-7 rounded-full bg-white items-center justify-center text-genz-muted shadow-[0_4px_10px_-3px_rgba(7,27,51,0.25)]">
+                          <ArrowRight size={14} />
+                        </span>
+                        <span className="lg:hidden absolute left-1/2 -bottom-4 -translate-x-1/2 z-10 w-7 h-7 rounded-full bg-white flex items-center justify-center text-genz-muted shadow-[0_4px_10px_-3px_rgba(7,27,51,0.25)]">
+                          <ArrowRight size={14} className="rotate-90" />
+                        </span>
+                      </>
+                    )}
+                  </motion.div>
+                );
+              })}
             </motion.div>
           </MotionConfig>
         </div>
