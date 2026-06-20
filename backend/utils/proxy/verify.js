@@ -62,6 +62,16 @@ async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier) {
     return { result: 'session_expired', httpStatus, finalPath, redirectedToSignIn: true, maskedId: null };
   }
 
+  // The upstream is behind an anti-bot challenge (e.g. Cloudflare's interactive managed
+  // challenge) that a server-side proxy cannot legitimately pass — report it honestly as
+  // 'unsupported' instead of a misleading 'working' on a 403. We never try to bypass it.
+  const cfMitigated = String(resp.headers.get('cf-mitigated') || '').toLowerCase().includes('challenge');
+  const cfServer = /cloudflare/i.test(resp.headers.get('server') || '');
+  const ctHeader = String(resp.headers.get('content-type') || '');
+  if (cfMitigated || (httpStatus === 403 && cfServer && /text\/html/i.test(ctHeader))) {
+    return { result: 'unsupported', httpStatus, finalPath, redirectedToSignIn: false, maskedId: null };
+  }
+
   let body = '';
   try { body = (await resp.text()).slice(0, 200000); } catch (_) {}
   const maskedId = extractMaskedIdentifier(body, TARGET);

@@ -14,6 +14,16 @@ tools.
 Grok keeps its **own encrypted cookie vault** (the backend scopes `ProxyAccount`
 rows by `tool=grok`), its **own lease cookie**, and its **own client grants**.
 
+> **⚠️ Status: UNSUPPORTED upstream.** grok.com is gated by Cloudflare's *interactive*
+> managed challenge (loads `challenges.cloudflare.com` cross-origin in an isolated
+> iframe; clearance is bound to the solving browser's IP **and** embedding origin). A
+> server-side reverse proxy from a fixed datacenter IP/origin cannot legitimately pass
+> it, and we will not bypass it. The infrastructure is fully wired and isolation-safe,
+> but client opens will show the clean **"not available through the secure proxy"**
+> notice (`CF_CHALLENGE_MODE=unsupported`) and the admin verifier reports `unsupported`.
+> If Cloudflare's protection on grok.com changes, only `TARGET_ORIGIN`/`CF_CHALLENGE_MODE`
+> need revisiting — no code change.
+
 ## What it does
 1. Accepts a signed lease at `/gateway?lease=TOKEN`, stores a host-scoped cookie, and
    redirects to `DEFAULT_PATH`.
@@ -69,7 +79,7 @@ No dependencies — `npm install` is a no-op.
    SetEnv SIGNIN_PATH /
    SetEnv GATEWAY_PUBLIC_ORIGIN https://grok1.genzdigitalstore.com
    SetEnv API_BASE https://api.genzdigitalstore.com/api/crm/proxy/gateway
-   SetEnv CF_CHALLENGE_PASSTHROUGH 1
+   SetEnv CF_CHALLENGE_MODE unsupported
    SetEnv LEASE_SECRET <SAME AS BACKEND PROXY_LEASE_SECRET>
    SetEnv GATEWAY_KEY <SAME AS BACKEND PROXY_GATEWAY_KEY>
    ```

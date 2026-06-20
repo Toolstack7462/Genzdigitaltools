@@ -119,6 +119,18 @@ const LEASE_TYPE = 'proxy_lease';
 // It never bypasses, auto-solves or alters the challenge. Default OFF → every other
 // tool's behavior is byte-for-byte unchanged.
 const CF_CHALLENGE_PASSTHROUGH = process.env.CF_CHALLENGE_PASSTHROUGH === '1' || /^true$/i.test(process.env.CF_CHALLENGE_PASSTHROUGH || '');
+// How to handle a detected Cloudflare challenge on a client nav:
+//   'block'       (default) → the generic "access could not be verified" block page.
+//   'passthrough'           → serve the real challenge so the user solves it (only viable
+//                             for a same-origin JS challenge; an INTERACTIVE challenge that
+//                             loads challenges.cloudflare.com cross-origin can NOT be solved
+//                             through a proxy — origin+IP bound — so don't use it there).
+//   'unsupported'           → show a clear, friendly "not available through the secure
+//                             proxy" page (used for tools whose challenge a proxy can't
+//                             satisfy, e.g. grok.com's interactive managed challenge).
+// CF_CHALLENGE_PASSTHROUGH=1 is back-compat for mode 'passthrough'. Default keeps every
+// other gateway byte-for-byte unchanged.
+const CF_CHALLENGE_MODE = (process.env.CF_CHALLENGE_MODE || (CF_CHALLENGE_PASSTHROUGH ? 'passthrough' : 'block')).toLowerCase();
 const CF_COOKIE_RE = /^(cf_clearance|__cf_bm|__cflb|cf_chl|__cf_chl|__cf_waf)/i;
 
 function isCloudflareChallenge(statusCode, headers) {
@@ -487,6 +499,28 @@ a{font:inherit;display:inline-block;text-decoration:none;padding:11px 20px;borde
   res.end(html);
 }
 
+// ── "Unsupported" notice — the upstream's anti-bot challenge can't be satisfied ──
+// Shown when a tool sits behind a security check (e.g. Cloudflare's interactive managed
+// challenge that loads cross-origin from challenges.cloudflare.com and binds clearance to
+// the solving browser's IP + origin) that a server-side proxy cannot legitimately pass.
+// We never try to bypass it — we just tell the user clearly instead of looping a blank
+// or "unable to connect" screen.
+function sendUnsupportedPage(res) {
+  if (res.headersSent) { try { res.end(); } catch (_) {} return; }
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${TOOL_NAME}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{max-width:460px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
+h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 22px}
+a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:600}</style></head>
+<body><div class="card"><h1>${TOOL_NAME} isn't available through the secure proxy</h1>
+<p>${TOOL_NAME} uses a browser security check that can't be completed through our secure
+proxy. This isn't a problem with your account. Please contact support for access options.</p>
+<a href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></body></html>`;
+  res.writeHead(503, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(html);
+}
+
 // ── Reload-loop breaker ──────────────────────────────────────────────────────
 // A proxied SPA that re-navigates to the same path on every load creates an
 // infinite blank-page loop (observed on this gateway: the same nav repeated
@@ -637,10 +671,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       const rawLoc = String(uRes.headers['location'] || '');
       const redirectedToLogin = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|log-?in|auth\/login)\b/i.test(rawLoc);
       const upstreamForbidden = uRes.statusCode === 401 || uRes.statusCode === 403;
-      // A genuine Cloudflare challenge (opt-in) is passed through to the client to solve
-      // — NOT replaced by our block page — and gets no overlay/identity injection.
-      const cfChallenge = CF_CHALLENGE_PASSTHROUGH && !ctx.capture && !ctx.asset && !isCaptchaReq
+      // Detect a genuine Cloudflare challenge on a client view. How we respond depends on
+      // CF_CHALLENGE_MODE: 'passthrough' serves it for the user to solve (and gets NO
+      // overlay/identity injection); 'unsupported' shows a clear notice; else block page.
+      const cfChallengeDetected = !ctx.capture && !ctx.asset && !isCaptchaReq
         && isCloudflareChallenge(uRes.statusCode, uRes.headers);
+      const cfPassthrough = cfChallengeDetected && CF_CHALLENGE_MODE === 'passthrough';
 
       // Safe debug — IDs/paths/status only, NEVER cookies/tokens/secrets. Logged for
       // navigations and for any failing/asset-relevant response.
@@ -680,14 +716,19 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
 
       // Never pass a raw upstream "Forbidden"/login document to the client (main view
-      // only — captcha sub-responses handle their own errors). EXCEPTION: a genuine
-      // Cloudflare challenge is passed through (cfChallenge) so the user can solve it.
-      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset && !isCaptchaReq && !cfChallenge) {
+      // only — captcha sub-responses handle their own errors). A detected Cloudflare
+      // challenge branches on the configured mode instead of always blocking.
+      if ((isHtmlNav || isHtml) && upstreamForbidden && !ctx.capture && !ctx.asset && !isCaptchaReq && !cfPassthrough) {
+        if (cfChallengeDetected && CF_CHALLENGE_MODE === 'unsupported') {
+          logIt(false); uRes.resume();
+          safeLog('cf_unsupported', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav });
+          return isHtmlNav ? sendUnsupportedPage(res) : sendBlockPage(res, 'unavailable');
+        }
         logIt(false);
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
-      if (cfChallenge) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav });
+      if (cfPassthrough) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav });
 
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
@@ -714,7 +755,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           // captcha HTML (e.g. the reCAPTCHA iframe document), and a passed-through
           // Cloudflare challenge page, are rewritten for same-origin loading but otherwise
           // left intact so the challenge renders and solves cleanly.
-          if (!ctx.asset && !isCaptchaReq && !cfChallenge) {
+          if (!ctx.asset && !isCaptchaReq && !cfPassthrough) {
             if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
             html = injectSessionBootstrap(html, session);
             html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts

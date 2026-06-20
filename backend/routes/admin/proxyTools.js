@@ -404,6 +404,10 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
     else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
     else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
+    // The tool is behind an anti-bot challenge a proxy can't pass → mark blocked so it is
+    // never auto-selected for a client (who would just hit the "unsupported" page); the
+    // recorded verification.result='unsupported' tells the admin exactly why.
+    else if (v.result === 'unsupported') { account.status = 'blocked'; }
     else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
 
     await account.save();
