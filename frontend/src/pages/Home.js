@@ -462,9 +462,12 @@ const Home = () => {
               className="grid gap-5 md:grid-cols-2 max-w-4xl mx-auto items-stretch"
               variants={mStagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.25 }}
             >
-              {/* Generic providers — deliberately understated */}
+              {/* Generic providers — understated, but with enough depth to read as a
+                  real card on the light background and a gentle hover to match its peer. */}
               <motion.div variants={mFadeUp}
-                className="rounded-3xl border border-genz-border bg-white/70 p-7 sm:p-8 backdrop-blur-[2px]">
+                whileHover={{ y: -3 }}
+                transition={{ type: 'spring', stiffness: 240, damping: 22 }}
+                className="rounded-3xl border border-genz-border bg-white/80 p-7 sm:p-8 backdrop-blur-[2px] shadow-[0_14px_34px_-22px_rgba(7,27,51,0.20)]">
                 <div className="flex items-center gap-2.5 mb-6">
                   <span className="w-9 h-9 rounded-xl grid place-items-center bg-genz-bg text-genz-muted"><X size={17} /></span>
                   <h3 className="text-[15px] font-bold text-genz-muted">Generic providers</h3>
@@ -518,7 +521,7 @@ const Home = () => {
       {/* ── PROCESS TIMELINE ── */}
       <section className="gz-section px-5" style={{ background: 'var(--brand-surface-soft)' }}>
         <div ref={stepRef} className={`gz-container reveal ${stepV ? 'visible' : ''}`}>
-          <div className="text-center max-w-xl mx-auto mb-14">
+          <div className="text-center max-w-xl mx-auto mb-12">
             <Eyebrow label="How It Works" />
             <h2 className="type-section-title text-genz-navy mb-4">From idea to launch in five steps</h2>
           </div>

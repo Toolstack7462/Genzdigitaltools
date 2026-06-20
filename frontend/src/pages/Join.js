@@ -18,7 +18,7 @@ const WHATSAPP_URL = 'https://wa.me/923027467462';
 const PageShell = ({ children }) => (
   <div className="relative overflow-hidden min-h-screen" style={{ background: 'var(--brand-soft, #f6fbfe)' }}>
     <div className="dot-grid" aria-hidden="true" />
-    <div className="relative mx-auto w-full max-w-6xl px-5 sm:px-6 lg:px-8 pt-28 pb-20 lg:pt-32">
+    <div className="relative mx-auto w-full max-w-6xl px-5 sm:px-6 lg:px-8 pt-24 sm:pt-28 pb-16 sm:pb-20 lg:pt-32">
       {children}
     </div>
   </div>
