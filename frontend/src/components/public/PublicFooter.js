@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Facebook, Instagram, Twitter, Youtube, MessageCircle, ArrowRight, Mail } from 'lucide-react';
+import { MessageCircle, ArrowRight, Mail, ShieldCheck, Clock, Sparkles } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
 import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from './PublicNavbar';
 
@@ -25,21 +25,31 @@ const PublicFooter = () => {
   const year = new Date().getFullYear();
 
   return (
-    <footer style={{ background: 'linear-gradient(180deg,#071B33 0%,#000820 100%)', borderTop: '1px solid rgba(6,182,212,0.15)' }}>
+    <footer
+      className="relative overflow-hidden"
+      style={{
+        // Premium blended navy → blue → teal gradient with soft top glow.
+        background:
+          'radial-gradient(1100px 460px at 50% -8%, rgba(6,182,212,0.13) 0%, rgba(6,182,212,0) 62%),' +
+          'radial-gradient(900px 500px at 100% 100%, rgba(37,99,235,0.12) 0%, rgba(37,99,235,0) 60%),' +
+          'linear-gradient(168deg, #071B33 0%, #0B2F52 42%, #06243F 72%, #03101F 100%)',
+        borderTop: '1px solid rgba(6,182,212,0.18)',
+      }}
+    >
       {/* Brand hairline accent */}
       <div className="brand-hairline" />
 
-      {/* Top CTA band */}
+      {/* Top CTA band — glass panel */}
       <div
         className="border-b"
-        style={{ borderColor: 'rgba(6,182,212,0.1)', background: 'rgba(6,182,212,0.04)' }}
+        style={{ borderColor: 'rgba(6,182,212,0.12)', background: 'rgba(255,255,255,0.03)', backdropFilter: 'blur(6px)' }}
       >
         <div className="mx-auto max-w-[1200px] px-5 sm:px-6 lg:px-8 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
           <div>
-            <h3 className="text-white font-bold text-xl mb-1">
+            <h3 className="text-white font-bold text-xl sm:text-2xl mb-1 tracking-tight">
               Ready to grow your digital presence?
             </h3>
-            <p className="text-white/50 text-sm">
+            <p className="text-white/55 text-sm">
               Talk to us about tools, services, or a custom solution.
             </p>
           </div>
@@ -48,18 +58,26 @@ const PublicFooter = () => {
               href={WHATSAPP_URL}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-[14px] hover:-translate-y-0.5 transition-all"
-              style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 8px 20px rgba(37,99,235,0.25)' }}
+              className="flex items-center gap-2 px-5 py-2.5 text-sm font-bold text-white rounded-[14px] hover:-translate-y-0.5 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-cyan/60"
+              style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)', boxShadow: '0 10px 26px rgba(37,99,235,0.30)' }}
             >
               <MessageCircle size={15} />
               Chat on WhatsApp
             </a>
             <Link
               to="/services"
-              className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-semibold text-genz-cyan border border-genz-cyan/40 rounded-[14px] hover:bg-genz-cyan/10 transition-all"
+              className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-semibold text-genz-cyan border border-genz-cyan/40 rounded-[14px] hover:bg-genz-cyan/10 hover:border-genz-cyan/60 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-cyan/40"
             >
               View Services <ArrowRight size={14} />
             </Link>
+          </div>
+        </div>
+        {/* Trust strip */}
+        <div className="mx-auto max-w-[1200px] px-5 sm:px-6 lg:px-8 pb-8 -mt-2">
+          <div className="flex flex-wrap items-center gap-x-7 gap-y-2 text-white/55 text-[12.5px]">
+            <span className="inline-flex items-center gap-2"><ShieldCheck size={15} className="text-genz-teal" /> Secure &amp; authorized access</span>
+            <span className="inline-flex items-center gap-2"><Clock size={15} className="text-genz-teal" /> 24/7 support on WhatsApp</span>
+            <span className="inline-flex items-center gap-2"><Sparkles size={15} className="text-genz-teal" /> Trusted by creators &amp; businesses</span>
           </div>
         </div>
       </div>
@@ -86,21 +104,19 @@ const PublicFooter = () => {
             >
               <Mail size={15} /> admin@genzdigitalstore.com
             </a>
+            {/* Connect — only real destinations (no dead links) */}
             <div className="flex gap-3 flex-wrap">
               {[
-                { Icon: Facebook, href: '#', label: 'Facebook' },
-                { Icon: Instagram, href: '#', label: 'Instagram' },
-                { Icon: Twitter, href: '#', label: 'Twitter' },
-                { Icon: Youtube, href: '#', label: 'YouTube' },
-                { Icon: MessageCircle, href: WHATSAPP_URL, label: 'WhatsApp' },
-              ].map(({ Icon, href, label }) => (
+                { Icon: MessageCircle, href: WHATSAPP_URL, label: 'WhatsApp', external: true },
+                { Icon: Mail, href: 'mailto:admin@genzdigitalstore.com', label: 'Email', external: false },
+              ].map(({ Icon, href, label, external }) => (
                 <a
                   key={label}
                   href={href}
-                  target={href !== '#' ? '_blank' : undefined}
-                  rel="noopener noreferrer"
+                  target={external ? '_blank' : undefined}
+                  rel={external ? 'noopener noreferrer' : undefined}
                   aria-label={label}
-                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white/55 hover:text-genz-teal hover:bg-genz-teal/10 border border-white/8 hover:border-genz-teal/30 transition-all duration-200"
+                  className="w-9 h-9 rounded-xl flex items-center justify-center text-white/60 hover:text-genz-teal hover:bg-genz-teal/10 border border-white/10 hover:border-genz-teal/30 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-teal/40"
                 >
                   <Icon size={15} />
                 </a>
@@ -161,9 +177,9 @@ const PublicFooter = () => {
             <ul className="space-y-2.5">
               {['Terms of Service', 'Privacy Policy', 'Refund Policy'].map((item) => (
                 <li key={item}>
-                  <a href="#" className="text-white/55 hover:text-white/60 text-xs transition-colors">
+                  <Link to="/contact" className="text-white/55 hover:text-genz-teal text-xs transition-colors duration-150">
                     {item}
-                  </a>
+                  </Link>
                 </li>
               ))}
             </ul>
