@@ -217,7 +217,7 @@ const AdminClientsEnhanced = () => {
             </div>
             <select
               value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
+              onChange={(e) => { setSelectedStatus(e.target.value); setPagination(p => ({ ...p, page: 1 })); }}
               aria-label="Filter clients by status"
               className="px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer md:w-44"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.85rem center', backgroundSize: '0.6rem' }}
@@ -229,7 +229,7 @@ const AdminClientsEnhanced = () => {
             </select>
             <select
               value={selectedTag}
-              onChange={(e) => setSelectedTag(e.target.value)}
+              onChange={(e) => { setSelectedTag(e.target.value); setPagination(p => ({ ...p, page: 1 })); }}
               aria-label="Filter clients by tag"
               className="px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer md:w-44"
               style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.85rem center', backgroundSize: '0.6rem' }}
