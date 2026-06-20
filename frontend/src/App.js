@@ -108,6 +108,7 @@ const AdminActivity = lazy(() => import('./pages/admin/AdminActivity'));
 const AdminBlog = lazy(() => import('./pages/admin/AdminBlog'));
 const AdminBlogForm = lazy(() => import('./pages/admin/AdminBlogForm'));
 const AdminContacts = lazy(() => import('./pages/admin/AdminContacts'));
+const AdminAnnouncements = lazy(() => import('./pages/admin/AdminAnnouncements'));
 const AdminAnalytics = lazy(() => import('./pages/admin/AdminAnalytics'));
 const AdminSecurityAlerts = lazy(() => import('./pages/admin/AdminSecurityAlerts'));
 const AdminToolWizard = lazy(() => import('./pages/admin/AdminToolWizard'));
@@ -192,6 +193,7 @@ function App() {
             <Route path="/admin/blog/new" element={<ErrorBoundary><AdminRoute><AdminBlogForm /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/blog/:id/edit" element={<ErrorBoundary><AdminRoute><AdminBlogForm /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/contacts" element={<ErrorBoundary><AdminRoute><AdminContacts /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/announcements" element={<ErrorBoundary><AdminRoute><AdminAnnouncements /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/analytics" element={<ErrorBoundary><AdminRoute><AdminAnalytics /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/security" element={<ErrorBoundary><AdminRoute><AdminSecurityAlerts /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/stealthwriter" element={<ErrorBoundary><AdminRoute><AdminStealthWriter /></AdminRoute></ErrorBoundary>} />

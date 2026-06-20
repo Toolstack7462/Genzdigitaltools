@@ -38,6 +38,7 @@ const tableNames = {
   DeviceProfile: 'device_profiles',
   EmailVerification: 'email_verifications',
   Reminder: 'reminders',
+  Announcement: 'announcements',
   // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
   StealthClient: 'stealth_clients',
   StealthLease: 'stealth_leases',

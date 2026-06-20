@@ -36,6 +36,9 @@ const AdminClientsEnhanced = () => {
   const [manageClient, setManageClient] = useState(null);
   const [modalTab, setModalTab] = useState('tools'); // per-client modal: 'tools' | 'profile'
   const [actionsOpenId, setActionsOpenId] = useState(null); // mobile: which card's overflow menu is open
+  const [selected, setSelected] = useState(() => new Set()); // bulk selection (client ids)
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkTag, setBulkTag] = useState(SUGGESTED_TAGS[0]);
 
   // Always open the client modal on the Tools tab.
   useEffect(() => { if (manageClient) setModalTab('tools'); }, [manageClient]);
@@ -59,6 +62,7 @@ const AdminClientsEnhanced = () => {
 
       const response = await api.get(`/admin/clients?${params}`);
       setClients(response.data.clients || []);
+      setSelected(new Set()); // clear stale selection on any (re)load
       setPagination(prev => ({ ...prev, ...response.data.pagination }));
     } catch (error) {
       console.error('Load clients error:', error);
@@ -71,6 +75,33 @@ const AdminClientsEnhanced = () => {
   const handleSearch = () => {
     setPagination(prev => ({ ...prev, page: 1 }));
     loadClients();
+  };
+
+  // ── Bulk selection ──────────────────────────────────────────────────────────
+  const allPageSelected = clients.length > 0 && clients.every(c => selected.has(c._id));
+  const toggleSelect = (id) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelectAll = () => setSelected(prev => {
+    if (clients.length && clients.every(c => prev.has(c._id))) { const n = new Set(prev); clients.forEach(c => n.delete(c._id)); return n; }
+    return new Set([...prev, ...clients.map(c => c._id)]);
+  });
+  const clearSel = () => setSelected(new Set());
+  const bulkAction = async (action, value) => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const label = action === 'enable' ? 'Enable' : action === 'disable' ? 'Disable'
+      : action === 'addTag' ? `Add tag "${value}"` : `Remove tag "${value}"`;
+    if (!window.confirm(`${label} for ${ids.length} client${ids.length === 1 ? '' : 's'}?`)) return;
+    try {
+      setBulkBusy(true);
+      const res = await api.post('/admin/clients/bulk', { clientIds: ids, action, value });
+      showSuccess(`Updated ${res.data?.updated ?? ids.length} client${ids.length === 1 ? '' : 's'}`);
+      clearSel();
+      loadClients();
+    } catch (e) {
+      showError(e.response?.data?.error || 'Bulk action failed');
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   const handleDeviceReset = async (clientId, clientName) => {
@@ -254,6 +285,29 @@ const AdminClientsEnhanced = () => {
           </p>
         )}
 
+        {/* Bulk action bar */}
+        {selected.size > 0 && (
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl bg-genz-teal/10 border border-genz-teal/30" data-testid="client-bulk-bar">
+            <span className="text-sm font-semibold text-genz-navy">{selected.size} selected</span>
+            <div className="flex flex-wrap items-center gap-1.5 ml-auto">
+              <button type="button" disabled={bulkBusy} onClick={() => bulkAction('enable')}
+                className="inline-flex items-center px-2.5 h-8 rounded-lg border border-genz-border bg-white text-green-600 hover:bg-green-50 text-xs font-semibold disabled:opacity-50">Enable</button>
+              <button type="button" disabled={bulkBusy} onClick={() => bulkAction('disable')}
+                className="inline-flex items-center px-2.5 h-8 rounded-lg border border-genz-border bg-white text-amber-600 hover:bg-amber-500/10 text-xs font-semibold disabled:opacity-50">Disable</button>
+              <select value={bulkTag} onChange={e => setBulkTag(e.target.value)}
+                className="h-8 px-2 text-xs bg-white border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal cursor-pointer" aria-label="Tag to add or remove">
+                {SUGGESTED_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <button type="button" disabled={bulkBusy} onClick={() => bulkAction('addTag', bulkTag)}
+                className="inline-flex items-center px-2.5 h-8 rounded-lg border border-genz-border bg-white text-genz-teal hover:bg-genz-teal/10 text-xs font-semibold disabled:opacity-50">+ Tag</button>
+              <button type="button" disabled={bulkBusy} onClick={() => bulkAction('removeTag', bulkTag)}
+                className="inline-flex items-center px-2.5 h-8 rounded-lg border border-genz-border bg-white text-genz-muted hover:bg-genz-navy/5 text-xs font-semibold disabled:opacity-50">− Tag</button>
+              <button type="button" disabled={bulkBusy} onClick={clearSel}
+                className="inline-flex items-center px-2.5 h-8 rounded-lg text-xs font-medium text-genz-muted hover:text-genz-navy disabled:opacity-50">Clear</button>
+            </div>
+          </div>
+        )}
+
         {/* Clients */}
         {loading ? (
           <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 space-y-3`} aria-busy="true" aria-label="Loading clients">
@@ -291,6 +345,10 @@ const AdminClientsEnhanced = () => {
                 <table className="ds-table">
                   <thead>
                     <tr>
+                      <th className="w-8">
+                        <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll}
+                          className="w-4 h-4 accent-genz-teal cursor-pointer" aria-label="Select all on this page" data-testid="client-select-all" />
+                      </th>
                       <th>Client</th>
                       <th>Status</th>
                       <th>Assignments</th>
@@ -301,6 +359,10 @@ const AdminClientsEnhanced = () => {
                   <tbody>
                     {clients.map(client => (
                       <tr key={client._id} data-testid={`client-card-${client._id}`}>
+                        <td className="w-8">
+                          <input type="checkbox" checked={selected.has(client._id)} onChange={() => toggleSelect(client._id)}
+                            className="w-4 h-4 accent-genz-teal cursor-pointer" aria-label={`Select ${client.fullName}`} />
+                        </td>
                         <td>
                           <div className="flex items-center gap-3 min-w-0">
                             <Avatar client={client} />
@@ -334,6 +396,8 @@ const AdminClientsEnhanced = () => {
               {clients.map(client => (
                 <div key={client._id} className="ds-card p-3.5" data-testid={`client-card-m-${client._id}`}>
                   <div className="flex items-start gap-3">
+                    <input type="checkbox" checked={selected.has(client._id)} onChange={() => toggleSelect(client._id)}
+                      className="w-4 h-4 accent-genz-teal cursor-pointer mt-1 flex-shrink-0" aria-label={`Select ${client.fullName}`} />
                     <Avatar client={client} size="md" />
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-genz-navy text-sm truncate">{client.fullName}</p>

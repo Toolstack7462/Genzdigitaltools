@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ClientLayoutEnhanced, { CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
-import { User, Mail, Calendar, Shield, Smartphone, Clock, CheckCircle2, AlertCircle, MessageCircle, ArrowRight } from 'lucide-react';
+import { User, Mail, Calendar, Shield, Smartphone, Clock, CheckCircle2, AlertCircle, MessageCircle, ArrowRight, Save, Lock, Loader2 } from 'lucide-react';
 
 const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
@@ -8,11 +8,17 @@ import { authService } from '../../services/authService';
 import { useToast } from '../../components/Toast';
 
 const ClientProfile = () => {
-  const { showError } = useToast();
+  const { showError, showSuccess } = useToast();
   const [profile, setProfile] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null);
   const [loading, setLoading] = useState(true);
-  
+
+  // self-service: edit name + change password
+  const [name, setName] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
+  const [savingPw, setSavingPw] = useState(false);
+
   const user = authService.getCurrentUser();
 
   useEffect(() => {
@@ -26,13 +32,46 @@ const ClientProfile = () => {
         api.get('/client/profile'),
         api.get('/client/device-info').catch(() => ({ data: { device: null } }))
       ]);
-      
-      setProfile(profileRes.data.user || profileRes.data);
+
+      const u = profileRes.data.user || profileRes.data;
+      setProfile(u);
+      setName(u?.fullName || '');
       setDeviceInfo(deviceRes.data.device);
     } catch (error) {
       showError('Failed to load profile');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveName = async () => {
+    const trimmed = (name || '').trim();
+    if (trimmed.length < 2) { showError('Name must be at least 2 characters'); return; }
+    try {
+      setSavingName(true);
+      const res = await api.put('/client/profile', { fullName: trimmed });
+      setProfile(res.data.user || { ...profile, fullName: trimmed });
+      showSuccess('Name updated');
+    } catch (e) {
+      showError(e.response?.data?.error || 'Failed to update name');
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const changePassword = async () => {
+    if (!pw.current || !pw.next) { showError('Enter your current and new password'); return; }
+    if (pw.next.length < 8) { showError('New password must be at least 8 characters'); return; }
+    if (pw.next !== pw.confirm) { showError('New passwords do not match'); return; }
+    try {
+      setSavingPw(true);
+      await api.post('/client/change-password', { currentPassword: pw.current, newPassword: pw.next });
+      setPw({ current: '', next: '', confirm: '' });
+      showSuccess('Password updated');
+    } catch (e) {
+      showError(e.response?.data?.error || 'Failed to change password');
+    } finally {
+      setSavingPw(false);
     }
   };
 
@@ -149,6 +188,53 @@ const ClientProfile = () => {
                   </span>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Profile & Security — self-service (edit name + change password) */}
+        <div className={`${CARD_VARIANTS.elevated} rounded-2xl overflow-hidden`}>
+          <div className="p-4 border-b border-genz-border">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-teal-500 rounded-lg flex items-center justify-center shadow-md">
+                <Lock size={20} className="text-white" />
+              </div>
+              <div>
+                <h2 className="text-[16px] font-semibold text-genz-navy">Profile &amp; Security</h2>
+                <p className="text-genz-muted text-[12.5px]">Update your name or change your password</p>
+              </div>
+            </div>
+          </div>
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Edit display name */}
+            <div className="space-y-2">
+              <label className="text-xs text-genz-muted uppercase tracking-wider font-medium">Display name</label>
+              <input
+                value={name} onChange={(e) => setName(e.target.value)} maxLength={100}
+                className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal transition-colors"
+                data-testid="profile-name-input"
+              />
+              <button onClick={saveName} disabled={savingName || (name || '').trim() === (userData?.fullName || '')}
+                className="btn-grad inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50">
+                {savingName ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save name
+              </button>
+            </div>
+            {/* Change password */}
+            <div className="space-y-2">
+              <label className="text-xs text-genz-muted uppercase tracking-wider font-medium">Change password</label>
+              <input type="password" autoComplete="current-password" placeholder="Current password"
+                value={pw.current} onChange={(e) => setPw(p => ({ ...p, current: e.target.value }))}
+                className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal transition-colors" />
+              <input type="password" autoComplete="new-password" placeholder="New password (min 8 characters)"
+                value={pw.next} onChange={(e) => setPw(p => ({ ...p, next: e.target.value }))}
+                className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal transition-colors" />
+              <input type="password" autoComplete="new-password" placeholder="Confirm new password"
+                value={pw.confirm} onChange={(e) => setPw(p => ({ ...p, confirm: e.target.value }))}
+                className="w-full px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal transition-colors" />
+              <button onClick={changePassword} disabled={savingPw}
+                className="btn-grad inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-50">
+                {savingPw ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />} Update password
+              </button>
             </div>
           </div>
         </div>

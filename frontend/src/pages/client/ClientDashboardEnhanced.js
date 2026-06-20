@@ -166,6 +166,7 @@ const ClientDashboardEnhanced = () => {
   }, [showError]);
   const [tools, setTools] = useState([]);
   const [expiringTools, setExpiringTools] = useState([]);
+  const [announcements, setAnnouncements] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -210,12 +211,15 @@ const ClientDashboardEnhanced = () => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [toolsRes, expiringRes] = await Promise.all([
+      const [toolsRes, expiringRes, annRes] = await Promise.all([
         api.get('/client/tools'),
-        api.get('/client/assignments/expiring')
+        api.get('/client/assignments/expiring'),
+        api.get('/client/announcements').catch(() => ({ data: {} }))
       ]);
       setTools(toolsRes.data.tools || []);
       setExpiringTools(expiringRes.data.expiring || []);
+      const annDismissed = JSON.parse(localStorage.getItem('announce_dismissed_v1') || '[]');
+      setAnnouncements((annRes.data?.announcements || []).filter(a => !annDismissed.includes(a._id)));
       if (expiringRes.data.expiring?.length > 0) {
         const dismissed = localStorage.getItem('expiry_warning_dismissed');
         const dismissedTime = dismissed ? new Date(dismissed) : null;
@@ -232,6 +236,15 @@ const ClientDashboardEnhanced = () => {
   }, [navigate, showError]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  const dismissAnnouncement = (id) => {
+    try {
+      const k = 'announce_dismissed_v1';
+      const arr = JSON.parse(localStorage.getItem(k) || '[]');
+      if (!arr.includes(id)) { arr.push(id); localStorage.setItem(k, JSON.stringify(arr)); }
+    } catch (_) { /* ignore */ }
+    setAnnouncements(a => a.filter(x => x._id !== id));
+  };
 
   // Urgent expiry toast: if any active tool has 1–3 days left, warn once per day.
   useEffect(() => {
@@ -635,6 +648,31 @@ const ClientDashboardEnhanced = () => {
         </div>
 
         {/* ── Stats Row — horizontal premium glass cards ── */}
+        {/* ── Announcements ── admin-posted notices (dismissible per device) ── */}
+        {announcements.length > 0 && (
+          <div className="space-y-2">
+            {announcements.map((a) => {
+              const lv = a.level === 'success'
+                ? { bd: 'rgba(16,185,129,0.30)', bg: 'rgba(16,185,129,0.07)', Icon: CheckCircle2, tone: 'text-emerald-600' }
+                : a.level === 'warning'
+                  ? { bd: 'rgba(251,191,36,0.32)', bg: 'rgba(251,191,36,0.08)', Icon: AlertTriangle, tone: 'text-amber-600' }
+                  : { bd: 'rgba(37,99,235,0.25)', bg: 'rgba(37,99,235,0.06)', Icon: Sparkles, tone: 'text-genz-blue' };
+              return (
+                <div key={a._id} className="ds-card flex items-start gap-3 p-3.5" style={{ border: `1px solid ${lv.bd}`, background: lv.bg }}>
+                  <lv.Icon size={16} className={`${lv.tone} flex-shrink-0 mt-0.5`} />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13.5px] font-bold text-genz-navy">{a.title}</p>
+                    {a.body && <p className="text-[12.5px] text-genz-muted mt-0.5 whitespace-pre-wrap break-words">{a.body}</p>}
+                  </div>
+                  <button onClick={() => dismissAnnouncement(a._id)} className="text-genz-muted hover:text-genz-navy flex-shrink-0" aria-label="Dismiss announcement">
+                    <X size={15} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3">
           {(() => {
             const accountActive = !user?.expiryDate || new Date(user.expiryDate) > new Date();
