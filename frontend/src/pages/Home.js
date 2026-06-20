@@ -459,58 +459,78 @@ const Home = () => {
 
           <MotionConfig reducedMotion="user">
             <motion.div
-              className="grid gap-5 md:grid-cols-2 max-w-4xl mx-auto items-stretch"
+              className="grid gap-5 md:gap-6 md:grid-cols-2 max-w-4xl mx-auto items-stretch"
               variants={mStagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.25 }}
             >
-              {/* Generic providers — understated, but with enough depth to read as a
-                  real card on the light background and a gentle hover to match its peer. */}
+              {/* Generic providers — the understated "old way" */}
               <motion.div variants={mFadeUp}
                 whileHover={{ y: -3 }}
                 transition={{ type: 'spring', stiffness: 240, damping: 22 }}
-                className="h-full flex flex-col rounded-3xl border border-genz-border bg-white/80 p-7 sm:p-8 backdrop-blur-[2px] shadow-[0_14px_34px_-22px_rgba(7,27,51,0.20)]">
-                <div className="flex items-center gap-2.5 mb-6">
-                  <span className="w-9 h-9 rounded-xl grid place-items-center bg-genz-bg text-genz-muted"><X size={17} /></span>
-                  <h3 className="text-[15px] font-bold text-genz-muted">Generic providers</h3>
+                className="h-full flex flex-col rounded-[26px] border border-genz-border bg-white/70 p-7 sm:p-8 backdrop-blur-[2px] shadow-[0_16px_40px_-26px_rgba(7,27,51,0.22)]">
+                <div className="flex items-center gap-3 mb-7">
+                  <span className="w-11 h-11 rounded-2xl grid place-items-center bg-genz-bg text-genz-muted ring-1 ring-genz-border"><X size={18} /></span>
+                  <div>
+                    <h3 className="text-[15px] font-bold text-genz-navy/70 leading-tight">Generic providers</h3>
+                    <p className="text-[12px] text-genz-muted/70 mt-0.5">The typical agency setup</p>
+                  </div>
                 </div>
-                <ul className="space-y-3.5">
+                <ul className="space-y-3.5 flex-1">
                   {COMPARE.map((row) => (
-                    <li key={row} className="flex items-start gap-3 text-[14.5px] text-genz-navy/55 leading-snug">
-                      <X size={16} className="mt-0.5 flex-shrink-0 text-genz-muted/50" />
-                      <span>{row}</span>
+                    <li key={row} className="flex items-start gap-3 text-[14.5px] text-genz-navy/45 leading-snug">
+                      <span className="mt-0.5 w-5 h-5 rounded-full grid place-items-center flex-shrink-0 bg-genz-bg ring-1 ring-genz-border/70">
+                        <X size={12} className="text-genz-muted/60" />
+                      </span>
+                      <span className="line-through decoration-genz-muted/25">{row}</span>
                     </li>
                   ))}
                 </ul>
               </motion.div>
 
-              {/* Gen Z Digital Store — elevated, on-brand, gently lifts on hover */}
+              {/* Gen Z Digital Store — hero card: gradient ring + glow + CTA */}
               <motion.div
                 variants={mFadeUp}
-                whileHover={{ y: -4 }}
+                whileHover={{ y: -6 }}
                 transition={{ type: 'spring', stiffness: 240, damping: 22 }}
-                className="relative h-full flex flex-col rounded-3xl p-7 sm:p-8 overflow-hidden depth-cyan"
-                style={{ background: 'linear-gradient(160deg,#001A3D 0%,#001030 58%,#000820 100%)', border: '1px solid rgba(6,182,212,0.34)' }}
+                className="relative h-full"
               >
-                <div className="absolute -top-20 -right-16 w-56 h-56 rounded-full pointer-events-none"
-                     style={{ background: 'radial-gradient(circle, rgba(6,182,212,0.30), transparent 70%)' }} />
-                <div className="relative flex-1">
-                  <div className="flex items-center justify-between gap-3 mb-6">
-                    <div className="flex items-center gap-2.5">
-                      <span className="w-9 h-9 rounded-xl grid place-items-center text-white" style={{ background: 'var(--gradient-cta)' }}><Sparkles size={16} /></span>
-                      <h3 className="text-[15px] font-extrabold text-white">Gen Z Digital Store</h3>
+                {/* gradient ring */}
+                <div className="relative h-full rounded-[26px] p-[1.5px] depth-cyan"
+                     style={{ background: 'linear-gradient(150deg, rgba(6,182,212,0.85) 0%, rgba(37,99,235,0.55) 50%, rgba(20,184,166,0.45) 100%)' }}>
+                  <div className="relative h-full flex flex-col rounded-[24px] p-7 sm:p-8 overflow-hidden"
+                       style={{ background: 'linear-gradient(160deg,#001A3D 0%,#001030 58%,#000820 100%)' }}>
+                    {/* glow accents */}
+                    <div className="absolute -top-24 -right-16 w-60 h-60 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(6,182,212,0.30), transparent 70%)' }} />
+                    <div className="absolute -bottom-24 -left-20 w-64 h-64 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle, rgba(37,99,235,0.22), transparent 72%)' }} />
+
+                    <div className="relative flex flex-col flex-1">
+                      <div className="flex items-center justify-between gap-3 mb-7">
+                        <div className="flex items-center gap-3">
+                          <span className="w-11 h-11 rounded-2xl grid place-items-center text-white" style={{ background: 'var(--gradient-cta)', boxShadow: '0 10px 22px -6px rgba(6,182,212,0.55)' }}><Sparkles size={18} /></span>
+                          <div>
+                            <h3 className="text-[15px] font-extrabold text-white leading-tight">Gen Z Digital Store</h3>
+                            <p className="text-[12px] text-genz-cyan/80 mt-0.5">Your premium partner</p>
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full text-genz-cyan whitespace-nowrap"
+                              style={{ background: 'rgba(6,182,212,0.16)', border: '1px solid rgba(6,182,212,0.4)' }}>Recommended</span>
+                      </div>
+                      <motion.ul className="space-y-3.5 flex-1" variants={mStagger}>
+                        {COMPARE.map((row) => (
+                          <motion.li key={row} variants={mRowIn} className="flex items-start gap-3 text-[14.5px] text-white/90 leading-snug">
+                            <span className="mt-0.5 w-5 h-5 rounded-full grid place-items-center flex-shrink-0" style={{ background: 'rgba(6,182,212,0.2)', border: '1px solid rgba(6,182,212,0.42)' }}>
+                              <Check size={13} className="text-genz-cyan" />
+                            </span>
+                            <span>{row}</span>
+                          </motion.li>
+                        ))}
+                      </motion.ul>
+                      <Link to="/services"
+                        className="group mt-7 inline-flex items-center justify-center gap-2 py-3 rounded-[14px] text-[14px] font-bold text-white transition-all duration-200 hover:-translate-y-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-cyan/50"
+                        style={{ background: 'var(--gradient-cta)', boxShadow: '0 12px 26px -8px rgba(37,99,235,0.5)' }}>
+                        Explore our services <ArrowRight size={15} className="transition-transform group-hover:translate-x-0.5" />
+                      </Link>
                     </div>
-                    <span className="text-[10.5px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full text-genz-cyan whitespace-nowrap"
-                          style={{ background: 'rgba(6,182,212,0.14)', border: '1px solid rgba(6,182,212,0.32)' }}>Recommended</span>
                   </div>
-                  <motion.ul className="space-y-3.5" variants={mStagger}>
-                    {COMPARE.map((row) => (
-                      <motion.li key={row} variants={mRowIn} className="flex items-start gap-3 text-[14.5px] text-white/90 leading-snug">
-                        <span className="mt-0.5 w-5 h-5 rounded-full grid place-items-center flex-shrink-0" style={{ background: 'rgba(6,182,212,0.18)' }}>
-                          <Check size={13} className="text-genz-cyan" />
-                        </span>
-                        <span>{row}</span>
-                      </motion.li>
-                    ))}
-                  </motion.ul>
                 </div>
               </motion.div>
             </motion.div>
@@ -525,24 +545,36 @@ const Home = () => {
             <Eyebrow label="How It Works" />
             <h2 className="type-section-title text-genz-navy mb-4">From idea to launch in five steps</h2>
           </div>
-          <div className="relative grid grid-cols-1 lg:grid-cols-5 gap-7 lg:gap-6 max-w-md lg:max-w-none mx-auto">
-            {/* desktop horizontal connector */}
-            <div className="hidden lg:block absolute top-7 left-[10%] right-[10%] h-0.5 tl-line rounded-full" />
-            {/* mobile/tablet vertical connector (runs through the icon centers) */}
-            <div className="lg:hidden absolute left-7 top-8 bottom-8 w-0.5 tl-line rounded-full" />
-            {STEPS.map(({ icon: Icon, t, s }, i) => (
-              <div key={t} className="relative flex items-start gap-4 text-left lg:block lg:text-center">
-                <div className="flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center text-white relative z-10 depth lg:mx-auto lg:mb-4" style={{ background: 'var(--gradient-cta)' }}>
-                  <Icon size={22} />
-                  <span className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-white border border-genz-border text-[11px] font-bold text-genz-blue flex items-center justify-center">{i + 1}</span>
-                </div>
-                <div className="flex-1 pt-1.5 lg:pt-0">
-                  <h3 className="text-genz-navy font-bold text-[16px] mb-1">{t}</h3>
-                  <p className="text-genz-muted text-[13px] leading-relaxed">{s}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+          <MotionConfig reducedMotion="user">
+            <motion.div
+              className="relative grid grid-cols-1 lg:grid-cols-5 gap-8 lg:gap-5 max-w-md lg:max-w-none mx-auto"
+              variants={mStagger} initial="hidden" whileInView="show" viewport={{ once: true, amount: 0.2 }}
+            >
+              {/* desktop gradient connector (behind the icon row) */}
+              <div className="hidden lg:block absolute top-9 left-[12%] right-[12%] h-[3px] rounded-full"
+                   style={{ background: 'linear-gradient(90deg, transparent, rgba(37,99,235,0.28) 14%, rgba(6,182,212,0.6) 50%, rgba(20,184,166,0.28) 86%, transparent)' }} />
+              {/* mobile/tablet vertical gradient connector (through the icon centers) */}
+              <div className="lg:hidden absolute left-9 top-10 bottom-10 w-[3px] rounded-full"
+                   style={{ background: 'linear-gradient(180deg, rgba(37,99,235,0.28), rgba(6,182,212,0.55), rgba(20,184,166,0.28))' }} />
+              {STEPS.map(({ icon: Icon, t, s }, i) => (
+                <motion.div key={t} variants={mFadeUp}
+                  className="group relative flex items-start gap-4 text-left lg:block lg:text-center">
+                  <div className="relative z-10 flex-shrink-0 lg:mx-auto lg:mb-5">
+                    <div className="relative w-[72px] h-[72px] rounded-2xl flex items-center justify-center text-white transition-transform duration-300 group-hover:-translate-y-1 group-hover:scale-[1.05]"
+                         style={{ background: 'var(--gradient-cta)', boxShadow: '0 14px 30px -10px rgba(6,182,212,0.55)' }}>
+                      <span className="absolute inset-0 rounded-2xl pointer-events-none" style={{ background: 'linear-gradient(155deg, rgba(255,255,255,0.28), transparent 46%)' }} />
+                      <Icon size={26} className="relative" />
+                    </div>
+                    <span className="absolute -top-2.5 -right-2.5 w-7 h-7 rounded-full bg-white text-[12px] font-extrabold text-genz-blue flex items-center justify-center shadow-md ring-1 ring-genz-border">{i + 1}</span>
+                  </div>
+                  <div className="flex-1 pt-2 lg:pt-0">
+                    <h3 className="text-genz-navy font-bold text-[16px] mb-1.5">{t}</h3>
+                    <p className="text-genz-muted text-[13px] leading-relaxed lg:max-w-[200px] lg:mx-auto">{s}</p>
+                  </div>
+                </motion.div>
+              ))}
+            </motion.div>
+          </MotionConfig>
         </div>
       </section>
 
