@@ -82,8 +82,11 @@ const PublicNavbar = () => {
         <div className="flex items-center justify-between h-[72px]">
 
           {/* Logo */}
-          <Link to="/" className="flex items-center flex-shrink-0" aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">
-            <BrandLogo size="lg" />
+          <Link to="/" className="flex items-center gap-2.5 flex-shrink-0 pr-2" aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">
+            <BrandLogo size="nav" />
+            <span className="hidden sm:block lg:hidden xl:block text-genz-navy font-extrabold text-lg tracking-tight leading-none">
+              Gen Z Digital Store
+            </span>
           </Link>
 
           {/* Desktop Nav */}

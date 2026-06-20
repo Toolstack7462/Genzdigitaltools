@@ -10,6 +10,11 @@ const SIZE_CLASSES = {
   lg: 'h-14 w-14',
   xl: 'h-20 w-20',
   '2xl': 'h-28 w-28',
+  // Larger brand presence for the public marketing site (source PNG is 512×512, so
+  // these stay sharp even at 2× DPR). Kept separate so admin/client/login sizes are
+  // unaffected.
+  nav: 'h-16 w-16',              // ~64px — public navbar (sits in the 72px bar)
+  footer: 'h-[72px] w-[72px]',   // prominent footer badge
 };
 
 const BrandLogo = ({

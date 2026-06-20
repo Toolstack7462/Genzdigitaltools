@@ -70,8 +70,11 @@ const PublicFooter = () => {
 
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
-            <Link to="/" className="inline-block mb-4">
-              <BrandLogo variant="horizontal" size="md" />
+            <Link to="/" className="inline-flex items-center gap-3 mb-4" aria-label="Gen Z Digital Store — home">
+              <BrandLogo size="footer" glow />
+              <span className="text-white font-extrabold text-lg leading-tight tracking-tight">
+                Gen Z Digital Store
+              </span>
             </Link>
             <p className="text-white/55 text-sm leading-relaxed mb-4 max-w-xs">
               Premium digital tools access, creative services, and smart web solutions
