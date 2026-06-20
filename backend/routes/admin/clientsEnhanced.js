@@ -9,6 +9,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const ExtensionScan = require('../../models/ExtensionScan');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate, schemas } = require('../../middleware/validation');
+const { buildProxyAssignmentDTOs } = require('../../utils/proxyAssignments');
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -84,9 +85,13 @@ router.get('/', async (req, res) => {
       return res.json({ success: true, clients: [], pagination: { page, limit, totalCount: 0, totalPages: 0, hasMore: false } });
     }
 
-    // FIX9: Single aggregation for assignment counts
+    // Flip any past-expiry rows to 'expired' first, so the status-based active
+    // count below never includes a stale-but-unswept assignment.
+    await ToolAssignment.updateExpiredAssignments().catch(() => {});
+
+    // FIX9: Single aggregation for catalog (extension/direct) assignment counts.
     const clientIds = clients.map(c => c._id);
-    const [assignmentAgg, deviceBindings] = await Promise.all([
+    const [assignmentAgg, deviceBindings, proxyDTOs] = await Promise.all([
       ToolAssignment.aggregate([
         { $match: { clientId: { $in: clientIds } } },
         { $group: {
@@ -95,11 +100,27 @@ router.get('/', async (req, res) => {
             active: { $sum: { $cond: [{ $eq: ['$status', 'active'] }, 1, 0] } }
         }}
       ]),
-      DeviceBinding.find({ clientId: { $in: clientIds } }).select('clientId lastSeenAt userAgent')
+      DeviceBinding.find({ clientId: { $in: clientIds } }).select('clientId lastSeenAt userAgent'),
+      // Proxy-gateway tools (HIX / BypassGPT / ChatGPT / Ryne / WriteHuman) and
+      // StealthWriter live in separate models, so they were missing from the count.
+      // Reuse the shared read-model (same end-of-day expiry rule) so the Members
+      // count matches the Assignments list and the dashboards. Fail-safe → [].
+      buildProxyAssignmentDTOs().then(r => r || []).catch(() => []),
     ]);
 
     const assignMap = Object.fromEntries(assignmentAgg.map(a => [a._id.toString(), a]));
     const deviceMap = Object.fromEntries(deviceBindings.map(d => [d.clientId.toString(), d]));
+
+    // Per-client proxy/stealth tallies. DTO.status is 'active' only when not
+    // expired and not revoked/disabled, so it already means "active access".
+    const proxyTotalMap = {};
+    const proxyActiveMap = {};
+    for (const dto of proxyDTOs) {
+      const cid = dto && dto.clientId != null ? String(dto.clientId) : null;
+      if (!cid) continue;
+      proxyTotalMap[cid] = (proxyTotalMap[cid] || 0) + 1;
+      if (dto.status === 'active') proxyActiveMap[cid] = (proxyActiveMap[cid] || 0) + 1;
+    }
 
     const clientsWithData = clients.map(client => {
       const id = client._id.toString();
@@ -107,8 +128,8 @@ router.get('/', async (req, res) => {
       const binding = deviceMap[id];
       return {
         ...client.toObject(),
-        assignmentCount:   agg.total,
-        activeAssignments: agg.active,
+        assignmentCount:   agg.total  + (proxyTotalMap[id]  || 0),
+        activeAssignments: agg.active + (proxyActiveMap[id] || 0),
         isDeviceLocked: !!binding && client.devicePolicy.enabled,
         deviceInfo: binding ? { lastSeen: binding.lastSeenAt, userAgent: binding.userAgent } : null
       };
@@ -158,6 +179,43 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// ─── POST /bulk — bulk action on multiple clients ─────────────────────────────
+// Actions: enable | disable (status) · addTag | removeTag (CRM tags). Declared
+// before /:id so it is never captured as an id param.
+router.post('/bulk', async (req, res) => {
+  try {
+    const { clientIds, action, value } = req.body;
+    if (!Array.isArray(clientIds) || clientIds.length === 0) return res.status(400).json({ error: 'clientIds are required' });
+    const ACTIONS = ['enable', 'disable', 'addTag', 'removeTag'];
+    if (!ACTIONS.includes(action)) return res.status(400).json({ error: 'Invalid action' });
+    const tag = (action === 'addTag' || action === 'removeTag') ? String(value || '').trim().slice(0, 24) : null;
+    if ((action === 'addTag' || action === 'removeTag') && !tag) return res.status(400).json({ error: 'A tag value is required' });
+
+    let updated = 0;
+    for (const id of clientIds.slice(0, 500)) {
+      try {
+        const c = await User.findById(id);
+        if (!c || c.role !== 'CLIENT') continue;
+        if (action === 'enable') c.status = 'active';
+        else if (action === 'disable') c.status = 'disabled';
+        else if (action === 'addTag') {
+          const t = Array.isArray(c.tags) ? c.tags : [];
+          if (t.length < 12 && !t.some(x => String(x).toLowerCase() === tag.toLowerCase())) c.tags = [...t, tag];
+        } else if (action === 'removeTag') {
+          c.tags = (Array.isArray(c.tags) ? c.tags : []).filter(x => String(x).toLowerCase() !== tag.toLowerCase());
+        }
+        await c.save();
+        updated++;
+      } catch (_) { /* skip individual failures */ }
+    }
+    await ActivityLog.log('ADMIN', req.userId, 'CLIENT_BULK_ACTION', { action, value: tag || undefined, count: updated, ip: getClientIp(req) });
+    return res.json({ success: true, updated });
+  } catch (err) {
+    console.error('Bulk client action error:', err);
+    return res.status(500).json({ error: 'Failed to apply bulk action' });
+  }
+});
+
 // ─── GET /:id ────────────────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
@@ -177,7 +235,16 @@ router.get('/:id', async (req, res) => {
       ? { extensionVersion: extensionScan.extensionVersion || null, scannedAt: extensionScan.scannedAt || extensionScan.updatedAt || null, scannerStatus: extensionScan.scannerStatus || null }
       : null;
 
-    return res.json({ success: true, client: client.toObject(), assignments, deviceBinding, activityLogs, extensionScan: ext });
+    // Fold this client's proxy + StealthWriter assignments into the list so the
+    // profile health summary (active/expired) matches the Members list count.
+    // Read-only DTOs; same shape the detail panel already tolerates. Fail-safe.
+    let mergedAssignments = assignments;
+    try {
+      const proxyDTOs = await buildProxyAssignmentDTOs({ clientId: client._id });
+      if (Array.isArray(proxyDTOs) && proxyDTOs.length) mergedAssignments = [...assignments, ...proxyDTOs];
+    } catch (_) { /* keep catalog assignments only */ }
+
+    return res.json({ success: true, client: client.toObject(), assignments: mergedAssignments, deviceBinding, activityLogs, extensionScan: ext });
   } catch (err) {
     console.error('Get client error:', err);
     return res.status(500).json({ error: 'Failed to fetch client' });
