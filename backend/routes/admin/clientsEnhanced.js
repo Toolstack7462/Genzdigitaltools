@@ -6,6 +6,7 @@ const DeviceBinding = require('../../models/DeviceBinding');
 const RefreshToken = require('../../models/RefreshToken');
 const ExtensionToken = require('../../models/ExtensionToken');
 const ActivityLog = require('../../models/ActivityLog');
+const ExtensionScan = require('../../models/ExtensionScan');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate, schemas } = require('../../middleware/validation');
 
@@ -26,12 +27,25 @@ function safePagination(query) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+// Normalise CRM tags: trim, cap length, de-dupe (case-insensitive), cap count.
+function sanitizeTags(tags) {
+  if (!Array.isArray(tags)) return undefined;
+  const seen = new Set();
+  const out = [];
+  for (const t of tags) {
+    const s = String(t || '').trim().slice(0, 24);
+    if (s && !seen.has(s.toLowerCase())) { seen.add(s.toLowerCase()); out.push(s); }
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 // ─── GET / — list clients ──────────────────────────────────────────────────────
 // FIX9: Aggregation instead of N+1 queries
 // FIX10: deviceLocked filter applied BEFORE pagination so totalCount is accurate
 router.get('/', async (req, res) => {
   try {
-    const { search, status, deviceLocked, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
+    const { search, status, deviceLocked, tag, sortBy = 'createdAt', sortOrder = 'desc' } = req.query;
     const { page, limit, skip } = safePagination(req.query);
 
     const query = { role: 'CLIENT' };
@@ -46,6 +60,8 @@ router.get('/', async (req, res) => {
       ];
     }
     if (status) query.status = status;
+    // CRM tag filter — $in matches clients whose tags array CONTAINS the tag.
+    if (tag) query.tags = { $in: [String(tag)] };
 
     // FIX10: Apply deviceLocked filter BEFORE pagination using DB-level lookup
     if (deviceLocked === 'true' || deviceLocked === 'false') {
@@ -148,13 +164,20 @@ router.get('/:id', async (req, res) => {
     const client = await User.findById(req.params.id).select('-passwordHash');
     if (!client || client.role !== 'CLIENT') return res.status(404).json({ error: 'Client not found' });
 
-    const [assignments, deviceBinding, activityLogs] = await Promise.all([
+    const [assignments, deviceBinding, activityLogs, extensionScan] = await Promise.all([
       ToolAssignment.find({ clientId: client._id }).populate('toolId', 'name category status targetUrl').sort({ createdAt: -1 }),
       DeviceBinding.findOne({ clientId: client._id }),
-      ActivityLog.find({ actorId: client._id }).sort({ createdAt: -1 }).limit(20)
+      ActivityLog.find({ actorId: client._id }).sort({ createdAt: -1 }).limit(20),
+      // Latest browser-extension scan (one row per client) — powers the health card's
+      // extension version / last-sync. Never exposes secrets. Fail-safe.
+      ExtensionScan.findOne({ clientId: client._id }).catch(() => null),
     ]);
 
-    return res.json({ success: true, client: client.toObject(), assignments, deviceBinding, activityLogs });
+    const ext = extensionScan
+      ? { extensionVersion: extensionScan.extensionVersion || null, scannedAt: extensionScan.scannedAt || extensionScan.updatedAt || null, scannerStatus: extensionScan.scannerStatus || null }
+      : null;
+
+    return res.json({ success: true, client: client.toObject(), assignments, deviceBinding, activityLogs, extensionScan: ext });
   } catch (err) {
     console.error('Get client error:', err);
     return res.status(500).json({ error: 'Failed to fetch client' });
@@ -164,7 +187,7 @@ router.get('/:id', async (req, res) => {
 // ─── POST / — create client ───────────────────────────────────────────────────
 router.post('/', validate(schemas.createClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes } = req.body;
+    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
     const ip = getClientIp(req);
 
     // Accept either the flat flag or a nested { enabled } object; default ON.
@@ -179,7 +202,8 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
       fullName, email, passwordHash: password,
       role: 'CLIENT', status: status || 'active',
       devicePolicy: { enabled: deviceEnabled !== false, maxDevices: 1 },
-      notes
+      notes,
+      tags: sanitizeTags(tags) || []
     });
 
     await ActivityLog.log('ADMIN', req.userId, 'CLIENT_CREATED', { clientId: client._id, clientEmail: client.email, ip });
@@ -193,7 +217,7 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
 // ─── PUT /:id ─────────────────────────────────────────────────────────────────
 router.put('/:id', validate(schemas.updateClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes } = req.body;
+    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
     const ip = getClientIp(req);
 
     // Accept either the flat flag or a nested { enabled } object.
@@ -221,6 +245,7 @@ router.put('/:id', validate(schemas.updateClient), async (req, res) => {
       client.devicePolicy.enabled = deviceEnabled;
     }
     if (notes !== undefined) client.notes = notes;
+    if (tags !== undefined) { client.tags = sanitizeTags(tags) || []; changes.tags = true; }
 
     await client.save();
     await ActivityLog.log('ADMIN', req.userId, 'CLIENT_UPDATED', { clientId: client._id, clientEmail: client.email, changes, ip });

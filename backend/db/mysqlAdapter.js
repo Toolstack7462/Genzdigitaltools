@@ -37,6 +37,7 @@ const tableNames = {
   ExtensionRelease: 'extension_releases',
   DeviceProfile: 'device_profiles',
   EmailVerification: 'email_verifications',
+  Reminder: 'reminders',
   // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
   StealthClient: 'stealth_clients',
   StealthLease: 'stealth_leases',

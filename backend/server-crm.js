@@ -250,6 +250,7 @@ const adminActivityRoutes     = require('./routes/admin/activity');
 const adminAnalyticsRoutes    = require('./routes/admin/analytics');
 const adminBlogRoutes         = require('./routes/admin/blog');
 const adminContactsRoutes     = require('./routes/admin/contacts');
+const adminRemindersRoutes    = require('./routes/admin/reminders');
 const adminSecurityAlertsRoutes = require('./routes/admin/securityAlerts');
 const clientToolsRoutes       = require('./routes/client/tools');
 const clientAssignmentsRoutes = require('./routes/client/assignmentsEnhanced');
@@ -281,6 +282,7 @@ app.use('/api/crm/admin/activity',   adminActivityRoutes);
 app.use('/api/crm/admin/analytics',  adminAnalyticsRoutes);
 app.use('/api/crm/admin/blog',       adminBlogRoutes);
 app.use('/api/crm/admin/contacts',       adminContactsRoutes);
+app.use('/api/crm/admin/reminders',      adminRemindersRoutes);
 app.use('/api/crm/admin/security-alerts', adminSecurityAlertsRoutes);
 // Extension release management (admin uploads/replaces the ZIP in the EXISTING
 // download folder; body parsing is handled inside the router — raw for upload).

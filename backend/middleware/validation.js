@@ -88,7 +88,10 @@ const schemas = {
       enabled: Joi.boolean(),
       maxDevices: Joi.number().integer().min(1)
     }),
-    notes: Joi.string().allow('', null).max(500)
+    notes: Joi.string().allow('', null).max(500),
+    // CRM organisation labels (VIP/Trial/Paid/…). Free-text array, capped. Distinct
+    // from `status` (which gates access) — tags are organisational only.
+    tags: Joi.array().items(Joi.string().trim().max(24)).max(12)
   }),
 
   updateClient: Joi.object({
@@ -102,7 +105,8 @@ const schemas = {
       enabled: Joi.boolean(),
       maxDevices: Joi.number().integer().min(1)
     }),
-    notes: Joi.string().allow('', null).max(500)
+    notes: Joi.string().allow('', null).max(500),
+    tags: Joi.array().items(Joi.string().trim().max(24)).max(12)
   }).min(1),
   
   // Tool schemas

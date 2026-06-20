@@ -68,6 +68,7 @@ const AdminDashboardEnhanced = () => {
   const [dashboardError, setDashboardError] = useState(null);
   const [securityAlertCount, setSecurityAlertCount] = useState(0);
   const [expiringCount, setExpiringCount] = useState(0);
+  const [followups, setFollowups] = useState([]);
 
   useEffect(() => {
     loadDashboard();
@@ -84,7 +85,7 @@ const AdminDashboardEnhanced = () => {
     setLoading(true);
     setDashboardError(null);
     try {
-      const [toolsRes, clientsRes, clientStatsRes, activityRes, expiringRes] = await Promise.all([
+      const [toolsRes, clientsRes, clientStatsRes, activityRes, expiringRes, followupsRes] = await Promise.all([
         api.get('/admin/tools/stats').catch(() => ({ data: {} })),
         api.get('/admin/clients?limit=5').catch(() => ({ data: {} })),
         api.get('/admin/clients/stats').catch(() => ({ data: {} })),
@@ -92,6 +93,8 @@ const AdminDashboardEnhanced = () => {
         // "Expiring soon" = active assignments within the 7-day window. total is the
         // full count (computed server-side); we only need 1 row back.
         api.get('/admin/assignments?status=expiring&limit=1').catch(() => ({ data: {} })),
+        // Today's / overdue follow-ups (pending, due ≤ today).
+        api.get('/admin/reminders?scope=due&limit=6').catch(() => ({ data: {} })),
       ]);
 
       const toolStats    = toolsRes.data?.stats       || {};
@@ -117,12 +120,22 @@ const AdminDashboardEnhanced = () => {
       setRecentClients(Array.isArray(clientStats.recentClients) ? clientStats.recentClients : []);
       setRecentActivity(Array.isArray(activities) ? activities : []);
       setExpiringCount(Number(expiringRes.data?.total) || 0);
+      setFollowups(Array.isArray(followupsRes.data?.reminders) ? followupsRes.data.reminders : []);
     } catch (err) {
       console.error('Dashboard load error:', err);
       setDashboardError('Could not load dashboard data. Check your connection and try again.');
       showError('Failed to load dashboard');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const markFollowupDone = async (id) => {
+    try {
+      await api.patch(`/admin/reminders/${id}`, { status: 'done' });
+      setFollowups(f => f.filter(r => r._id !== id));
+    } catch (_) {
+      showError('Failed to update follow-up');
     }
   };
 
@@ -294,6 +307,35 @@ const AdminDashboardEnhanced = () => {
             })}
           </div>
         </div>
+
+        {/* Today's follow-ups (only when there are due/overdue pending ones) */}
+        {followups.length > 0 && (
+          <div className="ds-card overflow-hidden">
+            <div className="ds-panel-head flex items-center justify-between px-5 py-3.5">
+              <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
+                <Clock size={16} className="text-amber-500" /> Today's Follow-ups
+              </h2>
+              <span className="ds-badge ds-badge-warn">{followups.length}</span>
+            </div>
+            <ul className="divide-y divide-genz-border">
+              {followups.map((r) => (
+                <li key={r._id} className="flex items-center gap-3 px-5 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-genz-navy truncate">{r.title}</p>
+                    <p className="text-xs text-genz-muted truncate">
+                      {r.client?.fullName || 'General'}
+                      {r.dueDate ? ` · due ${new Date(r.dueDate).toLocaleDateString()}` : ''}
+                    </p>
+                  </div>
+                  <button onClick={() => markFollowupDone(r._id)}
+                    className="inline-flex items-center gap-1 px-2.5 h-8 rounded-lg border border-genz-border bg-white text-green-600 hover:bg-green-50 text-xs font-semibold flex-shrink-0">
+                    <CheckCircle2 size={13} /> Done
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Recent Members + Recent Activity */}
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">

@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import AdminLayout from '../../components/AdminLayout';
-import { ArrowLeft, Save, User, Mail, Lock, Shield, FileText } from 'lucide-react';
+import { ArrowLeft, Save, User, Mail, Lock, Shield, FileText, Tag } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import PasswordInput from '../../components/PasswordInput';
+import { TagEditor } from '../../components/admin/ClientTags';
 
 const AdminClientForm = () => {
   const navigate = useNavigate();
@@ -20,7 +21,8 @@ const AdminClientForm = () => {
     password: '',
     status: 'active',
     devicePolicyEnabled: true,
-    notes: ''
+    notes: '',
+    tags: []
   });
 
   useEffect(() => {
@@ -39,7 +41,8 @@ const AdminClientForm = () => {
         password: '', // Don't show password
         status: client.status || 'active',
         devicePolicyEnabled: client.devicePolicy?.enabled !== false,
-        notes: client.notes || ''
+        notes: client.notes || '',
+        tags: Array.isArray(client.tags) ? client.tags : []
       });
     } catch (error) {
       showError('Failed to load client');
@@ -73,7 +76,9 @@ const AdminClientForm = () => {
         devicePolicyEnabled: formData.devicePolicyEnabled === true,
         // Internal admin notes (incl. payment/renewal). Backend already accepts this
         // (validation: max 500). Free-text; never shown to the client.
-        notes: (formData.notes || '').slice(0, 500)
+        notes: (formData.notes || '').slice(0, 500),
+        // CRM organisation tags (VIP/Trial/Paid/…). Backend sanitises/caps them.
+        tags: Array.isArray(formData.tags) ? formData.tags : []
       };
 
       // Only include password if the admin actually typed a new one. Never send
@@ -269,6 +274,15 @@ const AdminClientForm = () => {
                 data-testid="client-notes-input"
               />
               <p className="text-xs text-genz-muted mt-1 text-right">{(formData.notes || '').length}/500</p>
+            </div>
+
+            {/* CRM tags / labels (organisational only — distinct from Status) */}
+            <div>
+              <label className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
+                <Tag size={16} className="text-genz-teal" />
+                Tags <span className="text-genz-muted font-normal">(CRM labels — VIP, Paid, Renewal Due…)</span>
+              </label>
+              <TagEditor value={formData.tags} onChange={(tags) => setFormData(prev => ({ ...prev, tags }))} />
             </div>
           </div>
 

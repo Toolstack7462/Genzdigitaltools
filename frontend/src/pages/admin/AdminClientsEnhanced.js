@@ -22,6 +22,7 @@ import { useToast } from '../../components/Toast';
 import AdminModal from '../../components/admin/AdminModal';
 import AssignmentManager from '../../components/admin/AssignmentManager';
 import ClientDetailPanel from '../../components/admin/ClientDetailPanel';
+import { SUGGESTED_TAGS, TagChip } from '../../components/admin/ClientTags';
 
 const AdminClientsEnhanced = () => {
   const navigate = useNavigate();
@@ -30,6 +31,7 @@ const AdminClientsEnhanced = () => {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedTag, setSelectedTag] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 20, totalPages: 0, total: 0 });
   const [manageClient, setManageClient] = useState(null);
   const [modalTab, setModalTab] = useState('tools'); // per-client modal: 'tools' | 'profile'
@@ -40,7 +42,8 @@ const AdminClientsEnhanced = () => {
 
   useEffect(() => {
     loadClients();
-  }, [pagination.page, selectedStatus]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pagination.page, selectedStatus, selectedTag]);
 
   const loadClients = async () => {
     try {
@@ -52,6 +55,7 @@ const AdminClientsEnhanced = () => {
 
       if (searchTerm) params.append('search', searchTerm);
       if (selectedStatus) params.append('status', selectedStatus);
+      if (selectedTag) params.append('tag', selectedTag);
 
       const response = await api.get(`/admin/clients?${params}`);
       setClients(response.data.clients || []);
@@ -223,6 +227,17 @@ const AdminClientsEnhanced = () => {
               <option value="active">Active</option>
               <option value="disabled">Disabled</option>
             </select>
+            <select
+              value={selectedTag}
+              onChange={(e) => setSelectedTag(e.target.value)}
+              aria-label="Filter clients by tag"
+              className="px-3.5 py-2.5 text-sm bg-genz-bg border border-genz-border rounded-xl text-genz-navy focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all appearance-none cursor-pointer md:w-44"
+              style={{ backgroundImage: "url('data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2712%27 height=%278%27 viewBox=%270 0 12 8%27%3E%3Cpath fill=%27%23999%27 d=%27M6 8L0 0h12z%27/%3E%3C/svg%3E')", backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.85rem center', backgroundSize: '0.6rem' }}
+              data-testid="tag-filter"
+            >
+              <option value="">All Tags</option>
+              {SUGGESTED_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
             <button
               onClick={handleSearch}
               className="btn-grad px-5 py-2.5 rounded-xl text-sm font-bold whitespace-nowrap"
@@ -292,6 +307,11 @@ const AdminClientsEnhanced = () => {
                             <div className="min-w-0">
                               <p className="font-semibold text-genz-navy text-sm truncate">{client.fullName}</p>
                               <p className="text-xs text-genz-muted truncate">{client.email}</p>
+                              {client.tags?.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  {client.tags.slice(0, 4).map(t => <TagChip key={t} tag={t} />)}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
@@ -319,6 +339,11 @@ const AdminClientsEnhanced = () => {
                       <p className="font-semibold text-genz-navy text-sm truncate">{client.fullName}</p>
                       <p className="text-xs text-genz-muted truncate mb-1.5">{client.email}</p>
                       <StatusBadge client={client} />
+                      {client.tags?.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {client.tags.slice(0, 5).map(t => <TagChip key={t} tag={t} />)}
+                        </div>
+                      )}
                       <div className="flex items-center gap-3 mt-2 text-xs text-genz-muted">
                         <span className="flex items-center gap-1"><TrendingUp size={12} /> {client.activeAssignments || 0} active</span>
                         <span className="flex items-center gap-1 truncate"><Clock size={12} /> {formatDate(client.lastLoginAt)}</span>
