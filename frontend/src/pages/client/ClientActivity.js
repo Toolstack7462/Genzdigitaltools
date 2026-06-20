@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import ClientLayoutEnhanced from '../../components/ClientLayoutEnhanced';
 import {
   Activity as ActivityIcon, Clock, LogIn, ShieldAlert, ShieldOff, Smartphone,
-  Package, CheckCircle2, RefreshCw, AlertCircle,
+  Package, RefreshCw, AlertCircle, Chrome,
 } from 'lucide-react';
 import api from '../../services/api';
+import { useExtension } from '../../hooks/useExtension';
 
 // Friendly label + icon for one of the client's OWN activity entries.
 function describe(a) {
@@ -37,6 +38,7 @@ const ClientActivity = () => {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const { status: ext } = useExtension(); // extension connection status (not scan data)
 
   const load = useCallback(async () => {
     try {
@@ -58,6 +60,19 @@ const ClientActivity = () => {
     seen[k].rows.push(a);
   });
 
+  // Extension connection status (from the bridge — never scan internals).
+  const extState = ext?.connected ? 'connected' : (ext?.installed ? 'installed' : 'none');
+  const extMeta = {
+    connected: { cls: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500', label: 'Extension connected' },
+    installed: { cls: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-500', label: 'Extension installed' },
+    none:      { cls: 'bg-genz-bg text-genz-muted border-genz-border', dot: 'bg-genz-muted', label: 'Extension not detected' },
+  }[extState];
+
+  // Tools used through the extension (distinct tool names from open events).
+  const toolsUsed = [...new Set(
+    items.filter(a => /TOOL_OPEN|TOOL_ACCESS|LEASE/i.test(a.action) && a.toolName).map(a => a.toolName)
+  )].slice(0, 12);
+
   return (
     <ClientLayoutEnhanced>
       <div className="max-w-3xl mx-auto">
@@ -71,13 +86,36 @@ const ClientActivity = () => {
               </span>
               Activity
             </h1>
-            <p className="text-sm text-genz-muted mt-0.5">Your recent sign-ins and tool usage.</p>
+            <p className="text-sm text-genz-muted mt-0.5">Your sign-ins and tools used via the extension — last 15 days.</p>
           </div>
           <button onClick={load}
             className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium hover:border-genz-teal/50 transition-colors"
             title="Refresh">
             <RefreshCw size={15} /> Refresh
           </button>
+        </div>
+
+        {/* Extension status + tools used via the extension */}
+        <div className="ds-card p-4 mb-5">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-semibold ${extMeta.cls}`}>
+              <span className={`w-2 h-2 rounded-full ${extMeta.dot} ${extState === 'connected' ? 'animate-pulse' : ''}`} />
+              <Chrome size={14} /> {extMeta.label}{ext?.version ? ` · v${ext.version}` : ''}
+            </span>
+            <span className="text-xs text-genz-muted">Showing the last 15 days</span>
+          </div>
+          {toolsUsed.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-genz-border">
+              <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-genz-muted mb-2">Tools used via extension</p>
+              <div className="flex flex-wrap gap-1.5">
+                {toolsUsed.map(t => (
+                  <span key={t} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-blue-50 text-genz-blue text-xs font-medium border border-blue-100">
+                    <Package size={12} /> {t}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {loading ? (

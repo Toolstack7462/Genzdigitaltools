@@ -40,8 +40,17 @@ router.get('/device-info', async (req, res) => {
 // returns another user's data, and the payload carries no cookies/tokens/secrets.
 router.get('/activity', async (req, res) => {
   try {
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
-    const rows = await ActivityLog.find({ actorId: req.userId }).sort({ createdAt: -1 }).limit(limit);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 60));
+    const days = Math.min(30, Math.max(1, parseInt(req.query.days, 10) || 15));
+    const cutoff = new Date(Date.now() - days * 86400000);
+    // Only client-meaningful events: sign-ins, blocked/failed sign-ins, tools opened
+    // (via the extension), and device resets. Excludes internal extension noise like
+    // EXTENSION_SCAN_SUBMITTED / EXTENSION_CREDENTIALS_FETCH / EXTENSION_AUTH.
+    const SHOW = /^(CLIENT_LOGIN|LOGIN_BLOCKED|TOOL_OPENED|DEVICE_RESET)/i;
+    const all = await ActivityLog.find({ actorId: req.userId }).sort({ createdAt: -1 }).limit(300);
+    const rows = (all || [])
+      .filter(l => SHOW.test(String(l.action || '')) && l.createdAt && new Date(l.createdAt) >= cutoff)
+      .slice(0, limit);
     // Resolve tool names for TOOL_OPENED entries (one bounded lookup), so the client
     // sees "Opened HIX AI" rather than a raw id. No secrets in the payload.
     const toolIds = [...new Set((rows || []).map(l => l.meta && l.meta.toolId).filter(Boolean).map(String))];
