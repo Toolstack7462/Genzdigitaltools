@@ -166,6 +166,7 @@ const ClientDashboardEnhanced = () => {
   }, [showError]);
   const [tools, setTools] = useState([]);
   const [expiringTools, setExpiringTools] = useState([]);
+  const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showExpiryWarning, setShowExpiryWarning] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -204,16 +205,20 @@ const ClientDashboardEnhanced = () => {
       (extInfo.minVersion && isOlder(installedExtVersion, extInfo.minVersion))
     )
   );
+  // Optional (non-forced) update available — a gentle nudge, never blocks access.
+  const extSoftUpdate = extOutdated && !extMustUpdate;
 
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [toolsRes, expiringRes] = await Promise.all([
+      const [toolsRes, expiringRes, activityRes] = await Promise.all([
         api.get('/client/tools'),
-        api.get('/client/assignments/expiring')
+        api.get('/client/assignments/expiring'),
+        api.get('/client/activity?limit=12').catch(() => ({ data: {} }))
       ]);
       setTools(toolsRes.data.tools || []);
       setExpiringTools(expiringRes.data.expiring || []);
+      setActivity(Array.isArray(activityRes.data?.activity) ? activityRes.data.activity : []);
       if (expiringRes.data.expiring?.length > 0) {
         const dismissed = localStorage.getItem('expiry_warning_dismissed');
         const dismissedTime = dismissed ? new Date(dismissed) : null;
@@ -905,6 +910,41 @@ const ClientDashboardEnhanced = () => {
           </div>
         )}
 
+        {/* ── Your recent activity ── own logins + tool opens (transparency) ── */}
+        {activity.length > 0 && (() => {
+          const toolNameById = {};
+          tools.forEach(t => { toolNameById[String(t._id || t.toolId)] = t.name; });
+          const fmtWhen = (d) => { const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+          const describe = (a) => {
+            const ac = String(a.action || '').toUpperCase();
+            if (ac.includes('LOGIN') && (ac.includes('FAIL') || ac.includes('BLOCK'))) return { Icon: AlertTriangle, tone: 'text-amber-500', text: 'Blocked or failed sign-in' };
+            if (ac.includes('LOGIN')) return { Icon: CheckCircle2, tone: 'text-green-500', text: 'Signed in' };
+            if (ac.includes('DEVICE')) return { Icon: Shield, tone: 'text-cyan-500', text: 'Device updated' };
+            if (ac.includes('TOOL_OPEN') || ac.includes('TOOL_ACCESS')) return { Icon: Package, tone: 'text-genz-blue', text: `Opened ${toolNameById[String(a.toolId)] || 'a tool'}` };
+            return { Icon: Clock, tone: 'text-genz-muted', text: ac.replace(/_/g, ' ').toLowerCase() };
+          };
+          return (
+            <div className="ds-card overflow-hidden">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-genz-border">
+                <Clock size={15} className="text-genz-blue" />
+                <h3 className="text-[13.5px] font-bold text-genz-navy">Your recent activity</h3>
+              </div>
+              <ul className="divide-y divide-genz-border">
+                {activity.slice(0, 8).map(a => {
+                  const { Icon, tone, text } = describe(a);
+                  return (
+                    <li key={a._id} className="flex items-center gap-3 px-4 py-2.5">
+                      <span className="w-7 h-7 rounded-lg bg-genz-bg flex items-center justify-center flex-shrink-0"><Icon size={13} className={tone} /></span>
+                      <span className="flex-1 min-w-0 text-[13px] text-genz-navy truncate">{text}</span>
+                      <span className="text-[11px] text-genz-muted flex-shrink-0">{fmtWhen(a.createdAt)}</span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })()}
+
         {/* ── WhatsApp Support banner ── */}
         <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
            className="ds-card ds-stat group relative overflow-hidden flex items-center gap-3 p-3.5">
@@ -928,17 +968,19 @@ const ClientDashboardEnhanced = () => {
         {/* ── Quick actions ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: Chrome, title: 'Extension Setup',  desc: 'Download the Chrome extension for one-click tool access.', to: extZipUrl(extLatest), cta: 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true },
+            { icon: Chrome, title: 'Extension Setup',  desc: extSoftUpdate ? 'A newer extension version is available — download to update.' : 'Download the Chrome extension for one-click tool access.', to: extZipUrl(extLatest), cta: extSoftUpdate ? 'Update' : 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true, badge: extSoftUpdate ? 'Update available' : null },
             { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',         to: '/client/profile', cta: 'Manage',   grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
             { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',          to: '/pricing',        cta: 'Upgrade',  grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
-          ].map(({ icon: Icon, title, desc, to, cta, grad, download }) => {
+          ].map(({ icon: Icon, title, desc, to, cta, grad, download, badge }) => {
             const cardClass = 'ds-card ds-stat p-4 flex flex-col group';
             const inner = (
               <>
                 <span className="w-9 h-9 rounded-lg flex items-center justify-center text-white mb-2.5" style={{ background: grad, boxShadow: '0 6px 14px -8px rgba(37,99,235,0.5)' }}>
                   <Icon size={17} />
                 </span>
-                <h4 className="text-[13.5px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors">{title}</h4>
+                <h4 className="text-[13.5px] font-bold text-genz-navy group-hover:text-genz-blue transition-colors flex items-center gap-1.5">
+                  {title}{badge && <span className="ds-badge ds-badge-warn !text-[9.5px] !py-[1px] !px-1.5">{badge}</span>}
+                </h4>
                 <p className="text-[12px] text-genz-muted mt-0.5 leading-snug flex-1">{desc}</p>
                 <span className="inline-flex items-center gap-1.5 mt-2.5 text-[12.5px] text-genz-blue font-semibold group-hover:gap-2.5 transition-all">
                   {cta} <ArrowRight size={13} />

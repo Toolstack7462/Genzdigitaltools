@@ -58,6 +58,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/admin/extension.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/extension.js" \
   -T backend/routes/extension/index.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/extension/index.js" \
   -T backend/routes/client/tools.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/tools.js" \
+  -T backend/routes/client/profile.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/profile.js" \
   -T backend/routes/admin/toolsEnhanced.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/toolsEnhanced.js" \
   -T backend/routes/admin/securityAlerts.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/securityAlerts.js" \
   -T backend/routes/authEnhanced.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEnhanced.js" \
