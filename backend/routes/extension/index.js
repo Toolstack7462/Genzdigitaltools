@@ -1047,7 +1047,12 @@ router.post('/tools/:toolId/opened', verifyExtensionToken, async (req, res) => {
         extensionVersion: req.headers['x-extension-version']
       }
     });
-    
+
+    // Also record a lightweight ActivityLog entry so catalog tool-opens feed the
+    // admin "Top Tools" analytics and the per-client timeline. Fire-and-forget —
+    // never blocks or breaks the open response; no secrets in meta.
+    ActivityLog.log('CLIENT', req.clientId, 'TOOL_OPENED', { toolId }).catch(() => {});
+
     res.json({ success: true });
   } catch (error) {
     console.error('Log tool opened error:', error);

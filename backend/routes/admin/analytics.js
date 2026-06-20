@@ -74,9 +74,23 @@ router.get('/', async (req, res) => {
     const recentActivity = recent.slice(0, 12).map(l => ({
       _id: l._id, action: l.action, actorRole: l.actorRole, createdAt: l.createdAt,
     }));
+    // Resolve a friendly tool name per open/lease event. Catalog opens log a toolId
+    // (resolve via the already-loaded tool list); proxy leases log a slug (map to the
+    // public display name); stealth leases get a fixed label — so Top Tools shows
+    // consistent names instead of slugs / "Unknown".
+    const toolNameById = {};
+    allTools.forEach(t => { toolNameById[String(t._id)] = t.name; });
     const toolMap = {};
     recent.filter(l => l.action === 'TOOL_OPENED' || l.action === 'PROXY_LEASE_ISSUED' || l.action === 'STEALTH_LEASE_ISSUED').forEach(l => {
-      const name = (l.meta && (l.meta.toolName || l.meta.tool || l.meta.toolId)) || 'Unknown';
+      const m = l.meta || {};
+      let name;
+      if (l.action === 'STEALTH_LEASE_ISSUED') {
+        name = m.toolName || 'StealthWriter';
+      } else if (l.action === 'PROXY_LEASE_ISSUED') {
+        name = m.toolName || (m.tool && proxyTools.publicInfo(m.tool) && proxyTools.publicInfo(m.tool).name) || m.tool || 'Proxy tool';
+      } else {
+        name = m.toolName || toolNameById[String(m.toolId)] || m.tool || 'Unknown';
+      }
       toolMap[name] = (toolMap[name] || 0) + 1;
     });
     const topTools = Object.entries(toolMap).sort(([, a], [, b]) => b - a).slice(0, 8).map(([name, count]) => ({ name, count }));

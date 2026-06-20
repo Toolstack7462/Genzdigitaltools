@@ -578,6 +578,7 @@ function createModel(name, options = {}) {
 
     static async _findOneAndUpdate(criteria, update, optionsArg = {}) {
       let rows = await this._findRaw(criteria);
+      const inserting = !rows[0];
       let data = rows[0] || null;
       if (!data && optionsArg.upsert) {
         data = { _id: newId(), createdAt: new Date(), updatedAt: new Date(), ...deepClone(criteria || {}) };
@@ -585,6 +586,11 @@ function createModel(name, options = {}) {
       if (!data) return null;
       const original = deepClone(data);
       data = applyUpdate(data, update);
+      // Mongoose-compatible $setOnInsert: apply its keys ONLY when creating a new
+      // row (previously dropped, so e.g. assignedAt was never stored on insert).
+      if (inserting && update && update.$setOnInsert && typeof update.$setOnInsert === 'object') {
+        for (const [k, v] of Object.entries(update.$setOnInsert)) setByPath(data, k, v);
+      }
       data._id = data._id || original._id || newId();
       if (!data.createdAt) data.createdAt = original.createdAt || new Date();
       data.updatedAt = new Date();

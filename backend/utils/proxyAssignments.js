@@ -12,19 +12,15 @@
 const ProxyClient = require('../models/proxy/ProxyClient');
 const StealthClient = require('../models/stealth/StealthClient');
 const User = require('../models/User');
+const ToolAssignment = require('../models/ToolAssignment');
 const proxyTools = require('./proxy/tools');
 
 const EXPIRING_SOON_DAYS = 7;
 
+// Use the SAME inclusive end-of-day rule as catalog tools (handles date-only
+// strings + timezone/ms edge cases) so proxy/stealth expiry never diverges.
 function endBoundary(expiryDate) {
-  if (!expiryDate) return null;
-  const d = new Date(expiryDate);
-  if (isNaN(d.getTime())) return null;
-  // Inclusive end-of-day for a date-only expiry (matches ProxyClient/StealthClient).
-  if (d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0) {
-    d.setUTCHours(23, 59, 59, 999);
-  }
-  return d;
+  return ToolAssignment.effectiveEndBoundary(expiryDate);
 }
 
 function statusFor(row, now = new Date()) {
