@@ -13,12 +13,12 @@ const SERVICES = [
   { to: '/services/seo-digital-growth',     label: 'SEO & Digital Growth' },
 ];
 
-// `anchor` = the link targets a section that lives on the HOMEPAGE, so it scrolls
-// to /#<id> (those ids + scroll-mt exist on Home). Items without `anchor` are real
-// standalone pages (Pricing/About/Contact have no homepage section).
+// Every top-level link has a real dedicated page (pages/public/Services.js,
+// Portfolio.js, pages/Pricing.js, About.js, Contact.js), so the navbar opens the
+// PAGE consistently — no mixing of /page and /#section.
 const NAV_LINKS = [
-  { to: '/services', label: 'Services', hasDropdown: true, anchor: '/#services' },
-  { to: '/portfolio', label: 'Portfolio', anchor: '/#portfolio' },
+  { to: '/services', label: 'Services', hasDropdown: true },
+  { to: '/portfolio', label: 'Portfolio' },
   { to: '/pricing',  label: 'Pricing'   },
   { to: '/about',    label: 'About'     },
   { to: '/contact',  label: 'Contact'   },
@@ -38,11 +38,11 @@ const APP_SIGNUP_URL = 'https://app.genzdigitalstore.com/client/signup';
 const MAIN_SITE_URL = 'https://genzdigitalstore.com';
 const isAppSubdomain = () =>
   typeof window !== 'undefined' && /^app\./i.test(window.location.hostname || '');
-// Absolute main-site target per top-level link. Homepage sections use a hash
-// (#services/#portfolio exist on the home page); standalone pages use their route.
+// Absolute main-site target per top-level link — every one is a real dedicated
+// page, so on the app subdomain they full-navigate to that page on the main site.
 const MARKETING_HREF = {
-  '/services':  `${MAIN_SITE_URL}/#services`,
-  '/portfolio': `${MAIN_SITE_URL}/#portfolio`,
+  '/services':  `${MAIN_SITE_URL}/services`,
+  '/portfolio': `${MAIN_SITE_URL}/portfolio`,
   '/pricing':   `${MAIN_SITE_URL}/pricing`,
   '/about':     `${MAIN_SITE_URL}/about`,
   '/contact':   `${MAIN_SITE_URL}/contact`,
@@ -122,7 +122,7 @@ const PublicNavbar = () => {
 
           {/* Desktop Nav */}
           <div className="hidden lg:flex items-center gap-8">
-            {NAV_LINKS.map(({ to, label, hasDropdown, anchor }) =>
+            {NAV_LINKS.map(({ to, label, hasDropdown }) =>
               // On the app subdomain every marketing link fully navigates to the main
               // site (the Services dropdown collapses to a single link there).
               onApp ? (
@@ -186,22 +186,6 @@ const PublicNavbar = () => {
                     </div>
                   )}
                 </div>
-              ) : anchor ? (
-                // Homepage section → scroll to /#id (works same-page and cross-page).
-                <a
-                  key={to}
-                  href={anchor}
-                  className={`${linkBase} group ${
-                    isActive(to) ? 'text-genz-blue' : 'text-genz-navy/75 hover:text-genz-blue'
-                  }`}
-                >
-                  {label}
-                  <span
-                    className={`absolute -bottom-1.5 left-0 h-0.5 w-full rounded-full bg-genz-blue origin-left transform transition-transform duration-200 ${
-                      isActive(to) ? 'scale-x-100' : 'scale-x-0 group-hover:scale-x-100'
-                    }`}
-                  />
-                </a>
               ) : (
                 <Link
                   key={to}
@@ -270,7 +254,7 @@ const PublicNavbar = () => {
             className="lg:hidden pb-5 pt-2 border-t animate-fade-up"
             style={{ borderColor: 'rgba(13,42,71,0.08)' }}
           >
-            {NAV_LINKS.map(({ to, label, hasDropdown, anchor }) =>
+            {NAV_LINKS.map(({ to, label, hasDropdown }) =>
               // App subdomain → full navigation to the main site (no in-app routing).
               onApp ? (
                 <a
@@ -278,17 +262,6 @@ const PublicNavbar = () => {
                   href={MARKETING_HREF[to] || MAIN_SITE_URL}
                   onClick={() => setMobileOpen(false)}
                   className="block py-3 px-2 text-[15px] font-medium text-genz-navy/80 hover:text-genz-blue hover:bg-genz-blue/[0.04] rounded-xl transition-colors"
-                >
-                  {label}
-                </a>
-              ) : anchor && !hasDropdown ? (
-                // Homepage section anchor — close the menu on tap (same-page hash
-                // won't change the route, so the auto-close effect won't fire).
-                <a
-                  key={to}
-                  href={anchor}
-                  onClick={() => setMobileOpen(false)}
-                  className="block py-3 px-2 text-[15px] font-medium rounded-xl transition-colors text-genz-navy/80 hover:text-genz-blue hover:bg-genz-blue/[0.04]"
                 >
                   {label}
                 </a>

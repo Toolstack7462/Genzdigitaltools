@@ -467,7 +467,7 @@ const Home = () => {
               <motion.div variants={mFadeUp}
                 whileHover={{ y: -3 }}
                 transition={{ type: 'spring', stiffness: 240, damping: 22 }}
-                className="rounded-3xl border border-genz-border bg-white/80 p-7 sm:p-8 backdrop-blur-[2px] shadow-[0_14px_34px_-22px_rgba(7,27,51,0.20)]">
+                className="h-full flex flex-col rounded-3xl border border-genz-border bg-white/80 p-7 sm:p-8 backdrop-blur-[2px] shadow-[0_14px_34px_-22px_rgba(7,27,51,0.20)]">
                 <div className="flex items-center gap-2.5 mb-6">
                   <span className="w-9 h-9 rounded-xl grid place-items-center bg-genz-bg text-genz-muted"><X size={17} /></span>
                   <h3 className="text-[15px] font-bold text-genz-muted">Generic providers</h3>
@@ -487,12 +487,12 @@ const Home = () => {
                 variants={mFadeUp}
                 whileHover={{ y: -4 }}
                 transition={{ type: 'spring', stiffness: 240, damping: 22 }}
-                className="relative rounded-3xl p-7 sm:p-8 overflow-hidden depth-cyan"
+                className="relative h-full flex flex-col rounded-3xl p-7 sm:p-8 overflow-hidden depth-cyan"
                 style={{ background: 'linear-gradient(160deg,#001A3D 0%,#001030 58%,#000820 100%)', border: '1px solid rgba(6,182,212,0.34)' }}
               >
                 <div className="absolute -top-20 -right-16 w-56 h-56 rounded-full pointer-events-none"
                      style={{ background: 'radial-gradient(circle, rgba(6,182,212,0.30), transparent 70%)' }} />
-                <div className="relative">
+                <div className="relative flex-1">
                   <div className="flex items-center justify-between gap-3 mb-6">
                     <div className="flex items-center gap-2.5">
                       <span className="w-9 h-9 rounded-xl grid place-items-center text-white" style={{ background: 'var(--gradient-cta)' }}><Sparkles size={16} /></span>
@@ -525,16 +525,21 @@ const Home = () => {
             <Eyebrow label="How It Works" />
             <h2 className="type-section-title text-genz-navy mb-4">From idea to launch in five steps</h2>
           </div>
-          <div className="relative grid sm:grid-cols-2 lg:grid-cols-5 gap-6">
+          <div className="relative grid grid-cols-1 lg:grid-cols-5 gap-7 lg:gap-6 max-w-md lg:max-w-none mx-auto">
+            {/* desktop horizontal connector */}
             <div className="hidden lg:block absolute top-7 left-[10%] right-[10%] h-0.5 tl-line rounded-full" />
+            {/* mobile/tablet vertical connector (runs through the icon centers) */}
+            <div className="lg:hidden absolute left-7 top-8 bottom-8 w-0.5 tl-line rounded-full" />
             {STEPS.map(({ icon: Icon, t, s }, i) => (
-              <div key={t} className="relative text-center">
-                <div className="mx-auto mb-4 w-14 h-14 rounded-2xl flex items-center justify-center text-white relative z-10 depth" style={{ background: 'var(--gradient-cta)' }}>
+              <div key={t} className="relative flex items-start gap-4 text-left lg:block lg:text-center">
+                <div className="flex-shrink-0 w-14 h-14 rounded-2xl flex items-center justify-center text-white relative z-10 depth lg:mx-auto lg:mb-4" style={{ background: 'var(--gradient-cta)' }}>
                   <Icon size={22} />
                   <span className="absolute -top-2 -right-2 w-6 h-6 rounded-full bg-white border border-genz-border text-[11px] font-bold text-genz-blue flex items-center justify-center">{i + 1}</span>
                 </div>
-                <h3 className="text-genz-navy font-bold text-[16px] mb-1">{t}</h3>
-                <p className="text-genz-muted text-[13px] leading-relaxed">{s}</p>
+                <div className="flex-1 pt-1.5 lg:pt-0">
+                  <h3 className="text-genz-navy font-bold text-[16px] mb-1">{t}</h3>
+                  <p className="text-genz-muted text-[13px] leading-relaxed">{s}</p>
+                </div>
               </div>
             ))}
           </div>
