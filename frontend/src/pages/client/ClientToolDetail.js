@@ -6,6 +6,7 @@ import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { useExtension } from '../../hooks/useExtension';
 import { daysUntilExpiry as expiryDays, isAccessExpired } from '../../utils/expiry';
+import RenewPlanLink from '../../components/RenewPlanLink';
 
 const ClientToolDetail = () => {
   const navigate = useNavigate();
@@ -201,10 +202,12 @@ const ClientToolDetail = () => {
                 extension opens the admin-saved tool URL in a new tab. */}
             <div className="space-y-2">
               {expired ? (
-                <Link to="/contact"
+                <RenewPlanLink
+                  toolName={tool.name}
+                  status="expired"
                   className="w-full flex items-center justify-center gap-2 py-3 rounded-xl text-[15px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
                   <RefreshCw size={18} /> Renew Access
-                </Link>
+                </RenewPlanLink>
               ) : tool.targetUrl ? (
                 <>
                   <button

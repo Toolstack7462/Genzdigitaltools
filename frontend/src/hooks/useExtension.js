@@ -126,6 +126,7 @@ export function useExtension() {
         version: resp.version,
         toolCount: resp.toolCount || 0,
         lastSync: resp.lastSync || null,
+        extensionUpdate: resp.extensionUpdate || null,
         reason: resp.connected ? null : (resp.reason || 'not_connected'),
       };
       setStatus(next);
@@ -254,6 +255,9 @@ export function useExtension() {
       }
       if (data.type === 'GENZ_SYNC_COMPLETE') {
         setStatus(prev => ({ ...(prev || {}), toolCount: data.toolCount, lastSync: data.lastSync }));
+      }
+      if (data.type === 'GENZ_EXTENSION_UPDATE') {
+        setStatus(prev => ({ ...(prev || {}), extensionUpdate: data.update || null }));
       }
     };
 

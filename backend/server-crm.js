@@ -257,6 +257,7 @@ const clientNotificationsRoutes = require('./routes/client/notifications');
 const clientProfileRoutes     = require('./routes/client/profile');
 const clientExtensionRoutes   = require('./routes/client/extension');
 const extensionRoutes         = require('./routes/extension');
+const adminExtensionRoutes    = require('./routes/admin/extension');
 // StealthWriter Proxy Gateway module (isolated)
 const adminStealthRoutes      = require('./routes/admin/stealth');
 const clientStealthRoutes     = require('./routes/client/stealth');
@@ -281,6 +282,9 @@ app.use('/api/crm/admin/analytics',  adminAnalyticsRoutes);
 app.use('/api/crm/admin/blog',       adminBlogRoutes);
 app.use('/api/crm/admin/contacts',       adminContactsRoutes);
 app.use('/api/crm/admin/security-alerts', adminSecurityAlertsRoutes);
+// Extension release management (admin uploads/replaces the ZIP in the EXISTING
+// download folder; body parsing is handled inside the router — raw for upload).
+app.use('/api/crm/admin/extension', adminExtensionRoutes);
 app.use('/api/crm/client/tools',     clientToolsRoutes);
 app.use('/api/crm/client/assignments', clientAssignmentsRoutes);
 app.use('/api/crm/client/notifications', clientNotificationsRoutes);

@@ -3,13 +3,14 @@ import {
   Zap, Lock, Puzzle, Sparkles, MousePointerClick,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import BrandLogo from '../components/BrandLogo';
+import { getLatestExtension, EXT_ZIP_PATH } from '../lib/extension';
 
-// Keep in sync with chrome-extension/manifest.json "version". Used for the badge
-// AND to cache-bust the ZIP so members never download a stale build.
-const EXT_VERSION = '3.8.7';
-const EXT_ZIP = `/downloads/genz-digital-store-extension.zip?v=${EXT_VERSION}`;
+// Version is read live from the backend (admin uploads the latest ZIP; the
+// backend extracts the version from the ZIP manifest). The download path is the
+// EXISTING /downloads link — only the cache-bust version is dynamic.
 
 const STEPS = [
   ['Download the ZIP', 'Grab the latest signed extension package below.'],
@@ -28,6 +29,12 @@ const FEATURES = [
 
 const ChromeExtensionPage = () => {
   const reduce = useReducedMotion();
+  const [ext, setExt] = useState({ latest: null, downloadUrl: EXT_ZIP_PATH });
+  useEffect(() => {
+    let alive = true;
+    getLatestExtension().then(info => { if (alive) setExt(info); });
+    return () => { alive = false; };
+  }, []);
   const ease = [0.16, 1, 0.3, 1];
   const fade = (d = 0) => (reduce ? {} : {
     initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 },
@@ -80,16 +87,18 @@ const ChromeExtensionPage = () => {
                 <div>
                   <div className="flex items-center gap-2 mb-1">
                     <h2 className="text-[22px] font-bold text-genz-navy">Download Extension</h2>
-                    <span className="text-[11px] font-bold px-2 py-0.5 rounded-full text-genz-teal"
-                          style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
-                      v{EXT_VERSION}
-                    </span>
+                    {ext.latest && (
+                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-full text-genz-teal"
+                            style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.28)' }}>
+                        v{ext.latest}
+                      </span>
+                    )}
                   </div>
                   <p className="text-genz-muted text-[14px]">Latest signed build for manual Chrome install.</p>
                 </div>
               </div>
 
-              <a href={EXT_ZIP} download
+              <a href={ext.downloadUrl} download
                  className="btn-grad inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-bold whitespace-nowrap hover:-translate-y-0.5 transition-transform">
                 <Download size={18} /> Download ZIP
               </a>

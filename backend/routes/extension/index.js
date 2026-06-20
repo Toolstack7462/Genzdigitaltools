@@ -11,6 +11,30 @@ const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
 const { buildToolCleanupConfig, getToolAccessMode } = require('../../utils/toolCleanupConfig');
+const ExtensionRelease = require('../../models/ExtensionRelease');
+const { isOlder } = require('../../utils/semver');
+
+// Compute update status for an installed extension version against the latest
+// published release. Returns safe metadata only (versions/booleans). `rel` may
+// be passed in to avoid a duplicate DB read.
+async function computeExtensionUpdate(installedVersion, rel) {
+  try {
+    const release = rel || await ExtensionRelease.getLatest();
+    const latest = release ? release.version : null;
+    const minVersion = release ? (release.minVersion || null) : null;
+    const installed = installedVersion || null;
+    return {
+      installed,
+      latest,
+      minVersion,
+      updateAvailable: !!(latest && installed && isOlder(installed, latest)),
+      updateRequired: !!(minVersion && installed && isOlder(installed, minVersion)),
+      downloadPath: '/downloads/genz-digital-store-extension.zip',
+    };
+  } catch (_) {
+    return { installed: installedVersion || null, latest: null, minVersion: null, updateAvailable: false, updateRequired: false };
+  }
+}
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
 const ExtensionScan         = require('../../models/ExtensionScan');
@@ -89,6 +113,28 @@ const verifyExtensionToken = async (req, res, next) => {
     res.status(500).json({ error: 'Authentication failed' });
   }
 };
+
+// GET /api/crm/extension/version-info — PUBLIC latest-version metadata.
+// Used by the dashboard download button to cache-bust + render the update
+// banner, and by the extension popup. No auth, no secrets — versions only.
+// The download link itself is the EXISTING static /downloads/<zip> path.
+router.get('/version-info', async (req, res) => {
+  try {
+    const rel = await ExtensionRelease.getLatest();
+    res.json({
+      success: true,
+      latest: rel ? rel.version : null,
+      minVersion: rel ? (rel.minVersion || null) : null,
+      filename: rel ? (rel.filename || 'genz-digital-store-extension.zip') : 'genz-digital-store-extension.zip',
+      size: rel ? (rel.size || 0) : 0,
+      publishedAt: rel ? (rel.publishedAt || null) : null,
+      downloadPath: '/downloads/genz-digital-store-extension.zip',
+    });
+  } catch (err) {
+    console.error('version-info error:', err.message);
+    res.status(500).json({ error: 'Failed to read version info' });
+  }
+});
 
 // POST /api/crm/extension/auth - Authenticate and get extension token
 router.post('/auth', authLimiter, async (req, res) => {
@@ -370,9 +416,14 @@ router.get('/tools', verifyExtensionToken, async (req, res) => {
       }
     });
     
-    res.json({ 
+    // Heartbeat update check: compare the installed extension version (sent on
+    // every request as X-Extension-Version) with the latest published release.
+    const extensionUpdate = await computeExtensionUpdate(req.headers['x-extension-version']);
+
+    res.json({
       success: true,
       tools,
+      extensionUpdate,
       syncedAt: new Date().toISOString()
     });
   } catch (error) {
@@ -432,6 +483,30 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
     // trace in the response if NODE_ENV is not 'production'.
     if (!toolId || !/^[a-f\d]{24}$/i.test(toolId)) {
       return res.status(400).json({ error: 'Invalid tool ID format' });
+    }
+
+    // ── Forced-update gate ────────────────────────────────────────────────────
+    // If admin set a minimum-required version and this install is older, BLOCK
+    // opening (the extension must update first). Returns the non-secret update
+    // metadata so the extension can show the update prompt + existing download
+    // link. Only gates when a minVersion is configured AND the install reports
+    // an older version — never blocks otherwise.
+    {
+      const upd = await computeExtensionUpdate(req.headers['x-extension-version']);
+      if (upd.updateRequired) {
+        accessDebug('credentials', {
+          clientId: req.clientId, toolId,
+          reason: 'extension_update_required',
+          code: 'extension_update_required',
+        });
+        return res.status(426).json({
+          error: 'Please update the Gen Z Digital Store extension to continue',
+          code: 'extension_update_required',
+          latest: upd.latest,
+          minVersion: upd.minVersion,
+          downloadPath: upd.downloadPath,
+        });
+      }
     }
 
     // Verify assignment via the SHARED helper — same source of truth used by

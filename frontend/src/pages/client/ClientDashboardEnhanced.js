@@ -11,10 +11,11 @@ import {
 const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
-import { EXT_ZIP_URL, EXT_ZIP_FILENAME } from '../../lib/extension';
+import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl } from '../../lib/extension';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 import StealthWriterCard from '../../components/StealthWriterCard';
+import RenewPlanLink from '../../components/RenewPlanLink';
 import { useStealthSummary } from '../../hooks/useStealthSummary';
 import ProxyToolCard from '../../components/ProxyToolCard';
 import { useProxyTools } from '../../hooks/useProxyTools';
@@ -125,11 +126,13 @@ const ToolCard = ({ tool, onOpen, openState }) => {
               {openState?.loading ? 'Opening Tool' : 'Access'}
             </button>
           ) : (
-            <Link to="/contact"
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[12.5px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
+            <RenewPlanLink
+              toolName={tool.name}
+              status="expired"
+              className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[12.5px] font-semibold border border-genz-blue/30 text-genz-blue hover:bg-genz-blue/[0.06] transition-all">
               <RefreshCw size={13} />
               Renew
-            </Link>
+            </RenewPlanLink>
           )}
           <Link to={`/client/tools/${tool._id}`}
                 className="px-3 py-2 rounded-lg text-[12.5px] font-medium border border-genz-border text-genz-muted hover:border-genz-blue/40 hover:text-genz-blue transition-all">
@@ -463,9 +466,42 @@ const ClientDashboardEnhanced = () => {
                 {expiringTools.length > 3 && ` +${expiringTools.length - 3}`}
               </span>
             </div>
+            <RenewPlanLink
+              status="expiring"
+              className="flex-shrink-0 text-[11px] font-semibold text-amber-100 underline-offset-2 hover:underline">
+              Renew
+            </RenewPlanLink>
             <button onClick={dismissExpiryWarning} className="text-amber-200/60 hover:text-amber-100 transition-colors">
               <X size={13} />
             </button>
+          </div>
+        )}
+
+        {/* ── Extension update banner (download latest from the existing link) ── */}
+        {extConnStatus?.extensionUpdate && (extConnStatus.extensionUpdate.updateAvailable || extConnStatus.extensionUpdate.updateRequired) && (
+          <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl"
+               style={{
+                 background: extConnStatus.extensionUpdate.updateRequired
+                   ? 'linear-gradient(120deg, rgba(127,29,29,0.34), rgba(127,29,29,0.18))'
+                   : 'linear-gradient(120deg, rgba(120,53,15,0.32), rgba(120,53,15,0.18))',
+                 border: extConnStatus.extensionUpdate.updateRequired ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(251,191,36,0.30)',
+               }}>
+            <RefreshCw size={13} className={extConnStatus.extensionUpdate.updateRequired ? 'text-red-300 flex-shrink-0' : 'text-amber-300 flex-shrink-0'} />
+            <div className="flex-1 min-w-0">
+              <span className={(extConnStatus.extensionUpdate.updateRequired ? 'text-red-200' : 'text-amber-200') + ' font-semibold text-[12px]'}>
+                {extConnStatus.extensionUpdate.updateRequired ? 'Extension update required' : 'Extension update available'}
+              </span>
+              <span className={(extConnStatus.extensionUpdate.updateRequired ? 'text-red-200/70' : 'text-amber-200/70') + ' text-[11px] ml-2'}>
+                {extConnStatus.extensionUpdate.updateRequired
+                  ? '· Tool access is paused until you update.'
+                  : (extConnStatus.extensionUpdate.latest ? `· v${extConnStatus.extensionUpdate.latest} is available` : '')}
+              </span>
+            </div>
+            <a href={extZipUrl(extConnStatus.extensionUpdate.latest)} download={EXT_ZIP_FILENAME} target="_blank" rel="noopener noreferrer"
+               className="flex-shrink-0 text-[11px] font-semibold text-white px-2.5 py-1 rounded-lg"
+               style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
+              Download latest
+            </a>
           </div>
         )}
 

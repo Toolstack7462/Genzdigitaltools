@@ -127,6 +127,37 @@ async function ensureScannerEnabled() {
   chrome.runtime.sendMessage({ type: 'GENZ_ENABLE_SCANNER_AUTO' }, () => {});
 }
 
+// ── Update banner ─────────────────────────────────────────────────────────
+// Shows when the backend heartbeat reported a newer (or required) version.
+// The button uses the EXISTING /downloads/ link (no separate download flow).
+function appOriginFromApiUrl(apiUrl) {
+  try {
+    const u = new URL(String(apiUrl || ''));
+    return `${u.protocol}//${u.host.replace(/^api\./, 'app.')}`;
+  } catch (_) { return 'https://app.genzdigitalstore.com'; }
+}
+
+function renderUpdateBanner(update, apiUrl) {
+  const banner = $('update-banner');
+  if (!banner || !update || (!update.updateAvailable && !update.updateRequired)) return;
+  const required = !!update.updateRequired;
+  const title = $('update-title');
+  const detail = $('update-detail');
+  const link = $('update-link');
+  if (title) title.textContent = required ? 'Update required' : 'Update available';
+  if (detail) {
+    detail.textContent = required
+      ? 'Your access is paused until you update to the latest extension.'
+      : `A newer version (${update.latest || 'latest'}) is available. Please update.`;
+  }
+  if (link) {
+    const origin = appOriginFromApiUrl(apiUrl);
+    const v = update.latest ? `?v=${encodeURIComponent(update.latest)}` : '';
+    link.href = `${origin}${update.downloadPath || '/downloads/genz-digital-store-extension.zip'}${v}`;
+  }
+  banner.classList.remove('hidden');
+}
+
 // ── Start ────────────────────────────────────────────────────────────────────
 async function init() {
   const manifest = chrome.runtime.getManifest();
@@ -136,8 +167,11 @@ async function init() {
 
   const data = await Storage.get([
     'extensionToken', 'apiUrl', 'tools', 'lastSync',
-    'userEmail',
+    'userEmail', 'extensionUpdate',
   ]);
+
+  // Surface any pending extension update (stored by the background heartbeat).
+  renderUpdateBanner(data.extensionUpdate, data.apiUrl);
 
   // The popup only runs when the extension is installed & enabled → always Ready.
   renderReady(data, !!data.extensionToken);

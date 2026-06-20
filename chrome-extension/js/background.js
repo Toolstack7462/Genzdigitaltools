@@ -338,6 +338,40 @@ async function setupSyncAlarm() {
   logger.debug(`Sync alarm every ${SYNC_INTERVAL_MINUTES}m; cleanup alarm every ${CLEANUP_INTERVAL_MINUTES}m`);
 }
 
+// ── Extension self-update awareness ─────────────────────────────────────────
+// The backend heartbeat (/tools) returns extensionUpdate = { installed, latest,
+// minVersion, updateAvailable, updateRequired, downloadPath }. Persist it so the
+// popup + dashboard can show the "download latest" prompt (existing link), badge
+// the icon, and (once per new version) raise a friendly notification. No secrets.
+async function applyExtensionUpdateInfo(update) {
+  if (!update || typeof update !== 'object') return;
+  try {
+    await setStorage({ extensionUpdate: update });
+    notifyDashboardTabs({ type: 'GENZ_EXTENSION_UPDATE', update });
+
+    if (update.updateRequired || update.updateAvailable) {
+      chrome.action.setBadgeText({ text: '↑' });
+      chrome.action.setBadgeBackgroundColor({ color: update.updateRequired ? '#ef4444' : '#f59e0b' });
+      // Notify once per newly-seen latest version (avoid repeat spam each sync).
+      const seen = await getStorage(['updateNotifiedFor']);
+      if (update.latest && seen.updateNotifiedFor !== update.latest) {
+        await setStorage({ updateNotifiedFor: update.latest });
+        chrome.notifications.create('genz-ext-update-' + update.latest, {
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: update.updateRequired ? 'Extension update required' : 'Extension update available',
+          message: update.updateRequired
+            ? 'Your access is paused until you update. Open the dashboard to download the latest version.'
+            : 'A newer version is available. Open the dashboard to download the latest version.',
+          priority: update.updateRequired ? 2 : 1,
+        });
+      }
+    }
+  } catch (err) {
+    logger.debug('applyExtensionUpdateInfo failed', { error: err.message });
+  }
+}
+
 async function checkForUpdates() {
   try {
     const stored = await getStorage(['toolVersions', 'sessionBundleVersions', 'extensionToken']);
@@ -349,6 +383,8 @@ async function checkForUpdates() {
     
     const result = await apiRequest('/tools');
     const tools = result.tools || [];
+    // Heartbeat self-update check (backend compares installed vs latest release).
+    if (result.extensionUpdate) await applyExtensionUpdateInfo(result.extensionUpdate);
     const oldVersions = stored.toolVersions || {};
     const oldBundleVersions = stored.sessionBundleVersions || {};
     
@@ -629,6 +665,7 @@ async function getToolCredentials(toolId, opts = {}) {
       const tagged = new Error(code);
       tagged.code = code;
       tagged.status = error.status;
+      tagged.payload = error.payload; // preserve safe fields (e.g. latest/minVersion)
       throw tagged;
     }
     // No business code → infrastructure failure (404/500/network/decrypt).
@@ -1368,6 +1405,20 @@ async function _handleOpenToolInner(payload) {
         if (code === 'extension_token_invalid') {
           return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
         }
+        if (code === 'extension_update_required') {
+          // Below the admin-required minimum version → block opening, surface the
+          // update prompt (existing download link via the stored update info).
+          const upd = err?.payload || {};
+          await applyExtensionUpdateInfo({
+            installed: chrome.runtime.getManifest().version,
+            latest: upd.latest || null,
+            minVersion: upd.minVersion || null,
+            updateAvailable: true,
+            updateRequired: true,
+            downloadPath: upd.downloadPath || '/downloads/genz-digital-store-extension.zip',
+          });
+          return { success: false, error: 'extension_update_required', stage: 'extension_update_required', code, latest: upd.latest || null, minVersion: upd.minVersion || null, message: 'Please update the extension to the latest version to continue.' };
+        }
       }
       // 'credentials_unavailable' falls through with credentialData=null; handled
       // by the session-required guard below.
@@ -1785,9 +1836,14 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
   }
 
   const appOrigin = await getAppOrigin();
+  // Pass safe identity (email/name) so the expired page can pre-fill the WhatsApp
+  // renewal message. These are NOT secrets; never include tokens/cookies/etc.
+  const who = await getStorage(['userEmail', 'userName']);
   let expiredUrl = chrome.runtime.getURL('expired.html')
     + `?tool=${encodeURIComponent(toolName || '')}&reason=${encodeURIComponent(reason || 'expired')}`;
   if (appOrigin) expiredUrl += `&app=${encodeURIComponent(appOrigin)}`;
+  if (who.userEmail) expiredUrl += `&email=${encodeURIComponent(who.userEmail)}`;
+  if (who.userName) expiredUrl += `&name=${encodeURIComponent(who.userName)}`;
 
   let redirected = 0;
   let storageCleared = false;
@@ -2314,7 +2370,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_EXTENSION_STATUS':
-      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail']).then(async d => {
+      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate']).then(async d => {
         const expired = d.tokenExpiresAt && Date.parse(d.tokenExpiresAt) <= Date.now();
         if (expired) {
           await clearExtensionAuthSession('stored_token_expired');
@@ -2340,6 +2396,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           tokenExpiresAt: d.tokenExpiresAt || null,
           expiresInDays,
           version: chrome.runtime.getManifest().version,
+          extensionUpdate: d.extensionUpdate || null,
         });
       });
       return true;

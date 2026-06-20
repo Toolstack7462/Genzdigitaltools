@@ -22,12 +22,29 @@
       msgEl.innerHTML = `Your access to <span class="tool">${escapeHtml(toolLabel)}</span> ${verb}. Please renew your plan to continue.`;
     }
 
-    // Point "Renew" at the dashboard. Honour an apiUrl-derived app origin if one
-    // was passed; otherwise keep the production default already in the markup.
-    const app = params.get('app');
-    if (app && /^https:\/\/[\w.-]+\.genzdigitalstore\.com\/?/.test(app)) {
-      const renew = document.getElementById('renew');
-      if (renew) renew.href = app.replace(/\/+$/, '') + '/client';
+    // "Renew your plan" opens WhatsApp support with a safe pre-filled message.
+    // Central support number (wa.me format: no '+'/spaces). Safe info only —
+    // never tokens, cookies, sessions, or secrets.
+    const SUPPORT_WHATSAPP_NUMBER = '923027467462';
+    const email = (params.get('email') || '').slice(0, 120);
+    const name = (params.get('name') || '').slice(0, 80);
+    const lines = ['Hello, I want to renew my plan.'];
+    if (safeName) lines.push(`Tool: ${safeName}`);
+    if (reason) lines.push(`Status: ${reason === 'revoked' ? 'revoked' : reason === 'removed' || reason === 'tool_removed' ? 'removed' : 'expired'}`);
+    const who = name || email;
+    if (who && /^[\w .,'@+\-]+$/.test(who)) lines.push(`Account: ${who}`);
+    const waUrl = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${encodeURIComponent(lines.join('\n'))}`;
+
+    const renew = document.getElementById('renew');
+    if (renew) {
+      renew.href = waUrl;
+      renew.target = '_blank';
+      renew.rel = 'noopener noreferrer';
+      // Fallback hint if the click is blocked from opening a window.
+      renew.addEventListener('click', () => {
+        const fb = document.getElementById('renew-fallback');
+        if (fb) setTimeout(() => { fb.style.display = 'block'; }, 1200);
+      });
     }
   } catch (_) { /* leave the static fallback message in place */ }
 

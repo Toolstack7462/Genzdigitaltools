@@ -34,6 +34,7 @@ const tableNames = {
   OpenIntent: 'open_intents',
   ActivationToken: 'activation_tokens',
   ExtensionScan: 'extension_scans',
+  ExtensionRelease: 'extension_releases',
   DeviceProfile: 'device_profiles',
   EmailVerification: 'email_verifications',
   // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
