@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
-import { Chrome, Upload, RefreshCw, Download, CheckCircle2, AlertTriangle, Clock } from 'lucide-react';
+import { Chrome, Upload, RefreshCw, Download, CheckCircle2, AlertTriangle, Clock, Bell, BellRing, Loader2 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 
@@ -15,6 +15,8 @@ export default function AdminExtension() {
   const [uploading, setUploading] = useState(false);
   const [minVersion, setMinVersion] = useState('');
   const [updateRequired, setUpdateRequired] = useState(false);
+  const [notifyBusy, setNotifyBusy] = useState(() => new Set()); // clientIds currently being notified
+  const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const fileRef = useRef(null);
 
   const load = useCallback(async () => {
@@ -69,8 +71,51 @@ export default function AdminExtension() {
     }
   };
 
+  // Build a result toast from the notify endpoint's counts.
+  const summarize = (r) => {
+    const parts = [];
+    if (r.notified) parts.push(`${r.notified} notified`);
+    if (r.debounced) parts.push(`${r.debounced} recently notified (skipped)`);
+    if (r.skippedUpToDate) parts.push(`${r.skippedUpToDate} already up to date`);
+    if (r.skippedNoVersion) parts.push(`${r.skippedNoVersion} never synced`);
+    return parts.length ? parts.join(' · ') : 'No outdated clients to notify';
+  };
+
+  // Notify one (or several) specific outdated clients.
+  const notifyClients = async (ids) => {
+    const clientIds = (ids || []).filter(Boolean);
+    if (clientIds.length === 0) return;
+    setNotifyBusy(prev => { const s = new Set(prev); clientIds.forEach(id => s.add(id)); return s; });
+    try {
+      const { data: r } = await api.post('/admin/extension/notify', { clientIds });
+      if (r.notified) showSuccess(summarize(r));
+      else showError(summarize(r));
+      await load();
+    } catch (err) {
+      showError(err?.response?.data?.error || 'Failed to send notification');
+    } finally {
+      setNotifyBusy(prev => { const s = new Set(prev); clientIds.forEach(id => s.delete(id)); return s; });
+    }
+  };
+
+  // Notify every outdated client in one shot (server filters + debounces).
+  const notifyAll = async () => {
+    setNotifyAllBusy(true);
+    try {
+      const { data: r } = await api.post('/admin/extension/notify', { all: true });
+      if (r.notified) showSuccess(summarize(r));
+      else showError(summarize(r));
+      await load();
+    } catch (err) {
+      showError(err?.response?.data?.error || 'Failed to notify clients');
+    } finally {
+      setNotifyAllBusy(false);
+    }
+  };
+
   const latest = data?.latestVersion || null;
   const clients = data?.clients || [];
+  const outdatedCount = clients.filter(c => c.isOutdated).length;
 
   return (
     <AdminLayoutEnhanced>
@@ -147,7 +192,18 @@ export default function AdminExtension() {
 
             {/* Per-client installed versions */}
             <div className="ds-card p-4">
-              <h3 className="text-[14px] font-bold text-genz-navy mb-3">Client installed versions ({clients.length})</h3>
+              <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                <h3 className="text-[14px] font-bold text-genz-navy">Client installed versions ({clients.length})</h3>
+                <button
+                  onClick={notifyAll}
+                  disabled={notifyAllBusy || outdatedCount === 0}
+                  title={outdatedCount === 0 ? 'No outdated clients' : `Notify ${outdatedCount} outdated client${outdatedCount > 1 ? 's' : ''}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12.5px] font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed"
+                  style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
+                  {notifyAllBusy ? <Loader2 size={14} className="animate-spin" /> : <BellRing size={14} />}
+                  Notify all outdated{outdatedCount > 0 ? ` (${outdatedCount})` : ''}
+                </button>
+              </div>
               {clients.length === 0 ? (
                 <div className="text-[13px] text-genz-muted">No client has synced the extension yet.</div>
               ) : (
@@ -157,8 +213,10 @@ export default function AdminExtension() {
                       <tr className="text-left text-genz-muted border-b border-genz-border">
                         <th className="py-2 pr-3">Client</th>
                         <th className="py-2 pr-3">Installed</th>
+                        <th className="py-2 pr-3">Latest</th>
                         <th className="py-2 pr-3">Status</th>
                         <th className="py-2 pr-3">Last sync</th>
+                        <th className="py-2 pr-3">Update notice</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -169,6 +227,7 @@ export default function AdminExtension() {
                             {c.email && c.name && <div className="text-[11px] text-genz-muted">{c.email}</div>}
                           </td>
                           <td className="py-2 pr-3">{c.installedVersion ? `v${c.installedVersion}` : '—'}</td>
+                          <td className="py-2 pr-3">{latest ? `v${latest}` : '—'}</td>
                           <td className="py-2 pr-3">
                             {c.updateRequired ? (
                               <span className="inline-flex items-center gap-1 text-red-600 font-semibold"><AlertTriangle size={12} /> Update required</span>
@@ -179,6 +238,28 @@ export default function AdminExtension() {
                             )}
                           </td>
                           <td className="py-2 pr-3 text-genz-muted">{c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleString() : '—'}</td>
+                          <td className="py-2 pr-3">
+                            {!c.isOutdated ? (
+                              <span className="text-genz-muted">—</span>
+                            ) : (
+                              <div className="flex flex-col gap-1">
+                                <button
+                                  onClick={() => notifyClients([c.clientId])}
+                                  disabled={notifyBusy.has(c.clientId)}
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border border-genz-blue/40 text-genz-blue hover:bg-genz-blue/10 disabled:opacity-50 disabled:cursor-not-allowed w-fit">
+                                  {notifyBusy.has(c.clientId)
+                                    ? <Loader2 size={12} className="animate-spin" />
+                                    : (c.notified ? <BellRing size={12} /> : <Bell size={12} />)}
+                                  {c.notified ? 'Notify again' : 'Notify update'}
+                                </button>
+                                {c.notified && c.notifiedAt && (
+                                  <span className="text-[11px] text-green-600 inline-flex items-center gap-1">
+                                    <CheckCircle2 size={11} /> Sent {new Date(c.notifiedAt).toLocaleString()}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

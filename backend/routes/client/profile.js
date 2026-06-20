@@ -5,6 +5,9 @@ const DeviceBinding = require('../../models/DeviceBinding');
 const ActivityLog = require('../../models/ActivityLog');
 const Tool = require('../../models/Tool');
 const Announcement = require('../../models/Announcement');
+const ExtensionRelease = require('../../models/ExtensionRelease');
+const { isOlder, compareVersions } = require('../../utils/semver');
+const { readDiskExtensionVersion } = require('../../utils/extensionDownloads');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
 
 // Apply auth middleware
@@ -133,6 +136,46 @@ router.get('/announcements', async (req, res) => {
   } catch (error) {
     console.error('Get announcements error:', error);
     res.json({ success: true, announcements: [] }); // fail-safe: never break the dashboard
+  }
+});
+
+// GET /api/crm/client/extension-notice - admin-triggered "please update your
+// extension" notice for the signed-in client. Returns the notice ONLY while the
+// client is still on an older version than the latest published release; once the
+// client updates, the notice self-clears (returns null). Safe metadata only — no
+// secrets. Fail-safe: never breaks the dashboard.
+router.get('/extension-notice', async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('extensionVersion extensionUpdateNotice');
+    const notice = user && user.extensionUpdateNotice ? user.extensionUpdateNotice : null;
+    if (!notice || !notice.notifiedAt) return res.json({ success: true, notice: null });
+
+    // Resolve the current latest version (disk ZIP first, then DB record).
+    const rel = await ExtensionRelease.getLatest().catch(() => null);
+    const diskVersion = readDiskExtensionVersion();
+    const dbVersion = rel ? rel.version : null;
+    let latest = diskVersion || dbVersion || null;
+    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+
+    const installed = user.extensionVersion || notice.installedVersion || null;
+    // Self-clear: if the client is no longer behind the latest, suppress the notice.
+    if (!latest || !installed || !isOlder(installed, latest)) {
+      return res.json({ success: true, notice: null });
+    }
+
+    res.json({
+      success: true,
+      notice: {
+        message: notice.message || 'Admin has requested you to update your Gen Z Digital Store extension to the latest version.',
+        latestVersion: latest,
+        installedVersion: installed,
+        mandatory: !!notice.mandatory,
+        notifiedAt: notice.notifiedAt,
+      },
+    });
+  } catch (error) {
+    console.error('Get extension notice error:', error);
+    res.json({ success: true, notice: null }); // fail-safe
   }
 });
 

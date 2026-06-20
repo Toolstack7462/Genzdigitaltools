@@ -182,6 +182,7 @@ const ClientDashboardEnhanced = () => {
   const [scanConsent, setScanConsent] = useState(null); // null=unknown, true=given, false=not given
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
   const [extInfo, setExtInfo] = useState(null); // backend version-info (latest/min/forceUpdate)
+  const [extNotice, setExtNotice] = useState(null); // admin-triggered "please update" notice (or null)
 
   // Detect outdated extension at the DASHBOARD level (works for ALL installed
   // versions, including old builds that lack heartbeat update-awareness). Fetch
@@ -191,6 +192,16 @@ const ClientDashboardEnhanced = () => {
   useEffect(() => {
     let alive = true;
     getLatestExtension(installedExtVersion).then(info => { if (alive) setExtInfo(info); }).catch(() => {});
+    return () => { alive = false; };
+  }, [installedExtVersion]);
+
+  // Admin-triggered update request (self-clears server-side once the client is on
+  // the latest version). Only enriches the existing update banner's wording.
+  useEffect(() => {
+    let alive = true;
+    api.get('/client/extension-notice')
+      .then(r => { if (alive) setExtNotice(r.data?.notice || null); })
+      .catch(() => {});
     return () => { alive = false; };
   }, [installedExtVersion]);
 
@@ -543,7 +554,9 @@ const ClientDashboardEnhanced = () => {
             <RefreshCw size={13} className={extMustUpdate ? 'text-red-300 flex-shrink-0' : 'text-amber-300 flex-shrink-0'} />
             <div className="flex-1 min-w-0">
               <span className={(extMustUpdate ? 'text-red-200' : 'text-amber-200') + ' font-semibold text-[12px]'}>
-                New extension version v{extLatest} is available. Please download and update.
+                {extNotice
+                  ? extNotice.message
+                  : `New extension version v${extLatest} is available. Please download and update.`}
               </span>
               <span className={(extMustUpdate ? 'text-red-200/70' : 'text-amber-200/70') + ' text-[11px] ml-2'}>
                 · Installed v{installedExtVersion || '—'} → Latest v{extLatest}

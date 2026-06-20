@@ -461,6 +461,21 @@ router.get('/tools', verifyExtensionToken, async (req, res) => {
       }).catch(() => {});
     }
 
+    // If an admin explicitly flagged this client to update AND it is still
+    // outdated, surface the admin's message so the popup shows the requested
+    // wording (reuses the existing update banner; old popups ignore extra fields).
+    if (extensionUpdate.isOutdated) {
+      try {
+        const u = await User.findById(req.clientId).select('extensionUpdateNotice');
+        const n = u && u.extensionUpdateNotice ? u.extensionUpdateNotice : null;
+        if (n && n.message) {
+          extensionUpdate.adminRequested = true;
+          extensionUpdate.message = n.message;
+          extensionUpdate.notifiedAt = n.notifiedAt || null;
+        }
+      } catch (_) { /* non-fatal — fall back to the generic update notice */ }
+    }
+
     // Safe debug log: version-check outcome only (no secrets).
     console.log('[extension/sync] version check', {
       clientId: String(req.clientId),

@@ -37,11 +37,12 @@ router.get('/release', async (req, res) => {
     let clients = [];
     try {
       const users = await User.find({ role: 'CLIENT' })
-        .select('email fullName extensionVersion extensionLastSyncAt');
+        .select('email fullName extensionVersion extensionLastSyncAt extensionUpdateNotice');
       clients = (users || [])
         .filter(u => u.extensionVersion || u.extensionLastSyncAt)
         .map(u => {
           const installed = u.extensionVersion || null;
+          const notice = u.extensionUpdateNotice || null;
           return {
             clientId: String(u._id),
             email: u.email || null,
@@ -51,6 +52,9 @@ router.get('/release', async (req, res) => {
             isOutdated: !!(latest && installed && isOlder(installed, latest)),
             updateRequired: !!(effectiveMin && installed && isOlder(installed, effectiveMin)),
             status: (latest && installed && isOlder(installed, latest)) ? 'outdated' : (installed ? 'up_to_date' : 'unknown'),
+            // Admin-triggered "please update" notice state (safe metadata only).
+            notified: !!(notice && notice.notifiedAt),
+            notifiedAt: notice ? (notice.notifiedAt || null) : null,
           };
         })
         .sort((a, b) => new Date(b.lastSyncAt || 0) - new Date(a.lastSyncAt || 0));
@@ -196,5 +200,96 @@ async function handleSetPolicy(req, res) {
 router.put('/policy', express.json({ limit: '10kb' }), handleSetPolicy);
 // Backward-compatible alias (minVersion only).
 router.put('/min-version', express.json({ limit: '10kb' }), handleSetPolicy);
+
+// Per-client debounce window: an admin cannot re-notify the same client within
+// this window (prevents notification spam). The client still keeps seeing the
+// existing update banner in the meantime — this only throttles re-flagging.
+const NOTIFY_DEBOUNCE_MS = 10 * 60 * 1000; // 10 minutes
+const NOTIFY_MESSAGE = 'Admin has requested you to update your Gen Z Digital Store extension to the latest version.';
+
+// POST /api/crm/admin/extension/notify — flag outdated clients to update their
+// extension. Body: { clientIds?: string[], all?: boolean }. Only clients whose
+// installed version is older than the latest published version are notified;
+// up-to-date clients are skipped. A per-client 10-minute debounce prevents spam.
+// Writes a safe metadata flag onto the client record (no secrets) which the
+// client dashboard + extension popup read to show the existing update banner.
+router.post('/notify', express.json({ limit: '64kb' }), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const all = !!body.all;
+    let clientIds = Array.isArray(body.clientIds)
+      ? body.clientIds.filter(id => typeof id === 'string' && /^[a-f\d]{24}$/i.test(id))
+      : [];
+    if (!all && clientIds.length === 0) {
+      return res.status(400).json({ error: 'Provide clientIds[] or all:true' });
+    }
+    if (clientIds.length > 1000) clientIds = clientIds.slice(0, 1000);
+
+    // Resolve latest + effective minimum from the SAME source as /release.
+    const rel = await ExtensionRelease.getLatest();
+    const diskVersion = readDiskExtensionVersion();
+    const dbVersion = rel ? rel.version : null;
+    let latest = diskVersion || dbVersion || null;
+    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+    if (!latest) return res.status(409).json({ error: 'No published extension version yet' });
+    const minVersion = rel ? (rel.minVersion || null) : null;
+    const forceUpdate = rel ? !!rel.updateRequired : false;
+    const effectiveMin = minVersion || (forceUpdate ? latest : null);
+
+    const query = { role: 'CLIENT' };
+    if (!all) query._id = { $in: clientIds };
+    const users = await User.find(query)
+      .select('email fullName extensionVersion extensionUpdateNotice');
+
+    const now = Date.now();
+    const adminId = req.userId || (req.user && req.user._id) || null;
+    let notified = 0, skippedUpToDate = 0, debounced = 0, skippedNoVersion = 0;
+    const notifiedClients = [];
+
+    for (const u of users) {
+      const installed = u.extensionVersion || null;
+      if (!installed) { skippedNoVersion++; continue; }          // never synced — nothing to compare
+      if (!isOlder(installed, latest)) { skippedUpToDate++; continue; } // already current
+      const prev = u.extensionUpdateNotice || null;
+      if (prev && prev.notifiedAt && (now - new Date(prev.notifiedAt).getTime()) < NOTIFY_DEBOUNCE_MS) {
+        debounced++; continue;
+      }
+      const mandatory = !!(effectiveMin && isOlder(installed, effectiveMin));
+      const notice = {
+        notifiedAt: new Date(),
+        notifiedBy: adminId ? String(adminId) : null,
+        latestVersion: latest,
+        installedVersion: installed,
+        mandatory,
+        message: NOTIFY_MESSAGE,
+      };
+      try {
+        await User.findByIdAndUpdate(u._id, { $set: { extensionUpdateNotice: notice } });
+        notified++;
+        notifiedClients.push(String(u._id));
+      } catch (_) { /* skip this client, continue with the rest */ }
+    }
+
+    await ActivityLog.log('ADMIN', adminId, 'EXTENSION_UPDATE_NOTIFIED', {
+      scope: all ? 'all_outdated' : 'selected',
+      requested: all ? null : clientIds.length,
+      notified, skippedUpToDate, debounced, skippedNoVersion,
+      latestVersion: latest,
+    });
+
+    res.json({
+      success: true,
+      latestVersion: latest,
+      notified,
+      skippedUpToDate,
+      debounced,
+      skippedNoVersion,
+      notifiedClients,
+    });
+  } catch (err) {
+    console.error('Extension notify error:', err.message);
+    res.status(500).json({ error: 'Failed to send update notifications' });
+  }
+});
 
 module.exports = router;

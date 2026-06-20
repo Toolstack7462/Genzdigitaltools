@@ -144,12 +144,18 @@ function renderUpdateBanner(update, apiUrl) {
   const title = $('update-title');
   const detail = $('update-detail');
   const link = $('update-link');
-  if (title) title.textContent = required ? 'Update required' : 'Update available';
+  // An admin can explicitly request a client to update; show that wording when
+  // present (back-compat: the field is simply absent on older heartbeats).
+  const adminRequested = !!update.adminRequested && !!update.message;
+  if (title) title.textContent = adminRequested ? 'Update requested by admin' : (required ? 'Update required' : 'Update available');
   const installed = chrome.runtime.getManifest().version;
   if (detail) {
-    detail.textContent = required
-      ? `Your access is paused until you update. Installed v${installed} → Latest v${update.latest || '—'}.`
-      : `New extension version v${update.latest || '—'} is available (installed v${installed}). Please download and update.`;
+    const versions = `Installed v${installed} → Latest v${update.latest || '—'}.`;
+    detail.textContent = adminRequested
+      ? `${update.message} ${versions}${required ? ' Your access is paused until you update.' : ''}`
+      : (required
+          ? `Your access is paused until you update. ${versions}`
+          : `New extension version v${update.latest || '—'} is available (installed v${installed}). Please download and update.`);
   }
   if (link) {
     const origin = appOriginFromApiUrl(apiUrl);
