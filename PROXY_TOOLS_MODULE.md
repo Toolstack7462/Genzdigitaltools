@@ -74,3 +74,54 @@ For the operator's OWN authorized accounts and client access control only. Does 
 bypass, modify, reset, increase or interfere with the tools' official usage,
 subscription, captcha, login, payment or account limits. Never logs cookies, tokens,
 sessions, passwords, authorization headers or secrets.
+
+---
+
+## Grok (added) — `grok1.genzdigitalstore.com`
+Grok is added as a normal, **isolated** proxy tool — NOT an API integration. It reuses
+the exact same backend cookie/session vault + reverse-proxy/lease architecture as the
+other proxy tools and is **registry-driven**, so it appears automatically in Admin
+Proxy Tools, Assignments, the Client Dashboard and My Tools once registered + granted.
+
+- **Registry:** one entry `grok` in `backend/utils/proxy/tools.js`
+  (`TARGET_ORIGIN=https://grok.com`, gateway `grok1.genzdigitalstore.com`,
+  `DEFAULT_PATH=/chat`). grok.com is the standalone cookie-session web app (not
+  `x.com/i/grok`). No mixing with StealthWriter/HIX/BypassGPT/WriteHuman/ChatGPT logic.
+- **Vault / admin:** the existing `/admin/proxy-tools/:tool/...` routes already serve
+  Grok — add multiple accounts, cookies encrypted at rest (AES-256-GCM, never returned
+  after save), verify against a logged-in page, statuses
+  active/standby/session_expired/blocked/limit_reached, refresh + capture-via-proxy.
+- **Gateway:** dedicated **`grok-gateway/`** folder (a copy of the generic, hardened
+  `proxy-gateway/server.js`, byte-identical so fixes apply everywhere). Cookies are
+  attached **server-side**; never set in the browser. Cloudflare/Turnstile-aware
+  (pinned UA/client-hints, renders the REAL challenge for the user to solve). Health
+  route `GET /__genz/health`, friendly notice/block pages (never blank), reload-loop
+  breaker. Safe logs only (route/target/status/account_id/lease/error) — never cookies,
+  tokens, sessions or secrets. Deploy steps + the `public_html/.htaccess` SetEnv block
+  are in `grok-gateway/README.md` and `grok-gateway/.env.example`.
+- **Unsupported fallback:** if Grok blocks reverse-proxy use or needs an unsupported
+  browser-security flow, the gateway shows a clear notice/block page and the account
+  verifies as `session_expired`/`unknown` — mark it blocked/session_expired in the
+  vault. Nothing else breaks.
+
+### Customizable countdown (session length)
+The client-facing countdown = the backend lease length, now **configurable** instead of
+a fixed 30 min (the overlay countdown is driven by the lease's expiry, so changing the
+length changes the countdown):
+- **Per-client:** `ProxyClient.leaseMinutes` (1–1440), editable in Admin → Proxy Tools →
+  *(tool)* → Client Access → *Session length*.
+- **Per-tool / global default** (used when a client has no override): env
+  `GROK_LEASE_MINUTES` (or `<TOOL>_LEASE_MINUTES`) → `PROXY_LEASE_MINUTES` → 30.
+- Resolved in `routes/client/proxyTools.js` via `tools.defaultLeaseMinutes()`; the
+  effective value is returned to the client card and the admin table.
+
+### Deploy notes
+- **No `deploy-hostinger.sh` change needed** — every edited backend file
+  (`utils/proxy/tools.js`, `models/proxy/ProxyClient.js`, `routes/admin/proxyTools.js`,
+  `routes/client/proxyTools.js`) is already in the curl list. CORS auto-derives the
+  `grok1` origin from `TOOL_KEYS`. `leaseMinutes` is a JSON field — no migration.
+- **Frontend** changes (`ProxyToolCard.js`, `AdminProxyTools.js`) require
+  `cd frontend && npm run build` before `deploy-hostinger.sh`.
+- **Gateway** is deployed manually (like the others): create the `grok1` subdomain in
+  hPanel, upload `grok-gateway/` to `~/grok-gateway`, write the subdomain `.htaccess`
+  (see README), delete `default.php`, write `tmp/restart.txt`. Verify `/__genz/health`.

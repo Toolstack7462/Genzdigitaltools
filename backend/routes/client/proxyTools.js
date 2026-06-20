@@ -20,8 +20,14 @@ const accountSelect = require('../../utils/proxy/accountSelect');
 const leaseUtil = require('../../utils/proxy/lease');
 const tools = require('../../utils/proxy/tools');
 
-const LEASE_MINUTES = 30; // fixed 30-minute access lease (like StealthWriter)
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
+
+// The access-lease length (= the in-app countdown) is customizable. Precedence:
+//   per-client (ProxyClient.leaseMinutes) → per-tool env → global PROXY_LEASE_MINUTES → 30.
+function resolveLeaseMinutes(pc) {
+  const clamped = tools.clampMinutes(pc && pc.leaseMinutes);
+  return clamped || tools.defaultLeaseMinutes(pc ? pc.tool : null);
+}
 
 router.use(requireAuth);
 router.use(requireRole('CLIENT'));
@@ -38,6 +44,7 @@ function presentAssigned(pc) {
     active: pc.isActive(),
     expired: pc.isExpired(),
     expiryDate: pc.expiryDate || null,
+    leaseMinutes: resolveLeaseMinutes(pc), // drives the "Secure N-minute session" card label
   };
 }
 
@@ -78,8 +85,9 @@ router.post('/:tool/open', async (req, res) => {
       }
     }
 
+    const leaseMinutes = resolveLeaseMinutes(client);
     const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt.getTime() + LEASE_MINUTES * 60 * 1000);
+    const expiresAt = new Date(issuedAt.getTime() + leaseMinutes * 60 * 1000);
 
     const leaseRow = await ProxyLease.create({
       tool,
@@ -104,13 +112,13 @@ router.post('/:tool/open', async (req, res) => {
       userId: req.userId,
       tool,
       accountId: account ? account._id : undefined,
-      ttlMinutes: LEASE_MINUTES,
+      ttlMinutes: leaseMinutes,
     });
     leaseRow.tokenHash = leaseUtil.hashToken(token);
     await leaseRow.save();
 
     await ActivityLog.log('CLIENT', req.userId, 'PROXY_LEASE_ISSUED', {
-      tool, proxyClientId: client._id, leaseId: leaseRow._id, ttlMinutes: LEASE_MINUTES,
+      tool, proxyClientId: client._id, leaseId: leaseRow._id, ttlMinutes: leaseMinutes,
       accountId: account ? account._id : null, accountLabel: account ? account.label : null,
       ip: getClientIp(req),
     });
@@ -118,7 +126,7 @@ router.post('/:tool/open', async (req, res) => {
     return res.json({
       success: true,
       url: leaseUtil.gatewayUrl(tool, token),
-      lease: { id: leaseRow._id, expiresAt, durationMinutes: LEASE_MINUTES },
+      lease: { id: leaseRow._id, expiresAt, durationMinutes: leaseMinutes },
     });
   } catch (err) {
     console.error('Proxy open error:', err.message);

@@ -1,0 +1,13 @@
+{
+  "name": "genz-grok-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated Gen Z reverse-proxy gateway for Grok (grok.com) — same generic engine as proxy-gateway, deployed standalone on grok1.genzdigitalstore.com with its own .env and cookie vault.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

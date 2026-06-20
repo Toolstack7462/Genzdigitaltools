@@ -78,6 +78,24 @@ const TOOLS = {
     defaultPath: '/',
     verifyPathEnv: 'WRITEHUMAN_VERIFY_PATH',
   },
+  grok: {
+    key: 'grok',
+    name: 'Grok',
+    category: 'AI',
+    tagline: 'xAI Grok Assistant',
+    // grok.com is the standalone, cookie-session web app (separate from x.com/i/grok).
+    // It sits behind Cloudflare; the gateway already handles cf_clearance/UA pinning and
+    // renders real Turnstile/captcha challenges for the user to solve manually.
+    targetOriginEnv: 'GROK_TARGET_ORIGIN',
+    defaultTargetOrigin: 'https://grok.com',
+    gatewayUrlEnv: 'GROK_GATEWAY_URL',
+    defaultGatewayUrl: 'https://grok1.genzdigitalstore.com',
+    defaultPathEnv: 'GROK_DEFAULT_PATH',
+    defaultPath: '/chat', // logged-in chat surface (verify against the live app at deploy)
+    verifyPathEnv: 'GROK_VERIFY_PATH',
+    // Per-tool session-length override (minutes). Falls back to PROXY_LEASE_MINUTES, then 30.
+    leaseMinutesEnv: 'GROK_LEASE_MINUTES',
+  },
 };
 
 const TOOL_KEYS = Object.keys(TOOLS);
@@ -125,6 +143,26 @@ function verifyPath(tool) {
   return process.env[t.verifyPathEnv] || defaultPath(tool);
 }
 
+const ABS_FALLBACK_LEASE_MINUTES = 30; // historical default (StealthWriter parity)
+
+function clampMinutes(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(1440, Math.max(1, n)); // 1 min .. 24 h
+}
+
+// Resolve the session-lease length (= the client-facing countdown) for a tool.
+// Precedence: per-tool env (e.g. GROK_LEASE_MINUTES) → global PROXY_LEASE_MINUTES → 30.
+// A per-CLIENT override (ProxyClient.leaseMinutes) takes precedence over this and is
+// applied in the client open route, not here.
+function defaultLeaseMinutes(tool) {
+  const t = getTool(tool);
+  const perTool = t && t.leaseMinutesEnv ? process.env[t.leaseMinutesEnv] : undefined;
+  const perToolGeneric = t ? process.env[`${String(t.key).toUpperCase()}_LEASE_MINUTES`] : undefined;
+  return clampMinutes(perTool) || clampMinutes(perToolGeneric)
+    || clampMinutes(process.env.PROXY_LEASE_MINUTES) || ABS_FALLBACK_LEASE_MINUTES;
+}
+
 // Safe public descriptor for the client UI (never any secret/config).
 function publicInfo(tool) {
   const t = getTool(tool); if (!t) return null;
@@ -134,4 +172,5 @@ function publicInfo(tool) {
 module.exports = {
   TOOLS, TOOL_KEYS, isValidTool, getTool,
   targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, publicInfo,
+  defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES,
 };

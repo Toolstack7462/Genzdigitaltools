@@ -125,7 +125,7 @@ const AdminProxyTools = () => {
   // ── Client actions ──────────────────────────────────────────────────────────
   const saveClient = async (form) => {
     try {
-      if (editClient) await proxyToolsAdmin.updateClient(tool, editClient.id, { planName: form.planName, expiryDate: form.expiryDate || null, status: form.status });
+      if (editClient) await proxyToolsAdmin.updateClient(tool, editClient.id, { planName: form.planName, expiryDate: form.expiryDate || null, status: form.status, leaseMinutes: form.leaseMinutes });
       else await proxyToolsAdmin.createClient(tool, form);
       showSuccess('Access saved'); setShowClientModal(false); setEditClient(null); load();
     } catch (e) { showError(e.response?.data?.error || 'Failed to save access'); }
@@ -141,14 +141,14 @@ const AdminProxyTools = () => {
           <span className="ds-icon-grad w-10 h-10 rounded-xl flex items-center justify-center"><Zap size={20} /></span>
           <div>
             <h1 className="font-heading text-2xl font-extrabold text-genz-navy">Proxy Tools</h1>
-            <p className="text-sm text-genz-muted">HIX AI and BypassGPT — separate tools, each with its own encrypted cookie vault</p>
+            <p className="text-sm text-genz-muted">Each tool is fully separate, with its own encrypted cookie vault, client access and session length</p>
           </div>
           <button onClick={load} className="ml-auto text-genz-muted hover:text-genz-navy" title="Refresh"><RefreshCw size={18} /></button>
         </div>
 
         {/* Tool tabs (each tool is fully independent) */}
         <div className="flex items-center gap-2">
-          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }]).map(t => (
+          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).map(t => (
             <button key={t.tool} onClick={() => setTool(t.tool)}
               className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors ${tool === t.tool ? 'btn-grad' : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'}`}>
               {t.name}
@@ -246,7 +246,7 @@ const ClientAccess = ({ clients, onEdit, onRevoke, onRemove }) => {
   return (
     <div className="ds-card rounded-xl overflow-hidden">
       <table className="ds-table">
-        <thead><tr><th>Client</th><th>Status</th><th>Expiry</th><th>Sessions</th><th className="text-right">Actions</th></tr></thead>
+        <thead><tr><th>Client</th><th>Status</th><th>Expiry</th><th>Session</th><th>Sessions</th><th className="text-right">Actions</th></tr></thead>
         <tbody>
           {clients.map(c => (
             <tr key={c.id} data-testid={`proxy-client-${c.id}`}>
@@ -260,6 +260,7 @@ const ClientAccess = ({ clients, onEdit, onRevoke, onRemove }) => {
                 </span>
               </td>
               <td className="text-xs text-genz-muted">{c.expiryDate ? fmtDate(c.expiryDate) : 'No expiry'}</td>
+              <td className="text-xs text-genz-muted">{c.effectiveLeaseMinutes || c.leaseMinutes || 30} min{c.leaseMinutes ? '' : ' (default)'}</td>
               <td className="text-xs">{c.activeLeaseCount}</td>
               <td>
                 <div className="flex items-center justify-end gap-1.5">
@@ -360,12 +361,15 @@ const SessionModal = ({ account, onClose, onSave }) => {
 const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchClients, existing, onClose, onSave }) => {
   const [f, setF] = useState({
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
+    leaseMinutes: client?.leaseMinutes != null ? String(client.leaseMinutes) : '',
   });
   const taken = new Set((existing || []).map(c => String(c.userId)));
   const options = (crmClients || []).filter(c => client || !taken.has(String(c._id)));
   const submit = () => {
     if (!client && !f.userId) return;
-    onSave({ userId: f.userId, planName: f.planName, expiryDate: f.expiryDate || null, status: f.status });
+    // Blank session length → null = fall back to the tool/global default.
+    const lm = f.leaseMinutes === '' ? null : Math.min(1440, Math.max(1, parseInt(f.leaseMinutes, 10) || 0)) || null;
+    onSave({ userId: f.userId, planName: f.planName, expiryDate: f.expiryDate || null, status: f.status, leaseMinutes: lm });
   };
   return (
     <Shell title={client ? 'Edit access' : 'Grant access'} onClose={onClose}>
@@ -391,6 +395,12 @@ const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchCli
         <div className="grid grid-cols-2 gap-3">
           <div><label className={labelCls}>Expiry (optional)</label><input type="date" className={field} value={f.expiryDate} onChange={e => setF({ ...f, expiryDate: e.target.value })} /></div>
           <div><label className={labelCls}>Status</label><select className={field} value={f.status} onChange={e => setF({ ...f, status: e.target.value })}><option value="active">active</option><option value="disabled">disabled</option></select></div>
+        </div>
+        <div>
+          <label className={labelCls}>Session length / countdown (minutes, optional)</label>
+          <input type="number" min={1} max={1440} className={field} value={f.leaseMinutes}
+            onChange={e => setF({ ...f, leaseMinutes: e.target.value })} placeholder="default (e.g. 30)" />
+          <p className="text-[11px] text-genz-muted mt-1">How long each opened session lasts for this client. Blank = use the tool/global default.</p>
         </div>
       </div>
       <div className="flex justify-end gap-2 mt-5">

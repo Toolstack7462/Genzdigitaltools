@@ -15,6 +15,14 @@ const ProxyClient = createModel('ProxyClient', {
     if (!['active', 'disabled'].includes(data.status)) data.status = 'active';
     if (!data.planName) data.planName = '';
     if (data.expiryDate === undefined) data.expiryDate = null;
+    // Optional per-client session length (minutes) = the client-facing countdown.
+    // null/blank → fall back to the tool/global default in the open route. Clamp 1..1440.
+    if (data.leaseMinutes === undefined || data.leaseMinutes === null || data.leaseMinutes === '') {
+      data.leaseMinutes = null;
+    } else {
+      const n = parseInt(data.leaseMinutes, 10);
+      data.leaseMinutes = Number.isFinite(n) ? Math.min(1440, Math.max(1, n)) : null;
+    }
     return data;
   },
   methods: {

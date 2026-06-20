@@ -27,8 +27,6 @@ const { verifyAccountCookies, maskEmail } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason } = require('../../utils/proxy/accountSelect');
 
-const LEASE_MINUTES = 30;
-
 router.use(requireAuth);
 router.use(requireAdmin);
 
@@ -47,12 +45,15 @@ const schemas = {
     expiryDate: Joi.date().iso().allow(null),
     status: Joi.string().valid('active', 'disabled').default('active'),
     notes: Joi.string().max(500).allow('', null),
+    // Per-client session length / countdown (minutes). null → use tool/global default.
+    leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
   }),
   updateClient: Joi.object({
     planName: Joi.string().max(120).allow('', null),
     expiryDate: Joi.date().iso().allow(null),
     status: Joi.string().valid('active', 'disabled'),
     notes: Joi.string().max(500).allow('', null),
+    leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
   }).min(1),
   createAccount: Joi.object({
     label: Joi.string().min(1).max(120).required(),
@@ -104,6 +105,8 @@ async function presentClient(pc) {
     expiryDate: pc.expiryDate || null,
     expired: pc.isExpired(),
     notes: pc.notes || '',
+    leaseMinutes: pc.leaseMinutes ?? null,
+    effectiveLeaseMinutes: pc.leaseMinutes || tools.defaultLeaseMinutes(pc.tool),
     activeLeaseCount: activeLeases.length,
     createdAt: pc.createdAt,
     updatedAt: pc.updatedAt,
@@ -157,7 +160,7 @@ router.get('/:tool/clients', async (req, res) => {
 
 router.post('/:tool/clients', validate(schemas.createClient), async (req, res) => {
   try {
-    const { userId, planName, expiryDate, status, notes } = req.body;
+    const { userId, planName, expiryDate, status, notes, leaseMinutes } = req.body;
     const user = await User.findById(userId).select('role');
     if (!user || user.role !== 'CLIENT') return res.status(400).json({ error: 'Target user must be an existing CRM client' });
     const existing = await ProxyClient.findOne({ userId, tool: req.proxyTool });
@@ -169,6 +172,7 @@ router.post('/:tool/clients', validate(schemas.createClient), async (req, res) =
       expiryDate: expiryDate || null,
       status: status || 'active',
       notes: notes || '',
+      leaseMinutes: leaseMinutes ?? null,
       createdBy: req.userId,
     });
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLIENT_CREATED', { tool: req.proxyTool, proxyClientId: pc._id, userId, ip: getClientIp(req) });
@@ -185,6 +189,7 @@ router.put('/:tool/clients/:id', validate(schemas.updateClient), async (req, res
     if (!pc || pc.tool !== req.proxyTool) return res.status(404).json({ error: 'Client grant not found' });
     for (const f of ['planName', 'status', 'notes']) if (req.body[f] !== undefined) pc[f] = req.body[f];
     if (req.body.expiryDate !== undefined) pc.expiryDate = req.body.expiryDate || null;
+    if (req.body.leaseMinutes !== undefined) pc.leaseMinutes = req.body.leaseMinutes ?? null;
     await pc.save();
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLIENT_UPDATED', { tool: req.proxyTool, proxyClientId: pc._id, changes: req.body, ip: getClientIp(req) });
     return res.json({ success: true, client: await presentClient(pc) });
@@ -415,17 +420,18 @@ router.post('/:tool/accounts/:id/capture-lease', async (req, res) => {
     const account = await ProxyAccount.findById(req.params.id);
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     const leaseUtil = require('../../utils/proxy/lease');
+    const captureMinutes = tools.defaultLeaseMinutes(req.proxyTool);
     const issuedAt = new Date();
-    const expiresAt = new Date(issuedAt.getTime() + LEASE_MINUTES * 60 * 1000);
+    const expiresAt = new Date(issuedAt.getTime() + captureMinutes * 60 * 1000);
     const leaseRow = await ProxyLease.create({
       tool: req.proxyTool, userId: req.userId, proxyClientId: null, accountId: account._id, accountLabel: account.label,
       issuedAt, expiresAt, revoked: false, capture: true, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
     });
-    const token = leaseUtil.signLease({ jti: leaseRow._id, userId: req.userId, tool: req.proxyTool, accountId: account._id, ttlMinutes: LEASE_MINUTES, capture: true });
+    const token = leaseUtil.signLease({ jti: leaseRow._id, userId: req.userId, tool: req.proxyTool, accountId: account._id, ttlMinutes: captureMinutes, capture: true });
     leaseRow.tokenHash = leaseUtil.hashToken(token);
     await leaseRow.save();
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CAPTURE_LEASE', { tool: req.proxyTool, accountId: account._id, label: account.label, ip: getClientIp(req) });
-    return res.json({ success: true, url: leaseUtil.gatewayUrl(req.proxyTool, token), expiresAt, ttlMinutes: LEASE_MINUTES });
+    return res.json({ success: true, url: leaseUtil.gatewayUrl(req.proxyTool, token), expiresAt, ttlMinutes: captureMinutes });
   } catch (err) {
     console.error('Proxy capture-lease error:', err.message);
     return res.status(500).json({ error: 'Failed to create capture lease' });

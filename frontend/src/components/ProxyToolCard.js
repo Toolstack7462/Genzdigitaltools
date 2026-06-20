@@ -19,6 +19,7 @@ const fmtDate = (d) => {
 const THEME = {
   hix:       { from: 'from-sky-500',     to: 'to-cyan-500',    text: 'text-cyan-600',    grad: 'linear-gradient(135deg,#0ea5e9,#06b6d4)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fbff 100%)' },
   bypassgpt: { from: 'from-emerald-500', to: 'to-green-500',   text: 'text-emerald-600', grad: 'linear-gradient(135deg,#10b981,#22c55e)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fef8 100%)' },
+  grok:      { from: 'from-slate-700',   to: 'to-slate-900',   text: 'text-slate-700',   grad: 'linear-gradient(135deg,#334155,#0f172a)', soft: 'linear-gradient(167deg,#ffffff 0%,#f4f6fa 100%)' },
 };
 
 const ProxyToolCard = ({ tool }) => {
@@ -69,7 +70,7 @@ const ProxyToolCard = ({ tool }) => {
       </p>
 
       <div className="flex items-center gap-1.5 mb-3 text-[11.5px] text-genz-muted">
-        <ShieldCheck size={12} className={theme.text} /> Secure 30-minute session
+        <ShieldCheck size={12} className={theme.text} /> Secure {tool.leaseMinutes || 30}-minute session
       </div>
 
       <div className="mt-auto pt-1">
