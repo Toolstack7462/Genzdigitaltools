@@ -1,4 +1,4 @@
-import { useLayoutEffect } from 'react';
+import { useLayoutEffect, useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
 
 /**
@@ -14,13 +14,17 @@ import { useLocation } from 'react-router-dom';
  * slow when it fires on every navigation.
  */
 const ScrollToTop = () => {
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
 
   // useLayoutEffect (not useEffect) so the reset runs after the new route's DOM
   // is committed but BEFORE the browser paints — otherwise a heavy page paints
   // once at the inherited scroll position and visibly jumps to the top a few
   // hundred ms later.
   useLayoutEffect(() => {
+    // A hash target (e.g. landing on "/#services" from the app subdomain) is handled
+    // by the effect below — don't yank the page to the top and fight it.
+    if (hash) return;
+
     // Force a non-animated jump. NOTE: 'auto' is NOT instant — per the CSSOM
     // spec it defers to the element's CSS `scroll-behavior`, and this app sets
     // `html { scroll-behavior: smooth }`, which would make the window glide to
@@ -45,9 +49,25 @@ const ScrollToTop = () => {
           el.scrollLeft = 0;
         }
       });
-    // Only react to pathname changes — not query string / hash — so in-page
-    // filters and anchor links don't get yanked back to the top.
-  }, [pathname]);
+  }, [pathname, hash]);
+
+  // Scroll a #hash target into view, retrying across a few frames because the page
+  // (lazy-loaded) may not have rendered the section yet on a cold cross-domain load.
+  // Sections use `scroll-mt-*` so they clear the fixed navbar. Lightweight; no lib.
+  useEffect(() => {
+    if (!hash) return undefined;
+    const id = decodeURIComponent(hash.slice(1));
+    if (!id) return undefined;
+    let raf;
+    let tries = 0;
+    const go = () => {
+      const el = document.getElementById(id);
+      if (el) { el.scrollIntoView({ behavior: 'instant', block: 'start' }); return; }
+      if (tries++ < 25) raf = requestAnimationFrame(go);
+    };
+    raf = requestAnimationFrame(go);
+    return () => { if (raf) cancelAnimationFrame(raf); };
+  }, [pathname, hash]);
 
   return null;
 };

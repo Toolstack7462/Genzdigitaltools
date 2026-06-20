@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { MessageCircle, ArrowRight, Mail, ShieldCheck, Clock, Sparkles } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
-import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from './PublicNavbar';
+import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain } from './PublicNavbar';
 
 const SERVICES_LINKS = [
   { to: '/services/digital-tools',           label: 'Digital Tools Access'       },
@@ -23,6 +23,13 @@ const COMPANY_LINKS = [
 
 const PublicFooter = () => {
   const year = new Date().getFullYear();
+  // On the app subdomain, footer marketing links must navigate to the main site
+  // (same reason as the navbar). Footer targets are all real pages, so route + host.
+  const onApp = isAppSubdomain();
+  const FooterLink = ({ to, className, children, ...rest }) =>
+    onApp
+      ? <a href={`${MAIN_SITE_URL}${to}`} className={className} {...rest}>{children}</a>
+      : <Link to={to} className={className} {...rest}>{children}</Link>;
 
   return (
     <footer
@@ -64,12 +71,12 @@ const PublicFooter = () => {
               <MessageCircle size={15} />
               Chat on WhatsApp
             </a>
-            <Link
+            <FooterLink
               to="/services"
               className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-semibold text-genz-cyan border border-genz-cyan/40 rounded-[14px] hover:bg-genz-cyan/10 hover:border-genz-cyan/60 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-cyan/40"
             >
               View Services <ArrowRight size={14} />
-            </Link>
+            </FooterLink>
           </div>
         </div>
         {/* Trust strip */}
@@ -88,12 +95,12 @@ const PublicFooter = () => {
 
           {/* Brand */}
           <div className="sm:col-span-2 lg:col-span-1">
-            <Link to="/" className="inline-flex items-center gap-3 mb-4" aria-label="Gen Z Digital Store — home">
+            <FooterLink to="/" className="inline-flex items-center gap-3 mb-4" aria-label="Gen Z Digital Store — home">
               <BrandLogo size="footer" glow />
               <span className="text-white font-extrabold text-lg leading-tight tracking-tight">
                 Gen Z Digital Store
               </span>
-            </Link>
+            </FooterLink>
             <p className="text-white/55 text-sm leading-relaxed mb-4 max-w-xs">
               Premium digital tools access, creative services, and smart web solutions
               — all from one platform built for creators, businesses, and digital professionals.
@@ -130,12 +137,12 @@ const PublicFooter = () => {
             <ul className="space-y-2.5">
               {SERVICES_LINKS.map(({ to, label }) => (
                 <li key={to}>
-                  <Link
+                  <FooterLink
                     to={to}
                     className="text-white/55 hover:text-genz-teal text-sm transition-colors duration-150"
                   >
                     {label}
-                  </Link>
+                  </FooterLink>
                 </li>
               ))}
             </ul>
@@ -147,12 +154,12 @@ const PublicFooter = () => {
             <ul className="space-y-2.5">
               {COMPANY_LINKS.map(({ to, label }) => (
                 <li key={to}>
-                  <Link
+                  <FooterLink
                     to={to}
                     className="text-white/55 hover:text-genz-teal text-sm transition-colors duration-150"
                   >
                     {label}
-                  </Link>
+                  </FooterLink>
                 </li>
               ))}
             </ul>
@@ -177,9 +184,9 @@ const PublicFooter = () => {
             <ul className="space-y-2.5">
               {['Terms of Service', 'Privacy Policy', 'Refund Policy'].map((item) => (
                 <li key={item}>
-                  <Link to="/contact" className="text-white/55 hover:text-genz-teal text-xs transition-colors duration-150">
+                  <FooterLink to="/contact" className="text-white/55 hover:text-genz-teal text-xs transition-colors duration-150">
                     {item}
-                  </Link>
+                  </FooterLink>
                 </li>
               ))}
             </ul>

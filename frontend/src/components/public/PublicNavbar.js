@@ -28,8 +28,26 @@ const APP_LOGIN_URL = 'https://app.genzdigitalstore.com/client/login';
 // public marketing domain.
 const APP_SIGNUP_URL = 'https://app.genzdigitalstore.com/client/signup';
 
+// The public marketing site. When this navbar/footer renders on the APP subdomain
+// (the auth pages — signup/login/forgot/reset — are served there), the marketing
+// links must do a FULL navigation back to the main site; an in-app SPA route is
+// bounced to /client/login by the app's .htaccess whitelist.
+const MAIN_SITE_URL = 'https://genzdigitalstore.com';
+const isAppSubdomain = () =>
+  typeof window !== 'undefined' && /^app\./i.test(window.location.hostname || '');
+// Absolute main-site target per top-level link. Homepage sections use a hash
+// (#services/#portfolio exist on the home page); standalone pages use their route.
+const MARKETING_HREF = {
+  '/services':  `${MAIN_SITE_URL}/#services`,
+  '/portfolio': `${MAIN_SITE_URL}/#portfolio`,
+  '/pricing':   `${MAIN_SITE_URL}/pricing`,
+  '/about':     `${MAIN_SITE_URL}/about`,
+  '/contact':   `${MAIN_SITE_URL}/contact`,
+};
+
 const PublicNavbar = () => {
   const location = useLocation();
+  const onApp = isAppSubdomain(); // marketing links must leave the app subdomain
   const [mobileOpen, setMobileOpen] = useState(false);
   const [servicesOpen, setServicesOpen] = useState(false);
   const [mobileServicesOpen, setMobileServicesOpen] = useState(false);
@@ -81,18 +99,38 @@ const PublicNavbar = () => {
       <div className="mx-auto w-full max-w-[1200px] px-5 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-[72px]">
 
-          {/* Logo */}
-          <Link to="/" className="flex items-center gap-2.5 flex-shrink-0 pr-2" aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">
-            <BrandLogo size="nav" />
-            <span className="hidden sm:block lg:hidden xl:block text-genz-navy font-extrabold text-lg tracking-tight leading-none">
-              Gen Z Digital Store
-            </span>
-          </Link>
+          {/* Logo — on the app subdomain it goes to the main site, else SPA home */}
+          {(() => {
+            const brandCls = 'flex items-center gap-2.5 flex-shrink-0 pr-2';
+            const brandInner = (
+              <>
+                <BrandLogo size="nav" />
+                <span className="hidden sm:block lg:hidden xl:block text-genz-navy font-extrabold text-lg tracking-tight leading-none">
+                  Gen Z Digital Store
+                </span>
+              </>
+            );
+            return onApp ? (
+              <a href={MAIN_SITE_URL} className={brandCls} aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">{brandInner}</a>
+            ) : (
+              <Link to="/" className={brandCls} aria-label="Gen Z Digital Store — home" data-testid="public-nav-brand">{brandInner}</Link>
+            );
+          })()}
 
           {/* Desktop Nav */}
           <div className="hidden lg:flex items-center gap-8">
             {NAV_LINKS.map(({ to, label, hasDropdown }) =>
-              hasDropdown ? (
+              // On the app subdomain every marketing link fully navigates to the main
+              // site (the Services dropdown collapses to a single link there).
+              onApp ? (
+                <a
+                  key={to}
+                  href={MARKETING_HREF[to] || MAIN_SITE_URL}
+                  className={`${linkBase} text-genz-navy/75 hover:text-genz-blue`}
+                >
+                  {label}
+                </a>
+              ) : hasDropdown ? (
                 <div key={to} className="relative" ref={dropdownRef}>
                   <button
                     className={`${linkBase} flex items-center gap-1 ${
@@ -214,7 +252,16 @@ const PublicNavbar = () => {
             style={{ borderColor: 'rgba(13,42,71,0.08)' }}
           >
             {NAV_LINKS.map(({ to, label, hasDropdown }) =>
-              hasDropdown ? (
+              // App subdomain → full navigation to the main site (no in-app routing).
+              onApp ? (
+                <a
+                  key={to}
+                  href={MARKETING_HREF[to] || MAIN_SITE_URL}
+                  className="block py-3 px-2 text-[15px] font-medium text-genz-navy/80 hover:text-genz-blue hover:bg-genz-blue/[0.04] rounded-xl transition-colors"
+                >
+                  {label}
+                </a>
+              ) : hasDropdown ? (
                 <div key={to}>
                   <button
                     className="w-full flex items-center justify-between py-3 px-2 text-[15px] font-medium text-genz-navy/80 hover:text-genz-blue rounded-xl transition-colors"
@@ -288,4 +335,4 @@ const PublicNavbar = () => {
 };
 
 export default PublicNavbar;
-export { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL };
+export { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain };

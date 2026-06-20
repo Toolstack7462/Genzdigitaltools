@@ -11,7 +11,7 @@ import FAQItem from '../components/public/FAQItem';
 import CTASection from '../components/public/CTASection';
 import ShowcaseCard from '../components/public/showcase/ShowcaseCard';
 import SHOWCASE_ITEMS from '../components/public/showcase/showcaseItems';
-import { WHATSAPP_URL, APP_LOGIN_URL } from '../components/public/PublicNavbar';
+import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from '../components/public/PublicNavbar';
 
 const Eyebrow = ({ label, light }) => (
   <div className={`gz-eyebrow mb-5 ${light ? 'gz-eyebrow-light' : ''}`}><span className="glow-dot" /> {label}</div>
@@ -119,7 +119,7 @@ const ServiceHub = () => (
         </span>
         <div>
           <div className="text-[12px] font-bold text-genz-navy leading-none">Secure access</div>
-          <div className="text-[11px] text-genz-muted mt-0.5">encrypted bridge</div>
+          <div className="text-[11px] text-genz-muted mt-0.5">private &amp; protected</div>
         </div>
       </div>
     </div>
@@ -250,15 +250,34 @@ const Home = () => {
                 Premium digital tools, websites, research support, branding, social media designs,
                 documents and presentations — everything you need from one trusted digital platform.
               </p>
-              <div className="flex flex-wrap gap-3 mb-12">
-                <Link to="/services" className="btn-grad flex items-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-bold">
+              {/* Primary actions — one clear CTA (Get Started → signup), one subordinate */}
+              <div className="flex flex-col sm:flex-row flex-wrap gap-3">
+                <a
+                  href={APP_SIGNUP_URL}
+                  data-testid="hero-get-started"
+                  className="btn-grad flex items-center justify-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-blue/50 focus-visible:ring-offset-2"
+                >
+                  Get Started Free <ArrowRight size={16} />
+                </a>
+                <Link
+                  to="/services"
+                  className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-semibold text-genz-navy bg-white border border-genz-border hover:border-genz-blue/40 hover:text-genz-blue hover:-translate-y-0.5 transition-all duration-200 depth focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-blue/40"
+                >
                   <Zap size={16} /> Explore Services
                 </Link>
-                <a href={APP_LOGIN_URL} className="flex items-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-semibold text-genz-navy bg-white border border-genz-border hover:border-genz-blue/40 hover:text-genz-blue transition-all depth">
-                  <LayoutDashboard size={16} /> Member Dashboard
+              </div>
+              {/* Trust microcopy */}
+              <p className="mt-4 flex items-center gap-2 text-[13px] text-genz-muted">
+                <CheckCircle size={15} className="text-genz-teal flex-shrink-0" />
+                No setup fees · Instant member access · Cancel anytime
+              </p>
+              {/* Subordinate actions */}
+              <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3 mb-12 text-[14px] font-semibold">
+                <a href={APP_LOGIN_URL} className="inline-flex items-center gap-1.5 text-genz-navy/80 hover:text-genz-blue transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-genz-blue/40 rounded-md">
+                  <LayoutDashboard size={15} /> Member Login
                 </a>
-                <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 px-6 py-3.5 rounded-[14px] text-[15px] font-semibold text-emerald-600 bg-white border border-emerald-200 hover:bg-emerald-50 transition-all">
-                  <MessageCircle size={16} /> WhatsApp
+                <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-emerald-600 hover:text-emerald-700 transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400/50 rounded-md">
+                  <MessageCircle size={15} /> Chat on WhatsApp
                 </a>
               </div>
               <div className="flex flex-wrap gap-x-10 gap-y-5 pt-8 border-t border-genz-border">
@@ -290,7 +309,7 @@ const Home = () => {
       </section>
 
       {/* ── SERVICES (featured + bento) ── */}
-      <section className="gz-section px-5">
+      <section id="services" className="gz-section px-5 scroll-mt-24">
         <div ref={servRef} className={`gz-container reveal ${servV ? 'visible' : ''}`}>
           <div className="text-center max-w-2xl mx-auto mb-12">
             <Eyebrow label="Our Services" />
@@ -401,7 +420,7 @@ const Home = () => {
       </section>
 
       {/* ── FEATURED WORK SHOWCASE ── */}
-      <section className="gz-section px-5" style={{ background: 'var(--brand-surface-soft)' }}>
+      <section id="portfolio" className="gz-section px-5 scroll-mt-24" style={{ background: 'var(--brand-surface-soft)' }}>
         <div ref={portRef} className={`gz-container reveal ${portV ? 'visible' : ''}`}>
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-12">
             <div className="max-w-xl">
