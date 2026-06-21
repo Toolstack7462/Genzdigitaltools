@@ -219,6 +219,15 @@ const ClientDashboardEnhanced = () => {
   // Optional (non-forced) update available — a gentle nudge, never blocks access.
   const extSoftUpdate = extOutdated && !extMustUpdate;
 
+  // De-duplication: the extension update banner above is the single source of truth
+  // for "please update the extension". When it is showing, suppress any admin
+  // announcement that is just another extension-update notice so the same message
+  // never appears twice in a confusing way (req: avoid duplicate update messages).
+  const isExtUpdateAnnouncement = (a) => {
+    const txt = `${a?.title || ''} ${a?.body || ''}`.toLowerCase();
+    return /\bextension\b/.test(txt) && /(update|upgrade|new version|latest version|outdated|v\d)/.test(txt);
+  };
+
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
@@ -541,33 +550,77 @@ const ClientDashboardEnhanced = () => {
         )}
 
         {/* ── Extension update banner (dashboard-detected; works for every
-            installed version). Downloads the latest from the EXISTING link with
-            a versioned save-as filename. ── */}
+            installed version). The single, premium source of truth for the
+            "update your extension" message — shows installed + latest version
+            and a clear Download button. Downloads the latest from the EXISTING
+            link with a versioned save-as filename. ── */}
         {extOutdated && (
-          <div className="flex items-center gap-2.5 px-3.5 py-2 rounded-xl"
+          <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-4"
                style={{
                  background: extMustUpdate
-                   ? 'linear-gradient(120deg, rgba(127,29,29,0.34), rgba(127,29,29,0.18))'
-                   : 'linear-gradient(120deg, rgba(120,53,15,0.32), rgba(120,53,15,0.18))',
-                 border: extMustUpdate ? '1px solid rgba(248,113,113,0.35)' : '1px solid rgba(251,191,36,0.30)',
+                   ? 'linear-gradient(120deg, rgba(40,12,16,0.96) 0%, rgba(15,42,73,0.95) 60%, rgba(6,60,74,0.92) 100%)'
+                   : 'linear-gradient(120deg, rgba(7,27,51,0.96) 0%, rgba(15,42,73,0.95) 55%, rgba(6,78,89,0.92) 100%)',
+                 border: extMustUpdate ? '1px solid rgba(248,113,113,0.40)' : '1px solid rgba(6,182,212,0.30)',
+                 boxShadow: extMustUpdate
+                   ? '0 16px 40px -22px rgba(248,113,113,0.5), inset 0 1px 0 rgba(255,255,255,0.06)'
+                   : '0 16px 40px -22px rgba(6,182,212,0.55), inset 0 1px 0 rgba(255,255,255,0.07)',
+                 backdropFilter: 'blur(10px)',
+                 WebkitBackdropFilter: 'blur(10px)',
                }}>
-            <RefreshCw size={13} className={extMustUpdate ? 'text-red-300 flex-shrink-0' : 'text-amber-300 flex-shrink-0'} />
-            <div className="flex-1 min-w-0">
-              <span className={(extMustUpdate ? 'text-red-200' : 'text-amber-200') + ' font-semibold text-[12px]'}>
-                {extNotice
-                  ? extNotice.message
-                  : `New extension version v${extLatest} is available. Please download and update.`}
-              </span>
-              <span className={(extMustUpdate ? 'text-red-200/70' : 'text-amber-200/70') + ' text-[11px] ml-2'}>
-                · Installed v{installedExtVersion || '—'} → Latest v{extLatest}
-                {extMustUpdate ? ' · Tool access is paused until you update.' : ''}
-              </span>
+            {/* glow accent */}
+            <div className="absolute -top-14 -right-10 w-64 h-36 pointer-events-none opacity-70"
+                 style={{ background: extMustUpdate
+                   ? 'radial-gradient(closest-side, rgba(248,113,113,0.28), transparent 70%)'
+                   : 'radial-gradient(closest-side, rgba(6,182,212,0.34), transparent 70%)' }} />
+            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-3.5">
+              {/* icon */}
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
+                   style={{ background: extMustUpdate ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg, #2563EB, #06B6D4)',
+                            boxShadow: extMustUpdate ? '0 8px 20px -8px rgba(239,68,68,0.7), inset 0 1px 0 rgba(255,255,255,0.2)' : '0 8px 20px -8px rgba(6,182,212,0.75), inset 0 1px 0 rgba(255,255,255,0.25)' }}>
+                <RefreshCw size={20} className="text-white" />
+              </div>
+              {/* text + version chips */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-white text-[14.5px] leading-tight">
+                    {extMustUpdate ? 'Extension update required' : 'Extension update available'}
+                  </h3>
+                  {extMustUpdate && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-[2px] rounded-md text-[10px] font-bold"
+                          style={{ background: 'rgba(248,113,113,0.16)', border: '1px solid rgba(248,113,113,0.40)', color: '#FCA5A5' }}>
+                      Action needed
+                    </span>
+                  )}
+                </div>
+                <p className="text-[12px] text-white/65 mt-1 leading-snug">
+                  {extNotice
+                    ? extNotice.message
+                    : (extMustUpdate
+                        ? 'Tool access is paused until you install the latest version.'
+                        : 'A newer, more secure version is ready — update to keep one-click access running smoothly.')}
+                </p>
+                {/* installed → latest version chips */}
+                <div className="flex items-center gap-2 mt-2.5 flex-wrap">
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold text-white/70"
+                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                    Installed <span className="font-bold text-white">v{installedExtVersion || '—'}</span>
+                  </span>
+                  <ArrowRight size={13} className="text-white/40 flex-shrink-0" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg text-[11px] font-semibold text-genz-cyan"
+                        style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.32)' }}>
+                    Latest <span className="font-bold text-white">v{extLatest}</span>
+                  </span>
+                </div>
+              </div>
+              {/* action */}
+              <div className="flex-shrink-0 sm:self-center">
+                <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+                   className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 10px 22px -10px rgba(37,99,235,0.75)' }}>
+                  <Download size={14} /> Download Latest Extension
+                </a>
+              </div>
             </div>
-            <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
-               className="flex-shrink-0 text-[11px] font-semibold text-white px-2.5 py-1 rounded-lg whitespace-nowrap"
-               style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
-              Download Latest Extension
-            </a>
           </div>
         )}
 
@@ -661,30 +714,52 @@ const ClientDashboardEnhanced = () => {
         </div>
 
         {/* ── Stats Row — horizontal premium glass cards ── */}
-        {/* ── Announcements ── admin-posted notices (dismissible per device) ── */}
-        {announcements.length > 0 && (
+        {/* ── Announcements ── admin-posted notices (dismissible per device).
+            Dark-glass cards with LIGHT text so they read clearly on the navy
+            canvas (the old light-tinted .ds-card forced dark navy text onto a
+            near-transparent dark surface → unreadable). When the extension
+            update banner is showing, duplicate extension-update announcements
+            are filtered out so the same message never appears twice. ── */}
+        {(() => {
+          const visibleAnnouncements = extOutdated
+            ? announcements.filter(a => !isExtUpdateAnnouncement(a))
+            : announcements;
+          if (visibleAnnouncements.length === 0) return null;
+          return (
           <div className="space-y-2">
-            {announcements.map((a) => {
+            {visibleAnnouncements.map((a) => {
               const lv = a.level === 'success'
-                ? { bd: 'rgba(16,185,129,0.30)', bg: 'rgba(16,185,129,0.07)', Icon: CheckCircle2, tone: 'text-emerald-600' }
+                ? { ring: 'rgba(52,211,153,0.34)', glow: 'rgba(16,185,129,0.30)', Icon: CheckCircle2, accent: '#6EE7B7', chip: 'rgba(52,211,153,0.14)' }
                 : a.level === 'warning'
-                  ? { bd: 'rgba(251,191,36,0.32)', bg: 'rgba(251,191,36,0.08)', Icon: AlertTriangle, tone: 'text-amber-600' }
-                  : { bd: 'rgba(37,99,235,0.25)', bg: 'rgba(37,99,235,0.06)', Icon: Sparkles, tone: 'text-genz-blue' };
+                  ? { ring: 'rgba(251,191,36,0.36)', glow: 'rgba(245,158,11,0.30)', Icon: AlertTriangle, accent: '#FCD34D', chip: 'rgba(251,191,36,0.14)' }
+                  : { ring: 'rgba(6,182,212,0.34)', glow: 'rgba(37,99,235,0.30)', Icon: Sparkles, accent: '#67E8F9', chip: 'rgba(6,182,212,0.14)' };
               return (
-                <div key={a._id} className="ds-card flex items-start gap-3 p-3.5" style={{ border: `1px solid ${lv.bd}`, background: lv.bg }}>
-                  <lv.Icon size={16} className={`${lv.tone} flex-shrink-0 mt-0.5`} />
+                <div key={a._id}
+                     className="relative overflow-hidden rounded-2xl flex items-start gap-3 px-4 py-3.5"
+                     style={{
+                       background: 'linear-gradient(120deg, rgba(7,27,51,0.96) 0%, rgba(12,38,66,0.95) 60%, rgba(6,52,66,0.92) 100%)',
+                       border: `1px solid ${lv.ring}`,
+                       boxShadow: `0 12px 30px -20px ${lv.glow}, inset 0 1px 0 rgba(255,255,255,0.05)`,
+                     }}>
+                  {/* level accent rail */}
+                  <div className="absolute inset-y-0 left-0 w-[3px]" style={{ background: `linear-gradient(180deg, ${lv.accent}, transparent)` }} />
+                  <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5"
+                        style={{ background: lv.chip, border: `1px solid ${lv.ring}`, color: lv.accent }}>
+                    <lv.Icon size={15} />
+                  </span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13.5px] font-bold text-genz-navy">{a.title}</p>
-                    {a.body && <p className="text-[12.5px] text-genz-muted mt-0.5 whitespace-pre-wrap break-words">{a.body}</p>}
+                    <p className="text-[13.5px] font-bold text-white leading-snug">{a.title}</p>
+                    {a.body && <p className="text-[12.5px] text-white/70 mt-1 leading-relaxed whitespace-pre-wrap break-words">{a.body}</p>}
                   </div>
-                  <button onClick={() => dismissAnnouncement(a._id)} className="text-genz-muted hover:text-genz-navy flex-shrink-0" aria-label="Dismiss announcement">
+                  <button onClick={() => dismissAnnouncement(a._id)} className="text-white/45 hover:text-white transition-colors flex-shrink-0 -mr-0.5" aria-label="Dismiss announcement">
                     <X size={15} />
                   </button>
                 </div>
               );
             })}
           </div>
-        )}
+          );
+        })()}
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3">
           {(() => {
