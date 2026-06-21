@@ -22,6 +22,12 @@ import ProxyToolCard from '../../components/ProxyToolCard';
 import { useProxyTools } from '../../hooks/useProxyTools';
 
 
+/* ─── Snooze intervals — a dismissed notice re-appears after this long (the 45s
+   notification poll brings it back automatically; no page refresh needed). ─── */
+const EXT_MANDATORY_SNOOZE_MS = 15 * 60 * 1000;       // required update — re-nag every 15 min
+const EXT_OPTIONAL_SNOOZE_MS  = 6 * 60 * 60 * 1000;   // optional update — gentler, every 6 h
+const ANNOUNCE_SNOOZE_MS      = 8 * 60 * 60 * 1000;   // announcement — re-show after 8 h
+
 /* ─── Extension detection is handled by useExtension() bridge heartbeat.
    No Chrome extension ID is needed in the React build. */
 /* ─── Tool Card Component ────────────────────────────────────────── */
@@ -194,8 +200,9 @@ const ClientDashboardEnhanced = () => {
   // current latest version. Neither affects the tool-access gate (extMustUpdate)
   // below — snooze hides the banner only; outdated tools stay blocked if policy
   // requires it. Initialised from localStorage so a snooze survives re-renders.
-  const [extSnoozeUntil, setExtSnoozeUntil] = useState(0);
-  const [softDismissedVersion, setSoftDismissedVersion] = useState(null);
+  const [extSnoozeUntil, setExtSnoozeUntil] = useState(0);         // mandatory-update snooze (timestamp)
+  const [softSnoozeUntil, setSoftSnoozeUntil] = useState(0);       // optional-update snooze (timestamp)
+  const [softSnoozeVersion, setSoftSnoozeVersion] = useState(null); // version the optional snooze applies to
   // Refs used by the lightweight notification poll so its identity stays stable
   // (the extension bridge updates its version frequently during detection — we
   // must not tear down/recreate the poll interval on every heartbeat).
@@ -226,19 +233,24 @@ const ClientDashboardEnhanced = () => {
   // Keep the installed-version ref fresh for the poll (cheap, every render).
   installedVersionRef.current = installedExtVersion;
 
-  // ── Per-client dismissed-announcement storage ──────────────────────────────
-  // Dismissals are stored PER CLIENT (keyed by the signed-in client id) so that
-  // one member dismissing a notice never hides it for another member sharing the
-  // same browser. Legacy global key is still honoured so older dismissals stick.
+  // ── Per-client announcement snooze storage ─────────────────────────────────
+  // Dismissals are stored PER CLIENT (keyed by the signed-in client id) so one
+  // member closing a notice never hides it for another sharing the browser.
+  // A dismissal is a TIMED SNOOZE, not permanent: we store { id: showAgainAt },
+  // so a closed announcement re-appears automatically once ANNOUNCE_SNOOZE_MS
+  // has elapsed (the 45s poll brings it back — no refresh).
   const announceKey = useCallback(() => {
     const u = authService.getCurrentUser();
     const id = u?.id || u?._id || u?.email || 'anon';
-    return `announce_dismissed_v1_${id}`;
+    return `announce_snooze_v2_${id}`;
   }, []);
   const getDismissedAnnouncementIds = useCallback(() => {
     const out = new Set();
-    try { JSON.parse(localStorage.getItem(announceKey()) || '[]').forEach(id => out.add(id)); } catch (_) {}
-    try { JSON.parse(localStorage.getItem('announce_dismissed_v1') || '[]').forEach(id => out.add(id)); } catch (_) {}
+    try {
+      const map = JSON.parse(localStorage.getItem(announceKey()) || '{}');
+      const now = Date.now();
+      Object.keys(map).forEach(id => { if (map[id] > now) out.add(id); }); // still snoozed only
+    } catch (_) {}
     return out;
   }, [announceKey]);
   const extSnoozeKey = useCallback(() => {
@@ -247,14 +259,14 @@ const ClientDashboardEnhanced = () => {
     return { snooze: `ext_update_snooze_until_${id}`, soft: `ext_soft_update_dismissed_version_${id}` };
   }, []);
 
-  // Restore any persisted snooze/optional-dismiss once on mount.
+  // Restore any persisted snooze (mandatory + optional) once on mount.
   useEffect(() => {
     try {
       const k = extSnoozeKey();
       const snz = parseInt(localStorage.getItem(k.snooze) || '0', 10);
       if (snz) setExtSnoozeUntil(snz);
-      const sv = localStorage.getItem(k.soft);
-      if (sv) setSoftDismissedVersion(sv);
+      const soft = JSON.parse(localStorage.getItem(k.soft) || 'null');
+      if (soft && soft.until) { setSoftSnoozeUntil(soft.until); setSoftSnoozeVersion(soft.version || null); }
     } catch (_) { /* ignore */ }
   }, [extSnoozeKey]);
 
@@ -278,23 +290,27 @@ const ClientDashboardEnhanced = () => {
   // automatically via the poll once it lapses, or on the next visit). Optional →
   // dismissed for the current latest version only (re-shows when a newer version
   // ships).
-  const EXT_SNOOZE_MS = 15 * 60 * 1000;
+  const nowTs = Date.now();
   const extUpdateSnoozed = extMustUpdate
-    ? (extSnoozeUntil > Date.now())
-    : (extSoftUpdate && softDismissedVersion && softDismissedVersion === extLatest);
+    ? (extSnoozeUntil > nowTs)
+    // Optional: hidden only while the snooze is live AND still for this version
+    // (a newer release re-shows it immediately; an elapsed snooze re-shows it too).
+    : (extSoftUpdate && softSnoozeVersion === extLatest && softSnoozeUntil > nowTs);
   const showExtUpdateBanner = extOutdated && !extUpdateSnoozed;
 
   const snoozeExtUpdate = useCallback(() => {
     const k = extSnoozeKey();
     if (extMustUpdate) {
-      const until = Date.now() + EXT_SNOOZE_MS;
+      const until = Date.now() + EXT_MANDATORY_SNOOZE_MS;
       try { localStorage.setItem(k.snooze, String(until)); } catch (_) {}
       setExtSnoozeUntil(until);
     } else {
-      try { localStorage.setItem(k.soft, extLatest || ''); } catch (_) {}
-      setSoftDismissedVersion(extLatest || null);
+      const until = Date.now() + EXT_OPTIONAL_SNOOZE_MS;
+      try { localStorage.setItem(k.soft, JSON.stringify({ until, version: extLatest || '' })); } catch (_) {}
+      setSoftSnoozeUntil(until);
+      setSoftSnoozeVersion(extLatest || null);
     }
-  }, [extMustUpdate, extLatest, extSnoozeKey, EXT_SNOOZE_MS]);
+  }, [extMustUpdate, extLatest, extSnoozeKey]);
 
   // De-duplication: the extension update banner above is the single source of truth
   // for "please update the extension". When it is showing, suppress any admin
@@ -341,8 +357,9 @@ const ClientDashboardEnhanced = () => {
   const dismissAnnouncement = useCallback((id) => {
     try {
       const k = announceKey();
-      const arr = JSON.parse(localStorage.getItem(k) || '[]');
-      if (!arr.includes(id)) { arr.push(id); localStorage.setItem(k, JSON.stringify(arr)); }
+      const map = JSON.parse(localStorage.getItem(k) || '{}');
+      map[id] = Date.now() + ANNOUNCE_SNOOZE_MS; // re-show after the snooze window
+      localStorage.setItem(k, JSON.stringify(map));
     } catch (_) { /* ignore */ }
     setAnnouncements(a => a.filter(x => x._id !== id));
   }, [announceKey]);
