@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, memo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import {
@@ -160,7 +160,7 @@ ToolCard.displayName = 'ToolCard';
 /* ─── MAIN DASHBOARD ─────────────────────────────────────────────── */
 const ClientDashboardEnhanced = () => {
   const navigate = useNavigate();
-  const { showError, showWarning } = useToast();
+  const { showError, showWarning, showInfo } = useToast();
   // The Install Extension button downloads the static ZIP directly. We don't
   // preventDefault (so the anchor's own download fires in the user gesture,
   // avoiding popup blockers); this just verifies the file is reachable and
@@ -189,6 +189,18 @@ const ClientDashboardEnhanced = () => {
   const [toolOpenStates, setToolOpenStates] = useState({}); // toolId → {loading,error,message}
   const [extInfo, setExtInfo] = useState(null); // backend version-info (latest/min/forceUpdate)
   const [extNotice, setExtNotice] = useState(null); // admin-triggered "please update" notice (or null)
+  // Snooze state for the extension-update banner. MANDATORY updates can only be
+  // snoozed temporarily (timestamp); OPTIONAL updates can be dismissed for the
+  // current latest version. Neither affects the tool-access gate (extMustUpdate)
+  // below — snooze hides the banner only; outdated tools stay blocked if policy
+  // requires it. Initialised from localStorage so a snooze survives re-renders.
+  const [extSnoozeUntil, setExtSnoozeUntil] = useState(0);
+  const [softDismissedVersion, setSoftDismissedVersion] = useState(null);
+  // Refs used by the lightweight notification poll so its identity stays stable
+  // (the extension bridge updates its version frequently during detection — we
+  // must not tear down/recreate the poll interval on every heartbeat).
+  const installedVersionRef = useRef(null);
+  const seenAnnouncementIdsRef = useRef(null); // Set of announcement ids seen so far (null until first load)
 
   // Detect outdated extension at the DASHBOARD level (works for ALL installed
   // versions, including old builds that lack heartbeat update-awareness). Fetch
@@ -211,6 +223,41 @@ const ClientDashboardEnhanced = () => {
     return () => { alive = false; };
   }, [installedExtVersion]);
 
+  // Keep the installed-version ref fresh for the poll (cheap, every render).
+  installedVersionRef.current = installedExtVersion;
+
+  // ── Per-client dismissed-announcement storage ──────────────────────────────
+  // Dismissals are stored PER CLIENT (keyed by the signed-in client id) so that
+  // one member dismissing a notice never hides it for another member sharing the
+  // same browser. Legacy global key is still honoured so older dismissals stick.
+  const announceKey = useCallback(() => {
+    const u = authService.getCurrentUser();
+    const id = u?.id || u?._id || u?.email || 'anon';
+    return `announce_dismissed_v1_${id}`;
+  }, []);
+  const getDismissedAnnouncementIds = useCallback(() => {
+    const out = new Set();
+    try { JSON.parse(localStorage.getItem(announceKey()) || '[]').forEach(id => out.add(id)); } catch (_) {}
+    try { JSON.parse(localStorage.getItem('announce_dismissed_v1') || '[]').forEach(id => out.add(id)); } catch (_) {}
+    return out;
+  }, [announceKey]);
+  const extSnoozeKey = useCallback(() => {
+    const u = authService.getCurrentUser();
+    const id = u?.id || u?._id || u?.email || 'anon';
+    return { snooze: `ext_update_snooze_until_${id}`, soft: `ext_soft_update_dismissed_version_${id}` };
+  }, []);
+
+  // Restore any persisted snooze/optional-dismiss once on mount.
+  useEffect(() => {
+    try {
+      const k = extSnoozeKey();
+      const snz = parseInt(localStorage.getItem(k.snooze) || '0', 10);
+      if (snz) setExtSnoozeUntil(snz);
+      const sv = localStorage.getItem(k.soft);
+      if (sv) setSoftDismissedVersion(sv);
+    } catch (_) { /* ignore */ }
+  }, [extSnoozeKey]);
+
   // Recompute the decision client-side too, so it's correct regardless of which
   // installed version the backend saw (semantic compare — never string compare).
   const extLatest = extInfo?.latest || null;
@@ -224,6 +271,30 @@ const ClientDashboardEnhanced = () => {
   );
   // Optional (non-forced) update available — a gentle nudge, never blocks access.
   const extSoftUpdate = extOutdated && !extMustUpdate;
+
+  // Banner visibility (snooze-aware). IMPORTANT: this gates the BANNER only — the
+  // tool-access gate keeps using extMustUpdate, so snoozing a mandatory update
+  // never unblocks outdated tools. Mandatory → temporary 15-min snooze (re-shows
+  // automatically via the poll once it lapses, or on the next visit). Optional →
+  // dismissed for the current latest version only (re-shows when a newer version
+  // ships).
+  const EXT_SNOOZE_MS = 15 * 60 * 1000;
+  const extUpdateSnoozed = extMustUpdate
+    ? (extSnoozeUntil > Date.now())
+    : (extSoftUpdate && softDismissedVersion && softDismissedVersion === extLatest);
+  const showExtUpdateBanner = extOutdated && !extUpdateSnoozed;
+
+  const snoozeExtUpdate = useCallback(() => {
+    const k = extSnoozeKey();
+    if (extMustUpdate) {
+      const until = Date.now() + EXT_SNOOZE_MS;
+      try { localStorage.setItem(k.snooze, String(until)); } catch (_) {}
+      setExtSnoozeUntil(until);
+    } else {
+      try { localStorage.setItem(k.soft, extLatest || ''); } catch (_) {}
+      setSoftDismissedVersion(extLatest || null);
+    }
+  }, [extMustUpdate, extLatest, extSnoozeKey, EXT_SNOOZE_MS]);
 
   // De-duplication: the extension update banner above is the single source of truth
   // for "please update the extension". When it is showing, suppress any admin
@@ -244,11 +315,15 @@ const ClientDashboardEnhanced = () => {
       ]);
       setTools(toolsRes.data.tools || []);
       setExpiringTools(expiringRes.data.expiring || []);
-      const annDismissed = JSON.parse(localStorage.getItem('announce_dismissed_v1') || '[]');
-      setAnnouncements((annRes.data?.announcements || []).filter(a => !annDismissed.includes(a._id)));
+      const dismissed = getDismissedAnnouncementIds();
+      const annList = (annRes.data?.announcements || []).filter(a => !dismissed.has(a._id));
+      setAnnouncements(annList);
+      // Baseline the "seen" set so the background poll only toasts for genuinely
+      // new announcements that arrive AFTER this initial load.
+      seenAnnouncementIdsRef.current = new Set(annList.map(a => a._id));
       if (expiringRes.data.expiring?.length > 0) {
-        const dismissed = localStorage.getItem('expiry_warning_dismissed');
-        const dismissedTime = dismissed ? new Date(dismissed) : null;
+        const expiryDismissed = localStorage.getItem('expiry_warning_dismissed');
+        const dismissedTime = expiryDismissed ? new Date(expiryDismissed) : null;
         const hoursSinceDismissed = dismissedTime
           ? (new Date() - dismissedTime) / (1000 * 60 * 60) : 999;
         if (hoursSinceDismissed > 24) setShowExpiryWarning(true);
@@ -259,18 +334,63 @@ const ClientDashboardEnhanced = () => {
     } finally {
       setLoading(false);
     }
-  }, [navigate, showError]);
+  }, [navigate, showError, getDismissedAnnouncementIds]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const dismissAnnouncement = (id) => {
+  const dismissAnnouncement = useCallback((id) => {
     try {
-      const k = 'announce_dismissed_v1';
+      const k = announceKey();
       const arr = JSON.parse(localStorage.getItem(k) || '[]');
       if (!arr.includes(id)) { arr.push(id); localStorage.setItem(k, JSON.stringify(arr)); }
     } catch (_) { /* ignore */ }
     setAnnouncements(a => a.filter(x => x._id !== id));
-  };
+  }, [announceKey]);
+
+  // ── Real-time notification poll (no page refresh) ──────────────────────────
+  // Lightweight: re-reads the SAME existing endpoints the dashboard already uses
+  // (announcements, the admin "please update" notice, and the published version
+  // info) on a 45s interval and whenever the tab regains focus. New admin
+  // announcements and "Notify update" flags therefore appear automatically. This
+  // never toggles the loading skeleton, never re-fetches tools, and reuses the
+  // dismissed/snooze state — so there is no second notification system and no
+  // duplicate cards (the announcement list is replaced wholesale, keyed by _id).
+  const pollNotifications = useCallback(async () => {
+    // 1) Announcements — replace wholesale (dedupes), honour per-client dismissals.
+    try {
+      const r = await api.get('/client/announcements');
+      const dismissed = getDismissedAnnouncementIds();
+      const list = (r.data?.announcements || []).filter(a => !dismissed.has(a._id));
+      setAnnouncements(list);
+      // Toast only for genuinely NEW announcements (baseline set on first load).
+      const seen = seenAnnouncementIdsRef.current;
+      if (seen) {
+        const fresh = list.filter(a => !seen.has(a._id));
+        if (fresh.length === 1) showInfo(`New announcement: ${fresh[0].title}`);
+        else if (fresh.length > 1) showInfo(`${fresh.length} new announcements`);
+        fresh.forEach(a => seen.add(a._id));
+      } else {
+        seenAnnouncementIdsRef.current = new Set(list.map(a => a._id));
+      }
+    } catch (_) { /* fail-safe: never disrupt the dashboard */ }
+    // 2) Admin "please update" notice (self-clears server-side once up to date).
+    api.get('/client/extension-notice').then(r => setExtNotice(r.data?.notice || null)).catch(() => {});
+    // 3) Published version info — re-evaluates outdated / mandatory client-side.
+    getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {});
+  }, [getDismissedAnnouncementIds, showInfo]);
+
+  useEffect(() => {
+    const POLL_MS = 45000;
+    const id = setInterval(() => { pollNotifications(); }, POLL_MS);
+    const onVisible = () => { if (document.visibilityState === 'visible') pollNotifications(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [pollNotifications]);
 
   // Urgent expiry toast: if any active tool has 1–3 days left, warn once per day.
   useEffect(() => {
@@ -561,7 +681,7 @@ const ClientDashboardEnhanced = () => {
             "update your extension" message — shows installed + latest version
             and a clear Download button. Downloads the latest from the EXISTING
             link with a versioned save-as filename. ── */}
-        {extOutdated && (
+        {showExtUpdateBanner && (
           <div className="relative overflow-hidden rounded-2xl px-4 sm:px-5 py-4"
                style={{
                  background: extMustUpdate
@@ -579,7 +699,16 @@ const ClientDashboardEnhanced = () => {
                  style={{ background: extMustUpdate
                    ? 'radial-gradient(closest-side, rgba(248,113,113,0.28), transparent 70%)'
                    : 'radial-gradient(closest-side, rgba(6,182,212,0.34), transparent 70%)' }} />
-            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-3.5">
+            {/* Close / snooze. Mandatory updates can only be snoozed temporarily
+                (the banner returns after ~15 min or on next visit, and tool access
+                stays blocked meanwhile); optional updates dismiss for this version. */}
+            <button onClick={snoozeExtUpdate}
+                    title={extMustUpdate ? 'Remind me later (update still required)' : 'Dismiss'}
+                    aria-label={extMustUpdate ? 'Remind me later' : 'Dismiss update notice'}
+                    className="absolute top-2.5 right-2.5 z-20 text-white/45 hover:text-white transition-colors">
+              <X size={16} />
+            </button>
+            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-3.5 pr-6 sm:pr-7">
               {/* icon */}
               <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
                    style={{ background: extMustUpdate ? 'linear-gradient(135deg,#ef4444,#b91c1c)' : 'linear-gradient(135deg, #2563EB, #06B6D4)',
@@ -728,7 +857,11 @@ const ClientDashboardEnhanced = () => {
             update banner is showing, duplicate extension-update announcements
             are filtered out so the same message never appears twice. ── */}
         {(() => {
-          const visibleAnnouncements = extOutdated
+          // Hide duplicate "update your extension" announcements only while the
+          // dedicated update banner is actually VISIBLE. If it is snoozed/hidden,
+          // a genuine admin update announcement may still show (acts as the
+          // lingering reminder, especially for mandatory updates).
+          const visibleAnnouncements = showExtUpdateBanner
             ? announcements.filter(a => !isExtUpdateAnnouncement(a))
             : announcements;
           if (visibleAnnouncements.length === 0) return null;
