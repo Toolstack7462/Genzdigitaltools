@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import {
@@ -25,7 +25,12 @@ import { useProxyTools } from '../../hooks/useProxyTools';
 /* ─── Extension detection is handled by useExtension() bridge heartbeat.
    No Chrome extension ID is needed in the React build. */
 /* ─── Tool Card Component ────────────────────────────────────────── */
-const ToolCard = ({ tool, onOpen, openState }) => {
+/* memo: the dashboard re-renders frequently while the extension bridge polls
+   its status (~every 500ms during detection). Memoizing keeps the tool grid
+   from re-rendering on every status tick — it only re-renders when its own
+   tool/openState props actually change. Pure render optimization; no behaviour
+   change. */
+const ToolCard = memo(({ tool, onOpen, openState }) => {
   const theme = getCategoryTheme(tool.category);
   const days = tool.daysUntilExpiry;
   const hasDays = typeof days === 'number' && days >= 0;
@@ -149,7 +154,8 @@ const ToolCard = ({ tool, onOpen, openState }) => {
       </div>
     </div>
   );
-};
+});
+ToolCard.displayName = 'ToolCard';
 
 /* ─── MAIN DASHBOARD ─────────────────────────────────────────────── */
 const ClientDashboardEnhanced = () => {
@@ -291,22 +297,23 @@ const ClientDashboardEnhanced = () => {
     localStorage.setItem('expiry_warning_dismissed', new Date().toISOString());
   };
 
-  // Derive stats
-  const activeTools   = tools.filter(t => t.status !== 'expired');
-  const expiredTools  = tools.filter(t => t.status === 'expired');
+  // Derive stats. These iterate the tools list; memoize so the frequent
+  // extension-status re-renders don't re-run the filter/sort each tick (only
+  // recompute when the underlying data or search/filter actually changes).
+  const activeTools   = useMemo(() => tools.filter(t => t.status !== 'expired'), [tools]);
   // Proxy tools (HIX/BypassGPT/ChatGPT/Ryne/WriteHuman) and StealthWriter are assigned
   // tools too — count their ACTIVE ones in the Active Tools total so the number matches
   // what the member actually sees as tool cards.
   const proxyActiveCount = (proxyTools || []).filter(pt => pt && pt.active).length;
   const stealthActiveCount = (stealth?.hasPlan && (stealth.plan ? (stealth.plan.active !== false && !stealth.plan.expired) : true)) ? 1 : 0;
   const totalActiveTools = activeTools.length + proxyActiveCount + stealthActiveCount;
-  const featuredTools = tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4);
+  const featuredTools = useMemo(() => tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4), [tools]);
 
   // Expiring Soon — computed from real assignment data (backend daysUntilExpiry,
   // which mirrors effectiveEndBoundary). Within 7 days, excludes expired.
-  const expiringSoon = activeTools
+  const expiringSoon = useMemo(() => activeTools
     .filter(t => typeof t.daysUntilExpiry === 'number' && t.daysUntilExpiry >= 0 && t.daysUntilExpiry <= 7)
-    .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+    .sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry), [activeTools]);
   const nearestExpiry = expiringSoon[0] || null;
   const fmtExpiry = (d) => {
     if (!d) return null;
@@ -315,17 +322,17 @@ const ClientDashboardEnhanced = () => {
   };
 
   // Unique categories
-  const categories = ['All', ...new Set(tools.map(t => t.category).filter(Boolean))];
+  const categories = useMemo(() => ['All', ...new Set(tools.map(t => t.category).filter(Boolean))], [tools]);
 
   // Filter tools
-  const filteredTools = tools.filter(t => {
+  const filteredTools = useMemo(() => tools.filter(t => {
     const matchesSearch = !searchQuery ||
       t.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       t.category?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       t.shortDescription?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesFilter = activeFilter === 'All' || t.category === activeFilter;
     return matchesSearch && matchesFilter;
-  });
+  }), [tools, searchQuery, activeFilter]);
 
   // StealthWriter appears as a normal tool card when assigned; respect search/filter.
   const stealthMatches = (() => {
@@ -345,7 +352,7 @@ const ClientDashboardEnhanced = () => {
   });
 
   /* ─── sanitizeError — maps raw extension/backend errors to user-safe messages ─ */
-  const sanitizeError = (result) => {
+  const sanitizeError = useCallback((result) => {
     const raw = result?.actionableError || result?.message || result?.error || '';
     // Missing session bundle is NOT an expiry — show it distinctly (req #7).
     if (result?.error === 'session_bundle_missing' || /session missing|session for this tool is not available/i.test(raw)) {
@@ -387,10 +394,10 @@ const ClientDashboardEnhanced = () => {
       return 'Extension is waking up. Please wait 5 seconds and try again.';
     }
     return raw || 'Could not open tool.';
-  };
+  }, []);
 
   /* ─── handleOpenTool ─ */
-  const handleOpenTool = async (tool) => {
+  const handleOpenTool = useCallback(async (tool) => {
     const toolId = tool._id || tool.toolId;
     if (!toolId) return;
 
@@ -476,7 +483,7 @@ const ClientDashboardEnhanced = () => {
     }
 
     showToolError(sanitizeError(result));
-  };
+  }, [bridgeReady, extMustUpdate, openTool, sanitizeError]);
 
   /* ─── Loading State — skeleton screens ─ */
   if (loading) {
