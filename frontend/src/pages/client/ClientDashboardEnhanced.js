@@ -203,6 +203,7 @@ const ClientDashboardEnhanced = () => {
   const [extSnoozeUntil, setExtSnoozeUntil] = useState(0);         // mandatory-update snooze (timestamp)
   const [softSnoozeUntil, setSoftSnoozeUntil] = useState(0);       // optional-update snooze (timestamp)
   const [softSnoozeVersion, setSoftSnoozeVersion] = useState(null); // version the optional snooze applies to
+  const [showMandatoryModal, setShowMandatoryModal] = useState(false); // one-time blocking modal (mandatory update only)
   // Refs used by the lightweight notification poll so its identity stays stable
   // (the extension bridge updates its version frequently during detection — we
   // must not tear down/recreate the poll interval on every heartbeat).
@@ -311,6 +312,27 @@ const ClientDashboardEnhanced = () => {
       setSoftSnoozeVersion(extLatest || null);
     }
   }, [extMustUpdate, extLatest, extSnoozeKey]);
+
+  // One-time blocking modal for MANDATORY updates only. Shows ONCE per browser
+  // session (sessionStorage) so it grabs attention without nagging on every 5-min
+  // snooze — the persistent banner + blocked tool access carry the reminder after
+  // that. Optional updates and announcements never trigger this modal.
+  useEffect(() => {
+    if (!extMustUpdate) return;
+    try {
+      if (sessionStorage.getItem('ext_mandatory_modal_shown') === '1') return;
+      sessionStorage.setItem('ext_mandatory_modal_shown', '1');
+    } catch (_) { /* sessionStorage unavailable → just show once in-memory */ }
+    setShowMandatoryModal(true);
+  }, [extMustUpdate]);
+
+  // Esc closes the modal (it is a temporary dismiss only — tools stay blocked).
+  useEffect(() => {
+    if (!showMandatoryModal) return;
+    const onKey = (e) => { if (e.key === 'Escape') setShowMandatoryModal(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [showMandatoryModal]);
 
   // De-duplication: the extension update banner above is the single source of truth
   // for "please update the extension". When it is showing, suppress any admin
@@ -662,6 +684,69 @@ const ClientDashboardEnhanced = () => {
   /* ─── Main Render ─ */
   return (
     <ClientLayoutEnhanced>
+      {/* ── One-time MANDATORY-update modal ── blocking, shown once per session.
+          Optional updates / announcements never use this (they stay banner+toast).
+          Closing is a temporary dismiss only — tool access stays blocked via
+          extMustUpdate, and the persistent banner keeps reminding. ── */}
+      {showMandatoryModal && extMustUpdate && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+             role="dialog" aria-modal="true" aria-labelledby="ext-update-modal-title"
+             onClick={() => setShowMandatoryModal(false)}
+             style={{ background: 'rgba(2,8,20,0.72)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}>
+          <div onClick={(e) => e.stopPropagation()}
+               className="relative w-full max-w-md rounded-2xl overflow-hidden"
+               style={{
+                 background: 'linear-gradient(150deg, rgba(13,30,54,0.98), rgba(7,20,38,0.98))',
+                 border: '1px solid rgba(248,113,113,0.40)',
+                 boxShadow: '0 30px 80px -30px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06)',
+               }}>
+            <div className="absolute -top-16 -right-12 w-64 h-40 pointer-events-none opacity-70"
+                 style={{ background: 'radial-gradient(closest-side, rgba(248,113,113,0.28), transparent 70%)' }} />
+            <button onClick={() => setShowMandatoryModal(false)} aria-label="Remind me later"
+                    className="absolute top-3 right-3 z-10 text-white/45 hover:text-white transition-colors">
+              <X size={18} />
+            </button>
+            <div className="relative p-6">
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                   style={{ background: 'linear-gradient(135deg,#ef4444,#b91c1c)', boxShadow: '0 10px 24px -8px rgba(239,68,68,0.7)' }}>
+                <RefreshCw size={22} className="text-white" />
+              </div>
+              <h2 id="ext-update-modal-title" className="font-heading text-[18px] font-extrabold text-white leading-tight">
+                Extension update required
+              </h2>
+              <p className="text-[13px] text-white/70 mt-2 leading-relaxed">
+                {extNotice?.message || 'A required update is available. Tool access stays paused until you install the latest version of the Gen Z Digital Store extension.'}
+              </p>
+              <div className="flex items-center gap-2 mt-4 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold text-white/70"
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  Installed <span className="font-bold text-white">v{installedExtVersion || '—'}</span>
+                </span>
+                <ArrowRight size={14} className="text-white/40 flex-shrink-0" />
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold text-genz-cyan"
+                      style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.32)' }}>
+                  Latest <span className="font-bold text-white">v{extLatest}</span>
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5 mt-6">
+                <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+                   onClick={() => setShowMandatoryModal(false)}
+                   className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5"
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 12px 26px -10px rgba(37,99,235,0.8)' }}>
+                  <Download size={15} /> Download Latest Extension
+                </a>
+                <button onClick={() => setShowMandatoryModal(false)}
+                        className="px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white/70 hover:text-white transition-colors"
+                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  Later
+                </button>
+              </div>
+              <p className="text-[11px] text-white/40 mt-3">After updating, reload the extension and refresh this page.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
 
         {/* ── Expiry Warning Banner (slim, dark-glass amber) ── */}
