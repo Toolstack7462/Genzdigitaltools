@@ -24,9 +24,9 @@ import { useProxyTools } from '../../hooks/useProxyTools';
 
 /* ─── Snooze intervals — a dismissed notice re-appears after this long (the 45s
    notification poll brings it back automatically; no page refresh needed). ─── */
-const EXT_MANDATORY_SNOOZE_MS = 15 * 60 * 1000;       // required update — re-nag every 15 min
-const EXT_OPTIONAL_SNOOZE_MS  = 6 * 60 * 60 * 1000;   // optional update — gentler, every 6 h
-const ANNOUNCE_SNOOZE_MS      = 8 * 60 * 60 * 1000;   // announcement — re-show after 8 h
+const EXT_MANDATORY_SNOOZE_MS = 5 * 60 * 1000;        // required update — re-nag every 5 min
+const EXT_OPTIONAL_SNOOZE_MS  = 10 * 60 * 1000;       // optional update — re-show after 10 min
+const ANNOUNCE_SNOOZE_MS      = 10 * 60 * 1000;       // announcement — re-show after 10 min
 
 /* ─── Extension detection is handled by useExtension() bridge heartbeat.
    No Chrome extension ID is needed in the React build. */
