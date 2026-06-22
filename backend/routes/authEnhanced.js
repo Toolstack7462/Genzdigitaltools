@@ -37,28 +37,63 @@ const CLEAR_OPTS = {
 const ACCESS_MAX  = 15 * 60 * 1000;
 const REFRESH_MAX = Number(process.env.DASHBOARD_SESSION_DAYS || 30) * 24 * 60 * 60 * 1000;
 
+// ─── Email lookup helper ─────────────────────────────────────────────────────
+// ROOT CAUSE of "valid credentials but Login failed" for SOME clients: the email
+// field is lowercased on every NEW save (User preSave) and on every login request
+// (normalizeAuthInputs), but the DB lookup itself was an exact, case-sensitive
+// string compare. Any row whose stored email is NOT already lowercase or carries
+// stray surrounding whitespace — i.e. accounts imported by the MySQL migration or
+// created before email-normalisation existed — could never be found, so a correct
+// email + password was rejected as "Invalid credentials". This builds an
+// anchored, case-insensitive, whitespace-tolerant exact match so those accounts
+// resolve correctly. It is strictly more permissive: any email that matched before
+// still matches, so it cannot break a currently-working login.
+function emailMatch(email) {
+  const esc = String(email || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return { $regex: `^\\s*${esc}\\s*$`, $options: 'i' };
+}
+
+// Safe, structured auth logging. Pinpoints the exact failure stage without ever
+// emitting passwords, tokens, cookies or password hashes.
+function logAuth(tag, stage, info = {}) {
+  try {
+    const parts = Object.entries(info)
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ');
+    console.log(`[auth:${tag}] stage=${stage}${parts ? ' ' + parts : ''}`);
+  } catch (_) { /* logging must never break the request */ }
+}
+
 // ─── POST /api/crm/auth/admin/login ─────────────────────────────────────────
 router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.adminLogin), async (req, res) => {
   try {
     const { email, password } = req.body;
     const ip = getClientIp(req);
 
-    const admin = await User.findOne({ email, role: { $in: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] } });
+    // Arrival marker — same diagnostic purpose as the client flow (see below).
+    logAuth('admin', 'attempt', { email, ip });
+
+    const admin = await User.findOne({ email: emailMatch(email), role: { $in: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] } });
     if (!admin) {
+      logAuth('admin', 'user_not_found', { email, ip });
       await ActivityLog.log('SYSTEM', null, 'ADMIN_LOGIN_FAILED', { email, reason: 'User not found', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     if (admin.status === 'disabled') {
+      logAuth('admin', 'account_disabled', { email, ip });
       await ActivityLog.log('ADMIN', admin._id, 'ADMIN_LOGIN_BLOCKED', { reason: 'Account disabled', ip });
       return res.status(403).json({ error: 'Your account has been disabled' });
     }
 
     const isValid = await admin.comparePassword(password);
     if (!isValid) {
+      logAuth('admin', 'bad_password', { email, ip });
       await ActivityLog.log('ADMIN', admin._id, 'ADMIN_LOGIN_FAILED', { email, reason: 'Invalid password', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
+    logAuth('admin', 'success', { email, ip });
 
     admin.lastLoginAt = new Date();
     admin.lastLoginIp = ip;
@@ -73,8 +108,11 @@ router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.a
 
     return res.json({ success: true, user: admin.toJSON() });
   } catch (err) {
-    console.error('Admin login error:', err);
-    return res.status(500).json({ error: 'Login failed' });
+    // Log the FULL error server-side (stack included) so the exact failure point is
+    // identifiable, but never leak internals to the client.
+    logAuth('admin', 'server_error', { email: req.body && req.body.email, msg: err && err.message });
+    console.error('[auth:admin] unhandled login error:', err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'Login failed. Please try again.', code: 'SERVER_ERROR' });
   }
 });
 
@@ -84,21 +122,55 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
     const { email, password, deviceId } = req.body;
     const ip = getClientIp(req);
 
-    const client = await User.findOne({ email, role: 'CLIENT' });
-    if (!client) {
+    // Log arrival FIRST. If a "Login failed" report has NO matching `attempt` line in
+    // the server log, the request never reached this handler (CORS / preflight /
+    // proxy / timeout) rather than failing inside it — the single most useful split
+    // for diagnosing cross-origin login failures.
+    logAuth('client', 'attempt', { email, ip });
+
+    // Fetch ALL client rows matching this email (case-insensitive on both email and
+    // role). Migrated/legacy data can contain DUPLICATE rows for the same address —
+    // e.g. a legacy mixed-case row plus a newer lowercase one, because the create-time
+    // uniqueness checks compare email case-sensitively. With a single findOne we would
+    // arbitrarily pick the first row, which may be a stale duplicate whose password the
+    // client never set — producing a permanent "bad password" even with valid
+    // credentials. Checking every candidate fixes that. Role match is case-insensitive
+    // too (the adapter compares strings exactly) but scoped to CLIENT variants only, so
+    // it can never match an admin role.
+    const candidates = await User.find({ email: emailMatch(email), role: { $regex: '^CLIENT$', $options: 'i' } });
+    if (!candidates || candidates.length === 0) {
+      // DIAGNOSTIC: distinguish "no account exists" from "account exists but is not
+      // queryable as a CLIENT" (wrong/legacy role value). Logs metadata only.
+      let existing = 'none';
+      try {
+        const any = await User.findOne({ email: emailMatch(email) });
+        if (any) existing = `role=${JSON.stringify(any.role)},status=${any.status || 'unset'},verified=${any.emailVerified}`;
+      } catch (_) {}
+      logAuth('client', 'user_not_found', { email, ip, existing });
       await ActivityLog.log('SYSTEM', null, 'CLIENT_LOGIN_FAILED', { email, reason: 'User not found', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    if (client.status === 'disabled') {
-      await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN_BLOCKED', { reason: 'Account disabled', ip });
-      return res.status(403).json({ error: 'Your account has been disabled. Please contact support.' });
+    // Pick the candidate whose password actually matches (across any duplicates).
+    let client = null;
+    for (const c of candidates) {
+      try { if (await c.comparePassword(password)) { client = c; break; } } catch (_) {}
     }
 
-    const isValid = await client.comparePassword(password);
-    if (!isValid) {
-      await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN_FAILED', { email, reason: 'Invalid password', ip });
+    if (!client) {
+      // No candidate matched the password. Log how many duplicate rows exist + each
+      // hash FORMAT (first 7 chars = bcrypt header "$2b$12$" — no salt/secret) so a
+      // genuine wrong-password is distinguishable from a duplicate/legacy-hash issue.
+      const fmts = candidates.map(c => { const h = String(c.passwordHash || ''); return `${h.slice(0, 7)}:${h.length}`; }).join(',');
+      logAuth('client', 'bad_password', { email, ip, candidates: candidates.length, roles: JSON.stringify(candidates.map(c => c.role)), hashFmts: fmts });
+      await ActivityLog.log('CLIENT', candidates[0]._id, 'CLIENT_LOGIN_FAILED', { email, reason: 'Invalid password', ip });
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (client.status === 'disabled') {
+      logAuth('client', 'account_disabled', { email, ip });
+      await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN_BLOCKED', { reason: 'Account disabled', ip });
+      return res.status(403).json({ error: 'Your account has been disabled. Please contact support.' });
     }
 
     if (client.devicePolicy && client.devicePolicy.enabled) {
@@ -106,20 +178,34 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
       // SAME machine works in different browsers, while a genuinely NEW device is
       // held for admin approval. The first device per client auto-approves so
       // existing members are never locked out.
-      const decision = await DeviceProfile.resolve(client, {
-        fingerprint: req.body.deviceFingerprint || deviceId, // fallback keeps older clients working
-        browserInstanceId: deviceId,
-        os: req.body.os || null,
-        browser: req.body.browser || null,
-        ip,
-        userAgent: req.headers['user-agent'],
-      });
+      let decision;
+      try {
+        decision = await DeviceProfile.resolve(client, {
+          fingerprint: req.body.deviceFingerprint || deviceId, // fallback keeps older clients working
+          browserInstanceId: deviceId,
+          os: req.body.os || null,
+          browser: req.body.browser || null,
+          ip,
+          userAgent: req.headers['user-agent'],
+        });
+      } catch (deviceErr) {
+        // The credentials are already proven valid; the device profile is a
+        // SECONDARY control. A transient DB/profile error must not turn a valid
+        // login into a generic "Login failed". Fail open (allow) and log loudly so
+        // it is still visible to operators — matching DeviceProfile.resolve's own
+        // "do NOT break login" philosophy.
+        logAuth('client', 'device_resolve_error', { email, ip, msg: deviceErr && deviceErr.message });
+        console.error('[auth:client] device resolve error (allowing login):', deviceErr && deviceErr.stack ? deviceErr.stack : deviceErr);
+        decision = { status: 'approved', profile: null, reason: 'resolve_error' };
+      }
 
       if (decision.status === 'blocked') {
+        logAuth('client', 'device_blocked', { email, ip });
         await ActivityLog.log('CLIENT', client._id, 'LOGIN_BLOCKED_DEVICE', { ip, deviceStatus: 'blocked' });
         return res.status(403).json({ error: 'This device is blocked. Please contact admin.', code: 'DEVICE_BLOCKED' });
       }
       if (decision.status === 'pending') {
+        logAuth('client', 'device_pending', { email, ip });
         await ActivityLog.log('CLIENT', client._id, 'LOGIN_BLOCKED_DEVICE', { ip, deviceStatus: 'pending' });
         try {
           await SecurityAlert.raise(client._id, 'NEW_DEVICE', 'medium', {
@@ -147,21 +233,43 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
       } catch (_) {}
     }
 
-    client.lastLoginAt = new Date();
-    client.lastLoginIp = ip;
-    await client.save();
-
-    const { accessToken, refreshToken } = await generateTokenPair(client, ip);
-    await ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN', { ip });
+    // Token generation MUST stay on the critical path — the session depends on it.
+    // Credentials and the device check have ALREADY passed here, so if this throws the
+    // ONLY thing that failed is issuing the session (JWT sign or the refresh-token DB
+    // write — e.g. a transient DB/connection-pool error). Log it as a DISTINCT stage so
+    // it is never mistaken for a credential failure, and return a specific message
+    // instead of the generic catch-all so the user knows to simply retry.
+    let accessToken, refreshToken;
+    try {
+      ({ accessToken, refreshToken } = await generateTokenPair(client, ip));
+    } catch (tokenErr) {
+      logAuth('client', 'token_error', { email, ip, msg: tokenErr && tokenErr.message });
+      console.error('[auth:client] token generation failed:', tokenErr && tokenErr.stack ? tokenErr.stack : tokenErr);
+      return res.status(500).json({ error: 'We could not start your session. Please try again in a moment.', code: 'TOKEN_ERROR' });
+    }
+    logAuth('client', 'success', { email, ip });
 
     // Role-specific cookie names — isolated from admin session cookies
     res.cookie('clientAccessToken', accessToken, COOKIE_OPTS(ACCESS_MAX));
     res.cookie('clientRefreshToken', refreshToken, COOKIE_OPTS(REFRESH_MAX));
+    res.json({ success: true, user: client.toJSON() });
 
-    return res.json({ success: true, user: client.toJSON() });
+    // Non-critical writes run AFTER the response so they don't add to login latency:
+    // the last-login metadata and the audit-log entry. The session (tokens + cookies) is
+    // already issued, so a failure here never affects the login result. Fire-and-forget.
+    client.lastLoginAt = new Date();
+    client.lastLoginIp = ip;
+    Promise.resolve()
+      .then(() => client.save())
+      .then(() => ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN', { ip }))
+      .catch((err) => console.error('[auth:client] post-login write failed:', err && err.message));
+    return;
   } catch (err) {
-    console.error('Client login error:', err);
-    return res.status(500).json({ error: 'Login failed' });
+    // Log the FULL error server-side (stack included) to pinpoint the exact failure
+    // point, but keep the client-facing message generic so no internals leak.
+    logAuth('client', 'server_error', { email: req.body && req.body.email, msg: err && err.message });
+    console.error('[auth:client] unhandled login error:', err && err.stack ? err.stack : err);
+    return res.status(500).json({ error: 'Login failed. Please try again.', code: 'SERVER_ERROR' });
   }
 });
 

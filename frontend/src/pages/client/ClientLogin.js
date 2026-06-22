@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
@@ -23,11 +23,17 @@ const ClientLogin = () => {
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Hard guard against duplicate submits: the disabled button covers most cases, but a
+  // ref blocks a second submit fired in the same tick (double-click / Enter+click) before
+  // React re-renders the disabled state — so only ONE login request is ever in flight.
+  const submittingRef = useRef(false);
 
   // ── Auth logic unchanged ───────────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
+    if (submittingRef.current) return; // ignore repeat clicks while a request is in flight
+    submittingRef.current = true;
+    setLoading(true); // show the spinner instantly, before any async work
     try {
       const deviceId = authService.getOrCreateDeviceId();
       const { os, browser } = authService.getDeviceInfo();
@@ -39,17 +45,49 @@ const ClientLogin = () => {
       showSuccess('Welcome back to Gen Z Digital Store!');
       navigate('/client/dashboard');
     } catch (error) {
+      const status = error.response?.status;
       const code = error.response?.data?.code;
-      const errorMsg = error.response?.data?.error || 'Login failed';
-      if (code === 'DEVICE_PENDING') {
+      const serverMsg = error.response?.data?.error;
+
+      // Console diagnostic (no secrets) so a member reporting "Login failed" can be
+      // told exactly which branch fired. `hadResponse=false` means the request never
+      // got a reply (network / CORS / timeout); `status` present means the server
+      // answered and the message reflects its actual reason.
+      console.error('[client-login] failed:', {
+        status: status || null,
+        code: code || null,
+        axiosCode: error.code || null, // ECONNABORTED on timeout
+        hadResponse: !!error.response,
+        hadRequest: !!error.request,
+      });
+
+      if (status === 429) {
+        showError('Too many login attempts. Please wait a minute and try again — no need to click repeatedly.');
+      } else if (code === 'DEVICE_PENDING') {
         showError('New device detected — pending admin approval. Please contact admin to approve this device.');
       } else if (code === 'DEVICE_BLOCKED' || code === 'DEVICE_MISMATCH') {
         showError('This device is blocked. Contact admin to approve or reset it.');
+      } else if (status === 401) {
+        // The server received the request and rejected it → genuinely wrong credentials.
+        showError(serverMsg || 'Incorrect email or password. Please try again.');
+      } else if (status === 403) {
+        showError(serverMsg || 'Your account cannot sign in right now. Please contact support.');
+      } else if (status >= 500) {
+        // Server was reached but errored — this is NOT a wrong-password situation.
+        showError(serverMsg || 'Something went wrong on our end while signing you in. Please try again in a moment.');
+      } else if (error.code === 'ECONNABORTED') {
+        // The request timed out before any response (e.g. server cold start).
+        showError('The server is taking longer than usual to respond. Please wait a moment and try again.');
+      } else if (error.request && !error.response) {
+        // No response at all → network down, CORS block, or server unreachable.
+        showError("We couldn't reach the server. Please check your internet connection and try again.");
       } else {
-        showError(errorMsg);
+        showError(serverMsg || 'Login failed. Please try again.');
       }
     } finally {
+      // Always reset so the user can retry after a failure.
       setLoading(false);
+      submittingRef.current = false;
     }
   };
   // ───────────────────────────────────────────────────────────────────────

@@ -4,10 +4,45 @@ import api from './api';
 const ADMIN_USER_KEY = 'genz_admin_user';
 const CLIENT_USER_KEY = 'genz_client_user';
 
+// The backend (Passenger on shared hosting) recycles periodically; during the brief
+// restart window a request can get NO response or a 502/503/504. That made login
+// intermittently show "Login failed" even with correct credentials. Retry such
+// TRANSIENT failures once after a short delay so a restart blip is invisible to users.
+// Only retries on no-response / gateway errors — a real 401/403/400 is returned
+// immediately (never retried), so it does not mask genuine credential errors.
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function postWithRetry(url, body, { retries = 2, delayMs = 1200, timeout = 15000 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      // Bound each attempt so a hung request (cold start) fails fast and resets the UI
+      // instead of spinning forever — a slow-but-normal login (~3-4s) is well within this.
+      return await api.post(url, body, { timeout });
+    } catch (err) {
+      // IMPORTANT: a client-side TIMEOUT (ECONNABORTED) is NOT retried — the server may
+      // still be processing the request, and re-sending a non-idempotent login would
+      // create a second session/token for one click. Only retry when the request
+      // demonstrably did NOT execute on the server: a connection-level failure (refused/
+      // reset during a restart) or a gateway error (proxy up, app down).
+      const isTimeout = err.code === 'ECONNABORTED';
+      const connFailed = err.request && !err.response && !isTimeout;
+      const gateway = err.response && [502, 503, 504].includes(err.response.status);
+      if (attempt < retries && (connFailed || gateway)) {
+        await sleep(delayMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 class AuthService {
   // ─── Admin login ─────────────────────────────────────────────────────────
   async adminLogin(email, password) {
-    const response = await api.post('/auth/admin/login', { email, password });
+    // 30s (not the 15s default): the API runs on shared hosting (Passenger) and a
+    // cold start after idle can take 20s+. A too-short timeout aborts a login that
+    // would otherwise succeed and shows a misleading "Login failed". Timeouts are
+    // still NOT retried (see postWithRetry) so this never double-submits.
+    const response = await postWithRetry('/auth/admin/login', { email, password }, { timeout: 30000 });
     if (response.data.success) {
       localStorage.setItem(ADMIN_USER_KEY, JSON.stringify(response.data.user));
       return response.data.user;
@@ -17,7 +52,9 @@ class AuthService {
 
   // ─── Client login ─────────────────────────────────────────────────────────
   async clientLogin(email, password, deviceId, extra = {}) {
-    const response = await api.post('/auth/client/login', { email, password, deviceId, ...extra });
+    // 30s timeout — see adminLogin: absorbs shared-hosting cold starts so a slow-but-
+    // valid login is not aborted and surfaced as a generic "Login failed".
+    const response = await postWithRetry('/auth/client/login', { email, password, deviceId, ...extra }, { timeout: 30000 });
     if (response.data.success) {
       localStorage.setItem(CLIENT_USER_KEY, JSON.stringify(response.data.user));
       return response.data.user;
