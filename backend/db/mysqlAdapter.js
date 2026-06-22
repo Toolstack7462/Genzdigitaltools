@@ -16,6 +16,7 @@ const bcrypt = require('bcryptjs');
 
 let pool = null;
 let connectionInfo = null;
+let keepAliveTimer = null;
 
 const tableNames = {
   User: 'users',
@@ -99,14 +100,31 @@ async function connect() {
     timezone: 'Z',
     charset: 'utf8mb4',
     multipleStatements: false,
+    // Shared MySQL hosts close idle connections (wait_timeout). Without keep-alive the
+    // pool hands out a dead socket on the next request, which surfaced as intermittent
+    // 500s ("Login failed") after the app sat idle for a while. TCP keep-alive plus a
+    // bounded idle lifetime make the pool recycle stale connections instead.
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+    maxIdle: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
+    idleTimeout: 60000,
   });
 
   await pool.query('SELECT 1');
   await ensureTables();
+
+  // Application-level keep-alive: a tiny periodic ping keeps pooled connections warm
+  // so the DB server is far less likely to reap them as idle. Errors are ignored — the
+  // ping's only job is to exercise the socket; a real query will retry on its own.
+  if (keepAliveTimer) clearInterval(keepAliveTimer);
+  keepAliveTimer = setInterval(() => { if (pool) pool.query('SELECT 1').catch(() => {}); }, 4 * 60 * 1000);
+  if (keepAliveTimer.unref) keepAliveTimer.unref();
+
   return { ...parsed, password: '<hidden>' };
 }
 
 async function close() {
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
   if (pool) await pool.end();
   pool = null;
 }
@@ -122,6 +140,40 @@ function getStatus() {
 function assertPool() {
   if (!pool) throw new Error('MySQL connection is not initialized. Call mysqlAdapter.connect() during startup.');
   return pool;
+}
+
+// Connection-level failures that mean "this pooled socket is dead" — the pool will
+// open a fresh connection on the next call, so the query is safe to retry ONCE.
+const DEAD_CONN_CODES = new Set([
+  'PROTOCOL_CONNECTION_LOST', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT',
+  'PROTOCOL_SEQUENCE_TIMEOUT', 'ESOCKET',
+]);
+function isDeadConnError(err) {
+  if (!err) return false;
+  if (DEAD_CONN_CODES.has(err.code)) return true;
+  return /connection.*(lost|closed|reset)|read econnreset|closed state/i.test(String(err.message || ''));
+}
+
+// Single entry point for every runtime query. Retries exactly once when the failure
+// is a dropped idle connection (the root cause of the intermittent "Login failed"
+// 500s on shared hosting). Any other error propagates unchanged.
+async function runQuery(sql, params) {
+  const db = assertPool();
+  try {
+    return await db.query(sql, params);
+  } catch (err) {
+    if (isDeadConnError(err)) {
+      return await db.query(sql, params); // fresh connection from the pool
+    }
+    throw err;
+  }
+}
+
+// Real DB liveness check (runs an actual query) — for the /health endpoint so it
+// reflects whether queries truly work, not just whether a pool object exists.
+async function ping() {
+  try { await runQuery('SELECT 1'); return true; }
+  catch { return false; }
 }
 
 async function ensureTables() {
@@ -508,15 +560,13 @@ function createModel(name, options = {}) {
     }
 
     static async _allRows() {
-      const db = assertPool();
-      const [rows] = await db.query(`SELECT data FROM \`${table}\``);
+      const [rows] = await runQuery(`SELECT data FROM \`${table}\``);
       return rows.map(r => deserializeData(r.data));
     }
 
     static async _getRawById(id) {
       if (!id) return null;
-      const db = assertPool();
-      const [rows] = await db.query(`SELECT data FROM \`${table}\` WHERE id = ? LIMIT 1`, [String(id)]);
+      const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id = ? LIMIT 1`, [String(id)]);
       return rows[0] ? deserializeData(rows[0].data) : null;
     }
 
@@ -526,12 +576,11 @@ function createModel(name, options = {}) {
     }
 
     static async _upsertRaw(data) {
-      const db = assertPool();
       const now = new Date();
       if (!data._id) data._id = newId();
       if (!data.createdAt) data.createdAt = now;
       data.updatedAt = data.updatedAt || now;
-      await db.query(
+      await runQuery(
         `INSERT INTO \`${table}\` (id, data, createdAt, updatedAt) VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE data = VALUES(data), updatedAt = VALUES(updatedAt)`,
         [String(data._id), serializeData(data), data.createdAt, data.updatedAt]
@@ -616,10 +665,9 @@ function createModel(name, options = {}) {
 
     static async deleteMany(criteria = {}) {
       const rows = await this._findRaw(criteria);
-      const db = assertPool();
       let deletedCount = 0;
       for (const row of rows) {
-        const [res] = await db.query(`DELETE FROM \`${table}\` WHERE id = ?`, [String(row._id)]);
+        const [res] = await runQuery(`DELETE FROM \`${table}\` WHERE id = ?`, [String(row._id)]);
         deletedCount += res.affectedRows || 0;
       }
       return { acknowledged: true, deletedCount };
@@ -629,8 +677,7 @@ function createModel(name, options = {}) {
       const rows = await this._findRaw(criteria);
       const row = rows[0];
       if (!row) return { acknowledged: true, deletedCount: 0 };
-      const db = assertPool();
-      const [res] = await db.query(`DELETE FROM \`${table}\` WHERE id = ?`, [String(row._id)]);
+      const [res] = await runQuery(`DELETE FROM \`${table}\` WHERE id = ?`, [String(row._id)]);
       return { acknowledged: true, deletedCount: res.affectedRows || 0 };
     }
 
@@ -720,6 +767,7 @@ module.exports = {
   connect,
   close,
   getStatus,
+  ping,
   ensureTables,
   createModel,
   newId,

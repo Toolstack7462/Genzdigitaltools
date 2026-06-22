@@ -305,14 +305,19 @@ app.use('/api/crm/proxy/gateway',     proxyGatewayRoutes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check
-app.get('/api/crm/health', (req, res) => {
+app.get('/api/crm/health', async (req, res) => {
   const dbStatus = mysqlAdapter.getStatus();
-  res.json({
-    status: 'ok',
+  // Run a REAL query, not just a "pool exists" check. The old version reported
+  // "connected" whenever the pool object existed — even when every query was failing
+  // on dead idle connections — which is exactly why login could break while /health
+  // looked healthy. A true ping makes this endpoint trustworthy for diagnosis.
+  const dbAlive = await mysqlAdapter.ping();
+  res.status(dbAlive ? 200 : 503).json({
+    status: dbAlive ? 'ok' : 'degraded',
     service: 'Gen Z Digital Store CRM',
     version: '2.0.0-mysql',
     mysql: {
-      state: dbStatus.connected ? 'connected' : 'disconnected',
+      state: dbAlive ? 'connected' : 'unreachable',
       host: dbStatus.host,
       database: dbStatus.database
     },
