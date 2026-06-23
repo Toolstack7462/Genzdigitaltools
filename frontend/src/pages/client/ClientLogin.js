@@ -6,6 +6,7 @@ import {
   Cpu, Globe, Palette, Instagram, Rocket, CheckCircle2,
 } from 'lucide-react';
 import { authService } from '../../services/authService';
+import { classifyTransport, authDiag } from '../../services/authDiagnostics';
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 
@@ -36,6 +37,14 @@ const ClientLogin = () => {
     setLoading(true); // show the spinner instantly, before any async work
     try {
       const deviceId = authService.getOrCreateDeviceId();
+      // Defensive: getOrCreateDeviceId always returns an id (it falls back to an
+      // in-memory one when storage is blocked), but if it ever comes back empty the
+      // backend would reject the login with a vague 400 — surface the precise reason.
+      if (!deviceId) {
+        console.error('[client-login] aborted:', authDiag({}, { reason: 'device_id_missing' }));
+        showError('Your browser could not create a secure device ID for sign-in. Please enable cookies/site data (or leave private mode) and try again. [DEVICE_ID_MISSING]');
+        return;
+      }
       const { os, browser } = authService.getDeviceInfo();
       await authService.clientLogin(formData.email, formData.password, deviceId, {
         deviceFingerprint: authService.getDeviceFingerprint(),
@@ -55,28 +64,31 @@ const ClientLogin = () => {
       // would masquerade as a generic failure.
       const storageOk = authService.isStorageAvailable();
 
+      // Transport-level classification (no HTTP response): offline / timeout / API
+      // unreachable-or-blocked. Returns null when the server actually answered, so the
+      // status-based branches below still own those cases. This is the device-specific
+      // path — it is what makes a one-device "Login failed" identifiable.
+      const transport = classifyTransport(error);
+
       // Console diagnostic (no secrets) so a member reporting "Login failed" can be
       // told exactly which branch fired. `hadResponse=false` means the request never
-      // got a reply (network / CORS / timeout); `status` present means the server
-      // answered and the message reflects its actual reason.
-      console.error('[client-login] failed:', {
-        status: status || null,
-        code: code || null,
-        axiosCode: error.code || null, // ECONNABORTED on timeout
-        hadResponse: !!error.response,
-        hadRequest: !!error.request,
-        storageAvailable: storageOk,
-      });
+      // got a reply (network / CORS / cert / timeout); `status` present means the
+      // server answered and the message reflects its actual reason.
+      console.error('[client-login] failed:', authDiag(error, { storageAvailable: storageOk }));
 
       // Each branch shows a CLEAR reason plus a short [CODE] so the exact problem is
       // identifiable at a glance (by the member and by support) instead of a vague
       // "Login failed". The bracketed code mirrors the backend reason.
-      if (!storageOk) {
-        // Root cause for the device-specific "Login failed": the browser is blocking
-        // cookies/site data, so device binding can't be stored. Lead with this — it
-        // takes precedence over the server reason (e.g. a "pending" message would be
-        // misleading because approval can't persist until site data is enabled).
-        showError('This browser is blocking cookies & site data, which secure sign-in and device binding require. Please allow cookies/site data for this site (or leave private/incognito mode), then try again. [STORAGE_BLOCKED]');
+      if (transport) {
+        // Network / connection / timeout failure — the request never reached the API.
+        // Surface this BEFORE the storage hint: when the server was never contacted,
+        // a "cookies blocked" message would be misleading (the real fix is connectivity,
+        // device clock, or an extension/VPN/firewall block). [API_CONNECTION_FAILED]/[TIMEOUT]
+        showError(transport.message);
+      } else if (!storageOk) {
+        // The browser is blocking cookies/site data, so device binding can't be stored.
+        // Reached only when the server DID answer but persistence is impossible.
+        showError('This browser is blocking cookies & site data, which secure sign-in and device binding require. Please allow cookies/site data for this site (or leave private/incognito mode), then try again. [DEVICE_STORAGE_BLOCKED]');
       } else if (status === 429) {
         showError('Too many login attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
       } else if (code === 'DEVICE_PENDING') {
@@ -89,17 +101,11 @@ const ClientLogin = () => {
       } else if (status === 403) {
         showError((serverMsg || 'Your account cannot sign in right now. Please contact support.') + ' [ACCESS_DENIED]');
       } else if (status === 400) {
-        // Validation rejected the request (e.g. missing device id / malformed input).
-        showError((serverMsg || 'Your login could not be processed. Please refresh the page and try again.') + ' [INVALID_REQUEST]');
+        // Validation rejected the request (e.g. missing/invalid device payload).
+        showError((serverMsg || 'Your login could not be processed. Please refresh the page and try again.') + ' [DEVICE_PAYLOAD_INVALID]');
       } else if (status >= 500) {
         // Server was reached but errored — this is NOT a wrong-password situation.
         showError('Something went wrong on our end while signing you in. Please try again in a moment. [SERVER_ERROR]');
-      } else if (error.code === 'ECONNABORTED') {
-        // The request timed out before any response (e.g. server cold start).
-        showError('The server is taking longer than usual to respond. Please wait a moment and try again. [TIMEOUT]');
-      } else if (error.request && !error.response) {
-        // No response at all → network down, CORS block, or server unreachable.
-        showError("We couldn't reach the server. Please check your internet connection and try again. [NO_CONNECTION]");
       } else {
         showError((serverMsg || 'Login failed. Please try again.') + ' [UNKNOWN]');
       }

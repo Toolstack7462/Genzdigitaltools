@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
+import { classifyTransport, authDiag } from '../services/authDiagnostics';
 
 const EASE_OUT = [0.16, 1, 0.3, 1];
 const BRAND_CTA = 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)';
@@ -121,18 +122,21 @@ const Join = () => {
       const status = error.response?.status;
       const serverMsg = error.response?.data?.error;
 
+      // Transport classification (no HTTP response): offline / timeout / API unreachable
+      // -or-blocked. This is the device-specific path — signup sends no deviceId and uses
+      // no storage, so when it fails on one device but works on another the cause is the
+      // request never reaching the API (connectivity, device clock/cert, VPN/firewall/
+      // extension block). Returns null when the server actually answered.
+      const transport = classifyTransport(error);
+
       // Secret-free diagnostic (mirrors the login screen) so a member reporting a
       // signup failure can be told exactly which branch fired.
-      console.error('[client-signup] failed:', {
-        status: status || null,
-        code: error.response?.data?.code || null,
-        axiosCode: error.code || null,
-        hadResponse: !!error.response,
-        hadRequest: !!error.request,
-      });
+      console.error('[client-signup] failed:', authDiag(error));
 
       // Specific reason + [CODE] instead of a blanket "Server is busy".
-      if (status === 409) {
+      if (transport) {
+        showError(transport.message);
+      } else if (status === 409) {
         showError('An account with this email already exists. Please log in instead. [ACCOUNT_EXISTS]');
       } else if (status === 429) {
         showError('Too many attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
@@ -140,10 +144,6 @@ const Join = () => {
         showError((serverMsg || 'Please check your details and try again.') + ' [INVALID_DETAILS]');
       } else if (status >= 500) {
         showError('Something went wrong on our end while creating your account. Please try again in a moment. [SERVER_ERROR]');
-      } else if (error.code === 'ECONNABORTED') {
-        showError('The server is taking longer than usual to respond. Please wait a moment and try again. [TIMEOUT]');
-      } else if (error.request && !error.response) {
-        showError("We couldn't reach the server. Please check your internet connection and try again. [NO_CONNECTION]");
       } else {
         showError((serverMsg || 'Server is busy right now. Please try again in a moment.') + ' [UNKNOWN]');
       }

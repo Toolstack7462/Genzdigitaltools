@@ -8,6 +8,7 @@ import {
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 import api from '../../services/api';
+import { classifyTransport, authDiag } from '../../services/authDiagnostics';
 
 const CONSOLE = [
   { icon: Package,  label: 'Tools',    color: '#06B6D4' },
@@ -38,13 +39,20 @@ const AdminLogin = () => {
 
       window.location.href = '/admin/dashboard';
     } catch (error) {
-      console.error('Admin login error:', error);
-      showError(
-        error.response?.data?.error ||
-        error.response?.data?.message ||
-        error.message ||
-        'Login failed. Please check your email and password.'
-      );
+      // Secret-free diagnostic + transport classification (mirrors the client flow) so a
+      // connection / timeout / blocked-host failure is identifiable instead of generic.
+      console.error('[admin-login] failed:', authDiag(error));
+      const transport = classifyTransport(error);
+      if (transport) {
+        showError(transport.message);
+      } else {
+        showError(
+          (error.response?.data?.error ||
+           error.response?.data?.message ||
+           'Login failed. Please check your email and password.') +
+          (error.response?.status >= 500 ? ' [SERVER_ERROR]' : '')
+        );
+      }
     } finally {
       setLoading(false);
     }
