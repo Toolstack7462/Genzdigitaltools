@@ -93,13 +93,23 @@ if (ALLOWED_ORIGINS.length === 0) {
   console.warn('   Set ALLOWED_ORIGINS in .env, e.g.: https://app.example.com,http://localhost:3000');
 }
 
+// First-party web origins the SPA is served from. Allowed IN CODE (not only via the
+// ALLOWED_ORIGINS env) so a missing env entry can never CORS-block our own site — the
+// `www.` host was absent from the env, which made cross-origin login/signup/health calls
+// from www.genzdigitalstore.com fail their preflight and surface to clients as
+// [API_CONNECTION_FAILED]. These three are the only public web origins we own.
+const FIRST_PARTY_ORIGINS = [
+  'https://genzdigitalstore.com',
+  'https://www.genzdigitalstore.com',
+  'https://app.genzdigitalstore.com',
+];
+
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow server-to-server calls (no Origin header)
     if (!origin) return callback(null, true);
 
-    if (ALLOWED_ORIGINS.includes(origin)) {
-      console.log(`✅ CORS: Allowed origin: ${origin}`);
+    if (ALLOWED_ORIGINS.includes(origin) || FIRST_PARTY_ORIGINS.includes(origin)) {
       return callback(null, true);
     }
 
