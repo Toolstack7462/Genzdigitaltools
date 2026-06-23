@@ -1,15 +1,14 @@
 import { useState, useEffect } from 'react';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
-import { Package, CheckCircle2, Boxes, Puzzle, Globe, ClipboardList, Clock, XCircle, Users, BarChart3, RefreshCw } from 'lucide-react';
+import { Package, CheckCircle2, Boxes, Puzzle, Globe, ClipboardList, Clock, XCircle, Users, BarChart3 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { useRegisterRefresh } from '../../contexts/RefreshContext';
 
 const AdminAnalytics = () => {
   const { showError } = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
   const load = async () => {
     try {
@@ -22,6 +21,10 @@ const AdminAnalytics = () => {
       setLoading(false);
     }
   };
+
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  // Wire the shared topbar refresh button to re-fetch this page's data (no full reload).
+  useRegisterRefresh(load);
 
   const s = data?.stats || {};
   const statCards = data ? [
@@ -59,11 +62,6 @@ const AdminAnalytics = () => {
             <h1 className="text-xl font-black text-genz-navy">Analytics</h1>
             <p className="text-genz-muted text-[13px]">Live overview of tools, assignments, clients and activity</p>
           </div>
-          <button onClick={load}
-                  className="p-2 rounded-xl border border-genz-border text-genz-muted hover:text-genz-teal hover:border-genz-teal/30 transition-all"
-                  aria-label="Refresh">
-            <RefreshCw size={16} />
-          </button>
         </div>
 
         {/* Stats */}

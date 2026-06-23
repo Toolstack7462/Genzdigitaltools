@@ -63,7 +63,10 @@ router.get('/', async (req, res) => {
     const expiredAssignments = totalAssignments - activeAssignments;
 
     // ── Clients ───────────────────────────────────────────────────────────────────
-    const totalClients = await User.countDocuments({ role: 'CLIENT' });
+    // Case-insensitive role match: the JSON adapter compares `role` as an exact
+    // string, so a migrated/legacy client stored as 'client'/'Client' would be
+    // silently excluded from the count. Matches the same fix applied to login.
+    const totalClients = await User.countDocuments({ role: { $regex: '^CLIENT$', $options: 'i' } });
     const activeClientIds = new Set();
     normalActive.forEach(a => a.clientId && activeClientIds.add(String(a.clientId._id || a.clientId)));
     proxyActive.forEach(i => i.clientId && activeClientIds.add(String(i.clientId)));

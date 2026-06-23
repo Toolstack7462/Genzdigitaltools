@@ -3,11 +3,12 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, User, LogOut, Menu, X,
-  HelpCircle, ChevronRight, MessageCircle, ExternalLink, Activity
+  HelpCircle, ChevronRight, MessageCircle, ExternalLink, Activity, PlayCircle
 } from 'lucide-react';
 import { authService } from '../services/authService';
 import { useToast } from './Toast';
 import BrandLogo from './BrandLogo';
+import RefreshButton from './RefreshButton';
 
 // ============================================================================
 // SHARED THEME CONSTANTS
@@ -53,7 +54,9 @@ const PAGE_TITLES = [
   { match: (p) => p === '/client/dashboard',            title: 'Dashboard',     sub: 'Your tools & account overview' },
   { match: (p) => p.startsWith('/client/tools/'),       title: 'Tool Details',  sub: 'Access and manage this tool' },
   { match: (p) => p === '/client/tools',                title: 'My Tools',      sub: 'All tools assigned to you' },
+  { match: (p) => p === '/client/activity',             title: 'Activity',      sub: 'Your sign-ins & tool usage' },
   { match: (p) => p === '/client/profile',              title: 'Profile',       sub: 'Account & security settings' },
+  { match: (p) => p === '/client/extension-guide',      title: 'Extension Setup Guide', sub: 'Install & configure the browser extension' },
 ];
 const getPageMeta = (path) =>
   PAGE_TITLES.find((r) => r.match(path)) || { title: 'Member Portal', sub: '' };
@@ -86,13 +89,16 @@ const ClientLayoutEnhanced = ({ children }) => {
   };
 
   const navItems = [
-    { to: '/client/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { to: '/client/tools',     icon: Package,         label: 'My Tools'  },
-    { to: '/client/activity',  icon: Activity,        label: 'Activity'  },
-    { to: '/client/profile',   icon: User,            label: 'Profile'   },
+    { to: '/client/dashboard',       icon: LayoutDashboard, label: 'Dashboard'   },
+    { to: '/client/tools',           icon: Package,         label: 'My Tools'    },
+    { to: '/client/activity',        icon: Activity,        label: 'Activity'    },
+    { to: '/client/extension-guide', icon: PlayCircle,      label: 'Setup Guide' },
+    { to: '/client/profile',         icon: User,            label: 'Profile'     },
   ];
 
-  const isActive = (path) => location.pathname === path;
+  // Match the exact path OR any nested sub-route (e.g. /client/tools/:id highlights
+  // "My Tools"), so the active item is correct on detail pages too.
+  const isActive = (path) => location.pathname === path || location.pathname.startsWith(path + '/');
   const pageMeta = getPageMeta(location.pathname);
   const initials = user?.fullName
     ? user.fullName.split(' ').map((n) => n[0]).join('').slice(0, 2)
@@ -173,8 +179,12 @@ const ClientLayoutEnhanced = ({ children }) => {
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
       {/* Desktop Sidebar */}
+      {/* Rendered as a function call (not <Sidebar/>) so its elements inline into this
+          component's tree. Sidebar is defined inside the component, so using it as a JSX
+          element type made React remount the whole sidebar on every re-render; calling it
+          reconciles in place instead. Sidebar uses no hooks, so this is safe. */}
       <div className="hidden lg:flex flex-shrink-0">
-        <Sidebar />
+        {Sidebar({})}
       </div>
 
       {/* Mobile Sidebar Overlay */}
@@ -194,7 +204,7 @@ const ClientLayoutEnhanced = ({ children }) => {
               exit={reduce ? undefined : { x: -300 }}
               transition={{ type: 'tween', ease: [0.16, 1, 0.3, 1], duration: 0.3 }}
             >
-              <Sidebar mobile />
+              {Sidebar({ mobile: true })}
               <button className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors"
                       onClick={() => setSidebarOpen(false)} aria-label="Close menu">
                 <X size={20} />
@@ -213,6 +223,7 @@ const ClientLayoutEnhanced = ({ children }) => {
             {pageMeta.sub && <p className="text-white/55 text-[13px]">{pageMeta.sub}</p>}
           </div>
           <div className="flex items-center gap-3">
+            <RefreshButton variant="dark" />
             <a href={WHATSAPP_URL} target="_blank" rel="noopener noreferrer"
                className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-emerald-300 border border-emerald-400/30 rounded-xl hover:bg-emerald-400/10 transition-all">
               <MessageCircle size={14} /> Support
@@ -231,9 +242,12 @@ const ClientLayoutEnhanced = ({ children }) => {
             <Menu size={22} />
           </button>
           <BrandLogo size="sm" glow />
-          <Link to="/client/profile" className="text-white/70 hover:text-white transition-colors" aria-label="Profile">
-            <User size={20} />
-          </Link>
+          <div className="flex items-center gap-2">
+            <RefreshButton variant="dark" className="!h-8 !w-8" />
+            <Link to="/client/profile" className="text-white/70 hover:text-white transition-colors" aria-label="Profile">
+              <User size={20} />
+            </Link>
+          </div>
         </div>
 
         {/* Page Content */}

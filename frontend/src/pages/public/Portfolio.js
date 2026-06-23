@@ -26,7 +26,7 @@ const Portfolio = () => {
       />
 
       {/* Filters */}
-      <section className="px-5 -mt-6">
+      <section className="relative z-[1] px-5 -mt-6">
         <div className="gz-container">
           <div className="flex flex-wrap justify-center gap-2 mb-12" data-testid="portfolio-filters">
             {ALL_TAGS.map((f) => (

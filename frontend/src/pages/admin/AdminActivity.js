@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
-import { Activity, Search, Filter, RefreshCw, ChevronLeft, ChevronRight, Calendar, Download, History } from 'lucide-react';
+import { Activity, Search, Filter, ChevronLeft, ChevronRight, Calendar, Download, History } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { useRegisterRefresh } from '../../contexts/RefreshContext';
 
 const AdminActivity = () => {
   const { showError } = useToast();
@@ -64,17 +65,39 @@ const AdminActivity = () => {
     }
   };
 
-  const exportToCSV = () => {
+  // Wire the shared topbar refresh button to reload this page's data (no full reload).
+  // Declared AFTER loadActivities so it isn't referenced in the temporal dead zone.
+  useRegisterRefresh(loadActivities);
+
+  const exportToCSV = async () => {
+    // Export ALL rows matching the current filters, not just the page on screen.
+    // Previously this only serialized `activities` (the current 20-row page), so the
+    // CSV silently dropped everything beyond page 1.
+    let rowsData = activities;
+    try {
+      const params = new URLSearchParams({ page: 1, limit: 100000 });
+      if (filters.role) params.append('role', filters.role);
+      if (filters.action) params.append('action', filters.action);
+      if (filters.startDate) params.append('startDate', filters.startDate);
+      if (filters.endDate) params.append('endDate', filters.endDate);
+      if (filters.search) params.append('search', filters.search.trim());
+      const res = await api.get(`/admin/activity?${params}`);
+      if (Array.isArray(res.data.activities) && res.data.activities.length) rowsData = res.data.activities;
+    } catch {
+      showError('Could not fetch all records — exporting the current page only.');
+    }
+
     const headers = ['Time', 'Email', 'Role', 'Action', 'Details'];
-    const rows = activities.map(a => [
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`; // CSV-escape embedded quotes
+    const rows = rowsData.map(a => [
       formatDate(a.createdAt),
       a.actorId?.email || a.meta?.email || 'N/A',
       a.actorRole,
       a.action,
       getActivityDescription(a)
     ]);
-    
-    const csvContent = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
+
+    const csvContent = [headers.join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -145,12 +168,30 @@ const AdminActivity = () => {
 
   const totalPages = Math.ceil(pagination.total / pagination.limit);
 
+  // These MUST match the exact action strings the backend writes via ActivityLog.log
+  // (see backend routes/models). Previously several values here ('LOGIN_BLOCKED_DISABLED',
+  // 'BULK_ASSIGNMENT', 'TOOL_COOKIES_ACCESSED') matched NO real action, so selecting them
+  // always returned "No activity found"; and key events (failed logins, registrations,
+  // tool opens, password resets) were missing entirely.
   const actionTypes = [
-    'ADMIN_LOGIN', 'CLIENT_LOGIN', 'LOGIN_BLOCKED_DISABLED', 'LOGIN_BLOCKED_DEVICE',
-    'TOOL_CREATED', 'TOOL_UPDATED', 'TOOL_DELETED',
-    'CLIENT_CREATED', 'CLIENT_UPDATED', 'CLIENT_DELETED',
-    'TOOL_ASSIGNED', 'TOOL_UNASSIGNED', 'BULK_ASSIGNMENT',
-    'DEVICE_RESET', 'TOOL_COOKIES_ACCESSED'
+    // Auth & sessions
+    'ADMIN_LOGIN', 'ADMIN_LOGIN_FAILED', 'ADMIN_LOGIN_BLOCKED',
+    'CLIENT_LOGIN', 'CLIENT_LOGIN_FAILED', 'CLIENT_LOGIN_BLOCKED',
+    'CLIENT_REGISTERED', 'LOGOUT', 'TOKEN_REFRESHED',
+    'LOGIN_BLOCKED_DEVICE', 'DEVICE_BOUND', 'DEVICE_RESET',
+    'PASSWORD_CHANGED', 'PASSWORD_RESET_REQUESTED', 'PASSWORD_RESET_COMPLETED',
+    'EMAIL_VERIFIED', 'EMAIL_VERIFICATION_RESENT',
+    // Clients
+    'CLIENT_CREATED', 'CLIENT_UPDATED', 'CLIENT_DELETED', 'CLIENT_BULK_ACTION', 'CLIENT_FORCE_LOGOUT',
+    // Tools
+    'TOOL_CREATED', 'TOOL_UPDATED', 'TOOL_DELETED', 'TOOL_OPENED',
+    // Assignments
+    'TOOL_ASSIGNED', 'TOOL_UNASSIGNED', 'TOOL_BULK_ASSIGNED',
+    'ASSIGNMENT_EXTENDED', 'ASSIGNMENT_REVOKED', 'ASSIGNMENT_UPDATED', 'ASSIGNMENT_EXPIRED',
+    // Extension
+    'EXTENSION_ACTIVATED', 'EXTENSION_AUTH', 'EXTENSION_AUTH_FAILED', 'EXTENSION_CREDENTIALS_FETCH',
+    // Proxy / StealthWriter leases
+    'PROXY_LEASE_ISSUED', 'PROXY_LEASE_REVOKED', 'STEALTH_LEASE_ISSUED', 'STEALTH_LEASE_REVOKED',
   ];
 
   return (
@@ -165,14 +206,6 @@ const AdminActivity = () => {
             </h1>
             <p className="text-genz-muted">Monitor all system activities and events</p>
           </div>
-          <button
-            onClick={loadActivities}
-            className={`flex items-center gap-2 px-4 py-2.5 ${ADMIN_CARD_VARIANTS.default} rounded-xl text-genz-navy hover:border-genz-teal/50 transition-colors`}
-            data-testid="refresh-activity-btn"
-          >
-            <RefreshCw size={18} />
-            Refresh
-          </button>
         </div>
 
         {/* Filters */}

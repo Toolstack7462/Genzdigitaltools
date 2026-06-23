@@ -6,6 +6,7 @@ import {
   Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome, Megaphone
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
+import RefreshButton from './RefreshButton';
 import api from '../services/api';
 
 const NAV_ITEMS = [
@@ -167,10 +168,13 @@ const AdminLayoutEnhanced = ({ children }) => {
           <h1 className="font-heading text-white font-bold text-[20px]">
             {getAdminTitle(location.pathname)}
           </h1>
-          <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-white/70 border border-white/15 rounded-xl hover:text-white hover:border-genz-cyan/50 hover:bg-white/5 transition-all">
-            <ExternalLink size={14} /> View Site
-          </a>
+          <div className="flex items-center gap-3">
+            <RefreshButton variant="dark" />
+            <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 px-3.5 py-2 text-[13px] font-semibold text-white/70 border border-white/15 rounded-xl hover:text-white hover:border-genz-cyan/50 hover:bg-white/5 transition-all">
+              <ExternalLink size={14} /> View Site
+            </a>
+          </div>
         </header>
 
         {/* Mobile topbar */}
@@ -179,7 +183,7 @@ const AdminLayoutEnhanced = ({ children }) => {
             <Menu size={20} />
           </button>
           <span className="text-white font-bold text-sm">{getAdminTitle(location.pathname)}</span>
-          <div className="w-6" />
+          <RefreshButton variant="dark" className="!h-8 !w-8" />
         </div>
 
         <main className="app-main flex-1 overflow-y-auto p-5 sm:p-6" style={{ background: 'var(--gradient-app)' }}>

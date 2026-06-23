@@ -63,6 +63,7 @@ import WhatsAppButton from './components/WhatsAppButton';
 import ScrollProgress from './components/public/ScrollProgress';
 import ScrollToTop from './components/ScrollToTop';
 import { ToastProvider } from './components/Toast';
+import { RefreshProvider } from './contexts/RefreshContext';
 import AdminRoute from './components/AdminRoute';
 import ClientRoute from './components/ClientRoute';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -123,6 +124,7 @@ const ClientToolsEnhanced = lazy(() => import('./pages/client/ClientToolsEnhance
 const ClientToolDetail = lazy(() => import('./pages/client/ClientToolDetail'));
 const ClientProfile = lazy(() => import('./pages/client/ClientProfile'));
 const ClientActivity = lazy(() => import('./pages/client/ClientActivity'));
+const ClientExtensionGuide = lazy(() => import('./pages/client/ClientExtensionGuide'));
 const ClientStealthWriter = lazy(() => import('./pages/client/ClientStealthWriter'));
 
 // Public layout wrapper
@@ -140,6 +142,7 @@ const PublicPage = ({ children }) => (
 function App() {
   return (
     <ToastProvider>
+     <RefreshProvider>
       <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
           <ScrollToTop />
@@ -208,6 +211,7 @@ function App() {
             <Route path="/client/stealthwriter" element={<ErrorBoundary><ClientRoute><ClientStealthWriter /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/profile" element={<ErrorBoundary><ClientRoute><ClientProfile /></ClientRoute></ErrorBoundary>} />
             <Route path="/client/activity" element={<ErrorBoundary><ClientRoute><ClientActivity /></ClientRoute></ErrorBoundary>} />
+            <Route path="/client/extension-guide" element={<ErrorBoundary><ClientRoute><ClientExtensionGuide /></ClientRoute></ErrorBoundary>} />
 
             {/* ── 404 ─────────────────────────────────────────── */}
             <Route path="*" element={<NotFound />} />
@@ -215,6 +219,7 @@ function App() {
           </Suspense>
         </BrowserRouter>
       </div>
+     </RefreshProvider>
     </ToastProvider>
   );
 }

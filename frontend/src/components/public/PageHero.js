@@ -47,7 +47,7 @@ const PageHero = ({
             </div>
           )}
 
-          <h1 className="font-heading font-extrabold text-genz-navy leading-[1.08] text-4xl sm:text-5xl lg:text-6xl tracking-tight mb-5">
+          <h1 className="font-heading font-extrabold text-genz-navy leading-[1.08] text-3xl sm:text-5xl lg:text-6xl tracking-tight mb-5 break-words">
             {title}
           </h1>
 

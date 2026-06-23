@@ -46,6 +46,14 @@
     font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
   }
+  /* Global guard against horizontal bleed on mobile: a stray full-bleed / wide
+     element was pushing the page ~30px wider than the viewport, which clipped the
+     right edge of headings, paragraphs and the navbar's menu button on small
+     screens. Clamp page width to the viewport so normal content always fits. */
+  html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
 }
 
 @layer utilities {
