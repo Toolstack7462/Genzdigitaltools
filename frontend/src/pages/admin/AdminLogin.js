@@ -8,7 +8,7 @@ import {
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 import api from '../../services/api';
-import { classifyTransport, authDiag } from '../../services/authDiagnostics';
+import { classifyTransport, authDiag, newRequestId } from '../../services/authDiagnostics';
 
 const CONSOLE = [
   { icon: Package,  label: 'Tools',    color: '#06B6D4' },
@@ -29,9 +29,12 @@ const AdminLogin = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+    // Correlation id sent as X-Request-Id so the backend [login-diag] line for this admin
+    // attempt is searchable by the same id the operator sees in the console.
+    const rid = newRequestId();
 
     try {
-      const response = await api.post('/auth/admin/login', formData);
+      const response = await api.post('/auth/admin/login', formData, { headers: { 'X-Request-Id': rid } });
       const data = response.data;
 
       localStorage.setItem('genz_admin_user', JSON.stringify(data.user));
@@ -41,7 +44,7 @@ const AdminLogin = () => {
     } catch (error) {
       // Secret-free diagnostic + transport classification (mirrors the client flow) so a
       // connection / timeout / blocked-host failure is identifiable instead of generic.
-      console.error('[admin-login] failed:', authDiag(error));
+      console.error('[admin-login] failed:', authDiag(error, { rid }));
       const transport = classifyTransport(error);
       if (transport) {
         showError(transport.message);

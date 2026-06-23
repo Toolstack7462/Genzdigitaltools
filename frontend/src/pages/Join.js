@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
-import { classifyTransport, authDiag, pingHealth } from '../services/authDiagnostics';
+import { classifyTransport, authDiag, pingHealth, newRequestId, collectClientDiag, loginDebugEnabled } from '../services/authDiagnostics';
 
 const EASE_OUT = [0.16, 1, 0.3, 1];
 const BRAND_CTA = 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)';
@@ -51,6 +51,7 @@ const Join = () => {
   const [resending, setResending] = useState(false);
   const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [agreed, setAgreed] = useState(false);
+  const [errorId, setErrorId] = useState(null); // quotable correlation id on signup failure
 
   // Member signup belongs on the app subdomain. If a public-domain link (or a
   // client-side nav the domain guard can't catch) lands here on the main domain,
@@ -72,6 +73,8 @@ const Join = () => {
       showError('Password must be at least 6 characters');
       return;
     }
+    const rid = newRequestId(); // correlation id for this signup attempt (X-Request-Id + Error ID)
+    setErrorId(null);
     try {
       setLoading(true);
       // The backend recycles periodically (shared hosting); during that ~1-2s window a
@@ -84,7 +87,7 @@ const Join = () => {
       let response;
       for (let attempt = 0; ; attempt++) {
         try {
-          response = await api.post('/public/register', payload);
+          response = await api.post('/public/register', payload, { headers: { 'X-Request-Id': rid } });
           break;
         } catch (err) {
           // A retry that now hits 409 means the FIRST attempt actually created the account
@@ -130,8 +133,11 @@ const Join = () => {
       const transport = classifyTransport(error);
 
       // Secret-free diagnostic (mirrors the login screen) so a member reporting a
-      // signup failure can be told exactly which branch fired.
-      console.error('[client-signup] failed:', authDiag(error));
+      // signup failure can be told exactly which branch fired. rid ties it to the backend
+      // [signup] logs + the on-screen Error ID.
+      setErrorId(rid);
+      console.error('[client-signup] failed:', authDiag(error, { rid }));
+      if (loginDebugEnabled()) console.log('[signup-debug]', collectClientDiag(error, { rid }));
 
       // Specific reason + [CODE] instead of a blanket "Server is busy".
       if (transport) {
@@ -436,6 +442,12 @@ const Join = () => {
                   {loading ? <><Loader2 size={18} className="animate-spin" /> Creating account…</> : <>Create account <ArrowRight size={16} /></>}
                 </motion.button>
               </motion.form>
+
+              {errorId && (
+                <p className="mt-4 text-center text-[12px] text-genz-muted">
+                  Error ID: <span className="font-mono text-genz-navy/80 select-all">{errorId}</span>
+                </p>
+              )}
 
               <div className="mt-6 text-center">
                 <p className="text-genz-muted text-sm">

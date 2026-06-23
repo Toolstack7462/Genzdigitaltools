@@ -6,7 +6,7 @@ import {
   Cpu, Globe, Palette, Instagram, Rocket, CheckCircle2, RefreshCw,
 } from 'lucide-react';
 import { authService } from '../../services/authService';
-import { classifyTransport, authDiag, pingHealth } from '../../services/authDiagnostics';
+import { classifyTransport, authDiag, pingHealth, newRequestId, collectClientDiag, loginDebugEnabled } from '../../services/authDiagnostics';
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 
@@ -27,6 +27,10 @@ const ClientLogin = () => {
   // Shown only after a connection-level failure so the member can re-attempt without
   // re-typing — a real wrong-password/disabled error does NOT show it.
   const [showRetry, setShowRetry] = useState(false);
+  // Correlation id + safe diagnostics surfaced as a small "Error ID" block on failure,
+  // so a member can quote it and support can grep the backend logs for the same id.
+  const [errorId, setErrorId] = useState(null);
+  const [errDiag, setErrDiag] = useState(null);
   // Hard guard against duplicate submits: the disabled button covers most cases, but a
   // ref blocks a second submit fired in the same tick (double-click / Enter+click) before
   // React re-renders the disabled state — so only ONE login request is ever in flight.
@@ -49,6 +53,11 @@ const ClientLogin = () => {
     if (submittingRef.current) return; // ignore repeat clicks while a request is in flight
     submittingRef.current = true;
     setShowRetry(false);
+    setErrorId(null);
+    setErrDiag(null);
+    // One correlation id per attempt — sent to the backend (X-Request-Id) and shown as
+    // the "Error ID" if this attempt fails.
+    const rid = newRequestId();
     setLoading(true); // show the spinner instantly, before any async work
     try {
       const deviceId = authService.getOrCreateDeviceId();
@@ -65,7 +74,7 @@ const ClientLogin = () => {
         deviceFingerprint: authService.getDeviceFingerprint(),
         os,
         browser,
-      });
+      }, rid);
       showSuccess('Welcome back to Gen Z Digital Store!');
       navigate('/client/dashboard');
     } catch (error) {
@@ -84,12 +93,14 @@ const ClientLogin = () => {
       // status-based branches below still own those cases. This is the device-specific
       // path — it is what makes a one-device "Login failed" identifiable.
       const transport = classifyTransport(error);
+      let reachable = null; // set when we actively probe health (the no-response path)
 
       // Console diagnostic (no secrets) so a member reporting "Login failed" can be
       // told exactly which branch fired. `hadResponse=false` means the request never
       // got a reply (network / CORS / cert / timeout); `status` present means the
-      // server answered and the message reflects its actual reason.
-      console.error('[client-login] failed:', authDiag(error, { storageAvailable: storageOk }));
+      // server answered and the message reflects its actual reason. rid ties it to the
+      // backend logs + the on-screen Error ID.
+      console.error('[client-login] failed:', authDiag(error, { rid, storageAvailable: storageOk }));
 
       // Each branch shows a CLEAR reason plus a short [CODE] so the exact problem is
       // identifiable at a glance (by the member and by support) instead of a vague
@@ -103,7 +114,7 @@ const ClientLogin = () => {
         if (transport.code === 'TIMEOUT') {
           showError(transport.message);
         } else {
-          const reachable = await pingHealth();
+          reachable = await pingHealth();
           showError(reachable
             ? 'Connection issue. Please try again in a moment. [API_CONNECTION_FAILED]'
             : transport.message);
@@ -137,6 +148,14 @@ const ClientLogin = () => {
       } else {
         showError((serverMsg || 'Login failed. Please try again.') + ' [UNKNOWN]');
       }
+
+      // Surface a quotable Error ID + a SAFE diagnostics snapshot (no secrets). The rich
+      // bundle is console-logged only when verbose debug is on (?debug=1 / localStorage),
+      // matching the env-gated backend [login-diag] so both sides correlate by rid.
+      setErrorId(rid);
+      const diag = collectClientDiag(error, { rid, reachable });
+      setErrDiag(diag);
+      if (loginDebugEnabled()) console.log('[login-debug]', diag);
     } finally {
       // Always reset so the user can retry after a failure.
       setLoading(false);
@@ -257,6 +276,27 @@ const ClientLogin = () => {
                   </button>
                 )}
               </form>
+
+              {/* Client-safe diagnostics: a quotable Error ID + non-sensitive facts only
+                  (no email, no password, no tokens). Support can grep backend logs by this id. */}
+              {errorId && (
+                <div className="mt-4 text-center">
+                  <p className="text-[12px] text-genz-muted">
+                    Error ID: <span className="font-mono text-genz-navy/80 select-all">{errorId}</span>
+                  </p>
+                  {errDiag && (
+                    <details className="mt-1 inline-block text-left">
+                      <summary className="text-[11px] text-genz-muted cursor-pointer select-none">Connection details</summary>
+                      <div className="mt-1 text-[11px] text-genz-muted/80 font-mono break-all leading-relaxed">
+                        <div>type: {errDiag.errorType}</div>
+                        <div>api: {errDiag.reachable === null ? 'n/a' : (errDiag.reachable ? 'reachable' : 'unreachable')}</div>
+                        <div>online: {String(errDiag.online)} · timeout: {String(errDiag.timeout)}</div>
+                        <div>build: {errDiag.bundle}</div>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
 
               <div className="mt-6 pt-5 border-t border-genz-border text-center space-y-2.5">
                 <Link to="/forgot-password" className="block text-[14px] text-genz-blue hover:underline font-semibold">Forgot your password?</Link>

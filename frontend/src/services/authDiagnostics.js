@@ -130,3 +130,92 @@ export function classifyTransport(error) {
 
   return null;
 }
+
+// Short, URL-safe correlation id for ONE login/signup attempt. The same id is sent to
+// the backend (X-Request-Id header) and shown to the user as "Error ID", so a reported
+// failure is searchable in the server's [login-diag]/[auth:*]/[signup] logs.
+export function newRequestId() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID().slice(0, 8);
+  } catch (_) { /* fall through */ }
+  return Math.random().toString(36).slice(2, 10);
+}
+
+// Mask an email for any client-side log: user@gmail.com -> u***@gmail.com.
+export function maskEmail(email) {
+  const s = String(email || '');
+  const at = s.indexOf('@');
+  if (at <= 0) return s ? '***' : '';
+  return s[0] + '***' + s.slice(at);
+}
+
+// Verbose client logging is OFF by default. Turn it on per-device WITHOUT a redeploy via
+// ?debug=1 in the URL or localStorage.genz_login_debug='1'. The basic one-line authDiag()
+// stays always-on; this only gates the richer console dump.
+export function loginDebugEnabled() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    if (p.get('debug') === '1' || p.get('debug') === 'true') return true;
+    return window.localStorage.getItem('genz_login_debug') === '1';
+  } catch (_) { return false; }
+}
+
+// Best-effort, non-throwing service-worker / cache-storage status (for diagnosing stale
+// bundles). This app registers no SW, so "controlled" would flag a legacy one.
+function swCacheStatus() {
+  try {
+    if ('serviceWorker' in navigator) {
+      return navigator.serviceWorker.controller ? 'controlled-by-sw' : 'none';
+    }
+  } catch (_) { /* ignore */ }
+  return 'unsupported';
+}
+
+// A SAFE, non-secret bundle of client-side facts for diagnosing a login/signup failure.
+// NEVER includes passwords/tokens/cookies/emails (email is masked if passed in extra).
+export function collectClientDiag(error, extra = {}) {
+  const { host, origin, crossOrigin } = apiContext();
+  const transport = classifyTransport(error);
+  const status = error?.response?.status;
+  let errorType;
+  if (transport?.code === 'TIMEOUT') errorType = 'timeout';
+  else if (transport) errorType = 'network';            // unreachable / CORS / DNS / SSL
+  else if (status === 404) errorType = '404';
+  else if (status === 401) errorType = 'invalid_credentials';
+  else if (status === 403) errorType = 'forbidden';
+  else if (status === 429) errorType = 'rate_limited';
+  else if (status >= 500) errorType = 'server';
+  else if (status) errorType = 'http_' + status;
+  else errorType = 'unknown';
+
+  let bundle = 'unknown';
+  try {
+    const s = document.querySelector('script[src*="/static/js/main."]');
+    if (s) bundle = s.src.split('/').pop();
+  } catch (_) { /* ignore */ }
+
+  const ua = (typeof navigator !== 'undefined' ? navigator.userAgent : '') || '';
+  let browser = 'Browser';
+  if (/Edg\//.test(ua)) browser = 'Edge';
+  else if (/OPR\//.test(ua) || /Opera/.test(ua)) browser = 'Opera';
+  else if (/Chrome\//.test(ua)) browser = 'Chrome';
+  else if (/Firefox\//.test(ua)) browser = 'Firefox';
+  else if (/Safari\//.test(ua)) browser = 'Safari';
+
+  return {
+    ...extra,                               // rid, healthEndpoint, reachable, email(masked)
+    errorType,
+    status: status || null,
+    axiosCode: error?.code || null,
+    timeout: error?.code === 'ECONNABORTED',
+    online: typeof navigator !== 'undefined' ? navigator.onLine : null,
+    apiHost: host,
+    apiOrigin: origin,
+    crossOrigin,
+    appOrigin: (typeof window !== 'undefined' && window.location) ? window.location.origin : '',
+    bundle,
+    browser,
+    serviceWorker: swCacheStatus(),
+    ua: ua.slice(0, 160),
+  };
+}

@@ -137,6 +137,24 @@ app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true, limit: '100kb' }));
 app.use(cookieParser());
 
+// ── Correlation ID (safe, no PII) ────────────────────────────────────────────
+// Ties a frontend "Error ID" to backend login-diagnostics so a reported failure is
+// searchable in the logs. Uses the client-sent X-Request-Id when present (sanitized
+// to word chars/hyphen), else generates a short one; echoes it back in the response.
+// Sets req.requestId only — it never logs anything on its own.
+const crypto = require('crypto');
+app.use((req, res, next) => {
+  try {
+    const incoming = req.headers['x-request-id'];
+    const cleaned = (typeof incoming === 'string' && incoming.trim())
+      ? incoming.trim().slice(0, 40).replace(/[^\w-]/g, '')
+      : '';
+    req.requestId = cleaned || crypto.randomUUID().slice(0, 8);
+    res.set('X-Request-Id', req.requestId);
+  } catch (_) { /* never block a request over diagnostics */ }
+  next();
+});
+
 // ============================================================================
 // PERSISTENT MYSQL/MARIADB DATABASE CONNECTION
 // ============================================================================

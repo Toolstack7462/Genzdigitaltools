@@ -54,26 +54,71 @@ function emailMatch(email) {
   return { $regex: `^\\s*${esc}\\s*$`, $options: 'i' };
 }
 
+// Mask an email for logs: keep the first char + domain, hide the local part.
+//   user@gmail.com -> u***@gmail.com   (never log a full address)
+function maskEmail(e) {
+  const s = String(e || '');
+  const at = s.indexOf('@');
+  if (at <= 0) return s ? '***' : '';
+  return s[0] + '***' + s.slice(at);
+}
+
 // Safe, structured auth logging. Pinpoints the exact failure stage without ever
-// emitting passwords, tokens, cookies or password hashes.
+// emitting passwords, tokens, cookies or password hashes. Any `email` field is masked.
 function logAuth(tag, stage, info = {}) {
   try {
     const parts = Object.entries(info)
       .filter(([, v]) => v !== undefined && v !== null && v !== '')
-      .map(([k, v]) => `${k}=${v}`)
+      .map(([k, v]) => `${k}=${k === 'email' ? maskEmail(v) : v}`)
       .join(' ');
     console.log(`[auth:${tag}] stage=${stage}${parts ? ' ' + parts : ''}`);
   } catch (_) { /* logging must never break the request */ }
 }
 
+// Verbose, ENV-GATED per-attempt diagnostics (DEBUG_LOGIN_DIAGNOSTICS=true). Logs ONE
+// line on response 'finish', so it captures the FINAL status + timing without touching
+// every return branch. Strictly non-sensitive: no body, no password/token/cookie — only
+// method, path, status, ms, a derived error type, origin, truncated UA, ip, masked email
+// and the correlation id. Off by default ⇒ no verbose logs are kept permanently.
+const loginDebugOn = () => process.env.DEBUG_LOGIN_DIAGNOSTICS === 'true';
+function attachLoginDiag(req, res, t0) {
+  if (!loginDebugOn()) return;
+  res.on('finish', () => {
+    try {
+      const sc = res.statusCode;
+      const type = sc < 400 ? 'success'
+        : sc === 400 ? 'validation'
+        : sc === 401 ? 'invalid_credentials'
+        : sc === 403 ? 'blocked'
+        : sc === 429 ? 'rate_limited'
+        : sc >= 500 ? 'server' : 'other';
+      const ua = String(req.headers['user-agent'] || '').slice(0, 120);
+      const line = [
+        `rid=${req.requestId || ''}`,
+        `method=${req.method}`,
+        `path=${req.path}`,
+        `status=${sc}`,
+        `ms=${Date.now() - t0}`,
+        `type=${type}`,
+        `origin=${req.headers.origin || ''}`,
+        `ip=${getClientIp(req)}`,
+        `email=${maskEmail(req.body && req.body.email)}`,
+        `ua="${ua}"`,
+      ].join(' ');
+      console.log(`[login-diag] ${line}`);
+    } catch (_) { /* diagnostics must never break the request */ }
+  });
+}
+
 // ─── POST /api/crm/auth/admin/login ─────────────────────────────────────────
 router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.adminLogin), async (req, res) => {
+  attachLoginDiag(req, res, Date.now());
   try {
     const { email, password } = req.body;
     const ip = getClientIp(req);
 
     // Arrival marker — same diagnostic purpose as the client flow (see below).
-    logAuth('admin', 'attempt', { email, ip });
+    logAuth('admin', 'attempt', { rid: req.requestId, email, ip });
 
     const admin = await User.findOne({ email: emailMatch(email), role: { $in: ['SUPER_ADMIN', 'ADMIN', 'SUPPORT'] } });
     if (!admin) {
@@ -119,6 +164,7 @@ router.post('/admin/login', authLimiter, normalizeAuthInputs, validate(schemas.a
 
 // ─── POST /api/crm/auth/client/login ────────────────────────────────────────
 router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.clientLogin), async (req, res) => {
+  attachLoginDiag(req, res, Date.now());
   try {
     const { email, password, deviceId } = req.body;
     const ip = getClientIp(req);
@@ -126,8 +172,8 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
     // Log arrival FIRST. If a "Login failed" report has NO matching `attempt` line in
     // the server log, the request never reached this handler (CORS / preflight /
     // proxy / timeout) rather than failing inside it — the single most useful split
-    // for diagnosing cross-origin login failures.
-    logAuth('client', 'attempt', { email, ip });
+    // for diagnosing cross-origin login failures. The rid ties it to the client Error ID.
+    logAuth('client', 'attempt', { rid: req.requestId, email, ip });
 
     // Fetch ALL client rows matching this email (case-insensitive on both email and
     // role). Migrated/legacy data can contain DUPLICATE rows for the same address —

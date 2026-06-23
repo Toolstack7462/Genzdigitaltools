@@ -12,7 +12,8 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
   const t0 = Date.now(); // [signup-diag] total request timing
   try {
     const { fullName, email, password } = req.body;
-    console.log(`[signup] stage=attempt email=${email || '(none)'}`);
+    const maskE = (e) => { const s = String(e || ''); const at = s.indexOf('@'); return at <= 0 ? (s ? '***' : '(none)') : s[0] + '***' + s.slice(at); };
+    console.log(`[signup] stage=attempt rid=${req.requestId || ''} email=${maskE(email)}`);
 
     // Validation
     if (!fullName || !email || !password) {
@@ -56,7 +57,7 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
       }
     });
 
-    console.log(`[signup] stage=created email=${client.email} ms=${Date.now() - t0}`);
+    console.log(`[signup] stage=created rid=${req.requestId || ''} email=${maskE(client.email)} ms=${Date.now() - t0}`);
 
     // Send an email-verification OTP (best-effort — never blocks signup). Login
     // is intentionally left unchanged; verification is additive. The Resend call is
@@ -91,7 +92,7 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
   } catch (error) {
     // [signup-diag] Capture the EXACT failure point + timing + error so a generic
     // "Server is busy" / "Registration failed" is never a mystery again.
-    console.error(`[signup] stage=error totalMs=${Date.now() - t0} name=${error && error.name} code=${error && (error.code || error.errno)} msg=${error && error.message}`);
+    console.error(`[signup] stage=error rid=${req.requestId || ''} totalMs=${Date.now() - t0} name=${error && error.name} code=${error && (error.code || error.errno)} msg=${error && error.message}`);
     console.error(error && error.stack ? error.stack : error);
 
     // Handle validation errors
