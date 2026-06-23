@@ -85,13 +85,18 @@ jobs:
           # mirror -R = upload local→remote (incremental; no --delete, so server-only
           # files like the app root's own .htaccess are never wiped). --no-perms because
           # the shared host rejects chmod. *.map source maps are not published.
-          common="set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 25; set net:persist-retries 2;"
+          #
+          # SINGLE connection only: Hostinger's SFTP throttles/refuses concurrent
+          # connections, so a parallel mirror dies with "max-retries exceeded". We force
+          # ONE serial connection (mirror:use-pget-n 1, no --parallel) and give it
+          # generous retries/reconnect — matching the single-connection manual deploy.
+          common="set sftp:auto-confirm yes; set net:max-retries 5; set net:timeout 40; set net:persist-retries 5; set net:reconnect-interval-base 5; set mirror:parallel-transfer-count 1; set mirror:use-pget-n 1;"
           echo "==> [1/2] main domain root"
           lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-            "$common mirror -R --no-perms --parallel=4 --verbose --exclude-glob *.map frontend/build/ $MAIN_WEB/; bye"
+            "$common mirror -R -c --no-perms --verbose --exclude-glob *.map frontend/build/ $MAIN_WEB/; bye"
           echo "==> [2/2] app subdomain root (never overwrite its .htaccess)"
           lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-            "$common mirror -R --no-perms --parallel=4 --verbose --exclude-glob *.map --exclude-glob .htaccess frontend/build/ $APP_WEB/; bye"
+            "$common mirror -R -c --no-perms --verbose --exclude-glob *.map --exclude-glob .htaccess frontend/build/ $APP_WEB/; bye"
           echo "==> SFTP upload complete to both roots."
 
       - name: Verify live bundle on both domains
@@ -101,9 +106,11 @@ jobs:
           echo "Expected live bundle: $LOCAL"
           fail=0
           for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
-            # Retry briefly to ride out any propagation.
-            for i in 1 2 3 4 5; do
-              LIVE="$(curl -s --max-time 20 "$d/index.html" | grep -o 'main\.[a-z0-9]*\.js' | head -1 || true)"
+            # Retry to ride out CDN propagation (index.html is served no-cache, so this
+            # converges quickly once the origin file is replaced).
+            LIVE=""
+            for i in $(seq 1 10); do
+              LIVE="$(curl -s --max-time 20 "$d/index.html?cb=$i$RANDOM" | grep -o 'main\.[a-z0-9]*\.js' | head -1 || true)"
               [ "$LIVE" = "$LOCAL" ] && break
               sleep 6
             done
