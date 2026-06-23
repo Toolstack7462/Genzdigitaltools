@@ -73,11 +73,40 @@ const Join = () => {
     }
     try {
       setLoading(true);
-      const response = await api.post('/public/register', {
-        fullName: formData.name,
-        email: formData.email,
-        password: formData.password,
-      });
+      // The backend recycles periodically (shared hosting); during that ~1-2s window a
+      // request can get NO response or a 502/503/504, which previously surfaced as
+      // "Failed to create account". Retry such TRANSIENT failures. Registration is a
+      // POST, so if a retry returns 409 "already exists" it means the FIRST attempt
+      // actually succeeded (its response was just lost) — treat that as success and send
+      // the user to login rather than showing an error.
+      const payload = { fullName: formData.name, email: formData.email, password: formData.password };
+      let response;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          response = await api.post('/public/register', payload);
+          break;
+        } catch (err) {
+          // A retry that now hits 409 means the FIRST attempt actually created the account
+          // (its response was lost) — treat as success.
+          if (attempt > 0 && err.response?.status === 409) {
+            setSuccess(true);
+            showSuccess('Your account is ready. Please log in.');
+            setTimeout(() => navigate('/client/login'), 1800);
+            return;
+          }
+          // Do NOT retry on a client-side timeout (ECONNABORTED): the server may have
+          // already created the account, and re-sending could duplicate work. Only retry
+          // when the request did not execute (connection failure / gateway error).
+          const isTimeout = err.code === 'ECONNABORTED';
+          const connFailed = err.request && !err.response && !isTimeout;
+          const gateway = err.response && [502, 503, 504].includes(err.response.status);
+          if (attempt < 2 && (connFailed || gateway)) {
+            await new Promise((r) => setTimeout(r, 1200));
+            continue;
+          }
+          throw err;
+        }
+      }
       if (response.data.success) {
         if (response.data.emailVerificationRequired) {
           setVerifyStep(true);
@@ -89,8 +118,35 @@ const Join = () => {
         }
       }
     } catch (error) {
-      const errorMsg = error.response?.data?.error || 'Failed to create account. Please try again.';
-      showError(errorMsg);
+      const status = error.response?.status;
+      const serverMsg = error.response?.data?.error;
+
+      // Secret-free diagnostic (mirrors the login screen) so a member reporting a
+      // signup failure can be told exactly which branch fired.
+      console.error('[client-signup] failed:', {
+        status: status || null,
+        code: error.response?.data?.code || null,
+        axiosCode: error.code || null,
+        hadResponse: !!error.response,
+        hadRequest: !!error.request,
+      });
+
+      // Specific reason + [CODE] instead of a blanket "Server is busy".
+      if (status === 409) {
+        showError('An account with this email already exists. Please log in instead. [ACCOUNT_EXISTS]');
+      } else if (status === 429) {
+        showError('Too many attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
+      } else if (status === 400) {
+        showError((serverMsg || 'Please check your details and try again.') + ' [INVALID_DETAILS]');
+      } else if (status >= 500) {
+        showError('Something went wrong on our end while creating your account. Please try again in a moment. [SERVER_ERROR]');
+      } else if (error.code === 'ECONNABORTED') {
+        showError('The server is taking longer than usual to respond. Please wait a moment and try again. [TIMEOUT]');
+      } else if (error.request && !error.response) {
+        showError("We couldn't reach the server. Please check your internet connection and try again. [NO_CONNECTION]");
+      } else {
+        showError((serverMsg || 'Server is busy right now. Please try again in a moment.') + ' [UNKNOWN]');
+      }
     } finally {
       setLoading(false);
     }

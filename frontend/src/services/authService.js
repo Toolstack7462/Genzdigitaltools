@@ -173,15 +173,46 @@ class AuthService {
   }
 
   // ─── Device ID (UUID v4) ──────────────────────────────────────────────────
+  // MUST never throw. On devices where localStorage is unavailable — private /
+  // incognito mode, a "block cookies & site data" setting, or a locked-down
+  // corporate browser — even READING localStorage raises a SecurityError. That used
+  // to bubble out of the login submit handler with no error.response/request/code, so
+  // the UI fell through to a generic "Login failed. [UNKNOWN]" with no explanation,
+  // while the SAME credentials logged in fine on a normal browser (reaching the device
+  // approval step). We now catch that and fall back to a session-stable in-memory id so
+  // the request still goes out and the user sees the REAL outcome; isStorageAvailable()
+  // lets the login screen explain that site data is blocked.
   getOrCreateDeviceId() {
-    let id = localStorage.getItem('device_id');
-    if (!id) {
-      id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-        ? crypto.randomUUID()
-        : this._fallbackUUID();
-      localStorage.setItem('device_id', id);
+    try {
+      let id = localStorage.getItem('device_id');
+      if (!id) {
+        id = this._newDeviceId();
+        localStorage.setItem('device_id', id);
+      }
+      return id;
+    } catch {
+      if (!this._memDeviceId) this._memDeviceId = this._newDeviceId();
+      return this._memDeviceId;
     }
-    return id;
+  }
+
+  // True only when site data can actually be persisted. The login screen uses this to
+  // give a precise reason ("site data blocked") instead of a generic failure.
+  isStorageAvailable() {
+    try {
+      const k = '__genz_storage_test__';
+      localStorage.setItem(k, '1');
+      localStorage.removeItem(k);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  _newDeviceId() {
+    return (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : this._fallbackUUID();
   }
 
   _fallbackUUID() {

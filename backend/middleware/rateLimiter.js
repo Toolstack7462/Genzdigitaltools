@@ -13,19 +13,11 @@ const rateLimit = require('express-rate-limit');
  * why those failures never produced an [auth:client] attempt log). Keying by the first
  * X-Forwarded-For hop buckets by the REAL visitor, so one client can no longer lock out
  * others. Applied to the auth login limiter ONLY — other limiters are left untouched.
- *
- * [TEMP DEBUG] Logs req.ip vs the real IP on the first few requests, then goes quiet.
  */
-let _ipDiag = 0;
 function clientIp(req) {
   const xff = req.headers['x-forwarded-for'];
-  const real = xff ? String(xff).split(',')[0].trim()
-                   : (req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
-  if (_ipDiag < 10) {
-    _ipDiag++;
-    try { console.log(`[auth:ipdiag] reqip=${req.ip} xff=${xff || ''} real=${real} path=${req.originalUrl}`); } catch (_) {}
-  }
-  return real;
+  return xff ? String(xff).split(',')[0].trim()
+             : (req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
 }
 
 /**
@@ -47,15 +39,6 @@ const authLimiter = rateLimit({
   // Key by the REAL client IP (see clientIp) instead of Express req.ip, which is the
   // rotating/shared Hostinger CDN edge IP and locked unrelated clients out together.
   keyGenerator: clientIp,
-  // [TEMP DEBUG] Record every throttle with the real key + path, so a generic
-  // "Login Failed" that has NO [auth:client] attempt line is explained (a 429 is
-  // returned by this middleware before the route handler ever runs).
-  handler: (req, res, next, options) => {
-    try {
-      console.log(`[auth:ratelimit] stage=blocked key=${clientIp(req)} reqip=${req.ip} xff=${req.headers['x-forwarded-for'] || ''} path=${req.originalUrl}`);
-    } catch (_) {}
-    res.status(options.statusCode).json(options.message);
-  },
   // Disable express-rate-limit v7 dev validations: our custom keyGenerator intentionally
   // reads X-Forwarded-For, which would otherwise emit trust-proxy / IPv6 warnings. This
   // must never throw at startup.

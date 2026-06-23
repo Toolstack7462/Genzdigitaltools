@@ -27,15 +27,26 @@ function getBackendOrigin() {
   return window.location.origin;
 }
 
+let _memWebDeviceId = null;
 function getWebsiteDeviceId() {
-  let id = localStorage.getItem('device_id');
-  if (!id) {
-    id = (typeof crypto !== 'undefined' && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : `web_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    localStorage.setItem('device_id', id);
+  const mint = () => (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `web_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  try {
+    let id = localStorage.getItem('device_id');
+    if (!id) {
+      id = mint();
+      localStorage.setItem('device_id', id);
+    }
+    return id;
+  } catch {
+    // localStorage blocked (private/incognito, cookies blocked, locked-down browser):
+    // never throw — a session-stable in-memory id lets tool access still proceed and
+    // surface the REAL backend state instead of crashing the open flow. Mirrors
+    // authService.getOrCreateDeviceId().
+    if (!_memWebDeviceId) _memWebDeviceId = mint();
+    return _memWebDeviceId;
   }
-  return id;
 }
 
 function getBridgeMarker() {

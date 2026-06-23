@@ -49,6 +49,12 @@ const ClientLogin = () => {
       const code = error.response?.data?.code;
       const serverMsg = error.response?.data?.error;
 
+      // Whether this browser can persist site data at all. When it CANNOT,
+      // getOrCreateDeviceId() falls back to an in-memory id and may even fail before a
+      // request is sent — that path has no status/response, so without this check it
+      // would masquerade as a generic failure.
+      const storageOk = authService.isStorageAvailable();
+
       // Console diagnostic (no secrets) so a member reporting "Login failed" can be
       // told exactly which branch fired. `hadResponse=false` means the request never
       // got a reply (network / CORS / timeout); `status` present means the server
@@ -59,12 +65,19 @@ const ClientLogin = () => {
         axiosCode: error.code || null, // ECONNABORTED on timeout
         hadResponse: !!error.response,
         hadRequest: !!error.request,
+        storageAvailable: storageOk,
       });
 
       // Each branch shows a CLEAR reason plus a short [CODE] so the exact problem is
       // identifiable at a glance (by the member and by support) instead of a vague
       // "Login failed". The bracketed code mirrors the backend reason.
-      if (status === 429) {
+      if (!storageOk) {
+        // Root cause for the device-specific "Login failed": the browser is blocking
+        // cookies/site data, so device binding can't be stored. Lead with this — it
+        // takes precedence over the server reason (e.g. a "pending" message would be
+        // misleading because approval can't persist until site data is enabled).
+        showError('This browser is blocking cookies & site data, which secure sign-in and device binding require. Please allow cookies/site data for this site (or leave private/incognito mode), then try again. [STORAGE_BLOCKED]');
+      } else if (status === 429) {
         showError('Too many login attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
       } else if (code === 'DEVICE_PENDING') {
         showError('New device detected. Your account is locked to one device — ask the admin to approve THIS device, then sign in again. [NEW_DEVICE_PENDING]');
