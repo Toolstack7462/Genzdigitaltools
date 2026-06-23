@@ -9,9 +9,11 @@ const { normalizeAuthInputs } = require('../middleware/normalize');
 
 // POST /api/crm/public/register - Public client registration
 router.post('/register', normalizeAuthInputs, async (req, res) => {
+  const t0 = Date.now(); // [signup-diag] total request timing
   try {
     const { fullName, email, password } = req.body;
-    
+    console.log(`[signup] stage=attempt email=${email || '(none)'}`);
+
     // Validation
     if (!fullName || !email || !password) {
       return res.status(400).json({ 
@@ -54,19 +56,22 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
       }
     });
 
-    console.log(`✅ New client registered: ${client.email} (ID: ${client._id})`);
+    console.log(`[signup] stage=created email=${client.email} ms=${Date.now() - t0}`);
 
     // Send an email-verification OTP (best-effort — never blocks signup). Login
-    // is intentionally left unchanged; verification is additive.
+    // is intentionally left unchanged; verification is additive. The Resend call is
+    // now time-capped (utils/email.js) so a slow email API cannot hang signup.
     let emailSent = false;
     try {
       if (isEmailEnabled()) {
+        const te = Date.now();
         const { code } = await EmailVerification.issueOtp({ userId: client._id, email: client.email });
         const r = await sendVerificationEmail(client.email, code);
         emailSent = !r.error && !r.skipped;
+        console.log(`[signup] stage=email result=${emailSent ? 'sent' : (r.skipped ? 'skipped' : 'failed')} emailMs=${Date.now() - te}${r.error ? ' err=' + r.error : ''}`);
       }
     } catch (e) {
-      console.error('Verification email failed to send (signup still succeeded):', e.message);
+      console.error(`[signup] stage=email_exception msg=${e.message}`);
     }
 
     res.status(201).json({
@@ -84,22 +89,24 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Client registration error:', error);
-    
+    // [signup-diag] Capture the EXACT failure point + timing + error so a generic
+    // "Server is busy" / "Registration failed" is never a mystery again.
+    console.error(`[signup] stage=error totalMs=${Date.now() - t0} name=${error && error.name} code=${error && (error.code || error.errno)} msg=${error && error.message}`);
+    console.error(error && error.stack ? error.stack : error);
+
     // Handle validation errors
     if (error.name === 'ValidationError') {
       const errors = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({ error: errors.join(', ') });
+      return res.status(400).json({ error: errors.join(', '), code: 'SIGNUP_VALIDATION' });
     }
-    
-    // Handle duplicate key errors (shouldn't happen with pre-check, but just in case)
-    if (error.code === 11000) {
-      return res.status(409).json({ 
-        error: 'An account with this email already exists' 
-      });
+
+    // Duplicate email — Mongo (11000) OR MySQL (errno 1062 / ER_DUP_ENTRY). The old
+    // check only handled the Mongo code, which never fires on this MySQL adapter.
+    if (error.code === 11000 || error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+      return res.status(409).json({ error: 'An account with this email already exists', code: 'SIGNUP_DUPLICATE' });
     }
-    
-    res.status(500).json({ error: 'Registration failed. Please try again.' });
+
+    res.status(500).json({ error: 'Registration failed. Please try again.', code: 'SIGNUP_SERVER_ERROR' });
   }
 });
 

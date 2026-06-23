@@ -60,6 +60,12 @@ async function sendEmail({ to, subject, html, text }) {
   if (!to || !EMAIL_RE.test(String(to))) return { error: 'Invalid recipient email address' };
   if (!subject || (!html && !text)) return { error: 'Email is missing subject or body' };
 
+  // Cap the outbound Resend call. A slow/unreachable email API must never hang the
+  // request that triggered it — signup AWAITS this, and without a timeout the await
+  // blocked past the client's limit, surfacing to users as
+  // "Server is busy, please try again later". 8s keeps signup well under that limit.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
@@ -68,7 +74,9 @@ async function sendEmail({ to, subject, html, text }) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ from, to, subject, html, text }),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
 
     if (!resp.ok) {
       // Resend returns a small JSON error like { statusCode, name, message }.
@@ -90,8 +98,10 @@ async function sendEmail({ to, subject, html, text }) {
     const data = await resp.json().catch(() => ({}));
     return { id: data.id };
   } catch (err) {
-    console.error('[email] Failed to send email:', err.message);
-    return { error: 'Failed to send email' };
+    clearTimeout(timer);
+    const aborted = err && err.name === 'AbortError';
+    console.error('[email] Failed to send email:', aborted ? 'timed out after 8s' : err.message);
+    return { error: aborted ? 'Email service timed out' : 'Failed to send email' };
   }
 }
 
