@@ -33,6 +33,28 @@
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+        <!-- Self-heal stale caches on old devices. This app uses NO service worker; if a
+             device still has one registered from a past build (or stale Cache Storage),
+             unregister it and clear caches so the freshest bundle is always fetched.
+             Safe no-op when none exist. index.html itself is served no-cache (.htaccess),
+             and JS/CSS are content-hashed, so this only cleans up legacy SW/cache. -->
+        <script>
+          (function () {
+            try {
+              if ('serviceWorker' in navigator && navigator.serviceWorker.getRegistrations) {
+                navigator.serviceWorker.getRegistrations()
+                  .then(function (regs) { regs.forEach(function (r) { r.unregister(); }); })
+                  .catch(function () {});
+              }
+              if (window.caches && caches.keys) {
+                caches.keys()
+                  .then(function (keys) { keys.forEach(function (k) { caches.delete(k); }); })
+                  .catch(function () {});
+              }
+            } catch (e) { /* never block app start */ }
+          })();
+        </script>
     </head>
     <body>
         <noscript>You need to enable JavaScript to run this app.</noscript>

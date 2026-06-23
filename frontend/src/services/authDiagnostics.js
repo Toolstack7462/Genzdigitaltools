@@ -24,10 +24,41 @@ function apiContext() {
   try {
     const base = api?.defaults?.baseURL || '';
     const url = base ? new URL(base, window.location.origin) : new URL(window.location.origin);
-    return { host: url.host, crossOrigin: !!base && url.origin !== window.location.origin };
+    return { host: url.host, origin: url.origin, crossOrigin: !!base && url.origin !== window.location.origin };
   } catch {
-    return { host: '', crossOrigin: false };
+    return { host: '', origin: '', crossOrigin: false };
   }
+}
+
+/**
+ * Active reachability probe used by the login/signup screens to tell "the API is
+ * unreachable from this device" apart from a transient blip, a 404, or bad creds.
+ *
+ * GETs {apiOrigin}/api/health (then /health) with a short timeout, via fetch — NOT
+ * the axios instance — so the 401 auto-refresh interceptor never touches it, and
+ * never sends credentials/cookies. Returns:
+ *   true  → the server ANSWERED (any HTTP status, even 404) ⇒ API is reachable.
+ *   false → no response on either path ⇒ genuinely unreachable (offline / DNS /
+ *           firewall / VPN / ad-blocker / TLS-cert/clock / CORS-level block).
+ * Treating a 404 as "reachable" is deliberate: an old build hitting a not-yet-
+ * deployed health path must never be reported as a connection failure.
+ */
+export async function pingHealth(timeoutMs = 6000) {
+  const { origin } = apiContext();
+  if (!origin) return false;
+  for (const path of ['/api/health', '/health']) {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      // eslint-disable-next-line no-await-in-loop
+      const r = await fetch(origin + path, { method: 'GET', cache: 'no-store', signal: ctrl.signal });
+      clearTimeout(timer);
+      return !!r; // any response object = server reachable
+    } catch (_) {
+      // network/abort/CORS error → try the next path, else fall through to false
+    }
+  }
+  return false;
 }
 
 // Secret-free object to console.error so a member reporting a failure can be told

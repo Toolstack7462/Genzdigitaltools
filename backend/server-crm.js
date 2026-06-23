@@ -332,6 +332,23 @@ app.get('/api/crm/health', async (req, res) => {
   });
 });
 
+// ── Public unauthenticated health probes ────────────────────────────────────
+// Lightweight liveness endpoints (no DB hit) at BOTH /health and /api/health,
+// because external uptime checks and older/cached frontends probe either path —
+// the deep DB check stays at /api/crm/health. CORS is already applied globally
+// (app.use(cors) above), so these answer for the allowed app + main origins and
+// for no-Origin server-to-server calls. no-store so a 200 is never cached by a
+// proxy/browser and can't mask a later outage. Returns a stable shape the login
+// page can rely on to tell "API reachable" from "device cannot reach the API".
+const healthProbe = (req, res) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.json({ ok: true, status: 'healthy', service: 'genz-api' });
+};
+app.get('/health', healthProbe);
+app.get('/api/health', healthProbe);
+
 // Global error handler — never leak stack traces to client
 app.use((err, req, res, next) => {
   const isDev = process.env.NODE_ENV !== 'production';

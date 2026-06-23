@@ -1,12 +1,12 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
 import {
   Lock, Mail, Eye, EyeOff, Shield, ArrowRight, Sparkles,
-  Cpu, Globe, Palette, Instagram, Rocket, CheckCircle2,
+  Cpu, Globe, Palette, Instagram, Rocket, CheckCircle2, RefreshCw,
 } from 'lucide-react';
 import { authService } from '../../services/authService';
-import { classifyTransport, authDiag } from '../../services/authDiagnostics';
+import { classifyTransport, authDiag, pingHealth } from '../../services/authDiagnostics';
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 
@@ -24,16 +24,31 @@ const ClientLogin = () => {
   const [formData, setFormData] = useState({ email: '', password: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Shown only after a connection-level failure so the member can re-attempt without
+  // re-typing — a real wrong-password/disabled error does NOT show it.
+  const [showRetry, setShowRetry] = useState(false);
   // Hard guard against duplicate submits: the disabled button covers most cases, but a
   // ref blocks a second submit fired in the same tick (double-click / Enter+click) before
   // React re-renders the disabled state — so only ONE login request is ever in flight.
   const submittingRef = useRef(false);
 
+  // Log which frontend bundle THIS device is actually running (filename carries the
+  // content hash) so an affected member's console tells us instantly whether they're on
+  // a stale cached build. No secrets — just the public asset name + origin.
+  useEffect(() => {
+    try {
+      const s = document.querySelector('script[src*="/static/js/main."]');
+      const bundle = s ? s.src.split('/').pop() : 'unknown';
+      console.info(`[client-login] app bundle=${bundle} origin=${window.location.origin}`);
+    } catch (_) { /* diagnostics must never break the page */ }
+  }, []);
+
   // ── Auth logic unchanged ───────────────────────────────────────────────
   const handleSubmit = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault(); // also callable from the "Retry connection" button (no event)
     if (submittingRef.current) return; // ignore repeat clicks while a request is in flight
     submittingRef.current = true;
+    setShowRetry(false);
     setLoading(true); // show the spinner instantly, before any async work
     try {
       const deviceId = authService.getOrCreateDeviceId();
@@ -80,11 +95,24 @@ const ClientLogin = () => {
       // identifiable at a glance (by the member and by support) instead of a vague
       // "Login failed". The bracketed code mirrors the backend reason.
       if (transport) {
-        // Network / connection / timeout failure — the request never reached the API.
-        // Surface this BEFORE the storage hint: when the server was never contacted,
-        // a "cookies blocked" message would be misleading (the real fix is connectivity,
-        // device clock, or an extension/VPN/firewall block). [API_CONNECTION_FAILED]/[TIMEOUT]
-        showError(transport.message);
+        // The request got NO response. Surface this BEFORE the storage hint. Actively
+        // probe /api/health to tell a genuine "this device can't reach the API" apart
+        // from a transient blip — so we only show the long device-side checklist when the
+        // API is really unreachable, and a calm "try again" when it's actually up.
+        setShowRetry(true);
+        if (transport.code === 'TIMEOUT') {
+          showError(transport.message);
+        } else {
+          const reachable = await pingHealth();
+          showError(reachable
+            ? 'Connection issue. Please try again in a moment. [API_CONNECTION_FAILED]'
+            : transport.message);
+        }
+      } else if (status === 404) {
+        // A response WAS received, so the API is reachable. A 404 means a moved/updating
+        // route or a stale cached bundle calling an old path — NEVER a connection failure.
+        setShowRetry(true);
+        showError('The sign-in service is updating. Please hard-refresh the page (Ctrl/Cmd+Shift+R) and try again. [ROUTE_NOT_FOUND]');
       } else if (!storageOk) {
         // The browser is blocking cookies/site data, so device binding can't be stored.
         // Reached only when the server DID answer but persistence is impossible.
@@ -218,6 +246,16 @@ const ClientLogin = () => {
                   className="btn-grad w-full py-3.5 text-[15px] font-bold rounded-[14px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
                   {loading ? (<><span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" /> Signing In…</>) : (<>Sign In to Dashboard <ArrowRight size={16} /></>)}
                 </button>
+
+                {/* Appears only after a connection-level failure — lets the member
+                    re-attempt the SAME credentials without retyping. */}
+                {showRetry && (
+                  <button type="button" onClick={() => handleSubmit()} disabled={loading}
+                    data-testid="retry-connection-button"
+                    className="w-full py-3 text-[14px] font-semibold rounded-[14px] flex items-center justify-center gap-2 border border-genz-border text-genz-navy hover:border-genz-blue/50 hover:bg-genz-blue/5 transition-all disabled:opacity-60">
+                    <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Retry connection
+                  </button>
+                )}
               </form>
 
               <div className="mt-6 pt-5 border-t border-genz-border text-center space-y-2.5">

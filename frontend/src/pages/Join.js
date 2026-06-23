@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
-import { classifyTransport, authDiag } from '../services/authDiagnostics';
+import { classifyTransport, authDiag, pingHealth } from '../services/authDiagnostics';
 
 const EASE_OUT = [0.16, 1, 0.3, 1];
 const BRAND_CTA = 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)';
@@ -135,7 +135,18 @@ const Join = () => {
 
       // Specific reason + [CODE] instead of a blanket "Server is busy".
       if (transport) {
-        showError(transport.message);
+        // Probe /api/health to distinguish a genuine unreachable API from a transient
+        // blip, so we show a calm "try again" when the server is actually up.
+        if (transport.code === 'TIMEOUT') {
+          showError(transport.message);
+        } else {
+          const reachable = await pingHealth();
+          showError(reachable
+            ? 'Connection issue. Please try again in a moment. [API_CONNECTION_FAILED]'
+            : transport.message);
+        }
+      } else if (status === 404) {
+        showError('The sign-up service is updating. Please hard-refresh the page (Ctrl/Cmd+Shift+R) and try again. [ROUTE_NOT_FOUND]');
       } else if (status === 409) {
         showError('An account with this email already exists. Please log in instead. [ACCOUNT_EXISTS]');
       } else if (status === 429) {
