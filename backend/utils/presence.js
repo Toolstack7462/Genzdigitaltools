@@ -39,6 +39,18 @@ function normalizeEvent(event) {
   return EVENT_LABELS[event] ? event : 'dashboard';
 }
 
+// High-frequency heartbeat events (dashboard poll / extension sync). Only these
+// are eligible for the in-memory fast-path throttle below.
+const HEARTBEAT_EVENTS = new Set(['dashboard', 'extension_sync']);
+
+// In-process marker of the last DB write per client: clientId -> { at, event }.
+// Lets a flood of identical heartbeats short-circuit BEFORE the findOne (which is
+// a FULL-TABLE SCAN on the JSON store), so spamming /presence/ping costs a Map
+// lookup, not a DB scan. Bounded by client count; tiny entries. Hard-capped so a
+// long-lived process can never grow it without bound.
+const _lastWrite = new Map();
+const _LASTWRITE_MAX = 10000;
+
 // Is this presence row "online right now"? Pure function → unit-testable.
 function isOnline(row, now = Date.now(), windowMs = ONLINE_WINDOW_MS) {
   if (!row || !row.lastSeenAt) return false;
@@ -80,11 +92,21 @@ async function resolveClient(clientId, clientName, clientEmail) {
 async function recordPresence({ clientId, clientName, clientEmail, event, toolId, toolName, ip } = {}) {
   try {
     if (!clientId) return;
-    const ClientPresence = require('../models/ClientPresence');
+    const key = String(clientId);
     const ev = normalizeEvent(event);
     const now = new Date();
 
-    const existing = await ClientPresence.findOne({ clientId: String(clientId) });
+    // Fast path: a repeated heartbeat of the SAME event within the throttle window
+    // is dropped here, BEFORE touching the DB (no full-table scan). Event changes
+    // (login/logout/tool_launched, or a heartbeat after a different event) always
+    // proceed, so presence stays accurate.
+    if (HEARTBEAT_EVENTS.has(ev)) {
+      const prev = _lastWrite.get(key);
+      if (prev && prev.event === ev && (now.getTime() - prev.at) < THROTTLE_MS) return;
+    }
+
+    const ClientPresence = require('../models/ClientPresence');
+    const existing = await ClientPresence.findOne({ clientId: key });
 
     // Throttle: skip a write if we just recorded the SAME event very recently and
     // this is not a tool launch (tool launches always update the last tool name).
@@ -112,6 +134,11 @@ async function recordPresence({ clientId, clientName, clientEmail, event, toolId
     } else {
       await ClientPresence.create(fields);
     }
+
+    // Record the write so the in-memory fast path can short-circuit subsequent
+    // identical heartbeats. Cheap reset if the map ever grows unexpectedly large.
+    if (_lastWrite.size >= _LASTWRITE_MAX) _lastWrite.clear();
+    _lastWrite.set(key, { at: now.getTime(), event: ev });
   } catch (err) {
     // Presence tracking must never affect the caller.
     try { console.error('recordPresence failed:', err && err.message); } catch (_) { /* noop */ }
