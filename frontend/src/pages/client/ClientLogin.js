@@ -61,28 +61,34 @@ const ClientLogin = () => {
         hadRequest: !!error.request,
       });
 
+      // Each branch shows a CLEAR reason plus a short [CODE] so the exact problem is
+      // identifiable at a glance (by the member and by support) instead of a vague
+      // "Login failed". The bracketed code mirrors the backend reason.
       if (status === 429) {
-        showError('Too many login attempts. Please wait a minute and try again — no need to click repeatedly.');
+        showError('Too many login attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
       } else if (code === 'DEVICE_PENDING') {
-        showError('New device detected — pending admin approval. Please contact admin to approve this device.');
+        showError('New device detected. Your account is locked to one device — ask the admin to approve THIS device, then sign in again. [NEW_DEVICE_PENDING]');
       } else if (code === 'DEVICE_BLOCKED' || code === 'DEVICE_MISMATCH') {
-        showError('This device is blocked. Contact admin to approve or reset it.');
+        showError('This device is not approved for your account. Ask the admin to approve or reset your device. [DEVICE_BLOCKED]');
       } else if (status === 401) {
         // The server received the request and rejected it → genuinely wrong credentials.
-        showError(serverMsg || 'Incorrect email or password. Please try again.');
+        showError('Incorrect email or password. Please check them and try again. [WRONG_CREDENTIALS]');
       } else if (status === 403) {
-        showError(serverMsg || 'Your account cannot sign in right now. Please contact support.');
+        showError((serverMsg || 'Your account cannot sign in right now. Please contact support.') + ' [ACCESS_DENIED]');
+      } else if (status === 400) {
+        // Validation rejected the request (e.g. missing device id / malformed input).
+        showError((serverMsg || 'Your login could not be processed. Please refresh the page and try again.') + ' [INVALID_REQUEST]');
       } else if (status >= 500) {
         // Server was reached but errored — this is NOT a wrong-password situation.
-        showError(serverMsg || 'Something went wrong on our end while signing you in. Please try again in a moment.');
+        showError('Something went wrong on our end while signing you in. Please try again in a moment. [SERVER_ERROR]');
       } else if (error.code === 'ECONNABORTED') {
         // The request timed out before any response (e.g. server cold start).
-        showError('The server is taking longer than usual to respond. Please wait a moment and try again.');
+        showError('The server is taking longer than usual to respond. Please wait a moment and try again. [TIMEOUT]');
       } else if (error.request && !error.response) {
         // No response at all → network down, CORS block, or server unreachable.
-        showError("We couldn't reach the server. Please check your internet connection and try again.");
+        showError("We couldn't reach the server. Please check your internet connection and try again. [NO_CONNECTION]");
       } else {
-        showError(serverMsg || 'Login failed. Please try again.');
+        showError((serverMsg || 'Login failed. Please try again.') + ' [UNKNOWN]');
       }
     } finally {
       // Always reset so the user can retry after a failure.
