@@ -19,6 +19,7 @@ const { requireAuth, requireRole, getClientIp } = require('../../middleware/auth
 const accountSelect = require('../../utils/proxy/accountSelect');
 const leaseUtil = require('../../utils/proxy/lease');
 const tools = require('../../utils/proxy/tools');
+const { recordPresence } = require('../../utils/presence');
 
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 
@@ -120,6 +121,17 @@ router.post('/:tool/open', async (req, res) => {
     await ActivityLog.log('CLIENT', req.userId, 'PROXY_LEASE_ISSUED', {
       tool, proxyClientId: client._id, leaseId: leaseRow._id, ttlMinutes: leaseMinutes,
       accountId: account ? account._id : null, accountLabel: account ? account.label : null,
+      ip: getClientIp(req),
+    });
+
+    // Live presence for the admin activity monitor (fire-and-forget, fail-safe).
+    const toolInfo = tools.publicInfo(tool);
+    recordPresence({
+      clientId: req.userId,
+      clientName: req.user && req.user.fullName,
+      clientEmail: req.user && req.user.email,
+      event: 'tool_launched',
+      toolName: (toolInfo && toolInfo.name) || tool,
       ip: getClientIp(req),
     });
 

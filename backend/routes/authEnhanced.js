@@ -9,6 +9,7 @@ const DeviceBinding = require('../models/DeviceBinding');
 const DeviceProfile = require('../models/DeviceProfile');
 const SecurityAlert = require('../models/SecurityAlert');
 const ActivityLog = require('../models/ActivityLog');
+const { recordPresence } = require('../utils/presence');
 const {
   generateTokenPair,
   requireAuth,
@@ -263,6 +264,8 @@ router.post('/client/login', authLimiter, normalizeAuthInputs, validate(schemas.
       .then(() => client.save())
       .then(() => ActivityLog.log('CLIENT', client._id, 'CLIENT_LOGIN', { ip }))
       .catch((err) => console.error('[auth:client] post-login write failed:', err && err.message));
+    // Live presence for the admin activity monitor (fire-and-forget, fail-safe).
+    recordPresence({ clientId: client._id, clientName: client.fullName, clientEmail: client.email, event: 'login', ip });
     return;
   } catch (err) {
     // Log the FULL error server-side (stack included) to pinpoint the exact failure
@@ -338,6 +341,11 @@ async function handleLogout(req, res, refreshCookieName, accessCookieName) {
     if (token) await RefreshToken.revokeToken(hashToken(token), ip);
 
     await ActivityLog.log(req.userRole, req.userId, 'LOGOUT', { ip });
+
+    // Mark client presence as logged-out so they drop off "Online Now" at once.
+    if (req.userId && String(req.userRole).toUpperCase() === 'CLIENT') {
+      recordPresence({ clientId: req.userId, clientName: req.user && req.user.fullName, clientEmail: req.user && req.user.email, event: 'logout', ip });
+    }
 
     res.clearCookie(accessCookieName, CLEAR_OPTS);
     res.clearCookie(refreshCookieName, CLEAR_OPTS);

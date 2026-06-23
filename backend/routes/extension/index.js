@@ -7,6 +7,7 @@ const ToolAssignment = require('../../models/ToolAssignment');
 const ExtensionToken = require('../../models/ExtensionToken');
 const CredentialAccessLog = require('../../models/CredentialAccessLog');
 const ActivityLog = require('../../models/ActivityLog');
+const { recordPresence } = require('../../utils/presence');
 const ActivationToken = require('../../models/ActivationToken');
 const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
@@ -460,6 +461,16 @@ router.get('/tools', verifyExtensionToken, async (req, res) => {
         $set: { extensionVersion: installedVersion, extensionLastSyncAt: new Date() },
       }).catch(() => {});
     }
+
+    // Live presence: the extension sync IS the heartbeat for clients using the
+    // extension (dashboard tab may be closed). Fire-and-forget, write-throttled.
+    recordPresence({
+      clientId: req.clientId,
+      clientName: req.client && req.client.fullName,
+      clientEmail: req.client && req.client.email,
+      event: 'extension_sync',
+      ip: req.ip,
+    });
 
     // If an admin explicitly flagged this client to update AND it is still
     // outdated, surface the admin's message so the popup shows the requested
@@ -1067,6 +1078,17 @@ router.post('/tools/:toolId/opened', verifyExtensionToken, async (req, res) => {
     // admin "Top Tools" analytics and the per-client timeline. Fire-and-forget —
     // never blocks or breaks the open response; no secrets in meta.
     ActivityLog.log('CLIENT', req.clientId, 'TOOL_OPENED', { toolId }).catch(() => {});
+
+    // Live presence: surface this as the client's latest action for the admin
+    // monitor (tool name resolved from toolId there). Fire-and-forget.
+    recordPresence({
+      clientId: req.clientId,
+      clientName: req.client && req.client.fullName,
+      clientEmail: req.client && req.client.email,
+      event: 'tool_launched',
+      toolId,
+      ip: req.ip,
+    });
 
     res.json({ success: true });
   } catch (error) {

@@ -67,6 +67,10 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/admin/assignments.js      "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/assignments.js" \
   -T backend/routes/admin/activity.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/activity.js" \
   -T backend/routes/admin/analytics.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/analytics.js" \
+  -T backend/routes/admin/activityMonitor.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/activityMonitor.js" \
+  -T backend/routes/client/presence.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/presence.js" \
+  -T backend/models/ClientPresence.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/ClientPresence.js" \
+  -T backend/utils/presence.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/presence.js" \
   -T backend/models/ActivityLog.js            "sftp://${HOST}:${PORT}${API_ROOT}/models/ActivityLog.js" \
   -T backend/models/Reminder.js               "sftp://${HOST}:${PORT}${API_ROOT}/models/Reminder.js" \
   -T backend/routes/admin/reminders.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/reminders.js" \

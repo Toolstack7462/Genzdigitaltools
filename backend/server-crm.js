@@ -248,6 +248,7 @@ const adminClientsRoutes      = require('./routes/admin/clientsEnhanced');
 const adminAssignmentsRoutes  = require('./routes/admin/assignments');
 const adminActivityRoutes     = require('./routes/admin/activity');
 const adminAnalyticsRoutes    = require('./routes/admin/analytics');
+const adminActivityMonitorRoutes = require('./routes/admin/activityMonitor');
 const adminBlogRoutes         = require('./routes/admin/blog');
 const adminContactsRoutes     = require('./routes/admin/contacts');
 const adminRemindersRoutes    = require('./routes/admin/reminders');
@@ -258,6 +259,7 @@ const clientAssignmentsRoutes = require('./routes/client/assignmentsEnhanced');
 const clientNotificationsRoutes = require('./routes/client/notifications');
 const clientProfileRoutes     = require('./routes/client/profile');
 const clientExtensionRoutes   = require('./routes/client/extension');
+const clientPresenceRoutes    = require('./routes/client/presence');
 const extensionRoutes         = require('./routes/extension');
 const adminExtensionRoutes    = require('./routes/admin/extension');
 // StealthWriter Proxy Gateway module (isolated)
@@ -281,6 +283,7 @@ app.use('/api/crm/admin/clients',    adminClientsRoutes);
 app.use('/api/crm/admin/assignments',adminAssignmentsRoutes);
 app.use('/api/crm/admin/activity',   adminActivityRoutes);
 app.use('/api/crm/admin/analytics',  adminAnalyticsRoutes);
+app.use('/api/crm/admin/activity-monitor', adminActivityMonitorRoutes);
 app.use('/api/crm/admin/blog',       adminBlogRoutes);
 app.use('/api/crm/admin/contacts',       adminContactsRoutes);
 app.use('/api/crm/admin/reminders',      adminRemindersRoutes);
@@ -293,6 +296,9 @@ app.use('/api/crm/client/tools',     clientToolsRoutes);
 app.use('/api/crm/client/assignments', clientAssignmentsRoutes);
 app.use('/api/crm/client/notifications', clientNotificationsRoutes);
 app.use('/api/crm/client/extension', clientExtensionRoutes);
+// Client presence heartbeat (feeds admin Client Activity Monitor). Mounted BEFORE
+// the broad '/api/crm/client' profile router so '/presence/ping' resolves here.
+app.use('/api/crm/client/presence',  clientPresenceRoutes);
 // StealthWriter Proxy Gateway module — isolated mounts
 app.use('/api/crm/admin/stealth',    adminStealthRoutes);
 app.use('/api/crm/client/stealth',   clientStealthRoutes);

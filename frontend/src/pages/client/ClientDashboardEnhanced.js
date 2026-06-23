@@ -5,7 +5,7 @@ import {
   Package, Clock, CheckCircle2, X, ExternalLink,
   Lock, Chrome, Download, Zap, Shield, User, Star, Search,
   AlertTriangle, Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck,
-  MessageCircle
+  MessageCircle, PlayCircle
 } from 'lucide-react';
 
 const WHATSAPP_URL = 'https://wa.me/923027467462';
@@ -430,6 +430,25 @@ const ClientDashboardEnhanced = () => {
       window.removeEventListener('focus', onVisible);
     };
   }, [pollNotifications]);
+
+  // ── Presence heartbeat (admin "who's online" monitor) ──────────────────────
+  // Lightweight, fail-safe, fire-and-forget: sends NO user content — just a tap
+  // on /client/presence/ping so admins can see this client is online. Piggybacks
+  // the same 45s cadence and resumes on tab focus. Errors are ignored so it can
+  // never disrupt the dashboard.
+  useEffect(() => {
+    const ping = () => { api.post('/client/presence/ping', {}).catch(() => {}); };
+    ping();
+    const id = setInterval(ping, 45000);
+    const onVisible = () => { if (document.visibilityState === 'visible') ping(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, []);
 
   // Urgent expiry toast: if any active tool has 1–3 days left, warn once per day.
   useEffect(() => {
@@ -1102,7 +1121,7 @@ const ClientDashboardEnhanced = () => {
                 </p>
               </div>
               {/* action */}
-              <div className="flex-shrink-0 sm:self-center">
+              <div className="flex-shrink-0 sm:self-center flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 {!extConnStatus?.checking ? (
                   <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                      onClick={verifyExtensionDownload}
@@ -1117,6 +1136,13 @@ const ClientDashboardEnhanced = () => {
                     <Loader2 size={14} className="animate-spin" /> Detecting…
                   </span>
                 )}
+                {/* Secondary action: watch the step-by-step setup video (the Setup Guide page). */}
+                <Link to="/client/extension-guide"
+                      data-testid="ext-banner-guide"
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-semibold text-white/85 hover:text-white transition-all"
+                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)' }}>
+                  <PlayCircle size={14} /> Watch setup guide
+                </Link>
               </div>
             </div>
           </div>

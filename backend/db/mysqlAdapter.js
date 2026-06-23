@@ -40,6 +40,7 @@ const tableNames = {
   EmailVerification: 'email_verifications',
   Reminder: 'reminders',
   Announcement: 'announcements',
+  ClientPresence: 'client_presence',
   // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
   StealthClient: 'stealth_clients',
   StealthLease: 'stealth_leases',

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
@@ -69,6 +69,10 @@ const AdminDashboardEnhanced = () => {
   const [securityAlertCount, setSecurityAlertCount] = useState(0);
   const [expiringCount, setExpiringCount] = useState(0);
   const [followups, setFollowups] = useState([]);
+  const [monitor, setMonitor] = useState({
+    onlineNow: [], recentlyActive: [], recentlyOpenedTools: [],
+    counts: { online: 0, recentlyActive: 0 },
+  });
 
   useEffect(() => {
     loadDashboard();
@@ -80,6 +84,36 @@ const AdminDashboardEnhanced = () => {
       .catch(() => {});
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── Live Client Activity Monitor (no page refresh) ─────────────────────────
+  // Polls the single, lightweight /admin/activity-monitor endpoint on a 20s
+  // cadence (and on tab focus). Fail-safe: errors are swallowed so the dashboard
+  // never breaks, and it never toggles the loading skeleton.
+  const loadMonitor = useCallback(async () => {
+    try {
+      const r = await api.get('/admin/activity-monitor');
+      const d = r.data || {};
+      setMonitor({
+        onlineNow: Array.isArray(d.onlineNow) ? d.onlineNow : [],
+        recentlyActive: Array.isArray(d.recentlyActive) ? d.recentlyActive : [],
+        recentlyOpenedTools: Array.isArray(d.recentlyOpenedTools) ? d.recentlyOpenedTools : [],
+        counts: d.counts || { online: 0, recentlyActive: 0 },
+      });
+    } catch (_) { /* fail-safe: never disrupt the dashboard */ }
+  }, []);
+
+  useEffect(() => {
+    loadMonitor();
+    const id = setInterval(loadMonitor, 20000);
+    const onVisible = () => { if (document.visibilityState === 'visible') loadMonitor(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
+  }, [loadMonitor]);
 
   const loadDashboard = async () => {
     setLoading(true);
@@ -305,6 +339,115 @@ const AdminDashboardEnhanced = () => {
                 </button>
               );
             })}
+          </div>
+        </div>
+
+        {/* ── Live Client Activity Monitor ── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-heading text-[16px] font-bold text-genz-navy flex items-center gap-2">
+              <ActivityIcon size={16} className="text-genz-blue" /> Live Activity
+              <span className="inline-flex items-center gap-1.5 ml-1 text-[11px] font-semibold text-green-600">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
+                </span>
+                {monitor.counts.online} online
+              </span>
+            </h2>
+            <button onClick={() => navigate('/admin/activity')}
+                    className="text-[13px] text-genz-blue hover:underline font-semibold inline-flex items-center gap-1">
+              Full activity <ArrowRight size={13} />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+            {/* Online Now */}
+            <div className="ds-card overflow-hidden">
+              <div className="ds-panel-head flex items-center justify-between px-4 py-3">
+                <h3 className="text-[13px] font-bold text-genz-navy flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500" /> Online Now
+                </h3>
+                <span className="ds-badge ds-badge-success">{monitor.onlineNow.length}</span>
+              </div>
+              {monitor.onlineNow.length === 0 ? (
+                <p className="px-4 py-8 text-center text-[12px] text-genz-muted">No clients online right now.</p>
+              ) : (
+                <ul className="ds-scroll max-h-[280px] overflow-y-auto divide-y divide-genz-border">
+                  {monitor.onlineNow.map((c) => (
+                    <li key={c.clientId} className="flex items-center gap-3 px-4 py-2.5">
+                      <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-[12px] text-white"
+                            style={{ background: 'linear-gradient(135deg, #16A34A, #06B6D4)' }}>
+                        {(c.name || '?').charAt(0).toUpperCase()}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-semibold text-genz-navy truncate">{c.name}</p>
+                        <p className="text-[11px] text-genz-muted truncate">{c.email}</p>
+                      </div>
+                      <span className="text-[11px] text-genz-muted whitespace-nowrap">{c.lastEventLabel}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Recently Active Clients */}
+            <div className="ds-card overflow-hidden">
+              <div className="ds-panel-head flex items-center justify-between px-4 py-3">
+                <h3 className="text-[13px] font-bold text-genz-navy flex items-center gap-2">
+                  <Clock size={14} className="text-amber-500" /> Recently Active
+                </h3>
+                <span className="ds-badge ds-badge-neutral">{monitor.recentlyActive.length}</span>
+              </div>
+              {monitor.recentlyActive.length === 0 ? (
+                <p className="px-4 py-8 text-center text-[12px] text-genz-muted">No recent activity.</p>
+              ) : (
+                <ul className="ds-scroll max-h-[280px] overflow-y-auto divide-y divide-genz-border">
+                  {monitor.recentlyActive.map((c) => (
+                    <li key={c.clientId} className="flex items-center gap-3 px-4 py-2.5">
+                      <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 font-bold text-[12px] text-white"
+                            style={{ background: 'linear-gradient(135deg, #2563EB, #7C3AED)' }}>
+                        {(c.name || '?').charAt(0).toUpperCase()}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-semibold text-genz-navy truncate">{c.name}</p>
+                        <p className="text-[11px] text-genz-muted truncate">{c.email}</p>
+                      </div>
+                      <span className="text-[11px] text-genz-muted whitespace-nowrap">{formatDate(c.lastSeenAt)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Recently Opened Tools */}
+            <div className="ds-card overflow-hidden">
+              <div className="ds-panel-head flex items-center justify-between px-4 py-3">
+                <h3 className="text-[13px] font-bold text-genz-navy flex items-center gap-2">
+                  <Layers size={14} className="text-purple-500" /> Recently Opened Tools
+                </h3>
+              </div>
+              {monitor.recentlyOpenedTools.length === 0 ? (
+                <p className="px-4 py-8 text-center text-[12px] text-genz-muted">No tools opened recently.</p>
+              ) : (
+                <ul className="ds-scroll max-h-[280px] overflow-y-auto divide-y divide-genz-border">
+                  {monitor.recentlyOpenedTools.map((t, i) => (
+                    <li key={i} className="flex items-center gap-3 px-4 py-2.5">
+                      <span className="w-8 h-8 rounded-lg bg-purple-500/10 text-purple-600 flex items-center justify-center flex-shrink-0">
+                        <Layers size={14} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-semibold text-genz-navy truncate">{t.toolName}</p>
+                        <p className="text-[11px] text-genz-muted truncate">{t.clientName} · {t.email}</p>
+                      </div>
+                      <span className="text-[11px] text-genz-muted whitespace-nowrap">{formatDate(t.at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
           </div>
         </div>
 
