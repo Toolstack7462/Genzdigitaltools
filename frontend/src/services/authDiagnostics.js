@@ -34,19 +34,20 @@ function apiContext() {
  * Active reachability probe used by the login/signup screens to tell "the API is
  * unreachable from this device" apart from a transient blip, a 404, or bad creds.
  *
- * GETs {apiOrigin}/api/health (then /health) with a short timeout, via fetch — NOT
- * the axios instance — so the 401 auto-refresh interceptor never touches it, and
- * never sends credentials/cookies. Returns:
- *   true  → the server ANSWERED (any HTTP status, even 404) ⇒ API is reachable.
- *   false → no response on either path ⇒ genuinely unreachable (offline / DNS /
- *           firewall / VPN / ad-blocker / TLS-cert/clock / CORS-level block).
- * Treating a 404 as "reachable" is deliberate: an old build hitting a not-yet-
- * deployed health path must never be reported as a connection failure.
+ * Probes, in order, {apiOrigin}/api/crm/health (the canonical route that has always
+ * existed), then /api/health and /health (aliases kept for older cached bundles) —
+ * via fetch, NOT the axios instance, so the 401 auto-refresh interceptor never touches
+ * it and no credentials/cookies are sent. Returns on the FIRST path that answers:
+ *   true  → the server ANSWERED (any HTTP status, even 404/503) ⇒ API is reachable.
+ *   false → no response on ANY path ⇒ genuinely unreachable (offline / DNS / firewall /
+ *           VPN / ad-blocker / TLS-cert-or-clock / CORS-level block).
+ * Treating a non-2xx as "reachable" is deliberate: a 404 (old path) or 503 (DB blip)
+ * means the SERVER replied, so it must never be reported as a device connection failure.
  */
 export async function pingHealth(timeoutMs = 6000) {
   const { origin } = apiContext();
   if (!origin) return false;
-  for (const path of ['/api/health', '/health']) {
+  for (const path of ['/api/crm/health', '/api/health', '/health']) {
     try {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
