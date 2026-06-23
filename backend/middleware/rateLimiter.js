@@ -1,18 +1,65 @@
 const rateLimit = require('express-rate-limit');
 
 /**
+ * Real client IP behind Hostinger's CDN/proxy chain (hcdn edge -> LiteSpeed -> Node).
+ * Mirrors getClientIp() in middleware/authEnhanced.js.
+ *
+ * ROOT CAUSE of the recurring generic "Login Failed": the DEFAULT express-rate-limit
+ * key is Express's req.ip. Behind Hostinger's CDN, req.ip is the edge-node IP and it
+ * ROTATES per request (verified: one client = 175.107.227.3 produced req.ip
+ * 194.164.75.140, 2a02:4780:27:1::3, 194.164.75.2). Many unrelated clients funnel
+ * through the same few edge IPs, so they SHARE one rate-limit window and trip it
+ * collectively — the limiter then returns 429 BEFORE the login handler runs (which is
+ * why those failures never produced an [auth:client] attempt log). Keying by the first
+ * X-Forwarded-For hop buckets by the REAL visitor, so one client can no longer lock out
+ * others. Applied to the auth login limiter ONLY — other limiters are left untouched.
+ *
+ * [TEMP DEBUG] Logs req.ip vs the real IP on the first few requests, then goes quiet.
+ */
+let _ipDiag = 0;
+function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  const real = xff ? String(xff).split(',')[0].trim()
+                   : (req.ip || (req.socket && req.socket.remoteAddress) || 'unknown');
+  if (_ipDiag < 10) {
+    _ipDiag++;
+    try { console.log(`[auth:ipdiag] reqip=${req.ip} xff=${xff || ''} real=${real} path=${req.originalUrl}`); } catch (_) {}
+  }
+  return real;
+}
+
+/**
  * Rate limiter for authentication routes
  * Prevents brute force attacks
  */
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 attempts per window
+  max: 30, // headroom: 10 was too low — legit retries + shared/NAT IPs hit it and got locked out
   message: {
-    error: 'Too many login attempts from this IP. Please try again after 15 minutes.'
+    error: 'Too many login attempts. Please wait a few minutes and try again.'
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false
+  // Only FAILED attempts count toward the limit. A successful login never consumes the
+  // budget, so a normal member (and others sharing the same IP) can never be locked out
+  // by their own successful logins — only sustained failures (brute force) are throttled.
+  skipSuccessfulRequests: true,
+  // Key by the REAL client IP (see clientIp) instead of Express req.ip, which is the
+  // rotating/shared Hostinger CDN edge IP and locked unrelated clients out together.
+  keyGenerator: clientIp,
+  // [TEMP DEBUG] Record every throttle with the real key + path, so a generic
+  // "Login Failed" that has NO [auth:client] attempt line is explained (a 429 is
+  // returned by this middleware before the route handler ever runs).
+  handler: (req, res, next, options) => {
+    try {
+      console.log(`[auth:ratelimit] stage=blocked key=${clientIp(req)} reqip=${req.ip} xff=${req.headers['x-forwarded-for'] || ''} path=${req.originalUrl}`);
+    } catch (_) {}
+    res.status(options.statusCode).json(options.message);
+  },
+  // Disable express-rate-limit v7 dev validations: our custom keyGenerator intentionally
+  // reads X-Forwarded-For, which would otherwise emit trust-proxy / IPv6 warnings. This
+  // must never throw at startup.
+  validate: false
 });
 
 /**
