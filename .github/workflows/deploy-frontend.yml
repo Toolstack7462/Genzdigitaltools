@@ -1,16 +1,21 @@
 name: Deploy frontend to Hostinger
 
-# Builds the React app and uploads frontend/build/ to the Hostinger frontend
-# domain over FTP. Runs on every push to main that touches the frontend (or
-# manually via the "Run workflow" button).
+# Builds the React app and uploads frontend/build/ to the Hostinger frontend over
+# SFTP — to BOTH web roots, exactly like deploy-frontend-only.sh:
+#   - main domain : /home/u171982351/domains/genzdigitalstore.com/public_html
+#   - app subdomain: .../public_html/app   (where /login, /client/*, /admin/* are served)
 #
-# One-time setup — add these in the repo: Settings → Secrets and variables → Actions
-#   Secrets:
-#     FTP_SERVER     e.g. ftp.genzdigitalstore.com   (Hostinger hPanel → Files → FTP Accounts)
-#     FTP_USERNAME   the FTP account username
-#     FTP_PASSWORD   the FTP account password
-#   Variables (optional):
-#     FTP_SERVER_DIR  target public dir, defaults to public_html/ if unset
+# WHY SFTP (not the old FTP-Deploy-Action): the previous FTP step reported "success"
+# but never updated the served docroot (its FTP target was not the live directory) and
+# it only ever wrote ONE root, leaving the app subdomain — where login/signup actually
+# run — stale. This deploys over SFTP (port 65002), to BOTH roots, and then VERIFIES the
+# live bundle hash on each domain so a non-landing deploy fails the job instead of lying.
+#
+# One-time setup — repo → Settings → Secrets and variables → Actions → New secret:
+#   SFTP_PASSWORD   the Hostinger SFTP password for user u171982351
+# (host 147.79.103.253, port 65002, user u171982351 are infra constants already in the
+#  committed deploy scripts, so they are set below rather than as secrets. The password
+#  must NOT contain a comma — lftp credential parsing splits on it.)
 #
 # The production API base (https://api.genzdigitalstore.com) comes from
 # frontend/.env.production, which CRA loads automatically during `npm run build`.
@@ -26,6 +31,13 @@ on:
 concurrency:
   group: deploy-frontend
   cancel-in-progress: true
+
+env:
+  SFTP_HOST: '147.79.103.253'
+  SFTP_PORT: '65002'
+  SFTP_USER: 'u171982351'
+  MAIN_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html'
+  APP_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html/app'
 
 jobs:
   build-and-deploy:
@@ -52,24 +64,51 @@ jobs:
           GENERATE_SOURCEMAP: 'false'
         run: npm run build
 
-      - name: Deploy via FTP
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          local-dir: ./frontend/build/
-          server-dir: ${{ vars.FTP_SERVER_DIR || 'public_html/' }}
-          # Never upload .htaccess: on this host the server-side .htaccess also
-          # carries the Passenger/Node backend config (PassengerStartupFile
-          # server-crm.js, etc.). The build's .htaccess only has SPA routing, so
-          # uploading it would strip the backend directives and take the API down.
-          # Excluding it keeps the server's complete .htaccess as the source of truth.
-          exclude: |
-            **/.git*
-            **/.git*/**
-            **/node_modules/**
-            **/.htaccess
-          # Keep server-only files (e.g. .htaccess, the extension ZIP under
-          # /downloads if managed separately) from being wiped on each deploy.
-          dangerous-clean-slate: false
+      - name: Sanity check build
+        run: |
+          test -f frontend/build/index.html || { echo "::error::frontend/build/index.html missing"; exit 1; }
+          test -f frontend/build/.htaccess || echo "::warning::frontend/build/.htaccess not found (main root redirect file)"
+
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      - name: Deploy via SFTP to BOTH web roots
+        env:
+          LFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LFTP_PASSWORD:-}" ]; then
+            echo "::error::Secret SFTP_PASSWORD is not set. Add it in Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          # --env-password keeps the password out of the process arg list (not in `ps`).
+          # mirror -R = upload local→remote (incremental; no --delete, so server-only
+          # files like the app root's own .htaccess are never wiped). --no-perms because
+          # the shared host rejects chmod. *.map source maps are not published.
+          common="set sftp:auto-confirm yes; set net:max-retries 2; set net:timeout 25; set net:persist-retries 2;"
+          echo "==> [1/2] main domain root"
+          lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+            "$common mirror -R --no-perms --parallel=4 --verbose --exclude-glob *.map frontend/build/ $MAIN_WEB/; bye"
+          echo "==> [2/2] app subdomain root (never overwrite its .htaccess)"
+          lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+            "$common mirror -R --no-perms --parallel=4 --verbose --exclude-glob *.map --exclude-glob .htaccess frontend/build/ $APP_WEB/; bye"
+          echo "==> SFTP upload complete to both roots."
+
+      - name: Verify live bundle on both domains
+        run: |
+          set -euo pipefail
+          LOCAL="$(grep -o 'main\.[a-z0-9]*\.js' frontend/build/index.html | head -1)"
+          echo "Expected live bundle: $LOCAL"
+          fail=0
+          for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            # Retry briefly to ride out any propagation.
+            for i in 1 2 3 4 5; do
+              LIVE="$(curl -s --max-time 20 "$d/index.html" | grep -o 'main\.[a-z0-9]*\.js' | head -1 || true)"
+              [ "$LIVE" = "$LOCAL" ] && break
+              sleep 6
+            done
+            echo "$d -> ${LIVE:-<none>}"
+            [ "$LIVE" = "$LOCAL" ] || { echo "::error::$d is NOT serving $LOCAL (got ${LIVE:-none}) — deploy did not land."; fail=1; }
+          done
+          [ "$fail" = "0" ] || exit 1
+          echo "✅ Both roots serve $LOCAL"
