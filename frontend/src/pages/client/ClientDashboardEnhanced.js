@@ -20,6 +20,8 @@ import RenewPlanLink from '../../components/RenewPlanLink';
 import { useStealthSummary } from '../../hooks/useStealthSummary';
 import ProxyToolCard from '../../components/ProxyToolCard';
 import { useProxyTools } from '../../hooks/useProxyTools';
+import DashboardActivityPreview from '../../components/DashboardActivityPreview';
+import DashboardSecurityPanel from '../../components/DashboardSecurityPanel';
 
 
 /* ─── Snooze intervals — a dismissed notice re-appears after this long (the 45s
@@ -1274,6 +1276,23 @@ const ClientDashboardEnhanced = () => {
               ))}
             </div>
           )}
+        </div>
+
+        {/* ── Account overview ── two lightweight, fail-safe widgets that surface
+            EXISTING data (recent activity + a security summary). Each fetches its
+            own data independently AFTER the dashboard has rendered, so neither
+            blocks tool launch; both degrade gracefully (skeleton → data/empty) and
+            never throw. They reuse the /client/activity and /client/security
+            endpoints — no duplicate widgets, no heavy polling. ── */}
+        <div>
+          <h2 className="font-bold text-white text-[15px] flex items-center gap-2 tracking-tight mb-3">
+            <ShieldCheck size={15} className="text-genz-cyan" />
+            Account Overview
+          </h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <DashboardActivityPreview />
+            <DashboardSecurityPanel />
+          </div>
         </div>
 
 

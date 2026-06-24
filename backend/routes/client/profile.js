@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../../models/User');
 const DeviceBinding = require('../../models/DeviceBinding');
+const DeviceProfile = require('../../models/DeviceProfile');
 const ActivityLog = require('../../models/ActivityLog');
 const Tool = require('../../models/Tool');
 const Announcement = require('../../models/Announcement');
@@ -77,6 +78,84 @@ router.get('/activity', async (req, res) => {
   } catch (error) {
     console.error('Get client activity error:', error);
     res.status(500).json({ error: 'Failed to fetch activity' });
+  }
+});
+
+// GET /api/crm/client/security - a privacy-safe security summary for the signed-in
+// client: last successful sign-in, device-approval status, and recent FAILED/BLOCKED
+// sign-in attempts (the "Failed Login Alerts" surface). Scoped strictly to req.userId
+// — never returns another user's data. Reuses EXISTING data only (User.lastLoginAt/Ip,
+// DeviceProfile, ActivityLog); adds NO new tracking and carries NO cookies/tokens/
+// secrets (only safe metadata: os/browser/status + the client's own login IPs). Each
+// sub-read is independently fail-safe, and the handler returns a minimal "secured"
+// shape on error so the dashboard widget degrades gracefully instead of breaking.
+router.get('/security', async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('lastLoginAt lastLoginIp devicePolicy createdAt');
+
+    // Devices grouped by physical system (safe metadata only).
+    let devices = [];
+    const deviceSummary = { total: 0, approved: 0, pending: 0, blocked: 0 };
+    try {
+      const profiles = await DeviceProfile.find({ clientId: req.userId });
+      (profiles || []).forEach(p => {
+        const st = String(p.status || 'approved');
+        deviceSummary.total += 1;
+        if (deviceSummary[st] != null) deviceSummary[st] += 1;
+      });
+      devices = (profiles || [])
+        .slice()
+        .sort((a, b) => new Date(b.lastSeenAt || 0) - new Date(a.lastSeenAt || 0))
+        .slice(0, 5)
+        .map(p => ({
+          os: p.os || null,
+          browser: p.browser || null,
+          status: p.status || 'approved',
+          firstDevice: !!p.firstDevice,
+          lastSeenAt: p.lastSeenAt || null,
+        }));
+    } catch (_) { /* device read is best-effort; never breaks the summary */ }
+
+    // Recent security-relevant events from the existing audit log (own account only).
+    // CLIENT_LOGIN_FAILED / CLIENT_LOGIN_BLOCKED / LOGIN_BLOCKED_DEVICE are logged
+    // against the client's own _id (see authEnhanced.js), so this is a true per-client
+    // view — it never reveals attempts on a *different* account.
+    const SECURITY_RE = /^(CLIENT_LOGIN|CLIENT_LOGIN_FAILED|CLIENT_LOGIN_BLOCKED|LOGIN_BLOCKED_DEVICE|PASSWORD_CHANGED|DEVICE_RESET)/i;
+    const FAIL_RE = /(FAILED|BLOCKED)/i;
+    const logs = await ActivityLog.find({ actorId: req.userId }).sort({ createdAt: -1 }).limit(200).catch(() => []);
+    const relevant = (logs || []).filter(l => SECURITY_RE.test(String(l.action || '')));
+    const since = Date.now() - 7 * 86400000;
+    let failedRecent = 0;
+    relevant.forEach(l => {
+      if (FAIL_RE.test(String(l.action || '')) && l.createdAt && new Date(l.createdAt).getTime() >= since) failedRecent += 1;
+    });
+    const events = relevant.slice(0, 8).map(l => {
+      const ac = String(l.action || '').toUpperCase();
+      let type = 'login';
+      if (/FAILED/.test(ac)) type = 'failed';
+      else if (/BLOCKED_DEVICE/.test(ac)) type = 'device_blocked';
+      else if (/BLOCKED/.test(ac)) type = 'blocked';
+      else if (/PASSWORD/.test(ac)) type = 'password';
+      else if (/DEVICE_RESET/.test(ac)) type = 'device_reset';
+      return { type, at: l.createdAt, ip: (l.meta && l.meta.ip) || null };
+    });
+
+    res.json({
+      success: true,
+      security: {
+        lastLogin: user && user.lastLoginAt ? { at: user.lastLoginAt, ip: user.lastLoginIp || null } : null,
+        deviceBinding: { enabled: !!(user && user.devicePolicy && user.devicePolicy.enabled) },
+        deviceSummary,
+        devices,
+        failedRecent,
+        events,
+        memberSince: user && user.createdAt ? user.createdAt : null,
+      },
+    });
+  } catch (error) {
+    console.error('Get client security error:', error);
+    // Fail-safe minimal shape so the widget renders a calm "secured" state.
+    res.json({ success: true, security: { lastLogin: null, deviceBinding: { enabled: false }, deviceSummary: { total: 0, approved: 0, pending: 0, blocked: 0 }, devices: [], failedRecent: 0, events: [] } });
   }
 });
 
