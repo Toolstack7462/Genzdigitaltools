@@ -19,6 +19,7 @@ const ToolAssignment = require('../../models/ToolAssignment');
 const User = require('../../models/User');
 const ActivityLog = require('../../models/ActivityLog');
 const RenewalReminderLog = require('../../models/RenewalReminderLog');
+const RenewalFollowup = require('../../models/RenewalFollowup');
 const { requireAuth, requireAdmin } = require('../../middleware/authEnhanced');
 const { isEmailEnabled, sendRenewalReminderEmail } = require('../../utils/email');
 
@@ -26,6 +27,49 @@ router.use(requireAuth);
 router.use(requireAdmin);
 
 const DAY_MS = 86400000;
+
+const OFFERS = ['none', 'discount10', 'bonus2'];
+const FOLLOWUP_STATUSES = ['open', 'snoozed', 'lost', 'recovered'];
+
+// Derive the recovery STAGE from how overdue the client's most-urgent tool is.
+// Stages are computed (not stored) so they always reflect live expiry data.
+function deriveStage(soonestDaysLeft) {
+  if (soonestDaysLeft == null) return 'before_expiry';
+  if (soonestDaysLeft >= 1) return 'before_expiry';
+  if (soonestDaysLeft === 0) return 'expired_today';
+  const overdue = -soonestDaysLeft;
+  if (overdue <= 3) return 'day3';
+  if (overdue <= 7) return 'day7';
+  return 'final';
+}
+
+// Public-safe shape of a follow-up record (no internal/secret fields).
+function followupDTO(f) {
+  if (!f) return null;
+  return {
+    status: f.status || 'open',
+    lastFollowupAt: f.lastFollowupAt || null,
+    lastChannel: f.lastChannel || null,
+    lastStage: f.lastStage || null,
+    offer: OFFERS.includes(f.offer) ? f.offer : 'none',
+    note: f.note || '',
+    snoozeUntil: f.snoozeUntil || null,
+    lostReason: f.lostReason || '',
+  };
+}
+
+// Upsert (find-or-create) the single follow-up row for a client and merge `patch`.
+async function upsertFollowup(clientId, patch, adminId) {
+  const cid = String(clientId);
+  let f = await RenewalFollowup.findOne({ clientId: cid });
+  if (!f) {
+    f = await RenewalFollowup.create({ clientId: cid, status: 'open', offer: 'none', ...patch, updatedBy: adminId });
+  } else {
+    Object.assign(f, patch, { updatedBy: adminId });
+    await f.save();
+  }
+  return f;
+}
 
 // Build the list of a client's tool assignments that are expiring within `days`
 // or already expired. `rows` are populated ToolAssignment docs. Returns a flat
@@ -112,18 +156,32 @@ router.get('/', async (req, res) => {
       }
     } catch (_) { /* best-effort; never breaks the list */ }
 
+    // Attach the recovery follow-up state per client (single bounded read).
+    const followupByClient = {};
+    try {
+      const fups = await RenewalFollowup.find({}).limit(2000);
+      for (const f of fups || []) {
+        const cid = String(f.clientId || '');
+        if (cid) followupByClient[cid] = f;
+      }
+    } catch (_) { /* best-effort; never breaks the list */ }
+
     const clients = Array.from(byClient.values()).map(c => {
       c.tools.sort((a, b) => a.daysLeft - b.daysLeft);
       const expiredCount = c.tools.filter(t => t.expired).length;
       const expiringCount = c.tools.length - expiredCount;
       const soonest = c.tools[0] || null;
+      const soonestDaysLeft = soonest ? soonest.daysLeft : null;
       return {
         ...c,
         expiredCount,
         expiringCount,
-        soonestDaysLeft: soonest ? soonest.daysLeft : null,
+        soonestDaysLeft,
         soonestEndDate: soonest ? soonest.endDate : null,
+        overdueDays: soonestDaysLeft != null && soonestDaysLeft < 0 ? -soonestDaysLeft : 0,
+        suggestedStage: deriveStage(soonestDaysLeft),
         lastReminder: lastReminderByClient[c.clientId] || null,
+        followup: followupDTO(followupByClient[c.clientId]),
       };
     });
 
@@ -155,6 +213,9 @@ router.post('/:clientId/remind', async (req, res) => {
     const channel = req.body && req.body.channel === 'whatsapp' ? 'whatsapp' : 'email';
     const days = Math.min(90, Math.max(1, parseInt(req.body && req.body.days, 10) || 14));
     const toolIds = Array.isArray(req.body && req.body.toolIds) ? req.body.toolIds.map(String) : null;
+    // Optional retention offer + recovery stage (admin-controlled per send).
+    const offer = OFFERS.includes(req.body && req.body.offer) ? req.body.offer : 'none';
+    const stage = req.body && typeof req.body.stage === 'string' ? req.body.stage.slice(0, 24) : null;
 
     const client = await User.findOne({ _id: clientId, role: 'CLIENT' });
     if (!client) return res.status(404).json({ error: 'Client not found' });
@@ -173,14 +234,25 @@ router.post('/:clientId/remind', async (req, res) => {
         clientId: String(client._id),
         clientEmail: client.email || null,
         channel,
+        offer,
         toolCount: tools.length,
         tools: tools.map(t => ({ toolId: String(t.toolId || ''), toolName: t.toolName, endDate: t.endDate })),
         sentBy: req.userId,
         sentAt: new Date(),
       });
       await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_REMINDER_SENT', {
-        clientId: String(client._id), channel, toolCount: tools.length,
+        clientId: String(client._id), channel, toolCount: tools.length, offer,
       });
+      // Advance the recovery follow-up state: stamp the touch, record the offer,
+      // and clear any snooze (a fresh follow-up reopens the client).
+      await upsertFollowup(String(client._id), {
+        lastFollowupAt: new Date(),
+        lastChannel: channel,
+        lastStage: stage || deriveStage(tools[0] ? tools[0].daysLeft : null),
+        offer,
+        status: 'open',
+        snoozeUntil: null,
+      }, req.userId).catch(() => {});
     };
 
     if (channel === 'whatsapp') {
@@ -198,6 +270,7 @@ router.post('/:clientId/remind', async (req, res) => {
     const r = await sendRenewalReminderEmail(client.email, {
       clientName: client.fullName,
       tools,
+      offer,
     });
     if (r && r.error) {
       return res.json({ success: false, error: r.error, domainNotVerified: !!r.domainNotVerified });
@@ -207,6 +280,54 @@ router.post('/:clientId/remind', async (req, res) => {
   } catch (error) {
     console.error('Send renewal reminder error:', error);
     res.status(500).json({ error: 'Failed to send renewal reminder' });
+  }
+});
+
+// POST /:clientId/followup — update the recovery follow-up state WITHOUT sending a
+// message: snooze, mark lost (+reason), reactivate, set the offer, or save a note.
+// Body: { status?, snoozeDays?, lostReason?, offer?, note? }. Admin-only, no secrets.
+router.post('/:clientId/followup', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await User.findOne({ _id: clientId, role: 'CLIENT' });
+    if (!client) return res.status(404).json({ error: 'Client not found' });
+
+    const body = req.body || {};
+    const patch = {};
+
+    if (body.offer !== undefined) {
+      if (!OFFERS.includes(body.offer)) return res.status(400).json({ error: 'Invalid offer' });
+      patch.offer = body.offer;
+    }
+    if (body.note !== undefined) patch.note = String(body.note || '').slice(0, 500);
+    if (body.lostReason !== undefined) patch.lostReason = String(body.lostReason || '').slice(0, 200);
+
+    // Snooze: hide/deprioritise for N days (1–90) → status 'snoozed'.
+    if (body.snoozeDays !== undefined) {
+      const n = Math.min(90, Math.max(1, parseInt(body.snoozeDays, 10) || 0));
+      if (!n) return res.status(400).json({ error: 'snoozeDays must be 1–90' });
+      patch.snoozeUntil = new Date(Date.now() + n * DAY_MS);
+      patch.status = 'snoozed';
+    }
+
+    if (body.status !== undefined) {
+      if (!FOLLOWUP_STATUSES.includes(body.status)) return res.status(400).json({ error: 'Invalid status' });
+      patch.status = body.status;
+      // Reactivating clears the snooze; leaving 'lost' keeps any provided reason.
+      if (body.status === 'open' || body.status === 'recovered') patch.snoozeUntil = null;
+      if (body.status !== 'lost' && body.lostReason === undefined) patch.lostReason = '';
+    }
+
+    if (Object.keys(patch).length === 0) return res.status(400).json({ error: 'Nothing to update' });
+
+    const f = await upsertFollowup(String(client._id), patch, req.userId);
+    await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_FOLLOWUP_UPDATED', {
+      clientId: String(client._id), fields: Object.keys(patch),
+    });
+    res.json({ success: true, followup: followupDTO(f) });
+  } catch (error) {
+    console.error('Update renewal follow-up error:', error);
+    res.status(500).json({ error: 'Failed to update follow-up' });
   }
 });
 

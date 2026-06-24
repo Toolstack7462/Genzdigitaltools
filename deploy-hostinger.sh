@@ -77,6 +77,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/Announcement.js           "sftp://${HOST}:${PORT}${API_ROOT}/models/Announcement.js" \
   -T backend/routes/admin/announcements.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/announcements.js" \
   -T backend/models/RenewalReminderLog.js     "sftp://${HOST}:${PORT}${API_ROOT}/models/RenewalReminderLog.js" \
+  -T backend/models/RenewalFollowup.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/RenewalFollowup.js" \
   -T backend/routes/admin/renewals.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/renewals.js" \
   -T backend/utils/phone.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/phone.js" \
   -T backend/utils/proxyAssignments.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxyAssignments.js" \

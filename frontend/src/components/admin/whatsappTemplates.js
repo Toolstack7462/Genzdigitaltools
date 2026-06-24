@@ -119,3 +119,37 @@ export function buildRenewalMessage({ clientName, tools = [] } = {}) {
   lines.push('Gen Z Digital Store');
   return lines.join('\n');
 }
+
+// Optional retention offer clause (admin-controlled; never auto-applied).
+function offerClause(offer) {
+  if (offer === 'discount10') return 'To help you continue without interruption, we can offer you a limited 10% renewal discount for the next 48 hours.';
+  if (offer === 'bonus2') return 'Renew now and we will add 2 bonus days of access on us, as a thank-you.';
+  return 'To help you continue without interruption, just reply here and we will reactivate your access right away.';
+}
+
+/**
+ * Build a professional renewal RECOVERY/follow-up message for an EXPIRED client,
+ * with an optional retention offer ('none' | 'discount10' | 'bonus2'). Mirrors the
+ * approved support wording. Safe content only — no secrets; never auto-sent.
+ * `tools` = [{ toolName, ... }].
+ */
+export function buildFollowupMessage({ clientName, tools = [], offer = 'none' } = {}) {
+  const name = String(clientName || '').trim().split(/\s+/)[0] || 'there';
+  const names = (tools || []).map(t => t.toolName).filter(Boolean);
+  const toolPhrase = names.length === 0 ? 'your tools'
+    : names.length === 1 ? names[0]
+    : names.length === 2 ? `${names[0]} and ${names[1]}`
+    : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`;
+  return [
+    `Hello ${name},`,
+    '',
+    `Your Gen Z Digital Store access for ${toolPhrase} has expired.`,
+    '',
+    `We noticed you have not renewed yet. ${offerClause(offer)}`,
+    '',
+    'Reply here if you want us to reactivate your access.',
+    '',
+    'Thank you,',
+    'Gen Z Digital Store Support',
+  ].join('\n');
+}

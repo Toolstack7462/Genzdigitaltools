@@ -223,9 +223,18 @@ function esc(s) {
  * CTA. Reuses the branded shell. `tools` = [{ name, endDate, daysLeft, expired }].
  * `renewUrl` defaults to the support WhatsApp. Safe content only — no secrets.
  */
-async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl } = {}) {
+// Optional admin-controlled retention offer line (NEVER auto-applied — the admin
+// explicitly chooses an offer per send). Plain, professional wording.
+function offerClause(offer) {
+  if (offer === 'discount10') return 'To help you continue without interruption, we can offer you a limited <strong>10% renewal discount valid for the next 48 hours</strong>.';
+  if (offer === 'bonus2') return 'Renew now and we\'ll add <strong>2 bonus days of access</strong> on us, as a thank-you.';
+  return '';
+}
+
+async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, offer = 'none' } = {}) {
   const cta = renewUrl || SUPPORT_WHATSAPP;
   const anyExpired = tools.some(t => t.expired);
+  const offerLine = offerClause(offer);
   const rows = (tools || []).map(t => {
     const when = t.endDate
       ? new Date(t.endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
@@ -244,7 +253,7 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl }
   const inner = `
     <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">${heading}</h1>
     <p style="margin:0 0 20px;color:${SLATE};font-size:15px;line-height:23px">Hi ${esc(clientName || 'there')}, this is a friendly reminder from ${BRAND} about the following ${tools.length === 1 ? 'tool' : 'tools'} on your account. Renew to keep uninterrupted access.</p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e3ebf3;border-radius:12px;overflow:hidden;margin:0 0 24px">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e3ebf3;border-radius:12px;overflow:hidden;margin:0 0 ${offerLine ? '18px' : '24px'}">
       <tr style="background:#f1f6fb">
         <th align="left" style="padding:10px 14px;color:${SLATE};font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Tool</th>
         <th align="left" style="padding:10px 14px;color:${SLATE};font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Expiry</th>
@@ -252,10 +261,13 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl }
       </tr>
       ${rows}
     </table>
+    ${offerLine ? `<p style="margin:0 0 22px;color:${INK};font-size:14px;line-height:22px;background:#f1f6fb;border:1px solid #e3ebf3;border-radius:12px;padding:14px 16px">${offerLine}</p>` : ''}
     <div style="text-align:center;margin:0 0 8px">${button(cta, 'Renew / Contact Us')}</div>
   `;
   const textLines = (tools || []).map(t => `- ${t.name || 'Tool'}: ${t.expired ? 'Expired' : (t.daysLeft === 0 ? 'expires today' : `${t.daysLeft} days left`)}${t.endDate ? ` (${new Date(t.endDate).toLocaleDateString('en-US')})` : ''}`);
-  const text = `Hi ${clientName || 'there'}, a renewal reminder from ${BRAND}:\n${textLines.join('\n')}\nRenew / contact us: ${cta}`;
+  const offerText = offer === 'discount10' ? '\nOffer: a limited 10% renewal discount valid for the next 48 hours.'
+    : offer === 'bonus2' ? '\nOffer: renew now and we will add 2 bonus days of access.' : '';
+  const text = `Hi ${clientName || 'there'}, a renewal reminder from ${BRAND}:\n${textLines.join('\n')}${offerText}\nRenew / contact us: ${cta}`;
   return sendEmail({ to, subject: `${BRAND} — renewal reminder`, html: emailShell('Renewal reminder', inner), text });
 }
 
