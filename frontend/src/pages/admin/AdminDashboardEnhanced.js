@@ -186,7 +186,7 @@ const AdminDashboardEnhanced = () => {
     {
       icon: PackagePlus, title: 'Create Tool',
       description: 'Add a new tool to the platform',
-      action: () => navigate('/admin/tools/wizard'),
+      action: () => navigate('/admin/tools/new'),
       gradient: 'from-blue-500 to-cyan-500', variant: 'blue',
     },
     {

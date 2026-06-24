@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import "@/App.css";
 
 // ── Domain routing guard ─────────────────────────────────────────────────
@@ -113,7 +113,6 @@ const AdminAnnouncements = lazy(() => import('./pages/admin/AdminAnnouncements')
 const AdminRenewals = lazy(() => import('./pages/admin/AdminRenewals'));
 const AdminAnalytics = lazy(() => import('./pages/admin/AdminAnalytics'));
 const AdminSecurityAlerts = lazy(() => import('./pages/admin/AdminSecurityAlerts'));
-const AdminToolWizard = lazy(() => import('./pages/admin/AdminToolWizard'));
 const AdminStealthWriter = lazy(() => import('./pages/admin/AdminStealthWriter'));
 const AdminProxyTools = lazy(() => import('./pages/admin/AdminProxyTools'));
 const AdminExtension = lazy(() => import('./pages/admin/AdminExtension'));
@@ -184,7 +183,9 @@ function App() {
             <Route path="/admin/dashboard" element={<ErrorBoundary><AdminRoute><AdminDashboardEnhanced /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/tools"   element={<ErrorBoundary><AdminRoute><AdminToolsEnhanced /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/tools/new" element={<ErrorBoundary><AdminRoute><AdminToolForm /></AdminRoute></ErrorBoundary>} />
-            <Route path="/admin/tools/wizard" element={<ErrorBoundary><AdminRoute><AdminToolWizard /></AdminRoute></ErrorBoundary>} />
+            {/* Tool Setup Wizard retired — the single create-tool flow is /admin/tools/new.
+                Redirect any old link/bookmark there so nothing 404s. */}
+            <Route path="/admin/tools/wizard" element={<Navigate to="/admin/tools/new" replace />} />
             <Route path="/admin/tools/:id/edit" element={<ErrorBoundary><AdminRoute><AdminToolForm /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/clients" element={<ErrorBoundary><AdminRoute><AdminClientsEnhanced /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/clients/new" element={<ErrorBoundary><AdminRoute><AdminClientForm /></AdminRoute></ErrorBoundary>} />
