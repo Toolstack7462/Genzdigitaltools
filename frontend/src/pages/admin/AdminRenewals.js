@@ -6,7 +6,8 @@ import {
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
-import { WA_TEMPLATES, fillTemplate, buildWhatsAppUrl } from '../../components/admin/whatsappTemplates';
+import { buildRenewalMessage } from '../../components/admin/whatsappTemplates';
+import WhatsAppSendDialog from '../../components/admin/WhatsAppSendDialog';
 
 const WINDOWS = [
   { key: 7, label: '7 days' },
@@ -14,11 +15,6 @@ const WINDOWS = [
   { key: 30, label: '30 days' },
 ];
 
-const fmtDate = (d) => {
-  if (!d) return '—';
-  const dt = new Date(d);
-  return isNaN(dt.getTime()) ? '—' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-};
 const fmtAgo = (d) => {
   if (!d) return '';
   const dt = new Date(d); if (isNaN(dt.getTime())) return '';
@@ -40,6 +36,7 @@ const AdminRenewals = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState({}); // clientId|assignmentId -> true
+  const [waClient, setWaClient] = useState(null); // client for the WhatsApp dialog
 
   const load = useCallback(async (d = days) => {
     try {
@@ -70,12 +67,13 @@ const AdminRenewals = () => {
     finally { setBusyFor(c.clientId, false); }
   };
 
-  const sendWhatsApp = (c) => {
-    // Open WhatsApp with a pre-filled, safe template; admin reviews + sends.
-    const tpl = (c.expiredCount > 0 ? WA_TEMPLATES.find(t => t.key === 'expired') : WA_TEMPLATES.find(t => t.key === 'renewal')) || WA_TEMPLATES[0];
-    const msg = fillTemplate(tpl.body, { client_name: (c.fullName || '').split(' ')[0] || 'there', expiry_date: fmtDate(c.soonestEndDate) });
-    window.open(buildWhatsAppUrl(msg), '_blank', 'noopener,noreferrer');
-    // Record that the admin reached out (best-effort).
+  // Open the dialog so the admin can confirm/override the number + review the
+  // professional message before WhatsApp opens.
+  const sendWhatsApp = (c) => setWaClient(c);
+
+  // Fired once WhatsApp has actually been opened from the dialog: record the touch
+  // (best-effort) so "last reminded" updates.
+  const onWhatsAppOpened = (c) => {
     api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'whatsapp', days })
       .then(() => { showInfo('WhatsApp opened — marked as reminded.'); load(days); })
       .catch(() => {});
@@ -211,6 +209,14 @@ const AdminRenewals = () => {
           </div>
         )}
       </div>
+
+      <WhatsAppSendDialog
+        open={!!waClient}
+        client={waClient || {}}
+        message={waClient ? buildRenewalMessage({ clientName: waClient.fullName, tools: waClient.tools }) : ''}
+        onClose={() => setWaClient(null)}
+        onConfirm={() => waClient && onWhatsAppOpened(waClient)}
+      />
     </AdminLayoutEnhanced>
   );
 };

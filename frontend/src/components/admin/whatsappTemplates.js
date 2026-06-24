@@ -51,3 +51,71 @@ export function buildWhatsAppUrl(message, phone) {
   const base = digits ? `https://wa.me/${digits}` : 'https://wa.me/';
   return `${base}?text=${encodeURIComponent(message)}`;
 }
+
+/**
+ * Normalize a typed phone number into the digits-only, country-coded form wa.me
+ * expects (no "+", no spaces). Handles the common ways admins/clients write numbers:
+ *   "+92 300 1234567"  → "923001234567"   (leading + → drop it)
+ *   "0092 300 1234567" → "923001234567"   (00 international prefix → drop it)
+ *   "+2348012345678"   → "2348012345678"  (any country, e.g. +234, +91)
+ *   "0300-1234567"     → "923001234567"   (national 0… → prepend defaultCC)
+ *   "923001234567"     → "923001234567"   (already country-coded → unchanged)
+ * defaultCC (digits only, default 92 = Pakistan, the store's base) is applied ONLY
+ * to local numbers that start with a single 0; numbers that already carry a country
+ * code via "+" or "00" keep theirs. Returns "" if there are no digits.
+ */
+export function normalizeWhatsAppNumber(input, defaultCC = '92') {
+  if (input == null) return '';
+  const raw = String(input).trim();
+  const hasPlus = raw.startsWith('+');
+  const digits = raw.replace(/\D/g, '');
+  if (!digits) return '';
+  if (hasPlus) return digits;                     // "+CC…" → CC… (digits already stripped of +)
+  if (digits.startsWith('00')) return digits.slice(2); // "00CC…" → CC…
+  if (digits.startsWith('0')) return String(defaultCC).replace(/\D/g, '') + digits.slice(1); // national → CC…
+  return digits;                                  // assume already country-coded
+}
+
+// A normalized WhatsApp number is valid if it is 8–15 digits (E.164 max is 15).
+export function isValidWhatsAppNumber(digits) {
+  return /^\d{8,15}$/.test(String(digits || ''));
+}
+
+function fmtWaDate(d) {
+  if (!d) return '';
+  const dt = new Date(d);
+  return isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/**
+ * Build a professional, ready-to-send renewal message for a client. Includes the
+ * client's first name, each tool with its expiry date/status, a renewal instruction,
+ * and the Gen Z Digital Store signature. SAFE CONTENT ONLY — never tokens, cookies,
+ * sessions, passwords, lease tokens, or any secret. The admin reviews before sending;
+ * the message is never auto-sent (wa.me always requires a manual Send tap).
+ * `tools` = [{ toolName, endDate, daysLeft, expired }].
+ */
+export function buildRenewalMessage({ clientName, tools = [] } = {}) {
+  const name = String(clientName || '').trim().split(/\s+/)[0] || 'there';
+  const anyExpired = (tools || []).some(t => t.expired);
+  const lines = [];
+  lines.push(`Hello ${name},`);
+  lines.push('');
+  lines.push(anyExpired
+    ? 'This is a reminder from Gen Z Digital Store regarding the following tool access on your account that needs renewal:'
+    : 'This is a friendly reminder from Gen Z Digital Store that the following tool access on your account is expiring soon:');
+  lines.push('');
+  (tools || []).forEach(t => {
+    const when = fmtWaDate(t.endDate);
+    const status = t.expired
+      ? `expired${when ? ` on ${when}` : ''}`
+      : (t.daysLeft === 0 ? 'expires today' : `expires in ${t.daysLeft} day${t.daysLeft === 1 ? '' : 's'}${when ? ` (${when})` : ''}`);
+    lines.push(`• ${t.toolName || 'Tool'} — ${status}`);
+  });
+  lines.push('');
+  lines.push('To keep your access uninterrupted, just reply to this message and we will renew it for you right away.');
+  lines.push('');
+  lines.push('Thank you,');
+  lines.push('Gen Z Digital Store');
+  return lines.join('\n');
+}
