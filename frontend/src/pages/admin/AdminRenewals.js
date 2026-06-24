@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
 import {
   CalendarClock, RefreshCw, Mail, MessageCircle, AlertTriangle, Clock,
-  Loader2, CheckCircle2, Plus, MailWarning,
+  Loader2, CheckCircle2, Plus, MailWarning, Search, X,
 } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
@@ -13,6 +13,16 @@ const WINDOWS = [
   { key: 7, label: '7 days' },
   { key: 14, label: '14 days' },
   { key: 30, label: '30 days' },
+];
+
+// Status filters (client-side over the already-fetched window). Distinct from the
+// day-window filter above — no overlap/duplication.
+const STATUSES = [
+  { key: 'all', label: 'All' },
+  { key: 'expiring', label: 'Expiring' },
+  { key: 'expired', label: 'Expired' },
+  { key: 'reminded', label: 'Reminded' },
+  { key: 'notReminded', label: 'Not reminded' },
 ];
 
 const fmtAgo = (d) => {
@@ -37,6 +47,15 @@ const AdminRenewals = () => {
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState({}); // clientId|assignmentId -> true
   const [waClient, setWaClient] = useState(null); // client for the WhatsApp dialog
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  // Debounce the search box so typing stays snappy (filtering is client-side).
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 250);
+    return () => clearTimeout(t);
+  }, [search]);
 
   const load = useCallback(async (d = days) => {
     try {
@@ -100,19 +119,40 @@ const AdminRenewals = () => {
 
   const counts = data.counts || {};
 
+  // Client-side search + status filtering over the fetched window. Search matches
+  // client name, email, saved number (digits), and any tool name. Fast + debounced.
+  const visibleClients = useMemo(() => {
+    const q = debouncedSearch.trim().toLowerCase();
+    const qDigits = q.replace(/\D/g, '');
+    return (data.clients || []).filter(c => {
+      if (statusFilter === 'expiring' && !(c.expiringCount > 0)) return false;
+      if (statusFilter === 'expired' && !(c.expiredCount > 0)) return false;
+      if (statusFilter === 'reminded' && !c.lastReminder?.at) return false;
+      if (statusFilter === 'notReminded' && c.lastReminder?.at) return false;
+      if (!q) return true;
+      const hay = [c.fullName, c.email, ...(c.tools || []).map(t => t.toolName)]
+        .filter(Boolean).join(' ').toLowerCase();
+      const phoneHit = qDigits && String(c.phone || '').includes(qDigits);
+      return hay.includes(q) || phoneHit;
+    });
+  }, [data.clients, debouncedSearch, statusFilter]);
+
+  const filtersActive = !!debouncedSearch.trim() || statusFilter !== 'all';
+  const clearFilters = () => { setSearch(''); setStatusFilter('all'); };
+
   return (
     <AdminLayoutEnhanced>
       <div className="max-w-5xl mx-auto space-y-5">
         {/* Header */}
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <h1 className="font-heading text-2xl font-extrabold text-genz-navy flex items-center gap-2.5">
-              <span className="ds-icon-grad w-9 h-9 rounded-xl flex items-center justify-center"><CalendarClock size={18} /></span>
+              <span className="ds-icon-grad w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"><CalendarClock size={18} /></span>
               Renewals
             </h1>
             <p className="text-sm text-genz-muted mt-0.5">Clients with tools expiring soon or already expired. Remind by email or WhatsApp, or renew in one click.</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 justify-end">
             <div className="inline-flex rounded-xl border border-genz-border overflow-hidden">
               {WINDOWS.map(w => (
                 <button key={w.key} onClick={() => setDays(w.key)}
@@ -125,6 +165,33 @@ const AdminRenewals = () => {
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium hover:border-genz-teal/50 transition-colors">
               <RefreshCw size={15} /> Refresh
             </button>
+          </div>
+        </div>
+
+        {/* Search + status filters */}
+        <div className="flex flex-col lg:flex-row lg:items-center gap-2.5">
+          <div className="relative flex-1 min-w-0">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" />
+            <input
+              type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name, email, number, or tool…"
+              aria-label="Search renewals"
+              className="w-full pl-9 pr-9 py-2 text-sm rounded-xl bg-white border border-genz-border text-genz-navy placeholder:text-genz-muted focus:outline-none focus:border-genz-teal/50 focus:ring-2 focus:ring-genz-teal/20 transition-all"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} aria-label="Clear search"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-genz-muted hover:text-genz-navy"><X size={15} /></button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {STATUSES.map(s => (
+              <button key={s.key} onClick={() => setStatusFilter(s.key)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                  statusFilter === s.key ? 'bg-genz-teal/10 text-genz-teal border-genz-teal/30' : 'bg-white text-genz-muted border-genz-border hover:text-genz-navy hover:border-genz-teal/40'
+                }`}>
+                {s.label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -165,9 +232,24 @@ const AdminRenewals = () => {
             <h3 className="text-lg font-bold text-genz-navy mb-1">All clear</h3>
             <p className="text-sm text-genz-muted">No tools are expiring within {days} days. Try a wider window above.</p>
           </div>
+        ) : visibleClients.length === 0 ? (
+          <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
+            <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-genz-bg flex items-center justify-center">
+              <Search size={26} className="text-genz-muted" />
+            </div>
+            <h3 className="text-base font-bold text-genz-navy mb-1">No matching clients</h3>
+            <p className="text-sm text-genz-muted">Nothing matches your search or filters in this window.</p>
+            <button onClick={clearFilters} className="mt-3 text-sm font-semibold text-genz-teal hover:underline">Clear filters</button>
+          </div>
         ) : (
           <div className="space-y-2.5">
-            {data.clients.map(c => (
+            {filtersActive && (
+              <div className="flex items-center justify-between gap-2 px-0.5">
+                <p className="text-xs text-genz-muted">Showing {visibleClients.length} of {data.clients.length}</p>
+                <button onClick={clearFilters} className="text-xs font-semibold text-genz-teal hover:underline">Clear filters</button>
+              </div>
+            )}
+            {visibleClients.map(c => (
               <div key={c.clientId} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   {/* Client + tools */}
@@ -185,9 +267,9 @@ const AdminRenewals = () => {
                     {/* Tool chips with quick renew */}
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
                       {c.tools.map(t => (
-                        <span key={t.assignmentId} className={`group inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium border ${toolCls(t)}`}>
-                          {t.toolName}
-                          <span className="opacity-70">· {toolLabel(t)}</span>
+                        <span key={t.assignmentId} className={`group inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium border max-w-full ${toolCls(t)}`}>
+                          <span className="truncate max-w-[160px]">{t.toolName}</span>
+                          <span className="opacity-70 flex-shrink-0">· {toolLabel(t)}</span>
                           <button onClick={() => quickRenew(c, t)} disabled={!!busy[t.assignmentId]}
                             title="Renew +30 days"
                             className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 hover:bg-white text-genz-blue disabled:opacity-50">
