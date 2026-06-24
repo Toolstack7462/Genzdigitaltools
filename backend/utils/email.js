@@ -210,10 +210,60 @@ async function sendPasswordResetSuccessEmail(to) {
   return sendEmail({ to, subject: `${BRAND} — your password was changed`, html: emailShell('Your password was changed', inner), text });
 }
 
+// Minimal HTML escape for admin-entered tool names rendered inside the email.
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Renewal reminder — admin-triggered (manual, never automatic) email listing the
+ * client's tools that are expiring soon or already expired, with a renew/contact
+ * CTA. Reuses the branded shell. `tools` = [{ name, endDate, daysLeft, expired }].
+ * `renewUrl` defaults to the support WhatsApp. Safe content only — no secrets.
+ */
+async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl } = {}) {
+  const cta = renewUrl || SUPPORT_WHATSAPP;
+  const anyExpired = tools.some(t => t.expired);
+  const rows = (tools || []).map(t => {
+    const when = t.endDate
+      ? new Date(t.endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+      : '—';
+    const label = t.expired
+      ? 'Expired'
+      : (t.daysLeft === 0 ? 'Expires today' : `${t.daysLeft} day${t.daysLeft === 1 ? '' : 's'} left`);
+    const color = t.expired ? '#dc2626' : (typeof t.daysLeft === 'number' && t.daysLeft <= 3 ? '#d97706' : '#0891b2');
+    return `<tr>
+      <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${INK};font-size:14px;font-weight:600">${esc(t.name || 'Tool')}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${SLATE};font-size:13px">${when}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${color};font-size:13px;font-weight:700;text-align:right;white-space:nowrap">${label}</td>
+    </tr>`;
+  }).join('');
+  const heading = anyExpired ? 'Your access needs renewal' : 'Your access is expiring soon';
+  const inner = `
+    <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">${heading}</h1>
+    <p style="margin:0 0 20px;color:${SLATE};font-size:15px;line-height:23px">Hi ${esc(clientName || 'there')}, this is a friendly reminder from ${BRAND} about the following ${tools.length === 1 ? 'tool' : 'tools'} on your account. Renew to keep uninterrupted access.</p>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e3ebf3;border-radius:12px;overflow:hidden;margin:0 0 24px">
+      <tr style="background:#f1f6fb">
+        <th align="left" style="padding:10px 14px;color:${SLATE};font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Tool</th>
+        <th align="left" style="padding:10px 14px;color:${SLATE};font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Expiry</th>
+        <th align="right" style="padding:10px 14px;color:${SLATE};font-size:12px;text-transform:uppercase;letter-spacing:0.04em">Status</th>
+      </tr>
+      ${rows}
+    </table>
+    <div style="text-align:center;margin:0 0 8px">${button(cta, 'Renew / Contact Us')}</div>
+  `;
+  const textLines = (tools || []).map(t => `- ${t.name || 'Tool'}: ${t.expired ? 'Expired' : (t.daysLeft === 0 ? 'expires today' : `${t.daysLeft} days left`)}${t.endDate ? ` (${new Date(t.endDate).toLocaleDateString('en-US')})` : ''}`);
+  const text = `Hi ${clientName || 'there'}, a renewal reminder from ${BRAND}:\n${textLines.join('\n')}\nRenew / contact us: ${cta}`;
+  return sendEmail({ to, subject: `${BRAND} — renewal reminder`, html: emailShell('Renewal reminder', inner), text });
+}
+
 module.exports = {
   isEmailEnabled,
   sendEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendPasswordResetSuccessEmail,
+  sendRenewalReminderEmail,
 };

@@ -203,14 +203,21 @@ router.post('/change-password', async (req, res) => {
 // Read-only; only published (active) items; never exposes drafts or internal fields.
 router.get('/announcements', async (req, res) => {
   try {
-    const rows = await Announcement.find({ active: true }).sort({ createdAt: -1 }).limit(20);
-    const announcements = (rows || []).map(a => ({
-      _id: a._id,
-      title: a.title || '',
-      body: a.body || '',
-      level: a.level || 'info',
-      createdAt: a.createdAt,
-    }));
+    // Fetch a slightly larger window, then keep GLOBAL announcements (no clientId)
+    // plus any TARGETED specifically at this signed-in client. A client never sees
+    // an announcement aimed at someone else.
+    const uid = String(req.userId);
+    const rows = await Announcement.find({ active: true }).sort({ createdAt: -1 }).limit(60);
+    const announcements = (rows || [])
+      .filter(a => !a.clientId || String(a.clientId) === uid)
+      .slice(0, 20)
+      .map(a => ({
+        _id: a._id,
+        title: a.title || '',
+        body: a.body || '',
+        level: a.level || 'info',
+        createdAt: a.createdAt,
+      }));
     res.json({ success: true, announcements });
   } catch (error) {
     console.error('Get announcements error:', error);
