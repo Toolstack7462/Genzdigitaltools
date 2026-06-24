@@ -153,3 +153,32 @@ export function buildFollowupMessage({ clientName, tools = [], offer = 'none' } 
     'Gen Z Digital Store Support',
   ].join('\n');
 }
+
+const OFFER_INTRO = {
+  combo: 'here is a combo deal we think you will love',
+  renewal: 'here is a special renewal offer for you',
+  upgrade: 'here is an upgrade offer for your account',
+  recovery: 'we would love to welcome you back with this offer',
+};
+
+/**
+ * Build a professional WhatsApp message for a marketing Offer (combo / renewal /
+ * upgrade / recovery). Safe content only (title, description, tools, price, expiry)
+ * — no secrets; never auto-sent. `offer` = { title, description, toolNames[],
+ * priceText, expiryDate, kind }.
+ */
+export function buildOfferMessage({ clientName, offer = {} } = {}) {
+  const name = String(clientName || '').trim().split(/\s+/)[0] || 'there';
+  const tools = (offer.toolNames || []).filter(Boolean);
+  const lines = [`Hello ${name},`, ''];
+  lines.push(`From Gen Z Digital Store — ${OFFER_INTRO[offer.kind] || 'a special offer for you'}: ${offer.title || ''}`.trim());
+  if (offer.description) { lines.push(''); lines.push(offer.description); }
+  if (tools.length) { lines.push(''); lines.push(`Included: ${tools.join(', ')}`); }
+  if (offer.priceText) { lines.push(''); lines.push(offer.priceText); }
+  if (offer.expiryDate) {
+    const d = new Date(offer.expiryDate);
+    if (!isNaN(d.getTime())) { lines.push(''); lines.push(`Valid until ${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}.`); }
+  }
+  lines.push('', 'Reply here to claim it or if you have any questions.', '', 'Thank you,', 'Gen Z Digital Store');
+  return lines.join('\n');
+}

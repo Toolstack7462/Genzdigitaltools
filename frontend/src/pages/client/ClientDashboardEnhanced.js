@@ -22,6 +22,7 @@ import ProxyToolCard from '../../components/ProxyToolCard';
 import { useProxyTools } from '../../hooks/useProxyTools';
 import DashboardActivityPreview from '../../components/DashboardActivityPreview';
 import DashboardSecurityPanel from '../../components/DashboardSecurityPanel';
+import DashboardOffers from '../../components/DashboardOffers';
 
 
 /* ─── Snooze intervals — a dismissed notice re-appears after this long (the 45s
@@ -1023,6 +1024,9 @@ const ClientDashboardEnhanced = () => {
           </div>
           );
         })()}
+
+        {/* ── Curated offers (admin-controlled; max 2, renders nothing when none) ── */}
+        <DashboardOffers />
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 sm:gap-3">
           {(() => {

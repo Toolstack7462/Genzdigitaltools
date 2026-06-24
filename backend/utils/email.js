@@ -271,6 +271,36 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, 
   return sendEmail({ to, subject: `${BRAND} — renewal reminder`, html: emailShell('Renewal reminder', inner), text });
 }
 
+/**
+ * Marketing offer email — admin-triggered (manual) promo for one client: combo
+ * bundle / renewal / upgrade / recovery. Reuses the branded shell. Safe content
+ * only (title/description/tools/price/expiry) — no secrets; never auto-sent.
+ * `offer` = { title, description, toolNames[], priceText, expiryDate, kind }.
+ */
+async function sendOfferEmail(to, { clientName, offer = {}, ctaUrl } = {}) {
+  const cta = ctaUrl || SUPPORT_WHATSAPP;
+  const tools = Array.isArray(offer.toolNames) ? offer.toolNames.filter(Boolean) : [];
+  const expiry = offer.expiryDate ? new Date(offer.expiryDate) : null;
+  const expiryStr = expiry && !isNaN(expiry.getTime())
+    ? expiry.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+  const inner = `
+    <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">${esc(offer.title || 'A special offer for you')}</h1>
+    <p style="margin:0 0 18px;color:${SLATE};font-size:15px;line-height:23px">Hi ${esc(clientName || 'there')}, here's an offer from ${BRAND}${offer.description ? ':' : '.'}</p>
+    ${offer.description ? `<p style="margin:0 0 18px;color:${SLATE};font-size:14px;line-height:22px">${esc(offer.description)}</p>` : ''}
+    ${tools.length ? `<p style="margin:0 0 10px;color:${SLATE};font-size:13px"><b style="color:${INK}">Included:</b> ${tools.map(esc).join(' · ')}</p>` : ''}
+    ${offer.priceText ? `<div style="text-align:center;margin:0 0 18px"><span style="display:inline-block;background:#f1f6fb;border:1px solid #e3ebf3;border-radius:12px;padding:12px 22px;color:${NAVY};font-size:18px;font-weight:800">${esc(offer.priceText)}</span></div>` : ''}
+    ${expiryStr ? `<p style="margin:0 0 18px;color:${MUTED};font-size:13px">Offer valid until ${expiryStr}.</p>` : ''}
+    <div style="text-align:center;margin:0 0 8px">${button(cta, 'Claim this offer')}</div>
+  `;
+  const text = `Hi ${clientName || 'there'}, an offer from ${BRAND}: ${offer.title || ''}.`
+    + (offer.description ? `\n${offer.description}` : '')
+    + (tools.length ? `\nIncluded: ${tools.join(', ')}` : '')
+    + (offer.priceText ? `\n${offer.priceText}` : '')
+    + (expiryStr ? `\nValid until ${expiryStr}.` : '')
+    + `\nClaim it: ${cta}`;
+  return sendEmail({ to, subject: `${BRAND} — ${offer.title || 'a special offer'}`, html: emailShell(offer.title || 'A special offer', inner), text });
+}
+
 module.exports = {
   isEmailEnabled,
   sendEmail,
@@ -278,4 +308,5 @@ module.exports = {
   sendPasswordResetEmail,
   sendPasswordResetSuccessEmail,
   sendRenewalReminderEmail,
+  sendOfferEmail,
 };

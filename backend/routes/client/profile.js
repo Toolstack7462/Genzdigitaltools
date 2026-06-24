@@ -6,6 +6,7 @@ const DeviceProfile = require('../../models/DeviceProfile');
 const ActivityLog = require('../../models/ActivityLog');
 const Tool = require('../../models/Tool');
 const Announcement = require('../../models/Announcement');
+const Offer = require('../../models/Offer');
 const ExtensionRelease = require('../../models/ExtensionRelease');
 const { isOlder, compareVersions } = require('../../utils/semver');
 const { readDiskExtensionVersion } = require('../../utils/extensionDownloads');
@@ -222,6 +223,35 @@ router.get('/announcements', async (req, res) => {
   } catch (error) {
     console.error('Get announcements error:', error);
     res.json({ success: true, announcements: [] }); // fail-safe: never break the dashboard
+  }
+});
+
+// GET /api/crm/client/offers - active promotional offers flagged for the dashboard,
+// global or targeted to this client, not expired. Capped at 2 (kept clean — no
+// spam). Read-only, safe fields only (no tool internals/secrets). Fail-safe.
+router.get('/offers', async (req, res) => {
+  try {
+    const uid = String(req.userId);
+    const now = Date.now();
+    const rows = await Offer.find({ active: true }).sort({ createdAt: -1 }).limit(50);
+    const offers = (rows || [])
+      .filter(o => o.showOnDashboard)
+      .filter(o => !o.clientId || String(o.clientId) === uid)
+      .filter(o => !o.expiryDate || new Date(o.expiryDate).getTime() >= now)
+      .slice(0, 2)
+      .map(o => ({
+        _id: o._id,
+        title: o.title || '',
+        description: o.description || '',
+        kind: o.kind || 'combo',
+        toolNames: Array.isArray(o.toolNames) ? o.toolNames : [],
+        priceText: o.priceText || '',
+        expiryDate: o.expiryDate || null,
+      }));
+    res.json({ success: true, offers });
+  } catch (error) {
+    console.error('Get client offers error:', error);
+    res.json({ success: true, offers: [] }); // fail-safe: never break the dashboard
   }
 });
 

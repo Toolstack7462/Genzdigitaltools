@@ -43,6 +43,7 @@ const tableNames = {
   ClientPresence: 'client_presence',
   RenewalReminderLog: 'renewal_reminder_logs',
   RenewalFollowup: 'renewal_followups',
+  Offer: 'offers',
   // ── StealthWriter Proxy Gateway module (isolated) ──────────────────────────
   StealthClient: 'stealth_clients',
   StealthLease: 'stealth_leases',
