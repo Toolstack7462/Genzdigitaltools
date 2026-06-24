@@ -80,6 +80,7 @@ const schemas = {
     fullName: Joi.string().min(2).max(100).required(),
     email: Joi.string().email().required(),
     password: Joi.string().min(8).required(),
+    phone: Joi.string().allow('', null).max(32),
     status: Joi.string().valid('active', 'disabled').default('active'),
     devicePolicyEnabled: Joi.boolean().default(true),
     // Accept the nested object too (older/cached frontends send this) so a
@@ -98,6 +99,7 @@ const schemas = {
     fullName: Joi.string().min(2).max(100),
     email: Joi.string().email(),
     password: Joi.string().min(8),
+    phone: Joi.string().allow('', null).max(32),
     status: Joi.string().valid('active', 'disabled'),
     devicePolicyEnabled: Joi.boolean(),
     // Accept the nested object too (older/cached frontends send this).

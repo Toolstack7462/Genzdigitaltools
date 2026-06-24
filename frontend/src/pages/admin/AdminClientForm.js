@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import AdminLayout from '../../components/AdminLayout';
-import { ArrowLeft, Save, User, Mail, Lock, Shield, FileText, Tag } from 'lucide-react';
+import { ArrowLeft, Save, User, Mail, Lock, Shield, FileText, Tag, MessageCircle } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import PasswordInput from '../../components/PasswordInput';
@@ -19,6 +19,7 @@ const AdminClientForm = () => {
     fullName: '',
     email: '',
     password: '',
+    phone: '',
     status: 'active',
     devicePolicyEnabled: true,
     notes: '',
@@ -39,6 +40,7 @@ const AdminClientForm = () => {
         fullName: client.fullName || '',
         email: client.email || '',
         password: '', // Don't show password
+        phone: client.phone || '',
         status: client.status || 'active',
         devicePolicyEnabled: client.devicePolicy?.enabled !== false,
         notes: client.notes || '',
@@ -71,6 +73,9 @@ const AdminClientForm = () => {
       const payload = {
         fullName: formData.fullName.trim(),
         email: formData.email.trim(),
+        // Optional WhatsApp/phone number. Sent as-is; the backend normalizes +
+        // validates (empty string clears it). Never a secret.
+        phone: (formData.phone || '').trim(),
         status: formData.status,
         // Always a real boolean true/false (never a string or masked value).
         devicePolicyEnabled: formData.devicePolicyEnabled === true,
@@ -185,6 +190,25 @@ const AdminClientForm = () => {
                 placeholder="john@example.com"
                 data-testid="client-email-input"
               />
+            </div>
+
+            {/* WhatsApp / phone number (optional) */}
+            <div>
+              <label htmlFor="phone" className="flex items-center gap-2 text-sm font-medium text-genz-navy mb-2">
+                <MessageCircle size={16} className="text-genz-teal" />
+                WhatsApp Number <span className="text-genz-muted font-normal">(optional — used for renewal reminders)</span>
+              </label>
+              <input
+                type="tel"
+                id="phone"
+                name="phone"
+                value={formData.phone}
+                onChange={handleChange}
+                className="w-full px-4 py-3 bg-genz-bg border border-genz-border rounded-xl text-genz-navy placeholder-genz-muted focus:outline-none focus:border-genz-teal transition-colors"
+                placeholder="+92 300 1234567  ·  0300 1234567  ·  +234…"
+                data-testid="client-phone-input"
+              />
+              <p className="text-xs text-genz-muted mt-1">Local numbers (e.g. 0300…) are saved as Pakistan (+92). For other countries include the full +code.</p>
             </div>
 
             {/* Password */}

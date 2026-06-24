@@ -63,7 +63,7 @@ router.get('/', async (req, res) => {
 
     const rows = await ToolAssignment.find({})
       .populate('toolId', 'name category')
-      .populate('clientId', 'fullName email status');
+      .populate('clientId', 'fullName email status phone');
 
     // Group expiring/expired rows by client.
     const byClient = new Map();
@@ -85,6 +85,7 @@ router.get('/', async (req, res) => {
           fullName: client ? client.fullName : null,
           email: client ? client.email : null,
           status: client ? client.status : null,
+          phone: client ? (client.phone || null) : null,
           tools: [],
         });
       }

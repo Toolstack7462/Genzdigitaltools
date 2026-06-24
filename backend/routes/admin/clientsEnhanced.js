@@ -10,6 +10,9 @@ const ExtensionScan = require('../../models/ExtensionScan');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate, schemas } = require('../../middleware/validation');
 const { buildProxyAssignmentDTOs } = require('../../utils/proxyAssignments');
+const { normalizeWhatsAppNumber, isValidWhatsAppNumber } = require('../../utils/phone');
+
+const INVALID_PHONE_MSG = 'Please enter a valid WhatsApp number (8–15 digits, including country code).';
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -254,7 +257,7 @@ router.get('/:id', async (req, res) => {
 // ─── POST / — create client ───────────────────────────────────────────────────
 router.post('/', validate(schemas.createClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
+    const { fullName, email, password, phone, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
     const ip = getClientIp(req);
 
     // Accept either the flat flag or a nested { enabled } object; default ON.
@@ -262,12 +265,20 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
       ? devicePolicyEnabled
       : (devicePolicy && typeof devicePolicy === 'object' && devicePolicy.enabled !== undefined ? devicePolicy.enabled : true);
 
+    // Optional WhatsApp/phone number — normalize + validate when provided.
+    let normalizedPhone = '';
+    if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
+      normalizedPhone = normalizeWhatsAppNumber(phone);
+      if (!isValidWhatsAppNumber(normalizedPhone)) return res.status(400).json({ error: INVALID_PHONE_MSG });
+    }
+
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: 'Email already exists' });
 
     const client = await User.create({
       fullName, email, passwordHash: password,
       role: 'CLIENT', status: status || 'active',
+      phone: normalizedPhone,
       devicePolicy: { enabled: deviceEnabled !== false, maxDevices: 1 },
       notes,
       tags: sanitizeTags(tags) || []
@@ -284,7 +295,7 @@ router.post('/', validate(schemas.createClient), async (req, res) => {
 // ─── PUT /:id ─────────────────────────────────────────────────────────────────
 router.put('/:id', validate(schemas.updateClient), async (req, res) => {
   try {
-    const { fullName, email, password, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
+    const { fullName, email, password, phone, status, devicePolicyEnabled, devicePolicy, notes, tags } = req.body;
     const ip = getClientIp(req);
 
     // Accept either the flat flag or a nested { enabled } object.
@@ -313,6 +324,16 @@ router.put('/:id', validate(schemas.updateClient), async (req, res) => {
     }
     if (notes !== undefined) client.notes = notes;
     if (tags !== undefined) { client.tags = sanitizeTags(tags) || []; changes.tags = true; }
+    if (phone !== undefined) {
+      // Empty string clears the saved number; otherwise normalize + validate.
+      const trimmed = String(phone == null ? '' : phone).trim();
+      if (trimmed === '') { client.phone = ''; changes.phone = 'cleared'; }
+      else {
+        const np = normalizeWhatsAppNumber(trimmed);
+        if (!isValidWhatsAppNumber(np)) return res.status(400).json({ error: INVALID_PHONE_MSG });
+        client.phone = np; changes.phone = 'updated';
+      }
+    }
 
     await client.save();
     await ActivityLog.log('ADMIN', req.userId, 'CLIENT_UPDATED', { clientId: client._id, clientEmail: client.email, changes, ip });

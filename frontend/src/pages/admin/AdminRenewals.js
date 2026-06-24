@@ -79,6 +79,15 @@ const AdminRenewals = () => {
       .catch(() => {});
   };
 
+  // Save/update the number on the client's profile (reuses the existing client
+  // update endpoint). Only runs when the admin ticks "save" in the dialog.
+  const saveClientNumber = (c, number) => {
+    if (!c) return;
+    api.put(`/admin/clients/${c.clientId}`, { phone: number })
+      .then(() => { showSuccess('Number saved to client profile'); load(days); })
+      .catch((e) => showError(e.response?.data?.error || 'Could not save the number'));
+  };
+
   const quickRenew = async (c, tool) => {
     setBusyFor(tool.assignmentId, true);
     try {
@@ -169,7 +178,10 @@ const AdminRenewals = () => {
                       {c.expiringCount > 0 && <span className="ds-badge ds-badge-warn !text-[10px]">{c.expiringCount} expiring</span>}
                       {c.status === 'disabled' && <span className="ds-badge ds-badge-neutral !text-[10px]">disabled</span>}
                     </div>
-                    <p className="text-xs text-genz-muted mt-0.5 truncate">{c.email || 'no email on file'}</p>
+                    <p className="text-xs text-genz-muted mt-0.5 truncate">
+                      {c.email || 'no email on file'}
+                      {c.phone && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600"><MessageCircle size={11} /> +{c.phone}</span>}
+                    </p>
                     {/* Tool chips with quick renew */}
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
                       {c.tools.map(t => (
@@ -214,6 +226,8 @@ const AdminRenewals = () => {
         open={!!waClient}
         client={waClient || {}}
         message={waClient ? buildRenewalMessage({ clientName: waClient.fullName, tools: waClient.tools }) : ''}
+        canSave
+        onSaveNumber={(num) => saveClientNumber(waClient, num)}
         onClose={() => setWaClient(null)}
         onConfirm={() => waClient && onWhatsAppOpened(waClient)}
       />

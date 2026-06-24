@@ -240,7 +240,11 @@ export default function ClientDetailPanel({ clientId, onEdit }) {
             Send message <ChevronDown size={14} className={`transition-transform ${waOpen ? 'rotate-180' : ''}`} />
           </button>
         </div>
-        <p className="text-[11px] text-genz-muted mt-1">Opens WhatsApp with a pre-filled message you review before sending.</p>
+        <p className="text-[11px] text-genz-muted mt-1">
+          {c.phone
+            ? <>Saved number <span className="font-semibold text-emerald-600">+{c.phone}</span> — opens WhatsApp with a pre-filled message you review before sending.</>
+            : <>No number saved — WhatsApp will let you pick the contact. Add one via <span className="font-medium">Edit</span>.</>}
+        </p>
         {waOpen && (
           <div className="mt-3 grid sm:grid-cols-2 gap-1.5">
             {WA_TEMPLATES.map(t => (

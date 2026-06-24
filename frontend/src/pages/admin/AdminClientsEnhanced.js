@@ -369,6 +369,7 @@ const AdminClientsEnhanced = () => {
                             <div className="min-w-0">
                               <p className="font-semibold text-genz-navy text-sm truncate">{client.fullName}</p>
                               <p className="text-xs text-genz-muted truncate">{client.email}</p>
+                              {client.phone && <p className="text-[11px] text-emerald-600 truncate">+{client.phone}</p>}
                               {client.tags?.length > 0 && (
                                 <div className="flex flex-wrap gap-1 mt-1">
                                   {client.tags.slice(0, 4).map(t => <TagChip key={t} tag={t} />)}
@@ -401,7 +402,8 @@ const AdminClientsEnhanced = () => {
                     <Avatar client={client} size="md" />
                     <div className="flex-1 min-w-0">
                       <p className="font-semibold text-genz-navy text-sm truncate">{client.fullName}</p>
-                      <p className="text-xs text-genz-muted truncate mb-1.5">{client.email}</p>
+                      <p className="text-xs text-genz-muted truncate">{client.email}</p>
+                      {client.phone && <p className="text-[11px] text-emerald-600 truncate mb-1.5">+{client.phone}</p>}
                       <StatusBadge client={client} />
                       {client.tags?.length > 0 && (
                         <div className="flex flex-wrap gap-1 mt-1.5">
