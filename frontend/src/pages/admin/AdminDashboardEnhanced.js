@@ -60,7 +60,7 @@ const AdminDashboardEnhanced = () => {
   const [stats, setStats] = useState({
     totalTools: 0, activeTools: 0,
     totalClients: 0, activeClients: 0, disabledClients: 0,
-    totalAssignments: 0, deviceBindings: 0,
+    totalAssignments: null, deviceBindings: 0, // assignments load in the background → null shows a tiny skeleton
   });
   const [recentActivity, setRecentActivity] = useState([]);
   const [recentClients, setRecentClients] = useState([]);
@@ -75,8 +75,9 @@ const AdminDashboardEnhanced = () => {
   });
 
   useEffect(() => {
-    loadDashboard();
-    api.get('/admin/security-alerts?status=open&limit=1')
+    loadStats({ gate: true });   // fast, gates the skeleton
+    loadSecondary();             // heavy/optional widgets — independent + fail-safe
+    api.get('/admin/security-alerts?status=open&limit=1', { timeout: 12000 })
       .then(r => {
         const count = r.data?.stats?.highCount || r.data?.stats?.openCount || 0;
         if (count > 0) setSecurityAlertCount(count);
@@ -115,54 +116,69 @@ const AdminDashboardEnhanced = () => {
     };
   }, [loadMonitor]);
 
-  const loadDashboard = async () => {
-    setLoading(true);
-    setDashboardError(null);
+  // ── Phase 1: fast, gating load ──────────────────────────────────────────────
+  // Only the two LIGHT stats endpoints gate the skeleton. They power the hero stat
+  // cards + the Recent Members table, so the page becomes interactive as soon as
+  // they resolve — instead of waiting on the heaviest call (expiring assignments).
+  // `gate` controls the full-page skeleton: true on first mount, false on refresh
+  // (refresh updates in place so it feels instant and never flashes the skeleton).
+  const loadStats = useCallback(async ({ gate = false } = {}) => {
+    if (gate) { setLoading(true); setDashboardError(null); }
     try {
-      const [toolsRes, clientsRes, clientStatsRes, activityRes, expiringRes, followupsRes] = await Promise.all([
+      const [toolsRes, clientStatsRes] = await Promise.all([
         api.get('/admin/tools/stats').catch(() => ({ data: {} })),
-        api.get('/admin/clients?limit=5').catch(() => ({ data: {} })),
         api.get('/admin/clients/stats').catch(() => ({ data: {} })),
-        api.get('/admin/activity?limit=10').catch(() => ({ data: {} })),
-        // "Expiring soon" = active assignments within the 7-day window. total is the
-        // full count (computed server-side); we only need 1 row back.
-        api.get('/admin/assignments?status=expiring&limit=1').catch(() => ({ data: {} })),
-        // Today's / overdue follow-ups (pending, due ≤ today).
-        api.get('/admin/reminders?scope=due&limit=6').catch(() => ({ data: {} })),
       ]);
-
-      const toolStats    = toolsRes.data?.stats       || {};
-      const clientStats  = clientStatsRes.data?.stats  || {};
-      const clients      = clientsRes.data?.clients    || [];
-      const activities   = activityRes.data?.activities || [];
-
-      const totalAssignments = Array.isArray(clients)
-        ? clients.reduce((s, c) => s + (c?.assignmentCount || 0), 0)
-        : 0;
-
-      setStats({
-        totalTools:       Number(toolStats.totalTools)      || 0,
-        activeTools:      Number(toolStats.activeTools)     || 0,
-        totalClients:     Number(clientStats.totalClients)  || 0,
-        activeClients:    Number(clientStats.activeClients) || 0,
-        disabledClients:  Number(clientStats.disabledClients) || 0,
-        totalAssignments,
+      const toolStats   = toolsRes.data?.stats || {};
+      const clientStats = clientStatsRes.data?.stats || {};
+      setStats(prev => ({
+        ...prev,
+        totalTools:      Number(toolStats.totalTools)  || 0,
+        activeTools:     Number(toolStats.activeTools) || 0,
+        totalClients:    Number(clientStats.totalClients)  || 0,
+        activeClients:   Number(clientStats.activeClients) || 0,
+        disabledClients: Number(clientStats.disabledClients) || 0,
         // backend returns deviceLockedClients or clientsWithDeviceBinding
-        deviceBindings:   Number(clientStats.deviceLockedClients || clientStats.clientsWithDeviceBinding) || 0,
-      });
-
+        deviceBindings:  Number(clientStats.deviceLockedClients || clientStats.clientsWithDeviceBinding) || 0,
+      }));
       setRecentClients(Array.isArray(clientStats.recentClients) ? clientStats.recentClients : []);
-      setRecentActivity(Array.isArray(activities) ? activities : []);
-      setExpiringCount(Number(expiringRes.data?.total) || 0);
-      setFollowups(Array.isArray(followupsRes.data?.reminders) ? followupsRes.data.reminders : []);
     } catch (err) {
-      console.error('Dashboard load error:', err);
-      setDashboardError('Could not load dashboard data. Check your connection and try again.');
-      showError('Failed to load dashboard');
+      if (gate) {
+        console.error('Dashboard load error:', err);
+        setDashboardError('Could not load dashboard data. Check your connection and try again.');
+        showError('Failed to load dashboard');
+      }
     } finally {
-      setLoading(false);
+      if (gate) setLoading(false);
     }
-  };
+  }, [showError]);
+
+  // ── Phase 2: secondary widgets/banners ──────────────────────────────────────
+  // Loaded AFTER the page is interactive, in parallel, each fully independent,
+  // fail-safe, and time-boxed (12s) so a slow or failing widget can never block or
+  // break the dashboard. The heaviest call (expiring-assignment count) lives here,
+  // so it no longer holds up the skeleton.
+  const loadSecondary = useCallback(() => {
+    const opts = { timeout: 12000 };
+    // Assignments stat: derived from recent clients' counts (kept off the critical
+    // path; the stat card shows a tiny skeleton until this resolves).
+    api.get('/admin/clients?limit=5', opts)
+      .then(r => {
+        const clients = r.data?.clients || [];
+        const totalAssignments = Array.isArray(clients) ? clients.reduce((s, c) => s + (c?.assignmentCount || 0), 0) : 0;
+        setStats(prev => ({ ...prev, totalAssignments }));
+      })
+      .catch(() => setStats(prev => ({ ...prev, totalAssignments: prev.totalAssignments ?? 0 })));
+    api.get('/admin/activity?limit=10', opts)
+      .then(r => setRecentActivity(Array.isArray(r.data?.activities) ? r.data.activities : []))
+      .catch(() => {});
+    api.get('/admin/assignments?status=expiring&limit=1', opts)
+      .then(r => setExpiringCount(Number(r.data?.total) || 0))
+      .catch(() => {});
+    api.get('/admin/reminders?scope=due&limit=6', opts)
+      .then(r => setFollowups(Array.isArray(r.data?.reminders) ? r.data.reminders : []))
+      .catch(() => {});
+  }, []);
 
   const markFollowupDone = async (id) => {
     try {
@@ -257,7 +273,7 @@ const AdminDashboardEnhanced = () => {
           <h2 className="text-xl font-bold text-genz-navy mb-2">Dashboard unavailable</h2>
           <p className="text-genz-muted text-sm mb-6">{dashboardError}</p>
           <button
-            onClick={loadDashboard}
+            onClick={() => { loadStats({ gate: true }); loadSecondary(); }}
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-genz-deep-navy"
             style={{ background: 'linear-gradient(135deg, #06B6D4, #0891B2)' }}
           >
@@ -290,7 +306,7 @@ const AdminDashboardEnhanced = () => {
             </p>
           </div>
           <button
-            onClick={loadDashboard}
+            onClick={() => { loadStats(); loadSecondary(); loadMonitor(); }}
             className="p-2.5 rounded-xl border border-genz-border text-genz-muted hover:text-genz-navy hover:border-genz-blue/40 transition-all"
             title="Refresh dashboard"
           >
@@ -312,7 +328,9 @@ const AdminDashboardEnhanced = () => {
                   </span>
                   <span className="ds-badge ds-badge-neutral">{stat.sublabel}</span>
                 </div>
-                <div className="font-heading text-[28px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>
+                {stat.value === null
+                  ? <div className="h-7 w-12 rounded bg-genz-bg animate-pulse" />
+                  : <div className="font-heading text-[28px] font-extrabold text-genz-navy tabular-nums leading-none">{stat.value}</div>}
                 <div className="text-[12px] font-medium text-genz-muted mt-1.5">{stat.label}</div>
               </div>
             );
