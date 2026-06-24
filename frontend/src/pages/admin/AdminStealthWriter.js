@@ -1,14 +1,70 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Sparkles, Plus, RefreshCw, Trash2, Edit2, ShieldOff, Clock,
   Loader2, X, Save, Eye, Settings as SettingsIcon, Users, Zap,
-  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe
+  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
 import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
+import ListFilterBar from '../../components/admin/ListFilterBar';
+
+// ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
+const ACCOUNT_FILTERS = [
+  { key: 'all', label: 'All' }, { key: 'active', label: 'Active' }, { key: 'standby', label: 'Standby' },
+  { key: 'session_expired', label: 'Session expired' }, { key: 'limit_reached', label: 'Limit reached' },
+  { key: 'blocked', label: 'Blocked' }, { key: 'working', label: 'Working' }, { key: 'needs_login', label: 'Needs login' },
+  { key: 'has_sessions', label: 'Has sessions' }, { key: 'zero_sessions', label: 'Zero sessions' }, { key: 'primary', label: 'Primary' },
+];
+const CLIENT_FILTERS = [
+  { key: 'all', label: 'All' }, { key: 'active', label: 'Active' }, { key: 'disabled', label: 'Disabled' },
+  { key: 'expired', label: 'Expired' }, { key: 'limit_reached', label: 'Limit reached' },
+  { key: 'has_sessions', label: 'Has sessions' }, { key: 'zero_sessions', label: 'Zero sessions' },
+];
+function acctMatchesFilter(a, key) {
+  switch (key) {
+    case 'active': case 'standby': case 'session_expired': case 'limit_reached': case 'blocked': return a.status === key;
+    case 'working': return a.available !== false && !!a.hasSessionCookie;
+    case 'needs_login': return a.available === false || !a.hasSessionCookie;
+    case 'has_sessions': return (a.activeLeaseCount || 0) > 0;
+    case 'zero_sessions': return !(a.activeLeaseCount || 0);
+    case 'primary': return !!a.isPrimary;
+    default: return true;
+  }
+}
+function acctMatchesSearch(a, q) {
+  if (!q) return true;
+  return [a.label, a.status, a.maskedIdentifier, a.verification?.result].filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+function cliLimitReached(c) {
+  const h = c.limits?.humanizer, d = c.limits?.detector;
+  return (typeof h === 'number' && h >= 0 && (c.remaining?.humanizer ?? 1) <= 0)
+      || (typeof d === 'number' && d >= 0 && (c.remaining?.detector ?? 1) <= 0);
+}
+function cliMatchesFilter(c, key) {
+  switch (key) {
+    case 'active': return c.status === 'active' && !c.expired;
+    case 'disabled': return c.status === 'disabled';
+    case 'expired': return !!c.expired;
+    case 'limit_reached': return cliLimitReached(c);
+    case 'has_sessions': return (c.activeLeaseCount || 0) > 0;
+    case 'zero_sessions': return !(c.activeLeaseCount || 0);
+    default: return true;
+  }
+}
+function cliMatchesSearch(c, q) {
+  if (!q) return true;
+  return [c.user?.fullName, c.user?.email, c.planName, c.status].filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+const NoMatchBox = ({ onClear }) => (
+  <div className="p-8 text-center">
+    <Search size={24} className="mx-auto mb-2 text-slate-400" />
+    <p className="text-sm font-semibold text-slate-700">No matches</p>
+    <button onClick={onClear} className="text-xs text-genz-teal hover:underline mt-1">Clear filters</button>
+  </div>
+);
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
 const fmtLimit = (used, remaining, limit) => limit < 0 ? `${used} (∞)` : `${used}/${limit} · ${remaining} left`;
@@ -38,6 +94,17 @@ const AdminStealthWriter = () => {
   const [refreshAccount, setRefreshAccount] = useState(null);
   const [leasesAccount, setLeasesAccount] = useState(null);
   const [verifyingId, setVerifyingId] = useState(null);
+  const [acctSearch, setAcctSearch] = useState(''); const [acctFilter, setAcctFilter] = useState('all');
+  const [cliSearch, setCliSearch] = useState(''); const [cliFilter, setCliFilter] = useState('all');
+
+  const filteredAccounts = useMemo(() => {
+    const q = acctSearch.trim().toLowerCase();
+    return accounts.filter(a => acctMatchesFilter(a, acctFilter) && acctMatchesSearch(a, q));
+  }, [accounts, acctSearch, acctFilter]);
+  const filteredClients = useMemo(() => {
+    const q = cliSearch.trim().toLowerCase();
+    return clients.filter(c => cliMatchesFilter(c, cliFilter) && cliMatchesSearch(c, q));
+  }, [clients, cliSearch, cliFilter]);
 
   const load = useCallback(async () => {
     try {
@@ -187,8 +254,18 @@ const AdminStealthWriter = () => {
                 <Plus size={15} /> Add account
               </button>
             </div>
+            {accounts.length > 0 && (
+              <div className="px-4 py-3 border-b border-slate-100">
+                <ListFilterBar
+                  search={acctSearch} onSearch={setAcctSearch} placeholder="Search accounts by label, status, or login…"
+                  options={ACCOUNT_FILTERS} value={acctFilter} onChange={setAcctFilter}
+                  resultText={`Showing ${filteredAccounts.length} of ${accounts.length}`} />
+              </div>
+            )}
             {accounts.length === 0 ? (
               <p className="p-8 text-center text-slate-400 text-sm">No accounts yet. Add your StealthWriter account session to start.</p>
+            ) : filteredAccounts.length === 0 ? (
+              <NoMatchBox onClear={() => { setAcctSearch(''); setAcctFilter('all'); }} />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -198,7 +275,7 @@ const AdminStealthWriter = () => {
                     <th className="px-4 py-2 font-medium">Active leases</th><th className="px-4 py-2 font-medium text-right">Actions</th>
                   </tr></thead>
                   <tbody>
-                    {accounts.map((a) => (
+                    {filteredAccounts.map((a) => (
                       <tr key={a.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-1.5 font-medium text-slate-700">
@@ -250,8 +327,18 @@ const AdminStealthWriter = () => {
               <h2 className="font-semibold text-slate-700">StealthWriter clients</h2>
               <button onClick={load} className="text-slate-400 hover:text-slate-600"><RefreshCw size={16} /></button>
             </div>
+            {clients.length > 0 && (
+              <div className="px-4 py-3 border-b border-slate-100">
+                <ListFilterBar
+                  search={cliSearch} onSearch={setCliSearch} placeholder="Search clients by name, email, plan, or status…"
+                  options={CLIENT_FILTERS} value={cliFilter} onChange={setCliFilter}
+                  resultText={`Showing ${filteredClients.length} of ${clients.length}`} />
+              </div>
+            )}
             {clients.length === 0 ? (
               <p className="p-8 text-center text-slate-400 text-sm">No StealthWriter clients yet.</p>
+            ) : filteredClients.length === 0 ? (
+              <NoMatchBox onClear={() => { setCliSearch(''); setCliFilter('all'); }} />
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -262,7 +349,7 @@ const AdminStealthWriter = () => {
                     <th className="px-4 py-2 font-medium">Status</th><th className="px-4 py-2 font-medium text-right">Actions</th>
                   </tr></thead>
                   <tbody>
-                    {clients.map((c) => (
+                    {filteredClients.map((c) => (
                       <tr key={c.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                         <td className="px-4 py-2.5">
                           <div className="font-medium text-slate-700">{c.user?.fullName || '—'}</div>

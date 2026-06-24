@@ -1,13 +1,63 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Zap, Plus, RefreshCw, Trash2, Loader2, X, Save, Users, KeyRound,
-  Star, ShieldCheck, ShieldOff, Globe, List, CheckCircle2
+  Star, ShieldCheck, ShieldOff, Globe, List, CheckCircle2, Search
 } from 'lucide-react';
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
 import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
+import ListFilterBar from '../../components/admin/ListFilterBar';
+
+// ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
+const ACCOUNT_FILTERS = [
+  { key: 'all', label: 'All' }, { key: 'active', label: 'Active' }, { key: 'standby', label: 'Standby' },
+  { key: 'session_expired', label: 'Session expired' }, { key: 'limit_reached', label: 'Limit reached' },
+  { key: 'blocked', label: 'Blocked' }, { key: 'working', label: 'Working' }, { key: 'needs_login', label: 'Needs login' },
+  { key: 'has_sessions', label: 'Has sessions' }, { key: 'zero_sessions', label: 'Zero sessions' }, { key: 'primary', label: 'Primary' },
+];
+const CLIENT_FILTERS = [
+  { key: 'all', label: 'All' }, { key: 'active', label: 'Active' }, { key: 'disabled', label: 'Disabled' },
+  { key: 'expired', label: 'Expired' }, { key: 'has_sessions', label: 'Has sessions' }, { key: 'zero_sessions', label: 'Zero sessions' },
+];
+function accountMatchesFilter(a, key) {
+  switch (key) {
+    case 'active': case 'standby': case 'session_expired': case 'limit_reached': case 'blocked': return a.status === key;
+    case 'working': return a.available === true;
+    case 'needs_login': return a.available === false;
+    case 'has_sessions': return (a.activeLeaseCount || 0) > 0;
+    case 'zero_sessions': return !(a.activeLeaseCount || 0);
+    case 'primary': return !!a.isPrimary;
+    default: return true;
+  }
+}
+function accountMatchesSearch(a, q) {
+  if (!q) return true;
+  return [a.label, a.status, a.maskedIdentifier].filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+function clientMatchesFilter(c, key) {
+  switch (key) {
+    case 'active': return c.status === 'active' && !c.expired;
+    case 'disabled': return c.status === 'disabled';
+    case 'expired': return !!c.expired;
+    case 'has_sessions': return (c.activeLeaseCount || 0) > 0;
+    case 'zero_sessions': return !(c.activeLeaseCount || 0);
+    default: return true;
+  }
+}
+function clientMatchesSearch(c, q) {
+  if (!q) return true;
+  return [c.user?.fullName, c.user?.email, c.status].filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+
+const NoMatches = ({ onClear }) => (
+  <div className="ds-card rounded-xl p-10 text-center text-genz-muted">
+    <Search size={26} className="mx-auto mb-2 opacity-60" />
+    <p className="text-sm font-semibold text-genz-navy">No matches</p>
+    <button onClick={onClear} className="text-xs text-genz-teal hover:underline mt-1.5">Clear filters</button>
+  </div>
+);
 
 const fmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt.getTime()) ? '—' : dt.toLocaleString(); };
 const toDateInput = (d) => { if (!d) return ''; const dt = new Date(d); return isNaN(dt.getTime()) ? '' : dt.toISOString().slice(0, 10); };
@@ -44,6 +94,8 @@ const AdminProxyTools = () => {
   const [showSessionModal, setShowSessionModal] = useState(null); // account being (re)filled
   const [showClientModal, setShowClientModal] = useState(false);
   const [editClient, setEditClient] = useState(null);
+  const [acctSearch, setAcctSearch] = useState(''); const [acctFilter, setAcctFilter] = useState('all');
+  const [cliSearch, setCliSearch] = useState(''); const [cliFilter, setCliFilter] = useState('all');
 
   const loadDefs = useCallback(async () => {
     try { const r = await proxyToolsAdmin.listTools(); setToolDefs(r.data?.tools || []); } catch (_) {}
@@ -133,6 +185,15 @@ const AdminProxyTools = () => {
   const removeClient = async (id) => { if (!window.confirm('Remove this client\'s access to the tool?')) return; try { await proxyToolsAdmin.deleteClient(tool, id); showSuccess('Access removed'); load(); } catch (e) { showError('Failed'); } };
   const revokeClientLeases = async (id) => { try { const r = await proxyToolsAdmin.revokeClientLeases(tool, id); showSuccess(`Revoked ${r.data?.revoked || 0}`); load(); } catch (e) { showError('Failed'); } };
 
+  const filteredAccounts = useMemo(() => {
+    const q = acctSearch.trim().toLowerCase();
+    return accounts.filter(a => accountMatchesFilter(a, acctFilter) && accountMatchesSearch(a, q));
+  }, [accounts, acctSearch, acctFilter]);
+  const filteredClients = useMemo(() => {
+    const q = cliSearch.trim().toLowerCase();
+    return clients.filter(c => clientMatchesFilter(c, cliFilter) && clientMatchesSearch(c, q));
+  }, [clients, cliSearch, cliFilter]);
+
   return (
     <AdminLayoutEnhanced>
       <div className="max-w-7xl mx-auto space-y-5" data-testid="admin-proxy-tools-page">
@@ -182,15 +243,39 @@ const AdminProxyTools = () => {
         {loading ? (
           <div className="flex items-center justify-center py-16 text-genz-muted"><Loader2 className="animate-spin mr-2" size={20} /> Loading…</div>
         ) : section === 'accounts' ? (
-          <AccountVault
-            accounts={accounts} toolName={currentName}
-            onEdit={(a) => { setEditAccount(a); setShowAccountModal(true); }}
-            onSession={(a) => setShowSessionModal(a)}
-            onVerify={verify} onPrimary={setPrimary} onStatus={setStatus}
-            onCapture={captureLease} onRevoke={revokeAccountLeases} onDelete={deleteAccount}
-          />
+          <div className="space-y-3">
+            {accounts.length > 0 && (
+              <ListFilterBar
+                search={acctSearch} onSearch={setAcctSearch} placeholder="Search accounts by label, status, or login…"
+                options={ACCOUNT_FILTERS} value={acctFilter} onChange={setAcctFilter}
+                resultText={`Showing ${filteredAccounts.length} of ${accounts.length}`} />
+            )}
+            {accounts.length > 0 && filteredAccounts.length === 0 ? (
+              <NoMatches onClear={() => { setAcctSearch(''); setAcctFilter('all'); }} />
+            ) : (
+              <AccountVault
+                accounts={filteredAccounts} toolName={currentName}
+                onEdit={(a) => { setEditAccount(a); setShowAccountModal(true); }}
+                onSession={(a) => setShowSessionModal(a)}
+                onVerify={verify} onPrimary={setPrimary} onStatus={setStatus}
+                onCapture={captureLease} onRevoke={revokeAccountLeases} onDelete={deleteAccount}
+              />
+            )}
+          </div>
         ) : (
-          <ClientAccess clients={clients} onEdit={(c) => { setEditClient(c); setShowClientModal(true); }} onRevoke={revokeClientLeases} onRemove={removeClient} />
+          <div className="space-y-3">
+            {clients.length > 0 && (
+              <ListFilterBar
+                search={cliSearch} onSearch={setCliSearch} placeholder="Search clients by name, email, or status…"
+                options={CLIENT_FILTERS} value={cliFilter} onChange={setCliFilter}
+                resultText={`Showing ${filteredClients.length} of ${clients.length}`} />
+            )}
+            {clients.length > 0 && filteredClients.length === 0 ? (
+              <NoMatches onClear={() => { setCliSearch(''); setCliFilter('all'); }} />
+            ) : (
+              <ClientAccess clients={filteredClients} onEdit={(c) => { setEditClient(c); setShowClientModal(true); }} onRevoke={revokeClientLeases} onRemove={removeClient} />
+            )}
+          </div>
         )}
       </div>
 
