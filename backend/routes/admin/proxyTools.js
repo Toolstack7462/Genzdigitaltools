@@ -327,9 +327,36 @@ router.get('/:tool/active-account', async (req, res) => {
     const accounts = await ProxyAccount.find({ tool: req.proxyTool });
     const chosen = accounts.length ? selectAccount(accounts, SELECTION_MODE) : null;
     const counts = await activeLeaseCountsByAccount(req.proxyTool);
+
+    // LIVE probe (opt out with ?probe=0): fetch the tool with the CHOSEN account's stored
+    // cookies — exactly what the client gateway injects — and report safe signals so the
+    // admin SEES which account/plan those cookies load (logged-in/out, page title, plan
+    // keywords, masked email). Never returns cookies/tokens. This is the ground-truth check
+    // for "I updated the cookies but the client still shows the old/free account".
+    let liveProbe = null;
+    if (chosen && chosen.sessionEncrypted && req.query.probe !== '0') {
+      try {
+        const host = tools.targetHost(req.proxyTool);
+        const bundle = JSON.parse(vaultCrypto.decrypt(chosen.sessionEncrypted));
+        const cookieHeader = buildCookieHeader(bundle, host);
+        const cookieCount = countCookies(bundle, host);
+        if (cookieHeader) {
+          const v = await verifyAccountCookies(req.proxyTool, cookieHeader, chosen.expectedIdentifier);
+          liveProbe = {
+            result: v.result, httpStatus: v.httpStatus, finalPath: v.finalPath,
+            loggedOut: v.loggedOut ?? null, title: v.title || null, plan: v.plan || null,
+            maskedIdentifier: v.maskedId || null, cookieCount,
+          };
+        } else {
+          liveProbe = { result: 'no_session_cookie', cookieCount };
+        }
+      } catch (_) { liveProbe = { result: 'probe_failed' }; }
+    }
+
     return res.json({
       success: true,
       selectionMode: SELECTION_MODE,
+      liveProbe,
       activeAccount: chosen ? {
         id: chosen._id,
         label: chosen.label,

@@ -34,6 +34,22 @@ function looksLoggedOut(body) {
   return LOGIN_CTA_RE.test(html) && SIGNUP_CTA_RE.test(html);
 }
 
+// Safe, public-only page signals to help an admin SEE which account/plan the stored
+// cookies actually load — never any cookie/token/secret. Title is public; plan flags are
+// keyword presence; loggedOut is the heuristic above.
+function pageDiagnostics(body) {
+  const s = String(body || '');
+  const tm = s.match(/<title[^>]*>([\s\S]{0,120}?)<\/title>/i);
+  return {
+    title: tm ? tm[1].replace(/\s+/g, ' ').trim() : null,
+    loggedOut: looksLoggedOut(s),
+    plan: {
+      free: /\bfree\b/i.test(s), pro: /\bpro\b/i.test(s), premium: /\bpremium\b/i.test(s),
+      unlimited: /\bunlimited\b/i.test(s), upgrade: /\bupgrade\b/i.test(s),
+    },
+  };
+}
+
 function maskEmail(email) {
   if (!email) return null;
   const [local, domain] = String(email).split('@');
@@ -99,14 +115,15 @@ async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier) {
     return { result: 'session_expired', httpStatus, finalPath, redirectedToSignIn: false, maskedId: null };
   }
 
+  const diag = pageDiagnostics(body);
   if (expectedIdentifier) {
     const exp = String(expectedIdentifier).trim().toLowerCase();
     const found = (String(body).match(EMAIL_RE) || []).map(s => s.toLowerCase());
     if (found.length && !found.includes(exp)) {
-      return { result: 'wrong_account', httpStatus, finalPath, redirectedToSignIn: false, maskedId };
+      return { result: 'wrong_account', httpStatus, finalPath, redirectedToSignIn: false, maskedId, ...diag };
     }
   }
-  return { result: 'working', httpStatus, finalPath, redirectedToSignIn: false, maskedId };
+  return { result: 'working', httpStatus, finalPath, redirectedToSignIn: false, maskedId, ...diag };
 }
 
-module.exports = { verifyAccountCookies, maskEmail };
+module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics };
