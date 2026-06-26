@@ -426,6 +426,84 @@ function extractDomain(url) {
   }
 }
 
+// ============================================================================
+// ACCOUNT / LOGOUT SHIELD (extension-opened tools)
+// SINGLE source of truth for the hide/block rules used by js/shield.js. The proxy
+// gateways carry their own equivalent (proxy-gateway/overlay.js + server.js) because
+// they are a SEPARATE deploy unit; within the extension these rules live only here so
+// shield.js stays config-driven and we don't duplicate selector lists.
+//
+// SAFETY: these target only post-login account/billing/logout CHROME. shield.js never
+// hides inputs/textareas/contenteditable/forms/iframes or anything inside the working
+// area, and never touches captcha widgets — so it cannot break login, the editor, the
+// chat/upload area, or anti-aboot challenges.
+// ============================================================================
+export const SHIELD_DEFAULTS = {
+  enabled: true,
+  // <a href*> substrings → matching links hidden.
+  hrefSubstrings: [
+    'pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
+    'subscription', 'upgrade', 'refer', '/plans', '/settings', '/profile', '/me',
+    'api-key', 'apikey', 'logout', 'log-out', 'sign-out', 'signout'
+  ],
+  // aria-label / data-testid substrings → matching controls hidden.
+  attrSubstrings: [
+    'account', 'profile', 'user menu', 'usermenu', 'user-menu', 'avatar',
+    'upgrade', 'billing', 'subscription', 'affiliate', 'log out', 'logout', 'sign out'
+  ],
+  // Exact extra CSS selectors (per-tool overrides append here).
+  hideSelectors: [],
+  // Visible-label regex (source string) for controls to hide.
+  hideTextSource: '^(account|my account|account settings|account details|profile|my profile|settings|preferences|log\\s?out|sign\\s?out|logout|plans?\\s*&?\\s*pricing|pricing|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|api keys?|api key|affiliate|refer a friend|invite friends?|rewards)$',
+  // Labels we must NEVER hide (working area / primary nav).
+  keepTextSource: '^(dashboard|home|new|history|humanizer|ai detector|ai-detector|humanize|check for ai|detect ai|bypass|paraphrase|input|output|copy|paste|chat|send|upload|download|new chat|regenerate)$',
+  // Route path fragments → navigating here is blocked with a friendly toast.
+  blockRouteFragments: [
+    '/logout', '/log-out', '/sign-out', '/signout', '/billing', '/subscription',
+    '/subscriptions', '/account', '/account-settings', '/settings', '/upgrade',
+    '/pricing', '/plans', '/profile', '/affiliate'
+  ]
+};
+
+// Per-host overrides (matched on registrable host / hostname).
+export const SHIELD_OVERRIDES = {
+  'chatgpt.com': { hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'] }
+};
+
+/**
+ * Merge shield config for a tool URL. Layers: SHIELD_DEFAULTS → host override →
+ * backend per-assignment override (tool.extensionSettings.shield) → kill switch.
+ */
+export function getShieldConfig(url, tool) {
+  let host = '';
+  try { host = new URL(url).hostname.replace(/^www\./, ''); } catch (e) {}
+  const cfg = {
+    enabled: SHIELD_DEFAULTS.enabled,
+    hrefSubstrings: SHIELD_DEFAULTS.hrefSubstrings.slice(),
+    attrSubstrings: SHIELD_DEFAULTS.attrSubstrings.slice(),
+    hideSelectors: SHIELD_DEFAULTS.hideSelectors.slice(),
+    hideTextSource: SHIELD_DEFAULTS.hideTextSource,
+    keepTextSource: SHIELD_DEFAULTS.keepTextSource,
+    blockRouteFragments: SHIELD_DEFAULTS.blockRouteFragments.slice()
+  };
+  for (const k in SHIELD_OVERRIDES) {
+    if (host === k || host.endsWith('.' + k)) {
+      const o = SHIELD_OVERRIDES[k];
+      if (o.enabled === false) cfg.enabled = false;
+      if (Array.isArray(o.hideSelectors)) cfg.hideSelectors = cfg.hideSelectors.concat(o.hideSelectors);
+      if (Array.isArray(o.hrefSubstrings)) cfg.hrefSubstrings = cfg.hrefSubstrings.concat(o.hrefSubstrings);
+    }
+  }
+  const ts = tool && tool.extensionSettings && tool.extensionSettings.shield;
+  if (ts) {
+    if (ts.enabled === false) cfg.enabled = false;
+    if (Array.isArray(ts.hideSelectors)) cfg.hideSelectors = cfg.hideSelectors.concat(ts.hideSelectors);
+    if (Array.isArray(ts.blockRouteFragments)) cfg.blockRouteFragments = ts.blockRouteFragments;
+  }
+  if (tool && tool.shield === false) cfg.enabled = false;
+  return cfg;
+}
+
 export default {
   DEFAULT_STRATEGY_ORDER,
   TYPE_TO_STRATEGY_MAP,
@@ -436,5 +514,8 @@ export default {
   GENERIC_FORM_SELECTORS,
   TOOL_CONFIGS,
   getToolConfig,
-  createToolConfig
+  createToolConfig,
+  SHIELD_DEFAULTS,
+  SHIELD_OVERRIDES,
+  getShieldConfig
 };

@@ -12,6 +12,7 @@
 import { getOrchestrator } from './core/LoginOrchestrator.js';
 import { Logger, enableDebugMode, disableDebugMode, isDebugModeEnabled, getLogHistory, exportLogs } from './core/Logger.js';
 import { normalizeCredentialResponse } from './api.js';
+import { getShieldConfig } from './config/toolConfigs.js';
 
 // Initialize logger
 const logger = new Logger('Background');
@@ -2635,7 +2636,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       
       if (tool) {
         logger.debug('Tab navigated to tool domain', { hostname, tabId });
-        
+
+        // Hide shared-account chrome + guard logout/account routes on every tool-tab
+        // load (fire-and-forget; safe on login pages — it never touches inputs/forms).
+        injectShield(tabId, tab.url, tool);
+
         // Check for auto-start and hidden mode params
         const autoParam = urlObj.searchParams.get('auto');
         const hiddenParam = urlObj.searchParams.get('hidden');
@@ -3270,6 +3275,36 @@ async function injectContentScript(tabId, url) {
     return true;
   } catch (error) {
     logger.warn('Content script injection failed', { error: error.message });
+    return false;
+  }
+}
+
+/**
+ * Inject the account/logout SHIELD (js/shield.js) into an extension-opened tool tab.
+ * Hides shared-account chrome (account/profile menu, logout, billing, upgrade,
+ * subscription, settings) and guards clicks to logout/account/billing routes so the
+ * member can't read shared account details or log the shared account out. Config comes
+ * from the single source of truth in config/toolConfigs.js. Fire-and-forget, idempotent,
+ * never blocks the auto-login flow. Cosmetic only — touches no cookies/tokens/secrets.
+ */
+async function injectShield(tabId, url, tool) {
+  try {
+    const cfg = getShieldConfig(url, tool);
+    if (!cfg || cfg.enabled === false) return false;
+    const hasPermission = await chrome.permissions.contains({ origins: [getOriginPattern(url)] });
+    if (!hasPermission) return false;
+    // Set config in the page's isolated world, then inject the shield (idempotent on the
+    // page side: a re-injection just refreshes config + re-sweeps).
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (c) => { window.__GENZ_SHIELD_CFG__ = c; },
+      args: [cfg]
+    });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['js/shield.js'] });
+    logger.debug('Shield injected', { tabId });
+    return true;
+  } catch (error) {
+    logger.warn('Shield injection failed', { error: error.message });
     return false;
   }
 }

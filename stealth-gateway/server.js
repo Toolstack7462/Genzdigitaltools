@@ -368,6 +368,31 @@ a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:
   res.end(html);
 }
 
+// ── Friendly "managed section" notice for blocked account/billing/settings pages ──
+// Shown when a member navigates to an account/billing/subscription/settings page that
+// the shield blocks — a clear message + one click back into the editor, instead of a
+// silent bounce. Never exposes account data.
+function sendAccountNotice(res, retryPath) {
+  if (res.headersSent) { try { res.end(); } catch (_) {} return; }
+  const back = retryPath || DEFAULT_PATH;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>StealthWriter</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{max-width:440px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
+h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 22px}
+.row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+a{font:inherit;display:inline-block;text-decoration:none;padding:11px 20px;border-radius:10px;font-weight:600}
+.primary{background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff}
+.ghost{background:transparent;color:#7DE3F2;border:1px solid rgba(6,182,212,.4)}</style></head>
+<body><div class="card"><h1>Managed by Gen Z Digital Store</h1>
+<p>Account, billing and subscription settings are handled by Gen Z Digital Store, so this
+section isn't available here. Your StealthWriter editor is ready to use.</p>
+<div class="row"><a class="primary" href="${back}">Back to editor</a>
+<a class="ghost" href="https://app.genzdigitalstore.com/client/dashboard">My dashboard</a></div></div></body></html>`;
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(html);
+}
+
 // ── Header sanitising for proxied responses ──────────────────────────────────
 const STRIP_RESP_HEADERS = new Set([
   'content-security-policy', 'content-security-policy-report-only',
@@ -640,11 +665,11 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end('{}');
     }
-    // 2) Account / billing / subscription / pricing PAGE loads → bounce to editor.
+    // 2) Account / billing / subscription / pricing PAGE loads → friendly notice
+    //    (instead of silently bouncing, so the member understands why).
     if (isHtmlNav && BLOCK_NAV_RE.test(pathName)) {
       safeLog('route_blocked', { request_path: pathName, kind: 'nav' });
-      res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
-      return res.end();
+      return sendAccountNotice(res, DEFAULT_PATH);
     }
     // 3) Pure billing / payment / pricing API → empty stub, never proxied.
     if (!isHtmlNav && STUB_API_RE.test(pathName)) {

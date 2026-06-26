@@ -64,6 +64,10 @@ const TOOLS = {
     defaultPathEnv: 'RYNE_DEFAULT_PATH',
     defaultPath: '/',
     verifyPathEnv: 'RYNE_VERIFY_PATH',
+    // Ryne's logged-out state is its marketing page served at '/' with HTTP 200 (no
+    // redirect to /sign-in), so a dead session can't be detected by status/redirect
+    // alone. Opt this tool into the content-based logged-out heuristic (see verify.js).
+    detectLoggedOut: true,
   },
   writehuman: {
     key: 'writehuman',
@@ -77,6 +81,10 @@ const TOOLS = {
     defaultPathEnv: 'WRITEHUMAN_DEFAULT_PATH',
     defaultPath: '/',
     verifyPathEnv: 'WRITEHUMAN_VERIFY_PATH',
+    // WriteHuman's humanizer AND its logged-out marketing page both live at '/' (HTTP
+    // 200, no sign-in redirect), which is exactly why a stale session shows the public
+    // "Log in / Sign Up" page. Opt into the content-based logged-out heuristic.
+    detectLoggedOut: true,
   },
   grok: {
     key: 'grok',
@@ -143,6 +151,17 @@ function verifyPath(tool) {
   return process.env[t.verifyPathEnv] || defaultPath(tool);
 }
 
+// Whether to run the content-based logged-out heuristic for this tool (for tools whose
+// logged-out page is a 200 at the default path rather than a redirect to /sign-in).
+// Per-tool env `<TOOL>_DETECT_LOGGEDOUT` (1/0) overrides the registry default; off for
+// every tool that doesn't set it, so HIX/BypassGPT/ChatGPT/Grok are unaffected.
+function shouldDetectLoggedOut(tool) {
+  const t = getTool(tool); if (!t) return false;
+  const env = process.env[`${String(t.key).toUpperCase()}_DETECT_LOGGEDOUT`];
+  if (env != null && env !== '') return env === '1' || /^true$/i.test(env);
+  return !!t.detectLoggedOut;
+}
+
 const ABS_FALLBACK_LEASE_MINUTES = 30; // historical default (StealthWriter parity)
 
 function clampMinutes(v) {
@@ -172,5 +191,5 @@ function publicInfo(tool) {
 module.exports = {
   TOOLS, TOOL_KEYS, isValidTool, getTool,
   targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, publicInfo,
-  defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES,
+  defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES, shouldDetectLoggedOut,
 };

@@ -19,6 +19,9 @@
   var API = (CFG.api || '').replace(/\/$/, '');
   var TOOL_NAME = CFG.toolName || 'AI Tool';
   var SUPPORT_URL = CFG.support || 'https://app.genzdigitalstore.com/client/dashboard';
+  // Per-tool exact selectors from the gateway env (HIDE_SELECTORS). Already shipped in
+  // the critical hide CSS server-side; re-applied here so SPA re-renders stay hidden.
+  var HIDE_SELECTORS = (CFG.hideSelectors && CFG.hideSelectors.length) ? CFG.hideSelectors : [];
   if (!API) return;
 
   function getCookie(name) {
@@ -255,8 +258,10 @@
     var hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support', 'subscription',
       'upgrade', 'refer', 'plans', '/settings', '/profile', '/me', 'api-key', 'apikey',
       'logout', 'log-out', 'sign-out', 'signout'];
-    var css = hrefs.map(function (h) { return 'a[href*="' + h + '"]:not([data-genz-brand])'; }).join(',') +
-      ',[data-genz-hidden="1"]{display:none !important;}';
+    var parts = hrefs.map(function (h) { return 'a[href*="' + h + '"]:not([data-genz-brand])'; });
+    // Operator-supplied per-tool exact selectors (e.g. an obfuscated account container).
+    for (var i = 0; i < HIDE_SELECTORS.length; i++) { if (HIDE_SELECTORS[i]) parts.push(HIDE_SELECTORS[i]); }
+    var css = parts.join(',') + ',[data-genz-hidden="1"]{display:none !important;}';
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }

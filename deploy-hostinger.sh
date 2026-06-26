@@ -127,6 +127,21 @@ curl --fail-with-body --ftp-create-dirs \
 rm -f "${RESTART_TMP}"
 echo "    backend upload complete; Passenger restart triggered."
 
+# ── 1b) EXTENSION ZIP: rebuild the served extension zip from chrome-extension/
+#       BEFORE the frontend upload, so the version the admin page + client banner
+#       read (from the zip's manifest.json) always matches the extension source.
+#       The zip is a committed static artifact the CRA build does NOT regenerate;
+#       skipping this is what makes "new extension version not appearing". Writes
+#       to frontend/{public,build}/downloads. Non-fatal: if node is unavailable the
+#       already-committed zip still ships. ─────────────────────────────────────
+if command -v node >/dev/null 2>&1; then
+  echo "==> [1b] Rebuilding extension zip from chrome-extension/ ..."
+  node scripts/build-extension.mjs || echo "    WARNING: extension rebuild failed; shipping committed zip as-is." >&2
+else
+  echo "==> [1b] node not found — shipping committed extension zip as-is." >&2
+fi
+EXT_VER="$(node -e "try{const{readManifestFromZip}=require('./backend/utils/zipManifest.js');const fs=require('fs');process.stdout.write(readManifestFromZip(fs.readFileSync('${BUILD_DIR}/downloads/genz-digital-store-extension.zip')).version||'?')}catch(e){process.stdout.write('?')}" 2>/dev/null || echo '?')"
+
 # ── 2) FRONTEND: upload the build/ tree (minus *.map source maps, which we do
 #       not publish publicly) to BOTH website roots in ONE curl call.
 #       CRITICAL .htaccess handling:
@@ -169,7 +184,7 @@ for i in 1 2 3 4 5 6; do
   if echo "${BODY}" | grep -q 'extension_token_invalid'; then
     echo "==> SUCCESS: backend live, frontend + extension published."
     echo "    Site:      https://genzdigitalstore.com  /  https://app.genzdigitalstore.com"
-    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v3.9.4)"
+    echo "    Extension: https://genzdigitalstore.com/downloads/genz-digital-store-extension.zip (v${EXT_VER})"
     echo "    Reminder:  installed users must RELOAD the extension to pick up popup/background changes."
     exit 0
   fi

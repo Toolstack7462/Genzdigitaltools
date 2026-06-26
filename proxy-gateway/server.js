@@ -313,9 +313,56 @@ const BRAND_EMAIL = 'member@genzdigitalstore.com';
 // authenticated; set IDENTITY_SHIELD=1 only once it is proven auth-safe. The
 // logout-block below is ALWAYS on (protects the shared account) and never redacts.
 const IDENTITY_SHIELD = process.env.IDENTITY_SHIELD === '1' || /^true$/i.test(process.env.IDENTITY_SHIELD || '');
+// ── Account shield (route blocking) — DECOUPLED from IDENTITY_SHIELD ──────────
+// Blocking account/billing/settings PAGE loads + pure billing API calls is auth-SAFE
+// (it never touches the session/auth JSON the SPA needs), so it is ON by default for
+// every proxy tool. IDENTITY_SHIELD remains a SEPARATE, default-OFF switch that ALSO
+// deep-redacts identity JSON (which can log token SPAs out) — see sanitizeBody below.
+// Set ACCOUNT_SHIELD=0 to disable route blocking for a tool whose working area lives
+// under one of these path words (tune with NAV_BLOCK_EXCLUDE first).
+const ACCOUNT_SHIELD = !(process.env.ACCOUNT_SHIELD === '0' || /^false$/i.test(process.env.ACCOUNT_SHIELD || ''));
 const LOGOUT_RE = /(^|\/)(logout|log-?out|sign-?out|signout)(\/|$)|auth\/(sign-?out|signout|logout)/i;
 const BLOCK_NAV_RE = /(^|\/)(billing|subscription|subscriptions|pricing|plans?|upgrade|checkout|account|account-settings|settings|profile|affiliate|refer|referral|invite|rewards|api-keys?|apikeys?)(\/|$)/i;
 const STUB_API_RE = /(^|\/)(billing|invoice|invoices|payment|payments|checkout|customer-portal|create-portal|portal|pricing|plans?|upgrade|affiliate|refer|referral|coupon|promo|api-keys?|apikeys?)(\/|$)/i;
+// Optional per-tool tuning (each gateway is its own deployment with its own env, so this
+// IS the per-tool config). NAV_BLOCK_EXTRA adds comma-separated path fragments to block;
+// NAV_BLOCK_EXCLUDE removes a tool's working-area path that would otherwise match a word
+// above (e.g. a tool whose editor lives at /settings). Matched on the pathname only.
+const NAV_BLOCK_EXTRA = String(process.env.NAV_BLOCK_EXTRA || '').split(',').map(s => s.trim()).filter(Boolean);
+const NAV_BLOCK_EXCLUDE = String(process.env.NAV_BLOCK_EXCLUDE || '').split(',').map(s => s.trim()).filter(Boolean);
+function pathHasFragment(pathName, frags) { const p = String(pathName || '').toLowerCase(); return frags.some(f => p.includes(f.toLowerCase())); }
+function isBlockedAccountNav(pathName) {
+  if (NAV_BLOCK_EXCLUDE.length && pathHasFragment(pathName, NAV_BLOCK_EXCLUDE)) return false;
+  return BLOCK_NAV_RE.test(pathName) || (NAV_BLOCK_EXTRA.length && pathHasFragment(pathName, NAV_BLOCK_EXTRA));
+}
+function isStubApi(pathName) {
+  if (NAV_BLOCK_EXCLUDE.length && pathHasFragment(pathName, NAV_BLOCK_EXCLUDE)) return false;
+  return STUB_API_RE.test(pathName) || (NAV_BLOCK_EXTRA.length && pathHasFragment(pathName, NAV_BLOCK_EXTRA));
+}
+// Optional extra CSS selectors (comma-separated) for a tool's EXACT account/top-bar/
+// avatar containers an obfuscated class hides behind. Mirrors stealth-gateway's
+// STEALTH_HIDE_SELECTORS; shipped in the critical hide CSS (before first paint) and to
+// overlay.js. NEVER include selectors matching the editor / chat / upload / result area.
+const HIDE_SELECTORS = String(process.env.HIDE_SELECTORS || '').split(',').map(s => s.trim()).filter(Boolean);
+
+// ── Logged-out detection (opt-in; default OFF) ───────────────────────────────
+// Some tools (WriteHuman, Ryne) serve their PUBLIC marketing/login page at the default
+// path with HTTP 200 when the injected vault session is dead — so the client would see
+// "Log in / Sign Up" instead of the tool. When DETECT_LOGGED_OUT=1, the gateway checks
+// the MAIN nav document: if account cookies WERE attached but the page shows a logged-out
+// shell (sign-in AND sign-up CTA, and NO logout/account control), it flags the account
+// session-expired (server-to-server) and shows a friendly "session expired" page instead
+// of the public page. Requiring all three signals avoids ever tripping on a real logged-in
+// editor. Default OFF → every other tool is byte-for-byte unchanged.
+const DETECT_LOGGED_OUT = process.env.DETECT_LOGGED_OUT === '1' || /^true$/i.test(process.env.DETECT_LOGGED_OUT || '');
+const LO_LOGIN_RE  = /(log\s*in|sign\s*in)\b/i;
+const LO_SIGNUP_RE = /(sign\s*up|get\s*started|start\s*(for\s*)?free|try\s*(it\s*)?free|create\s*(an\s*)?account)\b/i;
+const LO_LOGOUT_RE = /(log\s*out|sign\s*out|\/logout|my\s*account|account\s*settings|data-testid="[^"]*account|aria-label="[^"]*log\s*out)/i;
+function htmlLooksLoggedOut(html) {
+  const s = String(html || '');
+  if (LO_LOGOUT_RE.test(s)) return false;
+  return LO_LOGIN_RE.test(s) && LO_SIGNUP_RE.test(s);
+}
 const IDENTITY_ROUTE_RE = /(^|\/)(session|get-session|user|users|me|account|accounts|profile|customer|subscription|subscriptions|membership)(\/|$|\.)|auth\/(session|get-session)/i;
 const KEY_NAME    = /^(name|fullname|full_name|displayname|display_name|firstname|first_name|lastname|last_name|username|user_name|nickname|handle)$/i;
 const KEY_EMAIL   = /^(email|emailaddress|email_address|e_mail|billingemail|billing_email)$/i;
@@ -451,6 +498,9 @@ function injectCaptchaShim(html) {
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
+// Inlined into <head> (not <script src defer>) so its MutationObserver/hiding starts
+// before <body> paints — same no-flash technique as the StealthWriter gateway.
+const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
 
 function sendBlockPage(res, code) {
   const messages = {
@@ -462,6 +512,7 @@ function sendBlockPage(res, code) {
     plan_expired: `Your ${TOOL_NAME} access has expired. Contact support to renew.`,
     account_blocked: `${TOOL_NAME} is temporarily unavailable. Please contact support.`,
     account_no_session: `${TOOL_NAME} is temporarily unavailable. Please contact support.`,
+    session_expired: `${TOOL_NAME} needs to sign in again. We're refreshing the session — please try again shortly or contact support.`,
     unavailable: 'Access could not be verified. Please refresh or contact support.',
   };
   const msg = messages[code] || 'Access could not be verified. Please refresh or contact support.';
@@ -496,6 +547,32 @@ a{font:inherit;display:inline-block;text-decoration:none;padding:11px 20px;borde
 <div class="row"><a class="primary" href="${retryPath}">Try again</a>
 <a class="ghost" href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></div></body></html>`;
   res.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  res.end(html);
+}
+
+// ── Friendly "managed section" notice for blocked account/billing/settings pages ──
+// Shown when a client navigates to an account / billing / subscription / settings page
+// that the shield blocks. Instead of breaking the tool or silently bouncing, it tells
+// them plainly that account & billing are handled by Gen Z Digital Store and offers a
+// one-click way back into the working tool. Never exposes any account data.
+function sendAccountNotice(res, retryPath) {
+  if (res.headersSent) { try { res.end(); } catch (_) {} return; }
+  const back = retryPath || DEFAULT_PATH;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${TOOL_NAME}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
+.card{max-width:440px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
+h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 22px}
+.row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+a{font:inherit;display:inline-block;text-decoration:none;padding:11px 20px;border-radius:10px;font-weight:600}
+.primary{background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff}
+.ghost{background:transparent;color:#7DE3F2;border:1px solid rgba(6,182,212,.4)}</style></head>
+<body><div class="card"><h1>Managed by Gen Z Digital Store</h1>
+<p>Account, billing and subscription settings are handled by Gen Z Digital Store, so this
+section isn't available here. Your ${TOOL_NAME} workspace is ready to use.</p>
+<div class="row"><a class="primary" href="${back}">Back to ${TOOL_NAME}</a>
+<a class="ghost" href="https://app.genzdigitalstore.com/client/dashboard">My dashboard</a></div></div></body></html>`;
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
   res.end(html);
 }
 
@@ -555,12 +632,40 @@ function rewriteSetCookie(values) {
 }
 
 // ── Overlay injection ─────────────────────────────────────────────────────────
+// ── Critical hide CSS (injected at the START of <head> → applies before first paint) ──
+// Ports the StealthWriter gateway's no-flash fix to every proxy tool: the static
+// account / billing / pricing / settings / logout hiding rules ship in the initial
+// <head> so the browser never paints them, instead of overlay.js adding them after the
+// app has already rendered (which caused a 1–2s flash). href + aria-label/data-testid
+// based (robust against obfuscated class names); operator HIDE_SELECTORS appended. The
+// overlay's sweep()/MutationObserver remain the backup for text-matched / SPA nodes.
+// NEVER matches the editor / chat / upload / result area.
+function buildCriticalCss() {
+  const hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support',
+    'subscription', 'upgrade', 'refer', '/plans', '/settings', '/profile', '/me',
+    'api-key', 'apikey', 'logout', 'log-out', 'sign-out', 'signout'];
+  const sel = hrefs.map(h => `a[href*="${h}" i]`);
+  const attrs = ['account', 'profile', 'user menu', 'usermenu', 'user-menu', 'avatar',
+    'upgrade', 'billing', 'subscription', 'affiliate', 'log out', 'logout', 'sign out'];
+  attrs.forEach(a => { sel.push(`[aria-label*="${a}" i]`); sel.push(`[data-testid*="${a}" i]`); });
+  HIDE_SELECTORS.forEach(s => sel.push(s));      // per-tool exact selectors
+  sel.push('[data-genz-hidden="1"]');            // anything overlay.js marks at runtime
+  return `/* genz critical hide */\n${sel.join(',')}{display:none !important;}`;
+}
+// Everything is injected into <head> so hiding applies before the app paints, and the
+// overlay JS is INLINED (executes during head parse, no extra round-trip) so its
+// MutationObserver is registered before <body> content is inserted. Capture (admin)
+// mode omits the critical CSS so the operator can still reach account pages to log in.
 function injectOverlay(html, capture) {
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY });
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS });
+  const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
+    critical +
     `<link rel="stylesheet" href="/__genz/overlay.css">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
-    `<script src="/__genz/overlay.js" defer></script>`;
+    `<script id="genz-overlay">${OVERLAY_JS_INLINE}</script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + tags);
   if (html.includes('</body>')) return html.replace('</body>', tags + '</body>');
   if (html.includes('</html>')) return html.replace('</html>', tags + '</html>');
   return html + tags;
@@ -748,6 +853,17 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.on('data', c => buf.push(c));
         uRes.on('end', () => {
           let html = Buffer.concat(buf).toString('utf8');
+          // Logged-out guard (opt-in): if the injected vault session is dead, the main view
+          // is the tool's PUBLIC page. Flag the account expired + show a friendly notice
+          // instead of leaking the public login/sign-up page to the client. Only when we
+          // actually attached account cookies (we expected a logged-in page).
+          if (DETECT_LOGGED_OUT && isHtmlNav && !ctx.asset && !isCaptchaReq && !cfPassthrough
+              && !ctx.capture && session && session.cookieCount > 0 && htmlLooksLoggedOut(html)) {
+            uRes.resume && uRes.resume();
+            safeLog('logged_out_detected', { request_path: reqPathOnly, lease_id: ctx.jti || null });
+            if (ctx.token) gatewayApiPost('/account-expired', ctx.token, {}).then(() => {}).catch(() => {});
+            return sendBlockPage(res, 'session_expired');
+          }
           html = neutralizeHostGuard(html);
           html = stripSecurityMeta(html);
           const rw = rewriteUpstreamUrls(html); html = rw.text;
@@ -757,9 +873,13 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           // left intact so the challenge renders and solves cleanly.
           if (!ctx.asset && !isCaptchaReq && !cfPassthrough) {
             if (IDENTITY_SHIELD && !ctx.capture) html = redactHtmlIdentity(html);
+            // All three are <head> inserts placed immediately after <head>, so the LAST
+            // call ends up FIRST in the document. Order them so the captcha shim and the
+            // session bootstrap still run before the app's own scripts, while the overlay
+            // (critical hide CSS + widget) is injected before <body> paints (no flash).
+            html = injectOverlay(html, ctx.capture);
             html = injectSessionBootstrap(html, session);
             html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
-            html = injectOverlay(html, ctx.capture);
           }
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
@@ -933,24 +1053,36 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── Server-side account/billing/logout shield (client leases only) ─────────
+  // Route blocking is auth-safe and ON by default (ACCOUNT_SHIELD). It is intentionally
+  // SEPARATE from the default-OFF IDENTITY_SHIELD, which additionally deep-redacts the
+  // identity JSON (and can log token SPAs out) via sanitizeBody below.
   if (!capture) {
+    // 1) Logout / sign-out: never proxied — it would destroy the shared vault session
+    //    for every client. Nav bounces back into the tool; API calls get a benign no-op
+    //    so the app's own in-page session token is left intact.
     if (LOGOUT_RE.test(pathName)) {
       safeLog('route_blocked', { request_path: pathName, kind: 'logout', is_nav: isHtmlNav });
       if (isHtmlNav) { res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' }); return res.end(); }
       res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       return res.end('{}');
     }
-    if (IDENTITY_SHIELD && isHtmlNav && BLOCK_NAV_RE.test(pathName)) {
-      safeLog('route_blocked', { request_path: pathName, kind: 'nav' });
-      res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
-      return res.end();
-    }
-    if (IDENTITY_SHIELD && !isHtmlNav && STUB_API_RE.test(pathName)) {
-      safeLog('route_blocked', { request_path: pathName, kind: 'api_stub' });
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      return res.end('{}');
+    if (ACCOUNT_SHIELD) {
+      // 2) Account / billing / subscription / settings PAGE loads → friendly notice
+      //    (instead of breaking the tool or silently bouncing).
+      if (isHtmlNav && isBlockedAccountNav(pathName)) {
+        safeLog('route_blocked', { request_path: pathName, kind: 'nav' });
+        return sendAccountNotice(res, DEFAULT_PATH);
+      }
+      // 3) Pure billing / payment / pricing API → empty stub, never proxied.
+      if (!isHtmlNav && isStubApi(pathName)) {
+        safeLog('route_blocked', { request_path: pathName, kind: 'api_stub' });
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        return res.end('{}');
+      }
     }
   }
+  // 4) Identity JSON deep-redaction stays OPT-IN (IDENTITY_SHIELD) — it preserves auth
+  //    structure but can break token SPAs, so it's per-tool and off by default.
   const sanitizeBody = IDENTITY_SHIELD && !capture && IDENTITY_ROUTE_RE.test(pathName);
 
   let session;

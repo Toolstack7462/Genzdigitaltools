@@ -76,14 +76,23 @@ router.post('/:tool/open', async (req, res) => {
 
     // ── Account Vault selection (per tool) ─────────────────────────────────
     const accounts = await ProxyAccount.find({ tool });
-    let account = null;
-    if (accounts.length > 0) {
-      account = accountSelect.selectAccount(accounts, SELECTION_MODE);
-      if (!account) {
-        const reasons = accounts.map(a => ({ account_id: a._id, account_label: a.label, reason: accountSelect.unavailableReason(a) }));
-        await ActivityLog.log('CLIENT', req.userId, 'PROXY_NO_ACCOUNT_AVAILABLE', { tool, reasons, ip: getClientIp(req) });
-        return res.status(503).json({ error: `No ${tool} account is currently available. Please try again shortly.`, code: 'no_account_available' });
-      }
+    const account = accounts.length > 0 ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    if (!account) {
+      // No usable vault session (none saved, or all expired/blocked/limit-reached). NEVER
+      // open a cookie-less proxy session — for these logged-in tools that would just show
+      // the platform's PUBLIC login / sign-up page to the client. Return a friendly
+      // "session expired / being set up" status instead; admin sees the per-account
+      // reasons (e.g. session_expired) and can refresh the session through the vault.
+      const reasons = accounts.map(a => ({ account_id: a._id, account_label: a.label, reason: accountSelect.unavailableReason(a) }));
+      const anyExpired = accounts.some(a => accountSelect.unavailableReason(a) === 'session_expired');
+      await ActivityLog.log('CLIENT', req.userId, 'PROXY_NO_ACCOUNT_AVAILABLE', { tool, accountsTotal: accounts.length, reasons, ip: getClientIp(req) });
+      const toolName = (tools.publicInfo(tool) || {}).name || tool;
+      return res.status(503).json({
+        error: anyExpired
+          ? `${toolName} needs to sign in again and is being refreshed. Please try again shortly or contact support.`
+          : `${toolName} is being set up and isn't available yet. Please try again shortly or contact support.`,
+        code: anyExpired ? 'session_expired' : 'no_account_available',
+      });
     }
 
     const leaseMinutes = resolveLeaseMinutes(client);
