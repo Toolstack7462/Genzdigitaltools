@@ -400,6 +400,12 @@ router.post('/:tool/accounts/:id/session', validate(schemas.accountSession), asy
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     const bundle = normalizeCookieBundle(req.body.sessionBundle);
     if (!bundle) return res.status(400).json({ error: 'Invalid session bundle' });
+    // Remember who the vault thought this account was BEFORE the update so we can warn if
+    // the "new" cookies resolve to the very same (old) account — the #1 real-world cause of
+    // "I updated the cookies but the client still shows the old account": the cookies were
+    // exported from a browser still logged into the old account.
+    const prevMaskedId = account.verification?.maskedId || null;
+
     account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
     account.sessionMeta = buildSessionMeta(req.proxyTool, bundle);
     if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
@@ -422,8 +428,35 @@ router.post('/:tool/accounts/:id/session', validate(schemas.accountSession), asy
       revokedLeases = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
     } catch (_) { /* non-fatal: cookies are saved; stale lease self-heals within ~60s */ }
 
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), revokedLeases });
+    // ── Auto-verify the just-saved cookies (immediate, safe feedback) ──────────
+    // Hit the tool live with ONLY the new bundle and report whose account it actually is
+    // (masked) so the admin sees at save time "this is still the OLD account" instead of
+    // discovering it on the client. Best-effort; cookies are saved regardless. No secrets.
+    let verifyResult = null, warning = null;
+    try {
+      const host = tools.targetHost(req.proxyTool);
+      const cookieHeader = buildCookieHeader(bundle, host);
+      if (!cookieHeader) {
+        account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
+        account.status = 'session_expired'; account.session_status = 'session_expired';
+        verifyResult = 'session_expired'; warning = 'no_session_cookie';
+      } else {
+        const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier);
+        account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
+        account.lastVerifiedAt = new Date();
+        if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
+        else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
+        else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
+        else if (v.result === 'unsupported') { account.status = 'blocked'; }
+        verifyResult = v.result;
+        if (v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
+        else if (v.result === 'wrong_account') warning = 'cookies_wrong_account';
+      }
+      await account.save();
+    } catch (_) { /* verify is best-effort; the cookies are already saved + leases revoked */ }
+
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, verifyResult, warning, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), revokedLeases, verifyResult, warning, maskedIdentifier: account.verification?.maskedId || null });
   } catch (err) {
     console.error('Proxy refresh session error:', err.message);
     return res.status(500).json({ error: 'Failed to refresh session' });

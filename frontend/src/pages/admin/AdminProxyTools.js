@@ -164,7 +164,24 @@ const AdminProxyTools = () => {
     } catch (e) { showError(e.response?.data?.error || 'Failed to save account'); }
   };
   const saveSession = async (id, sessionBundle) => {
-    try { await proxyToolsAdmin.refreshAccountSession(tool, id, sessionBundle); showSuccess('Cookies updated'); setShowSessionModal(null); load(); }
+    try {
+      const r = await proxyToolsAdmin.refreshAccountSession(tool, id, sessionBundle);
+      const d = r.data || {};
+      // The backend auto-verifies the saved cookies. Surface WHOSE account they actually
+      // are so a wrong/old-account paste is caught here, not on the client side.
+      if (d.warning === 'cookies_match_previous_account') {
+        showError(`Saved, but these cookies are the SAME account as before (${d.maskedIdentifier || 'unknown'}). You likely captured the OLD account again — log out of the tool and log into the new account before exporting.`);
+      } else if (d.warning === 'cookies_wrong_account') {
+        showError(`Saved, but these cookies verify as ${d.maskedIdentifier || 'a different account'}, not the expected account. Check you exported the new account's session.`);
+      } else if (d.warning === 'no_session_cookie' || d.verifyResult === 'session_expired') {
+        showError('Saved, but these cookies do not log in (no valid session). Re-export the new account including its httpOnly session cookie.');
+      } else if (d.verifyResult === 'working') {
+        showSuccess(`Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
+      } else {
+        showSuccess('Cookies updated.');
+      }
+      setShowSessionModal(null); load();
+    }
     catch (e) { showError(e.response?.data?.error || 'Failed to update cookies'); }
   };
   const verify = async (id) => { try { const r = await proxyToolsAdmin.verifyAccount(tool, id); showSuccess(`Verify: ${r.data?.result || 'done'}`); load(); } catch (e) { showError(e.response?.data?.error || 'Verify failed'); } };
