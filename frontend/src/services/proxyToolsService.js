@@ -26,6 +26,10 @@ export const proxyToolsAdmin = {
   setAccountStatus: (tool, id, status) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/status`, { status }),
   revokeAccountLeases: (tool, id) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/revoke-leases`),
   deleteAccount: (tool, id) => api.delete(`/admin/proxy-tools/${tool}/accounts/${id}`),
+  // Tool-wide: revoke ALL active leases so the next launch reads the latest cookies.
+  refreshSessions: (tool) => api.post(`/admin/proxy-tools/${tool}/refresh-sessions`),
+  // Ground-truth: which account clients get now + a safe live probe of its session.
+  activeAccount: (tool) => api.get(`/admin/proxy-tools/${tool}/active-account`),
 };
 
 // ── Client ────────────────────────────────────────────────────────────────

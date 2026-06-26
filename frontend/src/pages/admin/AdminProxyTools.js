@@ -189,6 +189,7 @@ const AdminProxyTools = () => {
   const setStatus = async (id, status) => { try { await proxyToolsAdmin.setAccountStatus(tool, id, status); load(); } catch (e) { showError('Failed to set status'); } };
   const captureLease = async (id) => { try { const r = await proxyToolsAdmin.captureLease(tool, id); if (r.data?.url) window.open(r.data.url, '_blank', 'noopener'); } catch (e) { showError('Failed to start capture'); } };
   const revokeAccountLeases = async (id) => { if (!window.confirm('Revoke all active sessions using this account?')) return; try { const r = await proxyToolsAdmin.revokeAccountLeases(tool, id); showSuccess(`Revoked ${r.data?.revoked || 0}`); load(); } catch (e) { showError('Failed'); } };
+  const refreshSessions = async () => { if (!window.confirm(`Clear ALL open ${currentName} sessions? The next launch will use the latest saved cookies.`)) return; try { const r = await proxyToolsAdmin.refreshSessions(tool); showSuccess(`Cleared ${r.data?.revoked || 0} open session(s). Next launch uses the latest cookies.`); load(); } catch (e) { showError('Failed to refresh sessions'); } };
   const deleteAccount = async (id) => { if (!window.confirm('Delete this account? Cookies are wiped and its sessions revoked.')) return; try { await proxyToolsAdmin.deleteAccount(tool, id); showSuccess('Account deleted'); load(); } catch (e) { showError('Failed'); } };
 
   // ── Client actions ──────────────────────────────────────────────────────────
@@ -250,9 +251,17 @@ const AdminProxyTools = () => {
               {label}
             </button>
           ))}
+          {section === 'accounts' && (
+            <button
+              onClick={refreshSessions}
+              title="Revoke all open sessions for this tool so the next launch uses the latest saved cookies"
+              className="ml-auto mb-1.5 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-semibold border border-genz-border text-genz-navy hover:bg-genz-soft">
+              <RefreshCw size={15} /> Refresh sessions
+            </button>
+          )}
           <button
             onClick={() => { if (section === 'accounts') { setEditAccount(null); setShowAccountModal(true); } else { setEditClient(null); setShowClientModal(true); } }}
-            className="ml-auto mb-1.5 btn-grad inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold">
+            className={`${section === 'accounts' ? '' : 'ml-auto'} mb-1.5 btn-grad inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold`}>
             <Plus size={15} /> {section === 'accounts' ? `Add ${currentName} account` : 'Grant access'}
           </button>
         </div>

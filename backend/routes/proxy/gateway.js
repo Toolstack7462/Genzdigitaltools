@@ -174,8 +174,22 @@ router.post('/capture-session', requireGatewayKey, async (req, res) => {
     account.session_status = 'working';
     account.verification = { result: 'working', maskedId: account.verification?.maskedId || null, httpStatus: 200, checkedAt: new Date() };
     await account.save();
-    dbg({ evt: 'capture_session', tool: account.tool, account_id: account._id, cookies_count_attached: cookieBundle.cookies.length });
-    return res.json({ ok: true, cookiesSaved: cookieBundle.cookies.length });
+
+    // The account's cookies were just REPLACED via capture (same as the admin paste flow).
+    // Revoke its in-flight leases so the next launch mints a FRESH lease (new jti → gateway
+    // cache miss → re-fetch of the new bundle from the DB) instead of an open/cached lease
+    // continuing on the old session. Mirrors routes/admin/proxyTools.js :id/session.
+    let revokedLeases = 0;
+    try {
+      const r = await ProxyLease.updateMany(
+        { accountId: account._id, revoked: false },
+        { $set: { revoked: true, revokedReason: 'session_refreshed', revokedAt: new Date() } }
+      );
+      revokedLeases = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
+    } catch (_) { /* non-fatal: cookies saved; an open lease self-heals within ~60s */ }
+
+    dbg({ evt: 'capture_session', tool: account.tool, account_id: account._id, cookies_count_attached: cookieBundle.cookies.length, revoked_leases: revokedLeases });
+    return res.json({ ok: true, cookiesSaved: cookieBundle.cookies.length, revokedLeases });
   } catch (err) {
     console.error('Proxy capture-session error:', err.message);
     return res.status(500).json({ ok: false, code: 'server_error' });

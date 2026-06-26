@@ -627,6 +627,25 @@ router.post('/:tool/accounts/:id/revoke-leases', async (req, res) => {
   }
 });
 
+// Tool-wide "Refresh proxy sessions / clear old leases": revoke EVERY active lease for the
+// tool so the next launch (for any client) mints a fresh lease → fresh DB read of the
+// latest cookies. Use after a cookie update if any stale session might still be open.
+// Reuses the same revoke mechanism; no new cookie/session system.
+router.post('/:tool/refresh-sessions', async (req, res) => {
+  try {
+    const r = await ProxyLease.updateMany(
+      { tool: req.proxyTool, revoked: false },
+      { $set: { revoked: true, revokedReason: 'tool_sessions_refreshed', revokedAt: new Date() } }
+    );
+    const revoked = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_TOOL_LEASES_REFRESHED', { tool: req.proxyTool, count: revoked, ip: getClientIp(req) });
+    return res.json({ success: true, revoked });
+  } catch (err) {
+    console.error('Proxy refresh sessions error:', err.message);
+    return res.status(500).json({ error: 'Failed to refresh sessions' });
+  }
+});
+
 router.delete('/:tool/accounts/:id', async (req, res) => {
   try {
     const account = await ProxyAccount.findById(req.params.id);
