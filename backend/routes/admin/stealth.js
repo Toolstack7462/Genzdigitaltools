@@ -24,7 +24,7 @@ const config = require('../../utils/stealth/config');
 const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/stealth/cookies');
-const { unavailableReason } = require('../../utils/stealth/accountSelect');
+const { unavailableReason, accountHealth } = require('../../utils/stealth/accountSelect');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
 const TARGET_HOST = (() => {
@@ -53,6 +53,9 @@ const schemas = {
     expiryDate: Joi.date().iso().allow(null),
     status: Joi.string().valid('active', 'disabled'),
     notes: Joi.string().max(500).allow('', null),
+    // Optional per-client account pinning (default 'auto' = global pool).
+    accountPinMode: Joi.string().valid('auto', 'specific', 'specific_or_auto'),
+    pinnedAccountId: Joi.string().allow('', null),
   }).min(1),
   settings: Joi.object({
     leaseDurationMinutes: Joi.number().integer().min(1).max(720),
@@ -100,6 +103,19 @@ async function presentClient(client) {
   const user = await User.findById(client.userId).select('fullName email status');
   const activeLeases = (await StealthLease.find({ stealthClientId: client._id, revoked: false }))
     .filter(l => l.isActive());
+
+  // Account-pin view: mode + the pinned account's SAFE label & live health
+  // (never email/cookies/sessions). Default 'auto' = global pool.
+  const pinMode = client.accountPinMode || 'auto';
+  const accountPin = { mode: pinMode, accountId: null, accountLabel: null, accountHealth: null, available: null };
+  if (pinMode !== 'auto' && client.pinnedAccountId) {
+    const acct = await StealthAccount.findById(client.pinnedAccountId);
+    accountPin.accountId = client.pinnedAccountId;
+    accountPin.accountLabel = acct ? acct.label : (client.pinnedAccountLabel || null);
+    accountPin.accountHealth = acct ? accountHealth(acct) : 'missing';
+    accountPin.available = acct ? (unavailableReason(acct) === null) : false;
+  }
+
   return {
     id: client._id,
     userId: client.userId,
@@ -113,6 +129,7 @@ async function presentClient(client) {
     remaining: snap.remaining,
     expired: snap.expired,
     activeLeaseCount: activeLeases.length,
+    accountPin,
     resetLabel: RESET_LABEL,
     nextResetAt: nextResetAt(),
     createdAt: client.createdAt,
@@ -259,6 +276,25 @@ router.put('/clients/:id', validate(schemas.updateClient), async (req, res) => {
     for (const f of fields) if (req.body[f] !== undefined) client[f] = req.body[f];
     if (req.body.expiryDate !== undefined) client.expiryDate = req.body.expiryDate || null;
 
+    // ── Optional account pinning ───────────────────────────────────────────────
+    if (req.body.accountPinMode !== undefined || req.body.pinnedAccountId !== undefined) {
+      const mode = req.body.accountPinMode || client.accountPinMode || 'auto';
+      if (mode === 'auto') {
+        // Clear the pin → back to the global pool.
+        client.accountPinMode = 'auto';
+        client.pinnedAccountId = null;
+        client.pinnedAccountLabel = null;
+      } else {
+        const pinnedId = req.body.pinnedAccountId !== undefined ? req.body.pinnedAccountId : client.pinnedAccountId;
+        if (!pinnedId) return res.status(400).json({ error: 'Select a StealthWriter account to pin, or choose Auto mode' });
+        const acct = await StealthAccount.findById(pinnedId);
+        if (!acct) return res.status(400).json({ error: 'Selected StealthWriter account not found' });
+        client.accountPinMode = mode;
+        client.pinnedAccountId = String(acct._id);
+        client.pinnedAccountLabel = acct.label; // safe label only — never cookies/email
+      }
+    }
+
     await client.save();
     await ActivityLog.log('ADMIN', req.userId, 'STEALTH_CLIENT_UPDATED', { stealthClientId: client._id, changes: req.body, ip: getClientIp(req) });
     return res.json({ success: true, client: await presentClient(client) });
@@ -378,6 +414,7 @@ function presentAccount(account, activeLeaseCount = 0) {
     hasExpectedIdentifier: !!account.expectedIdentifier,
     available: unavailableReason(account) === null,
     unavailableReason: unavailableReason(account), // safe reason (no secrets) or null
+    health: accountHealth(account),                // coarse UI health (no secrets)
     activeLeaseCount,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,

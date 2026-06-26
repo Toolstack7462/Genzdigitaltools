@@ -3,7 +3,7 @@ import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Sparkles, Plus, RefreshCw, Trash2, Edit2, ShieldOff, Clock,
   Loader2, X, Save, Eye, Settings as SettingsIcon, Users, Zap,
-  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search
+  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search, Pin
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
 import { cachedGet } from '../../services/apiCache';
@@ -354,6 +354,13 @@ const AdminStealthWriter = () => {
                         <td className="px-4 py-2.5">
                           <div className="font-medium text-slate-700">{c.user?.fullName || '—'}</div>
                           <div className="text-[12px] text-slate-400">{c.user?.email || c.userId}</div>
+                          {c.accountPin && c.accountPin.mode !== 'auto' && c.accountPin.accountLabel && (
+                            <div className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-slate-500">
+                              <Pin size={11} className="text-blue-500" />
+                              <span className="font-medium text-slate-600">{c.accountPin.accountLabel}</span>
+                              <HealthBadge health={c.accountPin.accountHealth} />
+                            </div>
+                          )}
                         </td>
                         <td className="px-4 py-2.5 text-slate-600">{c.planName}</td>
                         <td className="px-4 py-2.5 text-slate-600">{fmtLimit(c.used.humanizer, c.remaining.humanizer, c.limits.humanizer)}</td>
@@ -384,7 +391,7 @@ const AdminStealthWriter = () => {
 
       {showCreate && <CreateModal crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={loadCrmClients} onClose={() => setShowCreate(false)}
         onCreated={() => { setShowCreate(false); load(); }} showError={showError} showSuccess={showSuccess} />}
-      {editing && <EditModal client={editing} onClose={() => setEditing(null)}
+      {editing && <EditModal client={editing} accounts={accounts} onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); load(); }} showError={showError} showSuccess={showSuccess} />}
       {detail && <DetailModal detail={detail} onClose={() => setDetail(null)} onRevokeLease={async (lid) => { await stealthAdmin.revokeLease(lid); const r = await stealthAdmin.getClient(detail.client.id); setDetail(r.data); }} />}
       {showAddAccount && <AccountModal onClose={() => setShowAddAccount(false)}
@@ -424,6 +431,32 @@ const AccountStatusBadge = ({ status }) => (
     {String(status || '').replace('_', ' ')}
   </span>
 );
+
+// ── Account health badge (working / needs login / expired / blocked / limit) ──
+const HEALTH_STYLES = {
+  working: 'bg-green-100 text-green-700',
+  needs_login: 'bg-amber-100 text-amber-700',
+  expired: 'bg-amber-100 text-amber-700',
+  limit_reached: 'bg-orange-100 text-orange-700',
+  blocked: 'bg-red-100 text-red-700',
+  needs_verification: 'bg-slate-100 text-slate-600',
+  missing: 'bg-red-100 text-red-700',
+};
+const HEALTH_LABEL = {
+  working: 'working', needs_login: 'needs login', expired: 'expired',
+  limit_reached: 'limit reached', blocked: 'blocked',
+  needs_verification: 'unverified', missing: 'missing',
+};
+const HealthBadge = ({ health }) => !health ? null : (
+  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${HEALTH_STYLES[health] || 'bg-slate-100 text-slate-600'}`}>
+    {HEALTH_LABEL[health] || String(health).replace(/_/g, ' ')}
+  </span>
+);
+const PIN_MODE_LABEL = {
+  auto: 'Auto / default pool',
+  specific: 'Specific account only',
+  specific_or_auto: 'Specific + fallback to pool',
+};
 
 const BUNDLE_PLACEHOLDER = `{
   "cookies": [{ "name": "session", "value": "..." }],
@@ -493,22 +526,28 @@ const CreateModal = ({ crmClients, crmLoading, crmSearching, onSearchClients, on
   );
 };
 
-const EditModal = ({ client, onClose, onSaved, showError, showSuccess }) => {
+const EditModal = ({ client, accounts = [], onClose, onSaved, showError, showSuccess }) => {
+  const pin = client.accountPin || { mode: 'auto', accountId: null, accountLabel: null, accountHealth: null };
   const [form, setForm] = useState({
     planName: client.planName, dailyHumanizerLimit: client.limits.humanizer, dailyDetectorLimit: client.limits.detector,
     expiryDate: toDateInput(client.expiryDate), status: client.status,
+    pinMode: pin.mode || 'auto', pinnedAccountId: pin.accountId || '',
   });
   const [saving, setSaving] = useState(false);
   const submit = async () => {
+    if (form.pinMode !== 'auto' && !form.pinnedAccountId) return showError('Select an account to pin, or choose Auto mode');
     try {
       setSaving(true);
       await stealthAdmin.updateClient(client.id, {
         planName: form.planName, dailyHumanizerLimit: Number(form.dailyHumanizerLimit), dailyDetectorLimit: Number(form.dailyDetectorLimit),
         expiryDate: form.expiryDate || null, status: form.status,
+        accountPinMode: form.pinMode,
+        pinnedAccountId: form.pinMode === 'auto' ? null : (form.pinnedAccountId || null),
       });
       showSuccess('Client updated'); onSaved();
     } catch (e) { showError(e.response?.data?.error || 'Failed to update'); } finally { setSaving(false); }
   };
+  const clearPin = () => setForm({ ...form, pinMode: 'auto', pinnedAccountId: '' });
   return (
     <Modal title={`Edit — ${client.user?.fullName || client.userId}`} onClose={onClose}>
       <Field label="Plan name"><input className={inputCls} value={form.planName} onChange={(e) => setForm({ ...form, planName: e.target.value })} /></Field>
@@ -520,6 +559,51 @@ const EditModal = ({ client, onClose, onSaved, showError, showSuccess }) => {
       <Field label="Status">
         <select className={inputCls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}><option value="active">active</option><option value="disabled">disabled</option></select>
       </Field>
+
+      {/* ── StealthWriter account assignment (optional pinning) ── */}
+      <div className="mt-1 mb-3 border-t border-slate-100 pt-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-700"><Pin size={14} /> StealthWriter account assignment</span>
+          {form.pinMode !== 'auto' && (
+            <button type="button" onClick={clearPin} className="text-[12px] text-blue-600 hover:underline">Clear → Auto</button>
+          )}
+        </div>
+        <p className="text-[12px] text-slate-400 mb-2">
+          Default is the automatic pool. Pin a client to one of your saved accounts only when needed — official limits, logins and abuse protections still apply, and account sessions/cookies stay backend-only.
+        </p>
+        <Field label="Assignment mode">
+          <select className={inputCls} value={form.pinMode} onChange={(e) => setForm({ ...form, pinMode: e.target.value })}>
+            <option value="auto">Auto / Default pool</option>
+            <option value="specific">Specific account only</option>
+            <option value="specific_or_auto">Specific account, fallback to pool</option>
+          </select>
+        </Field>
+        {form.pinMode !== 'auto' && (
+          accounts.length === 0 ? (
+            <p className="text-[12px] text-amber-600 mb-2">No saved StealthWriter accounts yet. Add one in the Account Vault above first.</p>
+          ) : (
+            <Field label="Preferred account">
+              <select className={inputCls} value={form.pinnedAccountId} onChange={(e) => setForm({ ...form, pinnedAccountId: e.target.value })}>
+                <option value="">— Select an account —</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.label} — {HEALTH_LABEL[a.health] || a.status}{a.isPrimary ? ' · primary' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )
+        )}
+        {pin.mode !== 'auto' && pin.accountId && (
+          <div className="text-[12px] text-slate-500 flex items-center gap-2 mt-1">
+            <span>Currently assigned:</span>
+            <b className="text-slate-700">{pin.accountLabel || 'account'}</b>
+            <HealthBadge health={pin.accountHealth} />
+            <span className="text-slate-400">· {PIN_MODE_LABEL[pin.mode] || pin.mode}</span>
+          </div>
+        )}
+      </div>
+
       <button onClick={submit} disabled={saving} className="w-full mt-2 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-white bg-slate-800 disabled:opacity-60">
         {saving ? <Loader2 className="animate-spin" size={16} /> : <Save size={16} />} Save
       </button>

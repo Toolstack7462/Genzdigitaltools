@@ -21,6 +21,18 @@ const accountSelect = require('../../utils/stealth/accountSelect');
 const lease = require('../../utils/stealth/lease');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 
+// Human-readable phrasing for a pinned account's health (no secrets) — used in
+// the client-facing "your assigned account is currently …" message.
+const HEALTH_TEXT = {
+  working: 'available',
+  needs_login: 'in need of re-login',
+  expired: 'expired (needs re-login)',
+  blocked: 'blocked',
+  limit_reached: 'at its usage limit',
+  needs_verification: 'pending verification',
+  missing: 'no longer available',
+};
+
 router.use(requireAuth);
 router.use(requireRole('CLIENT'));
 
@@ -84,14 +96,47 @@ router.post('/open', async (req, res) => {
     const accounts = await StealthAccount.find({});
     let account = null;
     if (accounts.length > 0) {
-      account = accountSelect.selectAccount(accounts, settings.accountSelectionMode);
+      // Honor an optional per-client pin. With mode 'auto' (the default) this is
+      // identical to the previous global-pool selection.
+      const sel = accountSelect.selectAccountForClient(accounts, settings.accountSelectionMode, {
+        mode: client.accountPinMode,
+        accountId: client.pinnedAccountId,
+      });
+      account = sel.account;
+
       if (!account) {
-        // Safe per-account reasons for admin logs (no secrets, no cookie values).
+        if (sel.source === 'pinned_unavailable') {
+          // 'Specific account only' and that account is expired/blocked/limit
+          // reached/needs login → clear status, NO fallback, NO bypass.
+          await ActivityLog.log('CLIENT', req.userId, 'STEALTH_PINNED_ACCOUNT_UNAVAILABLE', {
+            stealthClientId: client._id, accountId: client.pinnedAccountId, accountLabel: client.pinnedAccountLabel,
+            reason: sel.pinnedReason, health: sel.pinnedHealth, ip: getClientIp(req),
+          });
+          const label = client.pinnedAccountLabel || 'assigned account';
+          return res.status(503).json({
+            error: `Your assigned StealthWriter account (${label}) is currently ${HEALTH_TEXT[sel.pinnedHealth] || 'unavailable'}. Please contact support.`,
+            code: 'pinned_account_unavailable',
+            accountStatus: sel.pinnedHealth || 'unavailable',
+          });
+        }
+        // No usable account anywhere (covers pin mode 'specific_or_auto' with an
+        // empty pool too). Safe per-account reasons for admin logs (no secrets).
         const reasons = accounts.map(a => ({ account_id: a._id, account_label: a.label, reason: accountSelect.unavailableReason(a) }));
         await ActivityLog.log('CLIENT', req.userId, 'STEALTH_NO_ACCOUNT_AVAILABLE', { reasons, ip: getClientIp(req) });
         return res.status(503).json({
           error: 'No StealthWriter account is currently available. Please try again shortly.',
           code: 'no_account_available',
+        });
+      }
+
+      // Pinned account was down and we fell back to the pool — record it for
+      // admin visibility (label-only, no secrets).
+      if (sel.source === 'fallback') {
+        await ActivityLog.log('CLIENT', req.userId, 'STEALTH_PINNED_FALLBACK', {
+          stealthClientId: client._id,
+          pinnedAccountId: client.pinnedAccountId, pinnedAccountLabel: client.pinnedAccountLabel,
+          reason: sel.pinnedReason, fallbackAccountId: account._id, fallbackAccountLabel: account.label,
+          ip: getClientIp(req),
         });
       }
     }

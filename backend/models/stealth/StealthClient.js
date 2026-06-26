@@ -27,6 +27,25 @@ const StealthClient = createModel('StealthClient', {
     }
     data.usage.humanizerUsed = Math.max(0, Math.trunc(Number(data.usage.humanizerUsed || 0)));
     data.usage.detectorUsed = Math.max(0, Math.trunc(Number(data.usage.detectorUsed || 0)));
+
+    // Optional account pinning (admin-controlled). Default 'auto' = use the
+    // global pool exactly as before. pinnedAccountId references a StealthAccount;
+    // pinnedAccountLabel is a denormalized SAFE label for display (no secrets).
+    const PIN_MODES = ['auto', 'specific', 'specific_or_auto'];
+    if (!PIN_MODES.includes(data.accountPinMode)) data.accountPinMode = 'auto';
+    if (data.accountPinMode === 'auto') {
+      data.pinnedAccountId = null;
+      data.pinnedAccountLabel = null;
+    } else {
+      data.pinnedAccountId = data.pinnedAccountId ? String(data.pinnedAccountId) : null;
+      if (!data.pinnedAccountId) {
+        // A pin mode without a target is meaningless — fall back to auto.
+        data.accountPinMode = 'auto';
+        data.pinnedAccountLabel = null;
+      } else {
+        data.pinnedAccountLabel = data.pinnedAccountLabel ? String(data.pinnedAccountLabel).slice(0, 160) : null;
+      }
+    }
     return data;
   },
   methods: {
