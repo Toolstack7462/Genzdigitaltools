@@ -25,7 +25,11 @@ const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
 const { verifyAccountCookies, maskEmail } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/proxy/cookies');
-const { unavailableReason } = require('../../utils/proxy/accountSelect');
+const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
+
+// Same selection mode the CLIENT open route uses, so the admin "active account" preview
+// reflects exactly which account clients will get (default auto_failover).
+const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -314,6 +318,40 @@ router.get('/:tool/accounts', async (req, res) => {
   }
 });
 
+// Which account will a client actually get RIGHT NOW? Runs the same selection the client
+// open route uses and reports the chosen account + why others were skipped — so an admin
+// can confirm the NEW account is the one being served after a cookie refresh, WITHOUT ever
+// exposing cookies/tokens (only id/label/status/masked identifier).
+router.get('/:tool/active-account', async (req, res) => {
+  try {
+    const accounts = await ProxyAccount.find({ tool: req.proxyTool });
+    const chosen = accounts.length ? selectAccount(accounts, SELECTION_MODE) : null;
+    const counts = await activeLeaseCountsByAccount(req.proxyTool);
+    return res.json({
+      success: true,
+      selectionMode: SELECTION_MODE,
+      activeAccount: chosen ? {
+        id: chosen._id,
+        label: chosen.label,
+        status: chosen.status,
+        sessionStatus: chosen.session_status || 'pending_verification',
+        isPrimary: !!chosen.isPrimary,
+        maskedIdentifier: chosen.verification?.maskedId || (chosen.expectedIdentifier ? maskEmail(chosen.expectedIdentifier) : null),
+        lastVerifiedAt: chosen.lastVerifiedAt || null,
+        activeLeaseCount: counts[String(chosen._id)] || 0,
+      } : null,
+      candidates: accounts.map(a => ({
+        id: a._id, label: a.label, isPrimary: !!a.isPrimary, priority: a.priority,
+        status: a.status, available: unavailableReason(a) === null, unavailableReason: unavailableReason(a),
+        selected: !!(chosen && String(chosen._id) === String(a._id)),
+      })),
+    });
+  } catch (err) {
+    console.error('Proxy active-account error:', err.message);
+    return res.status(500).json({ error: 'Failed to resolve active account' });
+  }
+});
+
 router.post('/:tool/accounts', validate(schemas.createAccount), async (req, res) => {
   try {
     const { label, sessionBundle, expectedIdentifier, status, priority, isPrimary, notes } = req.body;
@@ -367,8 +405,25 @@ router.post('/:tool/accounts/:id/session', validate(schemas.accountSession), asy
     if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
     account.session_status = 'pending_verification';
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account) });
+
+    // Cookies were just REPLACED. Any in-flight lease bound to this account is still
+    // serving the OLD session (the gateway caches the decrypted bundle per-lease for up
+    // to 60s, and an open lease keeps the old account until it expires). Revoke those
+    // leases so the next open mints a FRESH lease (new jti → gateway cache miss → re-fetch
+    // of the new bundle) and re-runs account selection. This is what makes the new account
+    // take effect immediately instead of after the lease/cache window. No gateway restart
+    // needed; the gateway re-validates leases on navigation and blocks revoked ones.
+    let revokedLeases = 0;
+    try {
+      const r = await ProxyLease.updateMany(
+        { accountId: account._id, revoked: false },
+        { $set: { revoked: true, revokedReason: 'session_refreshed', revokedAt: new Date() } }
+      );
+      revokedLeases = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
+    } catch (_) { /* non-fatal: cookies are saved; stale lease self-heals within ~60s */ }
+
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), revokedLeases });
   } catch (err) {
     console.error('Proxy refresh session error:', err.message);
     return res.status(500).json({ error: 'Failed to refresh session' });
