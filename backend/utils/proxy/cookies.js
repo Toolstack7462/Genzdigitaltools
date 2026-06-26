@@ -91,4 +91,18 @@ function countCookies(bundle, targetHost) {
   return h ? h.split('; ').filter(Boolean).length : 0;
 }
 
-module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, parseCookieString, hostMatchesCookieDomain, hasSessionCookie };
+// SAFE diagnostic: the NAMES (never values) of the cookies that would attach to the tool
+// host. Lets an admin see whether the required session cookie is present without ever
+// exposing a cookie value/secret. Capped + de-duped.
+function cookieNames(bundle, targetHost) {
+  const cookies = (bundle && Array.isArray(bundle.cookies)) ? bundle.cookies : [];
+  const seen = new Set();
+  for (const c of cookies) {
+    if (!c || !c.name) continue;
+    if (c.domain && !hostMatchesCookieDomain(c.domain, targetHost)) continue;
+    seen.add(String(c.name));
+  }
+  return [...seen].slice(0, 50);
+}
+
+module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, parseCookieString, hostMatchesCookieDomain, hasSessionCookie };

@@ -24,7 +24,7 @@ const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
 const { verifyAccountCookies, maskEmail } = require('../../utils/proxy/verify');
-const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/proxy/cookies');
+const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
@@ -340,15 +340,18 @@ router.get('/:tool/active-account', async (req, res) => {
         const bundle = JSON.parse(vaultCrypto.decrypt(chosen.sessionEncrypted));
         const cookieHeader = buildCookieHeader(bundle, host);
         const cookieCount = countCookies(bundle, host);
-        if (cookieHeader) {
+        const names = cookieNames(bundle, host);
+        const hasSess = hasSessionCookie(bundle);
+        if (cookieHeader && hasSess) {
           const v = await verifyAccountCookies(req.proxyTool, cookieHeader, chosen.expectedIdentifier);
           liveProbe = {
-            result: v.result, httpStatus: v.httpStatus, finalPath: v.finalPath,
+            result: (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result,
+            httpStatus: v.httpStatus, finalPath: v.finalPath,
             loggedOut: v.loggedOut ?? null, title: v.title || null, plan: v.plan || null,
-            maskedIdentifier: v.maskedId || null, cookieCount,
+            maskedIdentifier: v.maskedId || null, cookieCount, cookieNames: names,
           };
         } else {
-          liveProbe = { result: 'no_session_cookie', cookieCount };
+          liveProbe = { result: 'missing_required_session_cookie', cookieCount, cookieNames: names };
         }
       } catch (_) { liveProbe = { result: 'probe_failed' }; }
     }
@@ -460,30 +463,37 @@ router.post('/:tool/accounts/:id/session', validate(schemas.accountSession), asy
     // (masked) so the admin sees at save time "this is still the OLD account" instead of
     // discovering it on the client. Best-effort; cookies are saved regardless. No secrets.
     let verifyResult = null, warning = null;
+    const host = tools.targetHost(req.proxyTool);
+    const names = cookieNames(bundle, host);
     try {
-      const host = tools.targetHost(req.proxyTool);
       const cookieHeader = buildCookieHeader(bundle, host);
-      if (!cookieHeader) {
-        account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
-        account.status = 'session_expired'; account.session_status = 'session_expired';
-        verifyResult = 'session_expired'; warning = 'no_session_cookie';
+      // A bundle with no attachable cookie, or no recognizable session/auth cookie at all,
+      // cannot log in — this is the "missing httpOnly session cookie" case (a manual export
+      // that dropped the httpOnly session cookie). Never mark it working/available; tell the
+      // admin exactly what's wrong and steer them to capture-via-proxy (which DOES grab
+      // httpOnly cookies). No upstream call needed.
+      if (!cookieHeader || !hasSessionCookie(bundle)) {
+        account.verification = { result: 'missing_required_session_cookie', maskedId: null, httpStatus: 0, checkedAt: new Date() };
+        account.status = 'session_expired'; account.session_status = 'missing_required_session_cookie';
+        verifyResult = 'missing_required_session_cookie'; warning = 'missing_required_session_cookie';
       } else {
         const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier);
         account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
         account.lastVerifiedAt = new Date();
-        if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
+        if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
         else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
         else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-        else if (v.result === 'unsupported') { account.status = 'blocked'; }
+        else if (v.result === 'unsupported') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
         verifyResult = v.result;
         if (v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
         else if (v.result === 'wrong_account') warning = 'cookies_wrong_account';
+        else if (v.result === 'session_expired') warning = v.loggedOut ? 'needs_login' : 'session_expired';
       }
       await account.save();
     } catch (_) { /* verify is best-effort; the cookies are already saved + leases revoked */ }
 
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, verifyResult, warning, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), revokedLeases, verifyResult, warning, maskedIdentifier: account.verification?.maskedId || null });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, verifyResult, warning, cookieCount: names.length, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), revokedLeases, verifyResult, warning, sessionStatus: account.session_status, maskedIdentifier: account.verification?.maskedId || null, cookieNames: names });
   } catch (err) {
     console.error('Proxy refresh session error:', err.message);
     return res.status(500).json({ error: 'Failed to refresh session' });
@@ -500,23 +510,30 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     let bundle = null, cookieHeader = '';
     try { bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); cookieHeader = buildCookieHeader(bundle, host); } catch (_) {}
     const cookie_count = countCookies(bundle, host);
+    const names = cookieNames(bundle, host);
 
-    if (!cookieHeader) {
-      account.verification = { result: 'session_expired', maskedId: null, httpStatus: 0, checkedAt: new Date() };
+    // No attachable cookie, or no recognizable session/auth cookie → can't log in.
+    // Distinguish "missing required session cookie" from a generic expiry so the admin
+    // knows the bundle is incomplete (httpOnly session cookie was not captured).
+    if (!cookieHeader || !hasSessionCookie(bundle)) {
+      const code = 'missing_required_session_cookie';
+      account.verification = { result: code, maskedId: null, httpStatus: 0, checkedAt: new Date() };
       account.status = 'session_expired';
-      account.session_status = 'session_expired';
+      account.session_status = code;
       account.lastVerifiedAt = new Date();
       await account.save();
-      console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, has_session_cookie: false, upstream_status: 0, redirected_to_sign_in: true }));
-      return res.json({ success: true, account: presentAccount(account), result: 'session_expired' });
+      console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, has_session_cookie: false, upstream_status: 0 }));
+      return res.json({ success: true, account: presentAccount(account), result: code, cookieNames: names });
     }
 
     const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier);
-    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, upstream_status: v.httpStatus, final_path: v.finalPath, redirected_to_sign_in: v.redirectedToSignIn }));
+    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, upstream_status: v.httpStatus, final_path: v.finalPath, redirected_to_sign_in: v.redirectedToSignIn, logged_out: !!v.loggedOut }));
 
-    account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
+    // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
+    const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
+    account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
     account.lastVerifiedAt = new Date();
-    if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = 'session_expired'; }
+    if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
     else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
     else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
     // The tool is behind an anti-bot challenge a proxy can't pass → mark blocked so it is
@@ -526,8 +543,8 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
 
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: v.result, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), result: v.result });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: effResult, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), result: effResult, cookieNames: names });
   } catch (err) {
     console.error('Proxy verify account error:', err.message);
     return res.status(500).json({ error: 'Failed to verify account' });

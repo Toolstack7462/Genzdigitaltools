@@ -169,12 +169,16 @@ const AdminProxyTools = () => {
       const d = r.data || {};
       // The backend auto-verifies the saved cookies. Surface WHOSE account they actually
       // are so a wrong/old-account paste is caught here, not on the client side.
-      if (d.warning === 'cookies_match_previous_account') {
+      if (d.warning === 'missing_required_session_cookie' || d.verifyResult === 'missing_required_session_cookie') {
+        showError(`Saved, but the bundle is MISSING the login/session cookie, so it can't sign in${d.cookieNames?.length ? ` (got: ${d.cookieNames.slice(0, 8).join(', ')})` : ''}. The session cookie is httpOnly and a copy/paste export usually drops it — use "Capture session" (Refresh through proxy) instead, which captures httpOnly cookies.`);
+      } else if (d.warning === 'cookies_match_previous_account') {
         showError(`Saved, but these cookies are the SAME account as before (${d.maskedIdentifier || 'unknown'}). You likely captured the OLD account again — log out of the tool and log into the new account before exporting.`);
       } else if (d.warning === 'cookies_wrong_account') {
         showError(`Saved, but these cookies verify as ${d.maskedIdentifier || 'a different account'}, not the expected account. Check you exported the new account's session.`);
+      } else if (d.warning === 'needs_login' || d.verifyResult === 'needs_login') {
+        showError('Saved, but the tool still shows a logged-out page with these cookies. Capture the session again after logging into the new account.');
       } else if (d.warning === 'no_session_cookie' || d.verifyResult === 'session_expired') {
-        showError('Saved, but these cookies do not log in (no valid session). Re-export the new account including its httpOnly session cookie.');
+        showError('Saved, but these cookies do not log in (no valid session). Re-export the new account including its httpOnly session cookie, or use "Capture session".');
       } else if (d.verifyResult === 'working') {
         showSuccess(`Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
       } else {

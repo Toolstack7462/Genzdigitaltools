@@ -27,6 +27,8 @@ function unavailableReason(a) {
   if (!accountHasSessionCookie(a)) return 'no_session_cookie';
   const ss = a.session_status || 'pending_verification';
   if (ss === 'session_expired') return 'session_expired';
+  if (ss === 'needs_login') return 'needs_login';
+  if (ss === 'missing_required_session_cookie') return 'missing_required_session_cookie';
   if (ss === 'cookies_invalid') return 'verify_failed';
   if (!['active', 'standby'].includes(a.status)) return 'status_' + a.status;
   return null; // eligible

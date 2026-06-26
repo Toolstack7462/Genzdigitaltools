@@ -13,7 +13,7 @@
 const { createModel } = require('../../db/mysqlAdapter');
 
 const STATUSES = ['active', 'standby', 'limit_reached', 'session_expired', 'blocked'];
-const SESSION_STATUSES = ['pending_verification', 'working', 'session_expired', 'cookies_invalid'];
+const SESSION_STATUSES = ['pending_verification', 'working', 'session_expired', 'cookies_invalid', 'needs_login', 'missing_required_session_cookie'];
 
 const ProxyAccount = createModel('ProxyAccount', {
   preSave: async (data) => {

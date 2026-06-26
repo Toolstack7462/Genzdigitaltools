@@ -29,7 +29,9 @@ export const proxyToolsAdmin = {
   // Tool-wide: revoke ALL active leases so the next launch reads the latest cookies.
   refreshSessions: (tool) => api.post(`/admin/proxy-tools/${tool}/refresh-sessions`),
   // Ground-truth: which account clients get now + a safe live probe of its session.
-  activeAccount: (tool) => api.get(`/admin/proxy-tools/${tool}/active-account`),
+  // Pass { probe: 0 } to skip the live upstream probe (fast label-only fetch).
+  activeAccount: (tool, opts = {}) =>
+    api.get(`/admin/proxy-tools/${tool}/active-account${opts.probe === 0 ? '?probe=0' : ''}`),
 };
 
 // ── Client ────────────────────────────────────────────────────────────────
