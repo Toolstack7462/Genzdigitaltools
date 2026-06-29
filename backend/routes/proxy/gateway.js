@@ -22,7 +22,8 @@ const ProxyAccount = require('../../models/proxy/ProxyAccount');
 const leaseUtil = require('../../utils/proxy/lease');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
-const { normalizeCookieBundle } = require('../../utils/proxy/cookies');
+const { normalizeCookieBundle, buildCookieHeader } = require('../../utils/proxy/cookies');
+const { verifyAccountCookies } = require('../../utils/proxy/verify');
 const { apiLimiter } = require('../../middleware/rateLimiter');
 
 router.use(apiLimiter);
@@ -129,20 +130,53 @@ router.post('/session', requireGatewayKey, async (req, res) => {
 });
 
 // ─── Account expired signal (gateway-only) ───────────────────────────────────
+// The gateway only SIGNALS a POSSIBLE logout (e.g. an upstream redirect to /sign-in on a
+// nav). That signal must NOT, by itself, expire the account on a timer: for client-side-auth
+// tools (WriteHuman → Supabase) it fires the moment a short-lived access-token JWT lapses
+// (~30 min) even though the refresh token is still valid and the account stays logged in.
+// So we AUTHORITATIVELY CONFIRM with the same verifier the admin uses (for WriteHuman that is
+// the Supabase refresh-token exchange) and flag session_expired ONLY when verification proves
+// the session can no longer authenticate (logged out / cookies invalid). A 'working' result —
+// or an inconclusive 'unknown'/'unsupported'/network result — leaves the account ACTIVE, so a
+// valid session stays usable indefinitely until it is genuinely logged out, its cookies become
+// invalid, verification fails, or an admin revokes it. No timer ever expires it.
 router.post('/account-expired', requireGatewayKey, async (req, res) => {
   try {
     const r = await resolveLease(req);
     if (!r.ok) return res.status(r.status).json({ ok: false, code: r.code });
     if (!r.lease.accountId) return res.json({ ok: true, updated: false });
     const account = await ProxyAccount.findById(r.lease.accountId);
-    if (account && account.status === 'active') {
+    if (!account || account.status !== 'active') return res.json({ ok: true, updated: false });
+
+    // Confirm with a live verification of the account's own stored cookies before expiring.
+    let v = null;
+    try {
+      const host = tools.targetHost(account.tool);
+      let bundle = null;
+      try { if (account.sessionEncrypted) bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); } catch (_) {}
+      const cookieHeader = bundle ? buildCookieHeader(bundle, host) : '';
+      v = await verifyAccountCookies(account.tool, cookieHeader, account.expectedIdentifier);
+    } catch (_) { v = null; }
+
+    // Record ground-truth verification when we have it (safe fields only — never secrets).
+    if (v) {
+      account.verification = { result: v.result, maskedId: v.maskedId || (account.verification?.maskedId || null), httpStatus: v.httpStatus, checkedAt: new Date() };
+      account.lastVerifiedAt = new Date();
+    }
+
+    // Expire ONLY on a confirmed loss of authentication. 'working'/'wrong_account'/'unknown'/
+    // 'unsupported' or a failed verification do NOT expire the account.
+    if (v && v.result === 'session_expired') {
       account.status = 'session_expired';
-      account.session_status = 'session_expired';
-      account.verification = { result: 'session_expired', maskedId: account.verification?.maskedId || null, httpStatus: 0, checkedAt: new Date() };
+      account.session_status = v.loggedOut ? 'needs_login' : 'session_expired';
       await account.save();
-      dbg({ evt: 'account_expired', tool: r.tool, account_id: account._id, updated: true });
+      dbg({ evt: 'account_expired', tool: r.tool, account_id: account._id, updated: true, confirmed: true, verify_result: v.result });
       return res.json({ ok: true, updated: true });
     }
+
+    // Not confirmed → keep the account active; persist any refreshed verification info.
+    if (v) { try { await account.save(); } catch (_) {} }
+    dbg({ evt: 'account_expired', tool: r.tool, account_id: account._id, updated: false, confirmed: false, verify_result: v ? v.result : 'verify_failed' });
     return res.json({ ok: true, updated: false });
   } catch (err) {
     console.error('Proxy account-expired error:', err.message);
