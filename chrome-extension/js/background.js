@@ -12,7 +12,7 @@
 import { getOrchestrator } from './core/LoginOrchestrator.js';
 import { Logger, enableDebugMode, disableDebugMode, isDebugModeEnabled, getLogHistory, exportLogs } from './core/Logger.js';
 import { normalizeCredentialResponse } from './api.js';
-import { getShieldConfig } from './config/toolConfigs.js';
+import { getShieldConfig, isShieldHost, idleHostMatch, IDLE_TIMEOUT_MINUTES, IDLE_TIMEOUT_HOSTS } from './config/toolConfigs.js';
 
 // Initialize logger
 const logger = new Logger('Background');
@@ -20,6 +20,7 @@ const logger = new Logger('Background');
 // Constants
 const SYNC_INTERVAL_MINUTES = 15;
 const ALARM_NAME = 'genz-sync';
+const IDLE_ALARM_NAME = 'genz-idle-check'; // 15-min idle session watchdog (HIX / BypassGPT)
 // One-shot backoff retry alarm for a failed sync. Survives service-worker
 // restarts (unlike setTimeout). Cleared on the next successful sync.
 const SYNC_RETRY_ALARM = 'genz-sync-retry';
@@ -2276,6 +2277,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   } else if (alarm.name === SYNC_RETRY_ALARM) {
     logger.debug('Running sync backoff retry');
     checkForUpdates();
+  } else if (alarm.name === IDLE_ALARM_NAME) {
+    checkIdleSessions().catch(() => {});
   }
 });
 
@@ -2298,7 +2301,16 @@ chrome.runtime.onStartup.addListener(() => {
 // Message listener
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   logger.debug('Message received', { type: message.type, from: sender.tab?.id || 'popup' });
-  
+
+  // Idle watchdog: the activity reporter (injected into HIX / BypassGPT tabs) pings on user
+  // interaction. Reset that host's 15-min timer so active users are never interrupted.
+  if (message && message.type === 'GENZ_TOOL_ACTIVITY') {
+    const host = idleHostMatch(message.host || (sender.tab && sender.tab.url ? safeHostname(sender.tab.url) : ''));
+    if (host) { noteIdleActivity(host).catch(() => {}); }
+    sendResponse({ received: true });
+    return false;
+  }
+
   // Handle messages from content script
   if (message.source === 'content') {
     switch (message.type) {
@@ -2634,12 +2646,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       const hostname = urlObj.hostname;
       const tool = domainToolMap.get(hostname);
       
+      // Header-hide shield: apply on EVERY load of a supported site — dashboard-opened
+      // tool tabs AND manual/new-tab/refresh opens (and new accounts before the tool list
+      // has synced). getShieldConfig() resolves from the URL, so `tool` may be undefined.
+      // Fire-and-forget; idempotent on the page side; never touches inputs/forms/captcha.
+      if (tool || isShieldHost(hostname)) {
+        injectShield(tabId, tab.url, tool);
+      }
+      // Idle session watchdog (all supported tools — HIX / GPT Bypass / Ryne / WriteHuman):
+      // inject the activity reporter + (re)seed the 15-min timer. Any interaction resets it
+      // (see checkIdleSessions / startIdleWatch).
+      if (idleHostMatch(hostname)) {
+        startIdleWatch(tabId, hostname).catch(() => {});
+      }
+
       if (tool) {
         logger.debug('Tab navigated to tool domain', { hostname, tabId });
-
-        // Hide shared-account chrome + guard logout/account routes on every tool-tab
-        // load (fire-and-forget; safe on login pages — it never touches inputs/forms).
-        injectShield(tabId, tab.url, tool);
 
         // Check for auto-start and hidden mode params
         const autoParam = urlObj.searchParams.get('auto');
@@ -3291,6 +3313,9 @@ async function injectShield(tabId, url, tool) {
   try {
     const cfg = getShieldConfig(url, tool);
     if (!cfg || cfg.enabled === false) return false;
+    // Dashboard origin for the restricted-URL popup's "Go to Dashboard" button (shield.js
+    // validates it and falls back to app.genzdigitalstore.com). Safe, non-secret.
+    try { cfg.appOrigin = await getAppOrigin(); } catch (_) {}
     const hasPermission = await chrome.permissions.contains({ origins: [getOriginPattern(url)] });
     if (!hasPermission) return false;
     // Set config in the page's isolated world, then inject the shield (idempotent on the
@@ -3307,6 +3332,99 @@ async function injectShield(tabId, url, tool) {
     logger.warn('Shield injection failed', { error: error.message });
     return false;
   }
+}
+
+// ============================================================================
+// IDLE SESSION TIMEOUT (HIX AI & BypassGPT) — inactivity watchdog
+// ============================================================================
+// After IDLE_TIMEOUT_MINUTES with no user interaction in a HIX / BypassGPT tab, the shared
+// session is ENDED: cookies + page storage are cleared and the tab is sent to the friendly
+// expired page — reusing the SAME helpers as expired/revoked assignments (clearCookiesForConfig
+// + clearStorageAndRedirectTabs), so no new session system is created and auth/login logic is
+// untouched. Active users are never interrupted: the injected reporter pings on any interaction,
+// resetting the timer. Timestamps live in chrome.storage and the check runs on a chrome.alarm,
+// so both survive service-worker sleep.
+function idleKey(host) { return `idleLastActivity_${host}`; }
+function safeHostname(u) { try { return new URL(u).hostname; } catch (e) { return ''; } }
+
+// Per-tab activity reporter (runs in the tool tab's isolated world). Throttled to ~once/25s,
+// idempotent. Sends only a type + host — never any page content, cookie, token or secret.
+function idleActivityReporter(host) {
+  if (window.__GENZ_IDLE_ACTIVE__) return;
+  window.__GENZ_IDLE_ACTIVE__ = true;
+  var last = 0;
+  function ping() {
+    var now = Date.now();
+    if (now - last < 25000) return;
+    last = now;
+    try { chrome.runtime.sendMessage({ type: 'GENZ_TOOL_ACTIVITY', host: host }); } catch (e) {}
+  }
+  var evs = ['mousemove', 'mousedown', 'keydown', 'scroll', 'wheel', 'touchstart', 'click', 'input'];
+  for (var i = 0; i < evs.length; i++) {
+    try { window.addEventListener(evs[i], ping, { passive: true, capture: true }); } catch (e) {}
+  }
+  ping(); // opening/using the tab counts as activity so a fresh tab isn't expired instantly
+}
+
+async function ensureIdleAlarm() {
+  try {
+    const existing = await chrome.alarms.get(IDLE_ALARM_NAME);
+    if (!existing) chrome.alarms.create(IDLE_ALARM_NAME, { delayInMinutes: 1, periodInMinutes: 1 });
+  } catch (e) {}
+}
+
+// Inject the activity reporter into a tool tab, seed/refresh the timer, start the watchdog.
+async function startIdleWatch(tabId, hostname) {
+  const host = idleHostMatch(hostname);
+  if (!host) return;
+  await setStorage({ [idleKey(host)]: Date.now() });
+  await ensureIdleAlarm();
+  try {
+    const hasPermission = await chrome.permissions.contains({ origins: [getOriginPattern('https://' + hostname + '/')] });
+    if (hasPermission) {
+      await chrome.scripting.executeScript({ target: { tabId }, func: idleActivityReporter, args: [host] });
+    }
+  } catch (e) { /* reporter is best-effort; the alarm still enforces the timeout from the seed */ }
+}
+
+async function noteIdleActivity(host) {
+  await setStorage({ [idleKey(host)]: Date.now() });
+  await ensureIdleAlarm();
+}
+
+// End an idle tool's session via the existing expired-assignment cleanup path.
+async function expireIdleHost(host) {
+  const cleanup = {
+    name: host,
+    cookieDomains: [host, 'www.' + host],
+    domains: [host],
+    tabUrlPatterns: [`*://${host}/*`, `*://*.${host}/*`]
+  };
+  const { removed } = await clearCookiesForConfig(cleanup);
+  const { redirected } = await clearStorageAndRedirectTabs(cleanup, host, 'idle_timeout');
+  logger.info('Idle session ended', { host, minutes: IDLE_TIMEOUT_MINUTES, cookiesRemoved: removed, tabsRedirected: redirected });
+}
+
+// Watchdog tick: expire idle hosts that still have open tabs; stop the alarm when none remain.
+async function checkIdleSessions() {
+  const now = Date.now();
+  const limitMs = IDLE_TIMEOUT_MINUTES * 60 * 1000;
+  let anyActive = false;
+  for (const host of IDLE_TIMEOUT_HOSTS) {
+    let tabs = [];
+    try { tabs = await chrome.tabs.query({ url: [`*://${host}/*`, `*://*.${host}/*`] }); } catch (e) {}
+    if (!tabs.length) { await removeStorage([idleKey(host)]); continue; } // nothing open → stop tracking
+    const d = await getStorage([idleKey(host)]);
+    const last = d[idleKey(host)];
+    if (!last) { await setStorage({ [idleKey(host)]: now }); anyActive = true; continue; }
+    if (now - last >= limitMs) {
+      await expireIdleHost(host);
+      await removeStorage([idleKey(host)]);
+    } else {
+      anyActive = true;
+    }
+  }
+  if (!anyActive) { try { await chrome.alarms.clear(IDLE_ALARM_NAME); } catch (e) {} }
 }
 
 // FIX7: Initialization handled by onInstalled and onStartup listeners only

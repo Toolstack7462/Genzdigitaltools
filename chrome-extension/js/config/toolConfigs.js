@@ -457,18 +457,59 @@ export const SHIELD_DEFAULTS = {
   hideTextSource: '^(account|my account|account settings|account details|profile|my profile|settings|preferences|log\\s?out|sign\\s?out|logout|plans?\\s*&?\\s*pricing|pricing|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|api keys?|api key|affiliate|refer a friend|invite friends?|rewards)$',
   // Labels we must NEVER hide (working area / primary nav).
   keepTextSource: '^(dashboard|home|new|history|humanizer|ai detector|ai-detector|humanize|check for ai|detect ai|bypass|paraphrase|input|output|copy|paste|chat|send|upload|download|new chat|regenerate)$',
-  // Route path fragments → navigating here is blocked with a friendly toast.
+  // Restricted route path fragments. Clicking a link here, OR loading/navigating directly
+  // to one (direct URL entry, refresh, new tab, SPA route change, account switch), is blocked
+  // with the managed-account popup (see shield.js showRestrictedPopup). Substring match on the
+  // pathname. 'myaccount'/'my-account' cover WriteHuman's single-word /myaccount route.
   blockRouteFragments: [
     '/logout', '/log-out', '/sign-out', '/signout', '/billing', '/subscription',
-    '/subscriptions', '/account', '/account-settings', '/settings', '/upgrade',
-    '/pricing', '/plans', '/profile', '/affiliate'
-  ]
+    '/subscriptions', '/account', '/account-settings', '/myaccount', '/my-account',
+    '/settings', '/upgrade', '/pricing', '/plans', '/profile', '/affiliate'
+  ],
+  // Professional popup copy shown when a restricted page/URL is opened or a restricted
+  // link is clicked. Centralized here so every tool shows identical wording. Buttons
+  // ("Go to Dashboard" / "Close") are rendered by shield.js; the dashboard origin is
+  // injected at runtime as cfg.appOrigin by background.js.
+  restrictTitle: 'Access restricted',
+  restrictMessage: 'This account is managed by Gen Z Digital Store. Account settings and subscription management are handled by the administrator.'
 };
 
 // Per-host overrides (matched on registrable host / hostname).
 export const SHIELD_OVERRIDES = {
   'chatgpt.com': { hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'] }
 };
+
+// Hosts the header-hide shield must ALWAYS be injected on — even when the site is opened
+// manually in a new tab, on refresh, or before the member's tool list has synced (new
+// account). Without this the shield was only injected for dashboard-opened tool tabs, so
+// chatgpt.com / grok.com opened directly showed the full header again. shield.js itself
+// already re-applies on SPA nav / login / logout / account switch via its MutationObserver
+// + history hooks; this list only makes the INITIAL injection reliable. Matched on host or
+// any subdomain. Purely cosmetic — never touches auth, cookies or the working area.
+// STANDARDIZED across all extension-based tools: HIX AI (hix.ai), GPT Bypass (bypassgpt.ai),
+// Ryne (ryne.ai), WriteHuman (writehuman.ai), plus ChatGPT/Grok. Add any future supported
+// tool's host here and it inherits the identical header-hide + restricted-URL behavior.
+export const SHIELD_HOSTS = ['chatgpt.com', 'grok.com', 'hix.ai', 'bypassgpt.ai', 'ryne.ai', 'writehuman.ai'];
+export function isShieldHost(hostname) {
+  const h = String(hostname || '').replace(/^www\./, '').toLowerCase();
+  return SHIELD_HOSTS.some(k => h === k || h.endsWith('.' + k));
+}
+
+// ── Idle session timeout (all extension-based tools) ─────────────────────────
+// After IDLE_TIMEOUT_MINUTES of no user activity in the tool tab, the shared session is
+// ended (cookies + page storage cleared, tabs sent to the expired page) so a forgotten,
+// logged-in shared account can't be left open. ANY interaction (move/scroll/key/click)
+// resets the timer, so active users are never interrupted. Auth/login logic is untouched —
+// this only ends an already-open session, the same way an expired assignment is cleaned up.
+// STANDARDIZED at 15 min for HIX AI, GPT Bypass, Ryne and WriteHuman (one shared timeout so
+// every supported tool behaves identically). The resulting screen is the SESSION-expired
+// message ("launch again from your Gen Z Dashboard"), never the subscription/renew screen.
+export const IDLE_TIMEOUT_MINUTES = 15;
+export const IDLE_TIMEOUT_HOSTS = ['hix.ai', 'bypassgpt.ai', 'ryne.ai', 'writehuman.ai'];
+export function idleHostMatch(hostname) {
+  const h = String(hostname || '').replace(/^www\./, '').toLowerCase();
+  return IDLE_TIMEOUT_HOSTS.find(k => h === k || h.endsWith('.' + k)) || null;
+}
 
 /**
  * Merge shield config for a tool URL. Layers: SHIELD_DEFAULTS → host override →
@@ -484,7 +525,10 @@ export function getShieldConfig(url, tool) {
     hideSelectors: SHIELD_DEFAULTS.hideSelectors.slice(),
     hideTextSource: SHIELD_DEFAULTS.hideTextSource,
     keepTextSource: SHIELD_DEFAULTS.keepTextSource,
-    blockRouteFragments: SHIELD_DEFAULTS.blockRouteFragments.slice()
+    blockRouteFragments: SHIELD_DEFAULTS.blockRouteFragments.slice(),
+    restrictTitle: SHIELD_DEFAULTS.restrictTitle,
+    restrictMessage: SHIELD_DEFAULTS.restrictMessage
+    // cfg.appOrigin is added at injection time by background.js (dashboard origin for the popup).
   };
   for (const k in SHIELD_OVERRIDES) {
     if (host === k || host.endsWith('.' + k)) {
@@ -517,5 +561,10 @@ export default {
   createToolConfig,
   SHIELD_DEFAULTS,
   SHIELD_OVERRIDES,
-  getShieldConfig
+  getShieldConfig,
+  SHIELD_HOSTS,
+  isShieldHost,
+  IDLE_TIMEOUT_MINUTES,
+  IDLE_TIMEOUT_HOSTS,
+  idleHostMatch
 };
