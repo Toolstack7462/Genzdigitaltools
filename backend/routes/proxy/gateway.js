@@ -23,7 +23,7 @@ const leaseUtil = require('../../utils/proxy/lease');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
 const { normalizeCookieBundle, buildCookieHeader } = require('../../utils/proxy/cookies');
-const { verifyAccountCookies } = require('../../utils/proxy/verify');
+const { verifyAccountCookies, applySupabaseRefresh } = require('../../utils/proxy/verify');
 const { apiLimiter } = require('../../middleware/rateLimiter');
 
 router.use(apiLimiter);
@@ -130,16 +130,19 @@ router.post('/session', requireGatewayKey, async (req, res) => {
 });
 
 // ─── Account expired signal (gateway-only) ───────────────────────────────────
-// The gateway only SIGNALS a POSSIBLE logout (e.g. an upstream redirect to /sign-in on a
-// nav). That signal must NOT, by itself, expire the account on a timer: for client-side-auth
-// tools (WriteHuman → Supabase) it fires the moment a short-lived access-token JWT lapses
-// (~30 min) even though the refresh token is still valid and the account stays logged in.
-// So we AUTHORITATIVELY CONFIRM with the same verifier the admin uses (for WriteHuman that is
-// the Supabase refresh-token exchange) and flag session_expired ONLY when verification proves
-// the session can no longer authenticate (logged out / cookies invalid). A 'working' result —
-// or an inconclusive 'unknown'/'unsupported'/network result — leaves the account ACTIVE, so a
-// valid session stays usable indefinitely until it is genuinely logged out, its cookies become
-// invalid, verification fails, or an admin revokes it. No timer ever expires it.
+// The gateway SIGNALS a possible logout (e.g. an upstream redirect to /sign-in on a nav).
+//
+// For EVERY tool EXCEPT WriteHuman the behavior is UNCHANGED: the signal is a reliable logout
+// indicator (server-rendered tools redirect to /sign-in only when the session is genuinely
+// dead), so the account is flagged session_expired immediately, exactly as before.
+//
+// WriteHuman ALONE is handled differently because it is a client-side Supabase SPA: its
+// access-token JWT lapses on a ~30-min timer even though the refresh token (and thus the
+// session) is still valid, which made the signal fire on a timer and falsely expire live
+// accounts. For WriteHuman we AUTHORITATIVELY CONFIRM with the Supabase refresh verifier and
+// flag session_expired ONLY when verification proves the session can no longer authenticate;
+// a still-valid session is left active (and its rotated tokens persisted). No other tool's
+// path is affected.
 router.post('/account-expired', requireGatewayKey, async (req, res) => {
   try {
     const r = await resolveLease(req);
@@ -148,11 +151,21 @@ router.post('/account-expired', requireGatewayKey, async (req, res) => {
     const account = await ProxyAccount.findById(r.lease.accountId);
     if (!account || account.status !== 'active') return res.json({ ok: true, updated: false });
 
+    // Non-WriteHuman tools: ORIGINAL behavior — trust the gateway signal and expire immediately.
+    if (tools.verifyMode(account.tool) !== 'supabase_refresh') {
+      account.status = 'session_expired';
+      account.session_status = 'session_expired';
+      account.verification = { result: 'session_expired', maskedId: account.verification?.maskedId || null, httpStatus: 0, checkedAt: new Date() };
+      await account.save();
+      dbg({ evt: 'account_expired', tool: r.tool, account_id: account._id, updated: true });
+      return res.json({ ok: true, updated: true });
+    }
+
+    // ── WriteHuman only ───────────────────────────────────────────────────────
     // Confirm with a live verification of the account's own stored cookies before expiring.
-    let v = null;
+    let v = null, bundle = null;
     try {
       const host = tools.targetHost(account.tool);
-      let bundle = null;
       try { if (account.sessionEncrypted) bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); } catch (_) {}
       const cookieHeader = bundle ? buildCookieHeader(bundle, host) : '';
       v = await verifyAccountCookies(account.tool, cookieHeader, account.expectedIdentifier);
@@ -162,6 +175,20 @@ router.post('/account-expired', requireGatewayKey, async (req, res) => {
     if (v) {
       account.verification = { result: v.result, maskedId: v.maskedId || (account.verification?.maskedId || null), httpStatus: v.httpStatus, checkedAt: new Date() };
       account.lastVerifiedAt = new Date();
+    }
+
+    // WriteHuman: if verification refreshed (rotated) the Supabase session, persist it back so
+    // the stored cookies stay live and a later check doesn't fail on a consumed refresh token.
+    // Fail-safe; only set for supabase_refresh, so no other tool is affected.
+    if (v && v.result === 'working' && v.refreshedSession && bundle) {
+      try {
+        const ref = (tools.supabaseConfig(account.tool) || {}).projectRef;
+        const updated = applySupabaseRefresh(bundle, ref, v.refreshedSession);
+        if (updated) {
+          account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(updated));
+          account.sessionMeta = Object.assign({}, account.sessionMeta || {}, { updatedAt: new Date() });
+        }
+      } catch (_) { /* persist is best-effort */ }
     }
 
     // Expire ONLY on a confirmed loss of authentication. 'working'/'wrong_account'/'unknown'/

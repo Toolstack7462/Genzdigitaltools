@@ -23,7 +23,7 @@ const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/aut
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
-const { verifyAccountCookies, maskEmail } = require('../../utils/proxy/verify');
+const { verifyAccountCookies, maskEmail, applySupabaseRefresh } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
 
@@ -541,6 +541,22 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     // recorded verification.result='unsupported' tells the admin exactly why.
     else if (v.result === 'unsupported') { account.status = 'blocked'; }
     else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
+
+    // WriteHuman (supabase_refresh): a successful verify ROTATED the session. Persist the
+    // refreshed tokens back into the stored cookie bundle so the account stays live and the
+    // admin never has to re-export — exactly "auto-refresh/update the stored session and keep
+    // Working". Fail-safe: only when the cookie round-trips cleanly (else leave it untouched).
+    // refreshedSession is only ever set for supabase_refresh, so no other tool is affected.
+    if (v.result === 'working' && v.refreshedSession && bundle) {
+      try {
+        const ref = (tools.supabaseConfig(req.proxyTool) || {}).projectRef;
+        const updated = applySupabaseRefresh(bundle, ref, v.refreshedSession);
+        if (updated) {
+          account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(updated));
+          account.sessionMeta = Object.assign({}, account.sessionMeta || {}, { updatedAt: new Date() });
+        }
+      } catch (_) { /* persist is best-effort; verify result still stands */ }
+    }
 
     await account.save();
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: effResult, ip: getClientIp(req) });
