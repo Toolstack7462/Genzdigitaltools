@@ -476,7 +476,20 @@ export const SHIELD_DEFAULTS = {
 
 // Per-host overrides (matched on registrable host / hostname).
 export const SHIELD_OVERRIDES = {
-  'chatgpt.com': { hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'] }
+  'chatgpt.com': { hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'] },
+  // EXTENSION-BASED Ryne AI ONLY — the real ryne.ai opened through the extension. This does NOT
+  // affect the PROXY Ryne (served from ryne1.genzdigitalstore.com via the gateway overlay, a
+  // completely separate system that this host key never matches) and no other tool. Purely
+  // cosmetic: hide ONLY the top-right profile/avatar dropdown TRIGGER so clicking it opens
+  // nothing and every menu item — Profile, Changelog, Blog, Developers API, Help, AI Report,
+  // Logout, and any FUTURE item — is unreachable (the menu never opens). The credits/coin
+  // count is intentionally LEFT VISIBLE. Hooks are Ryne's own stable bundle attributes;
+  // shield.js never touches the editor/working area, so the tools keep working. No
+  // sessions/cookies/auth changed.
+  'ryne.ai': { hideSelectors: [
+    'div:has(> img[alt="User"])',                        // avatar/profile dropdown trigger (avatar+name+chevron)
+    'img[alt="User"]'                                    // the avatar image itself
+  ] }
 };
 
 // Hosts the header-hide shield must ALWAYS be injected on — even when the site is opened

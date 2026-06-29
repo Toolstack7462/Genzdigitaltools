@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Gen Z Digital Store Access",
   "short_name": "GZDS",
-  "version": "3.9.11",
+  "version": "3.9.12",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxpFat7kT6PYGA3HuaM5hhac1F8TQ2b2T35aTwdheC5e88M1/l97RSdgz4Bg/TmykdkWkj6dejUDynaiSnwZeD4zb71o4VBKIYXMy7a9025SU0DEo1r72IBwbju4S5rVcR4ZcFlFWkSRi3sTjfRucP7QGxd5wf3PU9FFi1s0RY/QfkEMaTFC3FabzZc1SslKLUZ0DSt4+UGLKUo0lr7t3d2hoeUyUhtI4Yc785n+l7SfhdOOf6sdx+tg7Hf0SmB4YUS7E6w5Fhqa1kpuxktOKUFWroGjEH/Ds2wRbeUp2A18L7d5hDVrYjaSjh8VdwNToS83r4vgiWD6pAVK2GnuBeQIDAQAB",
   "description": "Background helper for Gen Z Digital Store. Opens assigned tools with fresh authorized sessions from the member dashboard.",
   "permissions": [
