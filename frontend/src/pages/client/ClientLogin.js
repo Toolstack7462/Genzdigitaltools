@@ -31,6 +31,10 @@ const ClientLogin = () => {
   // so a member can quote it and support can grep the backend logs for the same id.
   const [errorId, setErrorId] = useState(null);
   const [errDiag, setErrDiag] = useState(null);
+  // Controls the user-friendly "Connection Failed" popup shown on a connection-level
+  // failure. Replaces the old technical toast (which leaked the API host + [CODE]); the
+  // full technical error is still logged internally for debugging.
+  const [connError, setConnError] = useState(false);
   // Hard guard against duplicate submits: the disabled button covers most cases, but a
   // ref blocks a second submit fired in the same tick (double-click / Enter+click) before
   // React re-renders the disabled state — so only ONE login request is ever in flight.
@@ -55,6 +59,7 @@ const ClientLogin = () => {
     setShowRetry(false);
     setErrorId(null);
     setErrDiag(null);
+    setConnError(false);
     // One correlation id per attempt — sent to the backend (X-Request-Id) and shown as
     // the "Error ID" if this attempt fails.
     const rid = newRequestId();
@@ -106,19 +111,16 @@ const ClientLogin = () => {
       // identifiable at a glance (by the member and by support) instead of a vague
       // "Login failed". The bracketed code mirrors the backend reason.
       if (transport) {
-        // The request got NO response. Surface this BEFORE the storage hint. Actively
-        // probe /api/health to tell a genuine "this device can't reach the API" apart
-        // from a transient blip — so we only show the long device-side checklist when the
-        // API is really unreachable, and a calm "try again" when it's actually up.
+        // The request got NO usable HTTP response (offline / timeout / API unreachable or
+        // blocked). Show the user-friendly "Connection Failed" popup instead of a technical
+        // message — it exposes NO internal details (API host, endpoints, codes, stack traces).
+        // The probe still runs purely to enrich the INTERNAL diagnostic (reachable flag fed to
+        // collectClientDiag below); connection/retry/auth logic is unchanged.
         setShowRetry(true);
-        if (transport.code === 'TIMEOUT') {
-          showError(transport.message);
-        } else {
+        if (transport.code !== 'TIMEOUT') {
           reachable = await pingHealth();
-          showError(reachable
-            ? 'Connection issue. Please try again in a moment. [API_CONNECTION_FAILED]'
-            : transport.message);
         }
+        setConnError(true);
       } else if (status === 404) {
         // A response WAS received, so the API is reachable. A 404 means a moved/updating
         // route or a stale cached bundle calling an old path — NEVER a connection failure.
@@ -172,6 +174,42 @@ const ClientLogin = () => {
 
   return (
     <div className="relative min-h-dvh overflow-hidden" style={{ background: 'var(--gradient-hero)' }}>
+      {/* User-friendly connection-failure popup. Replaces the old technical error toast —
+          shows NO internal details (API host, endpoints, codes, stack traces). The full
+          technical error is still logged internally (console.error + collectClientDiag). */}
+      {connError && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="conn-error-title">
+          <div className="absolute inset-0 bg-genz-navy/40 backdrop-blur-sm" onClick={() => setConnError(false)} />
+          <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl border border-genz-border p-6 sm:p-7">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(6,182,212,0.1)' }}>
+                <Shield size={20} style={{ color: '#06B6D4' }} />
+              </div>
+              <h2 id="conn-error-title" className="text-[19px] font-bold text-genz-navy">Connection Failed</h2>
+            </div>
+            <p className="text-[14px] text-genz-navy/70 mb-3">We couldn&apos;t establish a secure connection. Please try the following:</p>
+            <ol className="text-[13.5px] text-genz-navy/80 space-y-1.5 mb-4 list-decimal pl-5">
+              <li>Make sure your device date &amp; time are correct.</li>
+              <li>Switch to a stable Wi-Fi connection (avoid unstable mobile data if possible).</li>
+              <li>Disable any VPN, proxy, firewall, ad-blocker, or antivirus that may block the connection.</li>
+              <li>Close any Incognito/Private windows and try again.</li>
+              <li>Click <strong>Retry Connection</strong>.</li>
+            </ol>
+            <p className="text-[13px] text-genz-muted mb-5">If the issue continues, please contact <strong>Gen Z Digital Store Support</strong>.</p>
+            <div className="flex flex-col sm:flex-row gap-2.5">
+              <button type="button" onClick={() => { setConnError(false); handleSubmit(); }} disabled={loading}
+                className="btn-grad flex-1 py-3 text-[14px] font-bold rounded-[14px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
+                <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Retry Connection
+              </button>
+              <a href={`https://wa.me/923027467462?text=${encodeURIComponent("Hello, I'm having trouble connecting to my Gen Z Digital Store account.")}`}
+                target="_blank" rel="noopener noreferrer"
+                className="flex-1 py-3 text-[14px] font-semibold rounded-[14px] flex items-center justify-center gap-2 border border-genz-border text-genz-navy hover:border-genz-blue/50 hover:bg-genz-blue/5 transition-all">
+                Contact Support
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="aurora" />
       <div className="dot-grid" />
 
