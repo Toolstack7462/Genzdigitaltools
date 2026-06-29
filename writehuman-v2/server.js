@@ -15,6 +15,8 @@
  */
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const { config, applyGatewayEnv } = require('./lib/config');
 applyGatewayEnv();
@@ -25,6 +27,12 @@ const sm = require('./session/sessionManager');
 const scheduler = require('./session/scheduler');
 const syncIngest = require('./session/syncIngest');
 const gateway = require('./gateway/proxy'); // required AFTER applyGatewayEnv()
+
+// Self-contained admin panel (served at /v2/admin). Read once at boot. All of its actions
+// are gated by the admin key entered in the page → sent as x-admin-key. The HTML itself
+// carries no secret. Kept separate from the production admin app (V2 stays isolated).
+let ADMIN_HTML = '<!doctype html><title>WriteHuman V2</title><p>admin panel missing</p>';
+try { ADMIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'admin.html'), 'utf8'); } catch (_) {}
 
 store.init();
 sm.init();
@@ -126,6 +134,11 @@ function healthBody() {
 async function handleV2(req, res, pathName) {
   const method = req.method;
 
+  if (pathName === '/v2/admin' && method === 'GET') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end(ADMIN_HTML);
+  }
+
   if (pathName === '/v2/health') return send(res, 200, healthBody());
 
   // Read the body once for POST routes that need it.
@@ -181,6 +194,10 @@ async function handleV2(req, res, pathName) {
 const server = http.createServer((req, res) => {
   let pathName = '/';
   try { pathName = new URL(req.url, 'http://localhost').pathname; } catch (_) {}
+  if (pathName === '/admin') { // convenience redirect to the V2 admin panel
+    res.writeHead(302, { location: '/v2/admin', 'cache-control': 'no-store' });
+    return res.end();
+  }
   if (pathName === '/v2' || pathName.startsWith('/v2/')) {
     handleV2(req, res, pathName).catch((err) => {
       log.error('v2_handler', { path: pathName, message: err && err.message });
