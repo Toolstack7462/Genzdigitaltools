@@ -107,6 +107,32 @@ SFTP_PASS='<hostinger sftp password>' bash writehuman-v2/deploy.sh
 Finally: seed the account (`/v2/admin/seed`) and run the Cookie Sync Agent on the RDP
 (see `agent/README.md`). The production dashboard is **not** wired to V2 until it's proven.
 
+## Managing V2 like your other tools (assignment + cutover)
+
+WriteHuman is **already** a registered proxy tool, so it's assigned like any other:
+**Admin → Proxy Tools → WriteHuman → Client Access** (grant + session length); the client
+sees the WriteHuman card and clicks **Open**. Today that points at the production gateway
+`writehuman1`. You don't build a new management UI for V2 — you point that existing tool at V2.
+
+**Two-part switch (do the cutover only after the soak tests):**
+
+1. **On V2 (no production change):** enable production-backed validate so V2 accepts the
+   production-minted client leases and honours revocation/plan expiry, while still serving its
+   own fresh session. In the V2 `.env`:
+   ```
+   WRITEHUMAN_V2_PROD_LEASE_SECRET=<the production PROXY_LEASE_SECRET>
+   WRITEHUMAN_V2_PROD_API_BASE=https://api.genzdigitalstore.com/api/crm/proxy/gateway
+   ```
+   `/v2/health` then shows `"mode":"production-backed"`. (Leave blank = standalone; default.)
+
+2. **Cutover (one production env change, on your go):** set
+   `WRITEHUMAN_GATEWAY_URL=https://writehuman2.genzdigitalstore.com` in the production API app's
+   env and restart it. From then on, every client assigned "WriteHuman" transparently uses V2 —
+   managed exactly like HIX/BypassGPT. The Cookie Sync Agent keeps the session live. To roll
+   back, point `WRITEHUMAN_GATEWAY_URL` back at `writehuman1`.
+
+Until step 2, production WriteHuman keeps running on `writehuman1`, untouched.
+
 ## Security notes
 
 - Cookie bundle encrypted at rest (AES-256-GCM, `lib/vaultCrypto`, V2 vault key).

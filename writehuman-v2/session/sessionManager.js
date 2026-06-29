@@ -49,10 +49,34 @@ function secondsRemaining(payload) {
 }
 
 // ── /validate ────────────────────────────────────────────────────────────────
-function validate(token) {
+// Local mode: signature + expiry decide. Production-backed mode: after the local signature
+// check passes, consult the production backend's /validate so client revocation / plan expiry
+// are authoritative — but FALL BACK to the local result if prod is unreachable (a network
+// blip must not lock out a valid client). Returns a Promise in all cases.
+async function validate(token) {
   const r = resolveLease(token);
   if (r.error) return err(r.error.status, r.error.code);
-  return ok({ valid: true, tool: 'writehuman', toolName: config.toolName, secondsRemaining: secondsRemaining(r.payload) });
+  const localOk = ok({ valid: true, tool: 'writehuman', toolName: config.toolName, secondsRemaining: secondsRemaining(r.payload) });
+  if (!config.productionBacked || !config.prodApiBase) return localOk;
+  try {
+    const resp = await fetch(config.prodApiBase + '/validate', {
+      method: 'POST',
+      headers: { 'authorization': 'Bearer ' + token, 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(8000),
+    });
+    let body = null; try { body = await resp.json(); } catch (_) {}
+    if (resp.status === 200 && body && body.valid === true) {
+      return ok({ valid: true, tool: 'writehuman', toolName: config.toolName, secondsRemaining: (body.secondsRemaining != null ? body.secondsRemaining : secondsRemaining(r.payload)) });
+    }
+    if (resp.status >= 400 && resp.status < 500 && resp.status !== 429 && body) {
+      // Authoritative rejection (401/403 → revoked / plan_expired / client_disabled / lease_invalid).
+      return { status: resp.status, body: { valid: false, ok: false, code: body.code || 'lease_invalid' } };
+    }
+    // Transient (429 rate-limit / 5xx server error) → fall through to local (no lockout).
+  } catch (_) { /* prod unreachable */ }
+  log.warn('prod_validate_fallback', { jti: r.payload.jti });
+  return localOk;
 }
 
 // ── /session (gateway-only over HTTP; in-process for the gateway) ─────────────

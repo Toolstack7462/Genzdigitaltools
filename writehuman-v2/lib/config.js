@@ -82,6 +82,20 @@ const agentKey = (() => {
   return explicit || deriveSecret('agent:v1');
 })();
 
+// ── Production-backed validate mode (off by default) ──────────────────────────
+// When the production proxy lease secret is supplied, V2 validates leases minted by the
+// PRODUCTION backend (so the existing Admin→Proxy Tools assignment + client dashboard "Open"
+// flow can drive access to V2), while V2 keeps serving its OWN always-fresh session. If a
+// production API base is also given, V2 consults the prod /validate server-side so client
+// revocation / plan expiry are honoured. Enabling this is purely additive and changes nothing
+// until WRITEHUMAN_V2_PROD_LEASE_SECRET is set. The actual cutover (repointing the production
+// WriteHuman tool at writehuman2) is a separate production env change, done only on approval.
+const prodLeaseSecret = env('WRITEHUMAN_V2_PROD_LEASE_SECRET', '');         // = production PROXY_LEASE_SECRET
+const prodApiBase = env('WRITEHUMAN_V2_PROD_API_BASE', '').replace(/\/$/, ''); // e.g. https://api.genzdigitalstore.com/api/crm/proxy/gateway
+const productionBacked = !!(prodLeaseSecret && prodLeaseSecret.length >= 16);
+// The secret the gateway + in-process validate use to VERIFY lease signatures.
+const effectiveLeaseSecret = productionBacked ? prodLeaseSecret : leaseSecret;
+
 const config = {
   port: parseInt(env('PORT', env('WRITEHUMAN_V2_PORT', '3100')), 10) || 3100,
   targetOrigin: env('WRITEHUMAN_V2_TARGET_ORIGIN', 'https://writehuman.ai').replace(/\/$/, ''),
@@ -92,6 +106,7 @@ const config = {
   leaseMinutes: Math.min(1440, Math.max(1, parseInt(env('WRITEHUMAN_V2_LEASE_MINUTES', '30'), 10) || 30)),
   storeDriver: env('WRITEHUMAN_V2_STORE', 'auto'), // auto | sqlite | json
   leaseSecret, vaultKey, gatewayKey, adminKey, agentKey,
+  productionBacked, prodApiBase, prodLeaseSecret, effectiveLeaseSecret,
   // ── Step-2 smart session timer + verify retry ───────────────────────────────
   // The scheduler runs ONE verify when due (not a busy loop). On a still-valid access token
   // the verify is a no-network fast-path, so periodic verify is cheap. Defaults: verify every
@@ -118,7 +133,7 @@ function applyGatewayEnv() {
   set('TARGET_ORIGIN', config.targetOrigin);
   set('API_BASE', '/v2');                                   // overlay.js calls `${api}/validate` same-origin
   set('GATEWAY_PUBLIC_ORIGIN', config.publicOrigin || ('http://localhost:' + config.port));
-  set('LEASE_SECRET', config.leaseSecret);
+  set('LEASE_SECRET', config.effectiveLeaseSecret); // prod secret when production-backed
   set('GATEWAY_KEY', config.gatewayKey);
   set('TOOL_KEY', 'writehuman');
   set('TOOL_NAME', config.toolName);

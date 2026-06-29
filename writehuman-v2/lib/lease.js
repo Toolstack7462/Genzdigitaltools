@@ -22,7 +22,7 @@ function b64url(buf) {
 }
 function b64urlJson(obj) { return b64url(Buffer.from(JSON.stringify(obj), 'utf8')); }
 function sign(data) {
-  return crypto.createHmac('sha256', config.leaseSecret).update(data).digest('base64')
+  return crypto.createHmac('sha256', config.effectiveLeaseSecret).update(data).digest('base64')
     .replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
 }
 

@@ -118,6 +118,8 @@ function healthBody() {
     target: (() => { try { return new URL(config.targetOrigin).host; } catch (_) { return null; } })(),
     store: store.driver(),
     supabaseConfigured: !!(config.supabase.url && config.supabase.anonKey),
+    mode: config.productionBacked ? 'production-backed' : 'standalone',
+    prodValidate: !!(config.productionBacked && config.prodApiBase),
     account: {
       status: a.status || null,
       sessionStatus: a.session_status || null,
@@ -147,7 +149,7 @@ async function handleV2(req, res, pathName) {
   if (needsBody && body === null) return send(res, 400, { ok: false, code: 'bad_json' });
 
   if (pathName === '/v2/validate' && method === 'POST') {
-    const r = sm.validate(getLeaseToken(req, body));
+    const r = await sm.validate(getLeaseToken(req, body));
     return send(res, r.status, r.body);
   }
 
@@ -219,6 +221,7 @@ server.listen(config.port, () => {
     store: store.driver(),
     publicOrigin: config.publicOrigin || ('http://localhost:' + config.port),
     scheduler: config.schedulerEnabled ? 'on' : 'off',
+    mode: config.productionBacked ? 'production-backed' : 'standalone',
   });
   scheduler.start();
 });
