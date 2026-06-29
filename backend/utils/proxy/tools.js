@@ -81,10 +81,29 @@ const TOOLS = {
     defaultPathEnv: 'WRITEHUMAN_DEFAULT_PATH',
     defaultPath: '/',
     verifyPathEnv: 'WRITEHUMAN_VERIFY_PATH',
-    // WriteHuman's humanizer AND its logged-out marketing page both live at '/' (HTTP
-    // 200, no sign-in redirect), which is exactly why a stale session shows the public
-    // "Log in / Sign Up" page. Opt into the content-based logged-out heuristic.
-    detectLoggedOut: true,
+    // WriteHuman authenticates with Supabase. Its session cookie (`sb-<ref>-auth-token`,
+    // sometimes split into `.0`/`.1` chunks) carries a SHORT-LIVED access-token JWT (~1h) and
+    // a LONG-LIVED refresh token; the app mints a fresh session from the refresh token on
+    // load. So "can these cookies log in?" is decided by the REFRESH TOKEN — NOT by an HTML
+    // page (the client-hydrated shell always looks logged-out) and NOT by an app/JSON route
+    // that only validates the access token (an aged-out-but-refreshable session would falsely
+    // read as expired). verify therefore exchanges the refresh token at Supabase's own token
+    // endpoint — the exact call the app makes: 200 = a live, refreshable session → working;
+    // 400/401 = truly invalid → session_expired. Cookie-only; no email/password login.
+    verifyMode: 'supabase_refresh',
+    supabase: {
+      projectRef: 'hicfsbrfkzsxbwayibfm',
+      urlEnv: 'WRITEHUMAN_SUPABASE_URL',
+      defaultUrl: 'https://hicfsbrfkzsxbwayibfm.supabase.co',
+      // PUBLIC anon apikey (the same key WriteHuman ships to every browser; required by the
+      // Supabase token endpoint). Not a secret and never sent to our frontend or logged.
+      // Overridable via env if WriteHuman ever rotates it.
+      anonKeyEnv: 'WRITEHUMAN_SUPABASE_ANON_KEY',
+      defaultAnonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhpY2ZzYnJma3pzeGJ3YXlpYmZtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMwMzE4MDgsImV4cCI6MjA4ODYwNzgwOH0.8vN4qjWB6aBGHuz7ixzoLRrMgKO3Lnc-Vmm2SjbW9n0',
+    },
+    // NOTE: the content-based logged-out heuristic (detectLoggedOut) is intentionally NOT
+    // used for WriteHuman — it misfires on this client-hydrated SPA. The supabase_refresh
+    // verify above (and, on the gateway, DETECT_LOGGED_OUT=0) is the authoritative signal.
   },
   grok: {
     key: 'grok',
@@ -148,7 +167,30 @@ function defaultPath(tool) {
 
 function verifyPath(tool) {
   const t = getTool(tool); if (!t) return '/';
-  return process.env[t.verifyPathEnv] || defaultPath(tool);
+  // Per-tool env override → per-tool registry default (e.g. WriteHuman's authed /api/me) →
+  // the tool's default landing path. Only tools that set `defaultVerifyPath` change here;
+  // every other tool falls back to defaultPath exactly as before.
+  return process.env[t.verifyPathEnv] || t.defaultVerifyPath || defaultPath(tool);
+}
+
+// Per-tool verify interpretation mode. 'supabase_refresh' (WriteHuman) verifies by
+// exchanging the session's refresh token at Supabase instead of scraping an HTML page;
+// undefined for every other tool → the default HTML-based verify is used unchanged.
+function verifyMode(tool) {
+  const t = getTool(tool); if (!t) return null;
+  return t.verifyMode || null;
+}
+
+// Resolved Supabase config for a tool that verifies via 'supabase_refresh' (WriteHuman).
+// Returns { url, projectRef, anonKey } (env overrides → public defaults), or null otherwise.
+// The anonKey is a PUBLIC apikey — never logged and never returned to the frontend.
+function supabaseConfig(tool) {
+  const t = getTool(tool); if (!t || !t.supabase) return null;
+  const s = t.supabase;
+  const url = stripSlash((s.urlEnv && process.env[s.urlEnv]) || s.defaultUrl || '');
+  const anonKey = (s.anonKeyEnv && process.env[s.anonKeyEnv]) || s.defaultAnonKey || '';
+  if (!url || !anonKey) return null;
+  return { url, projectRef: s.projectRef || '', anonKey };
 }
 
 // Whether to run the content-based logged-out heuristic for this tool (for tools whose
@@ -190,6 +232,6 @@ function publicInfo(tool) {
 
 module.exports = {
   TOOLS, TOOL_KEYS, isValidTool, getTool,
-  targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, publicInfo,
+  targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, verifyMode, supabaseConfig, publicInfo,
   defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES, shouldDetectLoggedOut,
 };
