@@ -486,8 +486,15 @@ export const SHIELD_OVERRIDES = {
   // count is intentionally LEFT VISIBLE. Hooks are Ryne's own stable bundle attributes;
   // shield.js never touches the editor/working area, so the tools keep working. No
   // sessions/cookies/auth changed.
+  // Ryne's profile menu is a Radix dropdown: <Trigger>(div > div.flex.gap-2.items-center >
+  // <img alt="User"> + name span)</Trigger>, and its items (Profile, Changelog, Blog,
+  // Developers API, Help, AI Report, Log out) are role="menuitem" with onClick router pushes
+  // (NOT <a href>), so generic href/text rules don't catch them. We therefore hide the TRIGGER
+  // so the menu can never open — covering every current and future item. The coin/credits
+  // count is a separate cluster and is intentionally left visible.
   'ryne.ai': { hideSelectors: [
-    'div:has(> img[alt="User"])',                        // avatar/profile dropdown trigger (avatar+name+chevron)
+    '[aria-haspopup]:has(img[alt="User"])',              // the Radix dropdown trigger button → menu can't open
+    'div:has(> img[alt="User"])',                        // avatar+name cluster (fallback if trigger lacks aria-haspopup)
     'img[alt="User"]'                                    // the avatar image itself
   ] }
 };
