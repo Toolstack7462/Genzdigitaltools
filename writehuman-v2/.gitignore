@@ -1,0 +1,5 @@
+# WriteHuman V2 — local-only artifacts
+.env
+node_modules/
+store/data/
+*.log
