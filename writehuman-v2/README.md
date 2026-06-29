@@ -84,6 +84,29 @@ exchange + rotation persistence, server-side cookie injection through the gatewa
 ingest stub auth, cookie-hash semantics (auth-only; replace-not-merge), and that **no cookie
 value or refresh token ever appears in the logs**.
 
+## Deploy (Hostinger Passenger — its OWN subdomain, never production)
+
+V2 deploys as a **separate** Passenger app on a **new** subdomain. It never replaces or
+touches the production WriteHuman gateway.
+
+One-time (hPanel, manual — the script can't do these):
+1. Create a subdomain, e.g. `writehuman2.genzdigitalstore.com`.
+2. Create a Node.js (Passenger) app for it; app root = the V2 server dir
+   (`/home/<user>/writehuman-v2`), startup file `app.js`, Node ≥ 18.
+3. On the server create `.env` from `.env.example` with **real** V2 secrets and
+   `WRITEHUMAN_V2_PUBLIC_ORIGIN=https://writehuman2.genzdigitalstore.com`.
+   (The store falls back to a JSON file, so `better-sqlite3` is optional.)
+
+Then deploy the code (uploads runtime files only — never `.env`):
+
+```bash
+SFTP_PASS='<hostinger sftp password>' bash writehuman-v2/deploy.sh
+# verifies https://writehuman2.genzdigitalstore.com/v2/health → 200
+```
+
+Finally: seed the account (`/v2/admin/seed`) and run the Cookie Sync Agent on the RDP
+(see `agent/README.md`). The production dashboard is **not** wired to V2 until it's proven.
+
 ## Security notes
 
 - Cookie bundle encrypted at rest (AES-256-GCM, `lib/vaultCrypto`, V2 vault key).
