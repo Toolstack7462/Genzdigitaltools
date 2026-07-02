@@ -90,11 +90,21 @@ const AdminWriteHuman = () => {
   const a = state?.account || {};
   const ag = state?.agent || null;
   const v = a.verification || {};
-  const stTone = a.status === 'active' ? 'ok' : a.status === 'session_expired' ? 'bad' : 'warn';
+  // Reconciled health drives EVERY status card so they can't contradict each other.
+  const health = state?.health || 'unknown';
+  const healthTone = health === 'up' ? 'ok' : health === 'degraded' ? 'warn' : health === 'down' ? 'bad' : 'mut';
+  const loggedOut = a.browserAuthCookies === 0;          // agent reports the RDP browser has no auth cookie
+  const stTone = healthTone;                             // Session tone follows health, not the lagging raw status
   const agTone = !ag ? 'mut' : a.agentStale ? 'warn' : 'ok';
   const cdpUp = ag && ag.cdp === '200';
   const cdpTone = !ag ? 'mut' : cdpUp ? 'ok' : 'bad';
-  const syncTone = a.agentStale == null ? 'mut' : a.agentStale ? 'warn' : 'ok';
+  const syncTone = loggedOut ? 'bad' : a.agentStale == null ? 'mut' : a.agentStale ? 'warn' : 'ok';
+  // One honest session label: logged-out / working / unverified / the raw down-state.
+  const sessionLabel = loggedOut ? 'logged out'
+    : health === 'up' ? 'working'
+    : health === 'down' ? (a.sessionStatus || 'down')
+    : a.workingUnverified ? 'working · unverified'
+    : (a.sessionStatus || a.status || '—');
 
   return (
     <AdminLayoutEnhanced>
@@ -131,6 +141,11 @@ const AdminWriteHuman = () => {
       {conn === 'offline' && !firstLoad && (
         <div className="ds-card rounded-xl p-4 mb-5 border border-red-200 bg-red-50 text-red-700 text-sm flex items-center gap-2"><AlertTriangle size={16} /> Can't reach the WriteHuman V2 service right now. Retrying…</div>
       )}
+      {conn === 'live' && !firstLoad && health !== 'up' && health !== 'unknown' && state?.statusReason && (
+        <div className={`ds-card rounded-xl p-4 mb-5 border text-sm flex items-start gap-2 ${health === 'down' ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+          <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" /><span><strong>Needs attention:</strong> {state.statusReason}</span>
+        </div>
+      )}
 
       {firstLoad ? (
         <div className="flex items-center justify-center py-20 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading…</div>
@@ -138,24 +153,25 @@ const AdminWriteHuman = () => {
         <>
           {/* Big status stats */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-            <StatCard icon={ShieldCheck} label="Session" value={<Badge tone={stTone}>{a.status || '—'}</Badge>} color="from-blue-500 to-cyan-500" />
+            <StatCard icon={ShieldCheck} label="Session" value={<Badge tone={stTone}>{sessionLabel}</Badge>} color="from-blue-500 to-cyan-500" />
             <StatCard icon={Activity} label="Sync agent" value={<Badge tone={agTone}>{!ag ? 'no report' : a.agentStale ? 'stale' : 'live'}</Badge>} color="from-emerald-500 to-teal-500" />
             <StatCard icon={Chrome} label="Chrome / CDP" value={<Badge tone={cdpTone}>{!ag ? 'unknown' : cdpUp ? 'connected' : 'down'}</Badge>} color="from-violet-500 to-fuchsia-500" />
-            <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{a.agentStale == null ? 'never' : a.agentStale ? 'stale' : 'fresh'}</Badge>} color="from-amber-500 to-orange-500" />
+            <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{loggedOut ? 'logged out' : a.agentStale == null ? 'never' : a.agentStale ? 'stale' : 'fresh'}</Badge>} color="from-amber-500 to-orange-500" />
           </div>
 
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
             <Panel icon={ShieldCheck} title="Session & account" tint="text-blue-500">
               <Row k="Account">{a.label || '—'}</Row>
-              <Row k="Status"><Badge tone={stTone}>{a.status || '—'}</Badge></Row>
-              <Row k="Session state">{a.sessionStatus || '—'}</Row>
+              <Row k="Health"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
+              <Row k="Sign-in">{a.browserAuthCookies == null ? <Badge tone="mut">unknown</Badge> : loggedOut ? <Badge tone="bad">logged out</Badge> : <Badge tone="ok">logged in</Badge>}</Row>
+              <Row k="Stored status">{a.status || '—'} / {a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>
               <Row k="Access token valid">{a.accessTokenExpiresInSec == null ? '—' : a.accessTokenExpiresInSec <= 0 ? <Badge tone="warn">expired</Badge> : `~${dur(a.accessTokenExpiresInSec)}`}</Row>
             </Panel>
 
             <Panel icon={CheckCircle2} title="Verification" tint="text-emerald-500">
-              <Row k="Result">{v.result ? <Badge tone={v.result === 'working' ? 'ok' : v.result === 'session_expired' ? 'bad' : 'mut'}>{v.result}</Badge> : '—'}</Row>
+              <Row k="Result">{v.result ? <Badge tone={v.result === 'working' ? (a.workingUnverified ? 'warn' : 'ok') : v.result === 'session_expired' ? 'bad' : 'mut'}>{v.result === 'working' && a.workingUnverified ? 'working · unverified' : v.result}</Badge> : '—'}</Row>
               <Row k="Account (masked)">{v.maskedId || '—'}</Row>
               <Row k="HTTP">{v.httpStatus ?? '—'}</Row>
               <Row k="Last verification">{rel(a.lastVerifiedAt)}</Row>

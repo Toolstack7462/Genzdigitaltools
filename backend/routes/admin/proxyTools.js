@@ -624,22 +624,45 @@ router.get('/:tool/agent-state', async (req, res) => {
       }
     } catch (_) { /* best-effort; never expose or log the token */ }
 
-    // Overall health rollup for the dashboard chip: down (a down-state), degraded (working but the
-    // agent is stale / still pending), up (working + agent fresh).
+    // COHERENT health + reason — the single source of truth for the dashboard. Reconciles ALL
+    // signals so cards can no longer contradict each other:
+    //  - browserAuthCookies (agent report) = ground truth for "is the browser logged in RIGHT NOW";
+    //    0 means the RDP browser has no auth cookie -> it is logged out (even if the stored status
+    //    still reads 'working', because read-only verify won't downgrade a not-yet-expired JWT).
+    //  - tokenExpired (vault access-token exp, decoded above) = a hard local fact.
+    //  - agentStale = the agent isn't reporting, so freshness/liveness can't be trusted.
+    // A stored 'working' is only shown as truly UP when the browser is logged in, the agent is
+    // fresh, and the access token is still valid — otherwise it degrades (or goes down).
     const ss = account.session_status;
-    let health;
-    if (['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'].includes(ss)) health = 'down';
-    else if (ss === 'working') health = agentStale ? 'degraded' : 'up';
-    else health = account.sessionEncrypted ? 'degraded' : 'down'; // pending_verification etc.
+    const agentRep = account.agentReport || null;
+    const browserAuthCookies = agentRep && typeof agentRep.authCookies === 'number' ? agentRep.authCookies : null;
+    const tokenExpired = accessTokenExpiresInSec != null && accessTokenExpiresInSec <= 0;
+    const DOWN_STATES = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'];
+
+    let health, statusReason;
+    if (!account.sessionEncrypted) { health = 'down'; statusReason = 'No session bundle saved.'; }
+    else if (DOWN_STATES.includes(ss)) { health = 'down'; statusReason = ss === 'needs_login' ? 'Logged out — log back into WriteHuman in the RDP Chrome.' : 'Session ' + ss.replace(/_/g, ' ') + '.'; }
+    else if (browserAuthCookies === 0) { health = 'down'; statusReason = 'The RDP browser has no auth cookie right now — it is logged out. Log back in on the RDP; cached cookies may still be served briefly.'; }
+    else if (ss === 'working') {
+      if (agentStale) { health = 'degraded'; statusReason = 'Was working, but the Cookie Sync Agent is stale — current state is unverified.'; }
+      else if (tokenExpired) { health = 'degraded'; statusReason = 'Access token has expired and no fresh cookie arrived — the browser may be logged out or idle. Unverified.'; }
+      else { health = 'up'; statusReason = 'Working — browser logged in, agent fresh, access token valid.'; }
+    } else { health = 'degraded'; statusReason = 'Verification pending — not yet confirmed working.'; }
+    // A 'working' that is only degraded (not confidently up) is surfaced as unverified so cards
+    // don't render a confident green.
+    const working = ss === 'working';
+    const workingUnverified = working && health !== 'up';
 
     return res.json({
       ...base,
       health,
+      statusReason,
       account: {
         id: account._id,
         label: account.label || null,
         status: account.status || null,
         sessionStatus: account.session_status || null,
+        workingUnverified,
         hasBundle: !!account.sessionEncrypted,
         cookieCount: (account.sessionMeta && account.sessionMeta.cookieCount) || 0,
         hasCookieHash: !!account.cookieHash,
@@ -650,6 +673,8 @@ router.get('/:tool/agent-state', async (req, res) => {
         staleSec: staleMs != null ? Math.round(staleMs / 1000) : null,
         agentStale,
         accessTokenExpiresInSec,
+        tokenExpired,
+        browserAuthCookies,
       },
       agent: account.agentReport || null,
       pendingCommand: account.pendingCommand || null,
