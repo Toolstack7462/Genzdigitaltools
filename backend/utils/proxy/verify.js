@@ -67,7 +67,11 @@ function extractMaskedIdentifier(body, targetOrigin) {
   return maskEmail(external || matches[0]);
 }
 
-async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier) {
+// opts.forceLive (WriteHuman/supabase_refresh only): skip the local access-token-exp
+// short-circuit and ALWAYS perform a live refresh-token exchange, so a manual admin "Verify"
+// reflects the session's TRUE server-side state (not just a not-yet-expired access JWT).
+// Defaults off → every automated/internal caller keeps the idempotent fast-path unchanged.
+async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier, opts = {}) {
   const TARGET = tools.targetOrigin(tool);
   const VERIFY_PATH = tools.verifyPath(tool);
 
@@ -78,7 +82,7 @@ async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier) {
   // Per-tool verify mode that does NOT scrape the tool's HTML page (WriteHuman → Supabase
   // refresh-token exchange). Other tools have no verifyMode and fall through unchanged.
   if (tools.verifyMode && tools.verifyMode(tool) === 'supabase_refresh') {
-    return verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier);
+    return verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opts);
   }
 
   let resp;
@@ -244,20 +248,34 @@ function applySupabaseRefresh(bundle, projectRef, newSession) {
   } catch (_) { return null; }
 }
 
-async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier) {
+async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opts = {}) {
   const cfg = tools.supabaseConfig(tool);
   if (!cfg) return { result: 'unknown', httpStatus: 0, finalPath: null, redirectedToSignIn: false, maskedId: null };
 
   const { refreshToken, accessToken, email: cookieEmail } = extractSupabaseSession(cookieHeader, cfg.projectRef);
 
-  // STABLE / NON-DESTRUCTIVE check first: if the stored access-token JWT is still within its
-  // lifetime, the session is authenticated right now — report working WITHOUT exchanging (and
-  // thereby ROTATING) the refresh token. This makes re-verification idempotent (like HIX/Ryne's
-  // read-only check) so repeated verifies never consume the token, and the session stays valid
-  // as long as the cookies are valid. No timeout ever expires it here.
+  // STABLE / NON-DESTRUCTIVE fast-path: if the stored access-token JWT is still within its
+  // lifetime, report working WITHOUT exchanging (and thereby ROTATING) the refresh token. This
+  // keeps the AUTOMATED callers (gateway /account-expired, save-time liveProbe) idempotent so
+  // they never consume the token on every trigger.
+  //
+  // BUT a Supabase access token is a STATELESS JWT that stays exp-valid (~1h) even after the
+  // session is revoked/logged-out server-side — so this local-only check would report "working"
+  // for a session that is actually dead. A manual admin Verify passes opts.forceLive to SKIP
+  // this short-circuit and always do the live refresh-token exchange below (true state).
   const exp = jwtExp(accessToken);
-  if (exp && exp * 1000 > Date.now() + 120000) {
+  if (!opts.forceLive && exp && exp * 1000 > Date.now() + 120000) {
     return { result: 'working', httpStatus: 200, finalPath: '/auth (jwt)', redirectedToSignIn: false, maskedId: cookieEmail ? maskEmail(cookieEmail) : null };
+  }
+
+  // READ-ONLY mode (RDP Cookie Sync Agent): the BROWSER is the sole token rotator. A server-side
+  // refresh exchange here would rotate the refresh token and can trip Supabase reuse-detection,
+  // revoking the LIVE browser session. So in read-only mode we NEVER exchange: a still-valid
+  // access token already returned 'working' above; anything else is 'unknown' (do not rotate, do
+  // not expire) and left for the browser to refresh + the agent to re-push. Opt-in — only the
+  // agent sync path passes readOnly, so admin/gateway callers are byte-identical.
+  if (opts.readOnly) {
+    return { result: 'unknown', httpStatus: 0, finalPath: '/auth (readonly)', redirectedToSignIn: false, reason: 'readonly_no_exchange', maskedId: cookieEmail ? maskEmail(cookieEmail) : null };
   }
 
   if (!refreshToken) {

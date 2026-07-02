@@ -18,7 +18,7 @@
 #>
 param(
   [string]$AgentKey      = $env:WHV2_AGENT_KEY,
-  [string]$IngestUrl     = 'https://writehuman2.genzdigitalstore.com/v2/cookies/ingest',
+  [string]$IngestUrl     = 'https://api.genzdigitalstore.com/api/crm/proxy/agent/writehuman/cookies',
   [string]$CdpUrl        = 'http://127.0.0.1:9222',
   [string]$TargetDomain  = 'writehuman.ai',
   [string]$SupabaseRef   = 'hicfsbrfkzsxbwayibfm',
@@ -79,7 +79,7 @@ foreach($f in 'watchdog.ps1','status.ps1','uninstall.ps1'){ Deploy (Join-Path $P
 Deploy (Join-Path $repoRoot 'test\soak-monitor.js') (Join-Path $InstallDir 'soak-monitor.js')
 
 # 3) Machine config (non-secret) for status/watchdog ---------------------------
-$healthUrl = ($IngestUrl -replace '/cookies/ingest$','/health')
+$healthUrl = ($IngestUrl -replace '^(https?://[^/]+).*$','$1/')  # origin reachability probe (agent ingest is POST-only + key-gated)
 [ordered]@{ installDir=$InstallDir; nodeExe=$nodeExe; ingestUrl=$IngestUrl; cdpUrl=$CdpUrl; chromeProfile=$ChromeProfile; healthUrl=$healthUrl; adminUser=$AdminUser } |
   ConvertTo-Json | Set-Content (Join-Path $InstallDir 'rdp\config.json') -Encoding ASCII
 
