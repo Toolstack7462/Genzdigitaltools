@@ -68,7 +68,7 @@ async function main() {
   const adminH = { 'x-admin-key': ADMIN };
 
   realLog('\n── production-backed validate ────────────────────');
-  const h = await req(port, 'GET', '/v2/health');
+  const h = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('health reports production-backed', h.json && h.json.mode === 'production-backed' && h.json.prodValidate === true, h.json && h.json.mode);
 
   // A lease minted now is signed with the prod secret (effectiveLeaseSecret) → simulates a

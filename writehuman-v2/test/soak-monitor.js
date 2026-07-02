@@ -10,11 +10,13 @@
  *   - scheduler_stopped : smart timer not running
  *   - verify_stalled    : lastVerifiedAt older than the max age (timer not re-verifying)
  *
- * Read-only (HTTP GET on /v2/health) — never touches production, never sends the admin key,
- * never logs cookie values. Run it on the RDP (or anywhere that resolves the host) for the
- * full 24–72h window:
+ * Read-only (HTTP GET on /v2/health). Sends the admin key (x-admin-key) to read the detailed
+ * health block, which is admin-gated to avoid public information disclosure. Never mutates
+ * anything, never logs cookie values. Run it on the RDP (or anywhere that resolves the host)
+ * for the full 24–72h window:
  *
  *   WHV2_HEALTH_URL=https://writehuman2.genzdigitalstore.com/v2/health \
+ *   WHV2_ADMIN_KEY=<the V2 admin key> \
  *   SOAK_INTERVAL_SEC=300 SOAK_DURATION_HRS=72 node test/soak-monitor.js
  *
  * Exit code 0 = no regressions observed; 1 = at least one regression flagged.
@@ -23,6 +25,7 @@ const fs = require('fs');
 const path = require('path');
 
 const URL = process.env.WHV2_HEALTH_URL || 'https://writehuman2.genzdigitalstore.com/v2/health';
+const ADMIN_KEY = process.env.WHV2_ADMIN_KEY || '';
 const INTERVAL = Math.max(5, parseInt(process.env.SOAK_INTERVAL_SEC, 10) || 300) * 1000;
 const DURATION = (parseFloat(process.env.SOAK_DURATION_HRS) || 0) * 3600 * 1000; // 0 = until stopped
 const VERIFY_MAX_AGE = (parseInt(process.env.SOAK_VERIFY_MAX_AGE_MIN, 10) || 30) * 60 * 1000;
@@ -39,7 +42,7 @@ async function poll() {
   stats.polls++;
   let h = null, err = null;
   try {
-    const r = await fetch(URL, { signal: AbortSignal.timeout(20000), headers: { 'cache-control': 'no-store' } });
+    const r = await fetch(URL, { signal: AbortSignal.timeout(20000), headers: { 'cache-control': 'no-store', 'x-admin-key': ADMIN_KEY } });
     if (r.status !== 200) { err = 'http_' + r.status; } else { h = await r.json(); }
   } catch (e) { err = (e && e.name === 'TimeoutError') ? 'timeout' : 'neterr'; }
 

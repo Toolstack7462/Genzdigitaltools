@@ -69,7 +69,7 @@ async function main() {
   const adminH = { 'x-admin-key': ADMIN }, agentH = { 'x-agent-key': AGENT };
 
   realLog('\n── read-only verify (no server-side exchange) ────');
-  const h0 = await req(port, 'GET', '/v2/health');
+  const h0 = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('mode is standalone', h0.json && h0.json.mode === 'standalone', h0.json && h0.json.mode);
 
   // valid access token → working via fast-path, NO Supabase call
@@ -85,20 +85,20 @@ async function main() {
   const vStale = await req(port, 'POST', '/v2/admin/verify', { headers: adminH });
   check('aged-out access → unknown (read-only, no rotation)', vStale.json && vStale.json.result === 'unknown', vStale.json);
   check('read-only made NO Supabase exchange', supabaseHits === before, { before, after: supabaseHits });
-  const hStale = await req(port, 'GET', '/v2/health');
+  const hStale = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('stale token did NOT flip to session_expired', hStale.json.account.status !== 'session_expired', hStale.json.account.status);
 
   realLog('\n── sync visibility (Fix #3) ──────────────────────');
   const ig = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { cookies: authCookies('fresh', now() + 3600, 'REFRESH_GOOD') } });
   check('ingest changed → working', ig.json && ig.json.changed === true && ig.json.result === 'working', ig.json);
-  const hSync = await req(port, 'GET', '/v2/health');
+  const hSync = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('health shows lastSyncedAt + agentStale=false + syncCount>=1', !!hSync.json.account.lastSyncedAt && hSync.json.account.agentStale === false && hSync.json.account.syncCount >= 1, hSync.json.account);
 
   realLog('\n── heartbeat (liveness, no cookie change) ────────');
   const scBefore = hSync.json.account.syncCount;
   const hb = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { heartbeat: true, hash: 'abcd1234' } });
   check('heartbeat accepted', hb.status === 200 && hb.json && hb.json.heartbeat === true, hb.json);
-  const hHb = await req(port, 'GET', '/v2/health');
+  const hHb = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('heartbeat advances syncCount + keeps agentStale=false', hHb.json.account.syncCount > scBefore && hHb.json.account.agentStale === false, { before: scBefore, after: hHb.json.account.syncCount, stale: hHb.json.account.agentStale });
   const hb403 = await req(port, 'POST', '/v2/cookies/ingest', { body: { heartbeat: true } });
   check('heartbeat without key → 403', hb403.status === 403, hb403.status);
@@ -108,7 +108,7 @@ async function main() {
   check('logout signal without key → 403', lo403.status === 403, lo403.status);
   const lo = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { loggedOut: true, reason: 'auth_cookie_absent' } });
   check('logout signal accepted', lo.status === 200 && lo.json && lo.json.loggedOut === true, lo.json);
-  const hLo = await req(port, 'GET', '/v2/health');
+  const hLo = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('logout → session_expired / needs_login', hLo.json.account.status === 'session_expired' && hLo.json.account.sessionStatus === 'needs_login', hLo.json.account);
 
   realLog(`\n  RESULT: ${pass} passed, ${fail} failed\n`);

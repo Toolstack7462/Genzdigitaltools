@@ -126,7 +126,7 @@ async function main() {
   const mintTok = async () => (await req(port, 'POST', '/v2/admin/lease', { headers: adminH, body: {} })).json.token;
 
   realLog('\n── boot ─────────────────────────────────────────');
-  const h0 = await req(port, 'GET', '/v2/health');
+  const h0 = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('boots & /v2/health ok', h0.status === 200 && h0.json && h0.json.ok === true, h0.json);
   check('uses JSON store', h0.json && h0.json.store === 'json', h0.json && h0.json.store);
   check('supabase configured', h0.json && h0.json.supabaseConfigured === true);
@@ -138,7 +138,7 @@ async function main() {
   check('seed stores 3 cookies', s1.status === 200 && s1.json && s1.json.cookiesSaved === 3, s1.json);
   const s1bad = await req(port, 'POST', '/v2/admin/seed', { body: { cookies: live.cookies } });
   check('seed without admin key → 403', s1bad.status === 403, s1bad.status);
-  const h1 = await req(port, 'GET', '/v2/health');
+  const h1 = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('health shows bundle + cookieHash + active', h1.json && h1.json.account.hasBundle && h1.json.account.hasCookieHash && h1.json.account.status === 'active', h1.json && h1.json.account);
 
   realLog('\n── lease validate ───────────────────────────────');
@@ -164,7 +164,7 @@ async function main() {
   const ae1 = await req(port, 'POST', '/v2/account-expired', { headers: Object.assign({ authorization: 'Bearer ' + lzE.json.token }, gwH) });
   check('expired session → updated:true (confirmed)', ae1.status === 200 && ae1.json && ae1.json.updated === true, ae1.json);
   check('expired path called Supabase', supabaseHits > hitsBeforeExp);
-  const hExp = await req(port, 'GET', '/v2/health');
+  const hExp = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('account flagged session_expired', hExp.json && hExp.json.account.status === 'session_expired', hExp.json && hExp.json.account.status);
 
   // b) live (fast-path) bundle → stays active, no Supabase call
@@ -174,7 +174,7 @@ async function main() {
   const ae2 = await req(port, 'POST', '/v2/account-expired', { headers: Object.assign({ authorization: 'Bearer ' + lzL.json.token }, gwH) });
   check('live session → updated:false (kept active)', ae2.status === 200 && ae2.json && ae2.json.updated === false, ae2.json);
   check('live fast-path makes NO Supabase call', supabaseHits === hitsBeforeLive, { before: hitsBeforeLive, after: supabaseHits });
-  const hLive = await req(port, 'GET', '/v2/health');
+  const hLive = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('account back to active', hLive.json && hLive.json.account.status === 'active', hLive.json && hLive.json.account.status);
 
   realLog('\n── verifyNow (refresh exchange) ──────────────────');
@@ -247,14 +247,14 @@ async function main() {
 
   const igF = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { cookies: authOnly(bundle('flaky', now() - 30, 'REFRESH_FLAKY')) } });
   check('transient 503 → result unknown', igF.json && igF.json.result === 'unknown', igF.json);
-  const hF = await req(port, 'GET', '/v2/health');
+  const hF = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('transient unknown does NOT flip to needs_login (retry, stay active)', hF.json.account.status === 'active', hF.json.account.status);
 
   const igB = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { cookies: authOnly(bundle('bad', now() - 30, 'REFRESH_BAD')) } });
   check('confirmed bad refresh → session_expired', igB.json && igB.json.result === 'session_expired', igB.json);
   const igR = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { cookies: authOnly(bundle('rec', now() + 3600, 'REFRESH_GOOD')) } });
   check('recovery ingest → working again (auto-recover, no manual step)', igR.json && igR.json.result === 'working', igR.json);
-  const hR = await req(port, 'GET', '/v2/health');
+  const hR = await req(port, 'GET', '/v2/health', { headers: adminH });
   check('account recovered to active', hR.json.account.status === 'active', hR.json.account.status);
 
   realLog('\n── Step-2: smart-timer scheduler ─────────────────');

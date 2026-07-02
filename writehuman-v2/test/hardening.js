@@ -64,6 +64,19 @@ async function main() {
   const h = await req(port, 'GET', '/v2/health', { headers: { 'x-forwarded-for': '10.0.0.9' } });
   check('X-Content-Type-Options: nosniff', h.headers['x-content-type-options'] === 'nosniff', h.headers['x-content-type-options']);
 
+  realLog('\n-- health does NOT disclose account telemetry unauthenticated --');
+  const hPub = await req(port, 'GET', '/v2/health', { headers: { 'x-forwarded-for': '10.0.0.20' } });
+  check('public health -> 200 + ok', hPub.status === 200 && hPub.json && hPub.json.ok === true, hPub.status);
+  check('public health OMITS account/target/store/scheduler',
+    hPub.json && hPub.json.account === undefined && hPub.json.target === undefined && hPub.json.store === undefined && hPub.json.scheduler === undefined,
+    Object.keys(hPub.json || {}));
+  const hAuth = await req(port, 'GET', '/v2/health', { headers: { 'x-forwarded-for': '10.0.0.20', 'x-admin-key': 'h-admin' } });
+  check('admin health INCLUDES account detail', hAuth.json && hAuth.json.account !== undefined && hAuth.json.store !== undefined, Object.keys(hAuth.json || {}));
+
+  realLog('\n-- standalone admin panel retired (single unified dashboard) --');
+  const adminPanel = await req(port, 'GET', '/v2/admin', { headers: { 'x-forwarded-for': '10.0.0.21' } });
+  check('GET /v2/admin -> 404 (no public admin panel)', adminPanel.status === 404, adminPanel.status);
+
   realLog('\n-- gateway HTTP disabled --');
   const s = await req(port, 'POST', '/v2/session', { headers: { 'x-forwarded-for': '10.0.0.2', 'x-gateway-key': 'h-gw' }, body: {} });
   check('/v2/session -> 404 when EXPOSE_GATEWAY_HTTP=0', s.status === 404, s.status);

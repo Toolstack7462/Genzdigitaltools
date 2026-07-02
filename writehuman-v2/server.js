@@ -30,12 +30,6 @@ const rateLimit = require('./lib/rateLimit');
 const events = require('./lib/events');
 const gateway = require('./gateway/proxy'); // required AFTER applyGatewayEnv()
 
-// Self-contained admin panel (served at /v2/admin). Read once at boot. All of its actions
-// are gated by the admin key entered in the page → sent as x-admin-key. The HTML itself
-// carries no secret. Kept separate from the production admin app (V2 stays isolated).
-let ADMIN_HTML = '<!doctype html><title>WriteHuman V2</title><p>dashboard missing</p>';
-try { ADMIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'dashboard.html'), 'utf8'); } catch (_) {}
-
 store.init();
 sm.init();
 
@@ -152,16 +146,24 @@ function hasIngestKey(req) {
   return keyMatches(got, config.agentKey) || keyMatches(got, config.adminKey);
 }
 
-function healthBody() {
-  const a = store.get() || {};
-  return {
+// Unauthenticated callers get a MINIMAL liveness body only — exposing account/session/sync
+// telemetry on a public subdomain is information disclosure. The detailed block is returned
+// ONLY with the admin key (same gate as /v2/admin/state). Operator tooling (soak monitor,
+// tests) sends x-admin-key to see the detail.
+function healthBody(full) {
+  const base = {
     ok: true,
     service: 'writehuman-v2',
     step: 1,
+    mode: config.productionBacked ? 'production-backed' : 'standalone',
+  };
+  if (!full) return base;
+  const a = store.get() || {};
+  return {
+    ...base,
     target: (() => { try { return new URL(config.targetOrigin).host; } catch (_) { return null; } })(),
     store: store.driver(),
     supabaseConfigured: !!(config.supabase.url && config.supabase.anonKey),
-    mode: config.productionBacked ? 'production-backed' : 'standalone',
     prodValidate: !!(config.productionBacked && config.prodApiBase),
     account: {
       status: a.status || null,
@@ -189,12 +191,13 @@ async function handleV2(req, res, pathName) {
     return send(res, 429, { ok: false, code: 'rate_limited' });
   }
 
-  if (pathName === '/v2/admin' && method === 'GET') {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
-    return res.end(ADMIN_HTML);
-  }
+  // The standalone admin panel HTML is retired: the unified production Admin Dashboard is the
+  // single admin surface (backend/routes/admin/writehumanV2.js proxies to the /v2/admin/* JSON
+  // APIs below, which stay admin-key gated). Serving a public admin login page here would be
+  // needless attack surface, so /v2/admin returns 404 like any unknown path.
+  if (pathName === '/v2/admin' && method === 'GET') return send(res, 404, { ok: false, code: 'not_found' });
 
-  if (pathName === '/v2/health') return send(res, 200, healthBody());
+  if (pathName === '/v2/health') return send(res, 200, healthBody(hasAdminKey(req)));
 
   // ── Dashboard read APIs (admin-key gated; GET) ──────────────────────────────
   if (pathName === '/v2/admin/state' && method === 'GET') {
@@ -279,10 +282,6 @@ async function handleV2(req, res, pathName) {
 const server = http.createServer((req, res) => {
   let pathName = '/';
   try { pathName = new URL(req.url, 'http://localhost').pathname; } catch (_) {}
-  if (pathName === '/admin') { // convenience redirect to the V2 admin panel
-    res.writeHead(302, { location: '/v2/admin', 'cache-control': 'no-store' });
-    return res.end();
-  }
   if (pathName === '/v2' || pathName.startsWith('/v2/')) {
     handleV2(req, res, pathName).catch((err) => {
       log.error('v2_handler', { path: pathName, message: err && err.message });

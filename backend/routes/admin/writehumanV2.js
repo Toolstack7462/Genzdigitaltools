@@ -41,7 +41,10 @@ function guard(res) {
   return true;
 }
 function forwardError(res, e) {
-  return res.status(502).json({ ok: false, code: 'v2_unreachable', error: e && e.message });
+  // Log the detail server-side; return only a generic code to the browser (no internal URLs /
+  // messages leaked to the client).
+  try { console.error('[writehuman-v2] upstream error:', (e && e.message) || e); } catch (_) {}
+  return res.status(502).json({ ok: false, code: 'v2_unreachable' });
 }
 
 // Aggregated live state for the dashboard (account, session, verification, sync, agent telemetry).
