@@ -123,6 +123,15 @@ const config = {
   verifyExchange: bool('WRITEHUMAN_V2_VERIFY_EXCHANGE', false),
   // The Cookie Sync Agent is considered stale if no successful sync within this many minutes.
   agentStaleMin: Math.max(1, intEnv('WRITEHUMAN_V2_AGENT_STALE_MIN', 10)),
+  // ── Hardening (defaults preserve current behaviour) ─────────────────────────
+  // Per-IP requests/min for the /v2 API (0 = off). Generous so legit traffic is unaffected.
+  rateLimitPerMin: Math.max(0, intEnv('WRITEHUMAN_V2_RATE_LIMIT_PER_MIN', 600)),
+  // The gateway calls /session + /account-expired IN-PROCESS, so the HTTP versions are only
+  // for tests/external tooling. Keep exposed by default; set 0 in prod for defense-in-depth.
+  exposeGatewayHttp: bool('WRITEHUMAN_V2_EXPOSE_GATEWAY_HTTP', true),
+  // Optional IP allowlist for /v2/cookies/ingest (comma-separated; matched against the
+  // X-Forwarded-For client IP). Empty = allow any (default). Set to the RDP egress IP to lock down.
+  ingestAllowIps: String(env('WRITEHUMAN_V2_INGEST_ALLOW_IPS', '')).split(',').map((s) => s.trim()).filter(Boolean),
   // Supabase config for the supabase_refresh verifier. The anon key is PUBLIC (the same key
   // WriteHuman ships to every browser) — not a secret, never logged. Overridable via env.
   supabase: {

@@ -33,7 +33,7 @@ FILES=(
   app.js server.js package.json
   gateway/proxy.js
   public/overlay.js public/overlay.css public/admin.html
-  lib/config.js lib/log.js lib/cookies.js lib/vaultCrypto.js lib/lease.js lib/verify.js lib/supabase.js
+  lib/config.js lib/log.js lib/cookies.js lib/vaultCrypto.js lib/lease.js lib/verify.js lib/supabase.js lib/rateLimit.js
   store/accountStore.js store/schema.sql
   session/sessionManager.js session/cookieManager.js session/scheduler.js session/syncIngest.js
   agent/cookie-sync-agent.js

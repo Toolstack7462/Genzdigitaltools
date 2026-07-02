@@ -49,6 +49,11 @@ if(-not $nodeDirEntry){
   $file = $file.Trim()
   $zip  = Join-Path $env:TEMP $file
   Invoke-WebRequest ("https://nodejs.org/dist/latest-v22.x/$file") -OutFile $zip
+  # Verify the download against the official SHASUMS256 (integrity / supply-chain).
+  $expected = ((($shas -split "`n") | Where-Object { $_ -match [Regex]::Escape($file) } | Select-Object -First 1) -replace '\s.*$','').Trim().ToLower()
+  $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+  if(-not $expected -or $actual -ne $expected){ Remove-Item $zip -Force -ErrorAction SilentlyContinue; throw "Node download checksum mismatch (expected '$expected', got '$actual')" }
+  Info 'Node download checksum OK'
   New-Item -ItemType Directory -Force $NodeDir | Out-Null
   tar -xf $zip -C $NodeDir
   Remove-Item $zip -Force

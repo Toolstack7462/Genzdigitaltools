@@ -26,6 +26,7 @@ const store = require('./store/accountStore');
 const sm = require('./session/sessionManager');
 const scheduler = require('./session/scheduler');
 const syncIngest = require('./session/syncIngest');
+const rateLimit = require('./lib/rateLimit');
 const gateway = require('./gateway/proxy'); // required AFTER applyGatewayEnv()
 
 // Self-contained admin panel (served at /v2/admin). Read once at boot. All of its actions
@@ -56,8 +57,16 @@ scheduler.init({
 function send(res, status, obj) {
   if (res.headersSent) { try { res.end(); } catch (_) {} return; }
   const body = JSON.stringify(obj == null ? {} : obj);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
   res.end(body);
+}
+
+// Client IP for rate-limiting/allowlisting. Behind LiteSpeed/Passenger the socket peer is the
+// local proxy, so the real client is in X-Forwarded-For (first hop).
+function clientIp(req) {
+  const xff = req.headers['x-forwarded-for'];
+  if (xff) return String(xff).split(',')[0].trim();
+  return (req.socket && req.socket.remoteAddress) || 'unknown';
 }
 
 function readJson(req, limitBytes = 2 * 1024 * 1024) {
@@ -139,9 +148,15 @@ function healthBody() {
 // ── V2 API router ───────────────────────────────────────────────────────────
 async function handleV2(req, res, pathName) {
   const method = req.method;
+  const ip = clientIp(req);
+
+  // Best-effort per-IP rate limit (generous default; disabled when rateLimitPerMin<=0).
+  if (!rateLimit.allow('v2:' + ip, config.rateLimitPerMin)) {
+    return send(res, 429, { ok: false, code: 'rate_limited' });
+  }
 
   if (pathName === '/v2/admin' && method === 'GET') {
-    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
     return res.end(ADMIN_HTML);
   }
 
@@ -158,19 +173,22 @@ async function handleV2(req, res, pathName) {
   }
 
   if (pathName === '/v2/session' && method === 'POST') {
+    if (!config.exposeGatewayHttp) return send(res, 404, { ok: false, code: 'not_found' });
     if (!hasGatewayKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
     const r = sm.session(getLeaseToken(req, body));
     return send(res, r.status, r.body);
   }
 
   if (pathName === '/v2/account-expired' && method === 'POST') {
+    if (!config.exposeGatewayHttp) return send(res, 404, { ok: false, code: 'not_found' });
     if (!hasGatewayKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
     const r = await sm.accountExpired(getLeaseToken(req, body));
     return send(res, r.status, r.body);
   }
 
   if (pathName === '/v2/cookies/ingest' && method === 'POST') {
-    // Cookie Sync Agent target (admin or agent key).
+    // Cookie Sync Agent target (admin or agent key). Optional IP allowlist for defense-in-depth.
+    if (config.ingestAllowIps.length && !config.ingestAllowIps.includes(ip)) return send(res, 403, { ok: false, code: 'ip_not_allowed' });
     if (!hasIngestKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
     const r = await syncIngest.handle(body);
     return send(res, r.status, r.body);
