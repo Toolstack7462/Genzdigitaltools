@@ -217,8 +217,9 @@ function start() {
   const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
-  // (a slow CDP read + ingest can exceed the poll interval). unref'd so it never blocks shutdown.
-  const schedule = () => { if (state.stopped) return; timer = setTimeout(loop, CFG.pollMs); if (timer.unref) timer.unref(); };
+  // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
+  // so this timer is what keeps the process alive; shutdown() clears it + exits explicitly.
+  const schedule = () => { if (state.stopped) return; timer = setTimeout(loop, CFG.pollMs); };
   const loop = async () => {
     try { await pushIfChanged(state); } catch (e) { log('tick_error', { error: e && e.message }); }
     schedule();
