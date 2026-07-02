@@ -189,6 +189,7 @@ mysqlAdapter.connect()
     await ensureIndexes();
     await bootstrapAdmin();
     stealthScheduler.start(); // StealthWriter daily reset (no-op unless STEALTH_INTERNAL_CRON=true)
+    proxyVerifyScheduler.start(); // periodic read-only auto-verify for WriteHuman (no-op unless a live-agent tool exists)
   })
   .catch(err => {
     console.error('❌ MySQL/MariaDB connection FAILED:', err.message);
@@ -297,6 +298,7 @@ const adminStealthRoutes      = require('./routes/admin/stealth');
 const clientStealthRoutes     = require('./routes/client/stealth');
 const stealthGatewayRoutes    = require('./routes/stealth/gateway');
 const stealthScheduler        = require('./cron/stealthScheduler');
+const proxyVerifyScheduler    = require('./cron/proxyVerifyScheduler'); // periodic read-only auto-verify (live-agent tools)
 // Proxy-Tools module (HIX AI / BypassGPT) — isolated
 const adminProxyToolsRoutes   = require('./routes/admin/proxyTools');
 const clientProxyToolsRoutes  = require('./routes/client/proxyTools');

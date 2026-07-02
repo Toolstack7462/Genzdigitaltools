@@ -12,8 +12,8 @@ const ProxyLease = require('../../models/proxy/ProxyLease');
 const ActivityLog = require('../../models/ActivityLog');
 const vaultCrypto = require('./vaultCrypto');
 const tools = require('./tools');
-const { verifyAccountCookies } = require('./verify');
-const { buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('./cookies');
+const { verifyAndApply } = require('./verifyAndApply');
+const { countCookies, cookieNames, hasSessionCookie } = require('./cookies');
 
 // Safe, non-secret metadata about the stored bundle (counts / booleans only — no values).
 function buildSessionMeta(tool, bundle) {
@@ -58,32 +58,20 @@ async function applyAccountSession(account, bundle, opts = {}) {
     revokedLeases = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
   } catch (_) { /* non-fatal: cookies are saved; stale lease self-heals within ~60s */ }
 
-  // Auto-verify the just-saved cookies (immediate, safe feedback). Best-effort; cookies saved regardless.
+  // Auto-verify the just-saved cookies via the shared verify->apply path (ONE place for the
+  // verify->status mapping). Live-agent tools (WriteHuman) verify READ-ONLY — the browser is the
+  // sole token rotator, so the server never exchanges. Other tools keep the default fast-path.
+  // Best-effort; cookies are saved regardless.
   let verifyResult = null, warning = null;
-  const host = tools.targetHost(tool);
-  const names = cookieNames(bundle, host);
+  let names = cookieNames(bundle, tools.targetHost(tool));
   try {
-    const cookieHeader = buildCookieHeader(bundle, host);
-    if (!cookieHeader || !hasSessionCookie(bundle)) {
-      account.verification = { result: 'missing_required_session_cookie', maskedId: null, httpStatus: 0, checkedAt: new Date() };
-      account.status = 'session_expired'; account.session_status = 'missing_required_session_cookie';
-      verifyResult = 'missing_required_session_cookie'; warning = 'missing_required_session_cookie';
-    } else {
-      // Agent path is READ-ONLY: never do a server-side refresh exchange (the browser is the
-      // rotator). Admin path keeps the existing behavior (fast-path, or exchange when aged).
-      const v = await verifyAccountCookies(tool, cookieHeader, account.expectedIdentifier, { readOnly: source === 'agent' });
-      account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
-      account.lastVerifiedAt = new Date();
-      if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
-      else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
-      else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-      else if (v.result === 'unsupported') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
-      verifyResult = v.result;
-      if (v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
-      else if (v.result === 'wrong_account') warning = 'cookies_wrong_account';
-      else if (v.result === 'session_expired') warning = v.loggedOut ? 'needs_login' : 'session_expired';
-    }
-    await account.save();
+    const r = await verifyAndApply(account, tool, { readOnly: tools.hasLiveAgent(tool), bundle });
+    verifyResult = r.result; names = r.cookieNames;
+    const v = r.v;
+    if (v && v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
+    else if (r.result === 'wrong_account') warning = 'cookies_wrong_account';
+    else if (r.result === 'needs_login' || r.result === 'session_expired') warning = r.result;
+    else if (r.result === 'missing_required_session_cookie') warning = 'missing_required_session_cookie';
   } catch (_) { /* verify is best-effort; the cookies are already saved + leases revoked */ }
 
   try {

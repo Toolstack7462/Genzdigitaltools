@@ -74,6 +74,11 @@ const TOOLS = {
     name: 'WriteHuman',
     category: 'AI',
     tagline: 'Undetectable AI Humanizer',
+    // A live RDP Chrome + Cookie Sync Agent keeps this tool's session fresh (the browser is the
+    // SOLE token rotator). So server-side verifies must be READ-ONLY — a forceLive refresh
+    // exchange here would rotate the refresh token and revoke the live browser session. Also
+    // opts this tool into the periodic read-only auto-verify scheduler.
+    liveAgent: true,
     targetOriginEnv: 'WRITEHUMAN_TARGET_ORIGIN',
     defaultTargetOrigin: 'https://writehuman.ai',
     gatewayUrlEnv: 'WRITEHUMAN_GATEWAY_URL',
@@ -133,6 +138,14 @@ function isValidTool(tool) {
 
 function getTool(tool) {
   return TOOLS[String(tool || '')] || null;
+}
+
+// True if the tool is kept fresh by a live browser + Cookie Sync Agent. Server-side verifies
+// must be read-only for these (the browser is the sole token rotator), and they are eligible for
+// the periodic read-only auto-verify scheduler.
+function hasLiveAgent(tool) {
+  const t = getTool(tool);
+  return !!(t && t.liveAgent);
 }
 
 function stripSlash(s) { return String(s || '').replace(/\/+$/, ''); }
@@ -231,7 +244,7 @@ function publicInfo(tool) {
 }
 
 module.exports = {
-  TOOLS, TOOL_KEYS, isValidTool, getTool,
+  TOOLS, TOOL_KEYS, isValidTool, getTool, hasLiveAgent,
   targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, verifyMode, supabaseConfig, publicInfo,
   defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES, shouldDetectLoggedOut,
 };

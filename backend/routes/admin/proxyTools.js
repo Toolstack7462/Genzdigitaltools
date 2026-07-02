@@ -27,6 +27,8 @@ const { verifyAccountCookies, maskEmail, applySupabaseRefresh } = require('../..
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
+const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
+const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
 // reflects exactly which account clients will get (default auto_failover).
@@ -436,64 +438,15 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     if (!account.sessionEncrypted) return res.status(400).json({ error: 'No cookie bundle saved for this account' });
 
-    const host = tools.targetHost(req.proxyTool);
-    let bundle = null, cookieHeader = '';
-    try { bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); cookieHeader = buildCookieHeader(bundle, host); } catch (_) {}
-    const cookie_count = countCookies(bundle, host);
-    const names = cookieNames(bundle, host);
-
-    // No attachable cookie, or no recognizable session/auth cookie → can't log in.
-    // Distinguish "missing required session cookie" from a generic expiry so the admin
-    // knows the bundle is incomplete (httpOnly session cookie was not captured).
-    if (!cookieHeader || !hasSessionCookie(bundle)) {
-      const code = 'missing_required_session_cookie';
-      account.verification = { result: code, maskedId: null, httpStatus: 0, checkedAt: new Date() };
-      account.status = 'session_expired';
-      account.session_status = code;
-      account.lastVerifiedAt = new Date();
-      await account.save();
-      console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, has_session_cookie: false, upstream_status: 0 }));
-      return res.json({ success: true, account: presentAccount(account), result: code, cookieNames: names });
-    }
-
-    // forceLive: a manual Verify must reflect the session's TRUE server-side state, so for
-    // WriteHuman it always performs the live refresh-token exchange (no access-token-exp
-    // short-circuit). Automated callers (gateway/account-add) keep the idempotent fast-path.
-    const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier, { forceLive: true });
-    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, upstream_status: v.httpStatus, final_path: v.finalPath, redirected_to_sign_in: v.redirectedToSignIn, logged_out: !!v.loggedOut }));
-
-    // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
-    const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
-    account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
-    account.lastVerifiedAt = new Date();
-    if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
-    else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
-    else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-    // The tool is behind an anti-bot challenge a proxy can't pass → mark blocked so it is
-    // never auto-selected for a client (who would just hit the "unsupported" page); the
-    // recorded verification.result='unsupported' tells the admin exactly why.
-    else if (v.result === 'unsupported') { account.status = 'blocked'; }
-    else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
-
-    // WriteHuman (supabase_refresh): a successful verify ROTATED the session. Persist the
-    // refreshed tokens back into the stored cookie bundle so the account stays live and the
-    // admin never has to re-export — exactly "auto-refresh/update the stored session and keep
-    // Working". Fail-safe: only when the cookie round-trips cleanly (else leave it untouched).
-    // refreshedSession is only ever set for supabase_refresh, so no other tool is affected.
-    if (v.result === 'working' && v.refreshedSession && bundle) {
-      try {
-        const ref = (tools.supabaseConfig(req.proxyTool) || {}).projectRef;
-        const updated = applySupabaseRefresh(bundle, ref, v.refreshedSession);
-        if (updated) {
-          account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(updated));
-          account.sessionMeta = Object.assign({}, account.sessionMeta || {}, { updatedAt: new Date() });
-        }
-      } catch (_) { /* persist is best-effort; verify result still stands */ }
-    }
-
-    await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: effResult, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), result: effResult, cookieNames: names });
+    // Live-agent tools (WriteHuman): READ-ONLY verify — a manual check must never rotate the
+    // refresh token and compete with the RDP browser (the sole rotator), which would revoke the
+    // live session. Static-vault tools keep forceLive (the server IS their rotator). One shared
+    // verify->apply path (also used by the on-sync write + the periodic auto-verify scheduler).
+    const opts = tools.hasLiveAgent(req.proxyTool) ? { readOnly: true } : { forceLive: true };
+    const r = await verifyAndApply(account, req.proxyTool, opts);
+    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count: r.cookieCount, upstream_status: r.v ? r.v.httpStatus : 0, result: r.result, mode: opts.readOnly ? 'readonly' : 'forcelive' }));
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: r.result, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), result: r.result, cookieNames: r.cookieNames });
   } catch (err) {
     console.error('Proxy verify account error:', err.message);
     return res.status(500).json({ error: 'Failed to verify account' });
@@ -645,8 +598,14 @@ router.get('/:tool/agent-state', async (req, res) => {
     const accounts = await ProxyAccount.find({ tool });
     const account = primaryAccount(accounts);
     const clientsCount = (await ProxyClient.find({ tool })).length;
+    // Live-agent tools verify READ-ONLY (no server-side exchange), so verifyExchange is false for
+    // them; the smart-timer state reflects the real periodic auto-verify scheduler.
+    const sched = proxyVerifyScheduler.status();
+    const isLive = tools.hasLiveAgent(tool);
     const base = { ok: true, tool, mode: 'production-mysql', target: tools.targetHost(tool), store: 'mysql',
-      verifyExchange: tools.verifyMode(tool) === 'supabase_refresh', scheduler: { running: false, intervalMin: 0 }, clientsCount };
+      verifyExchange: tools.verifyMode(tool) === 'supabase_refresh' && !isLive,
+      scheduler: { running: isLive && sched.running, intervalMin: isLive ? sched.intervalMin : 0 },
+      clientsCount };
     if (!account) return res.json({ ...base, account: null, agent: null, pendingCommand: null });
     const lastSyncedAt = account.lastSyncedAt || null;
     const staleMs = lastSyncedAt ? (Date.now() - new Date(lastSyncedAt).getTime()) : null;
