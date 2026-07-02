@@ -239,6 +239,14 @@ function markLoggedOut(reason) {
   return { ok: true, loggedOut: true };
 }
 
+// Lightweight liveness ping the agent sends every poll (even when cookies are unchanged), so
+// lastSyncedAt / agentStale reflect true agent liveness — not just the last cookie CHANGE
+// (which only happens ~hourly on token rotation). No cookie processing.
+function heartbeat() {
+  store.markSynced();
+  return { ok: true, heartbeat: true };
+}
+
 // In-process dispatch used by the gateway's injected backend (server.js).
 function callGateway(subpath, token, body) {
   if (subpath === '/session') return Promise.resolve(session(token));
@@ -284,5 +292,5 @@ async function verifyNow() {
 
 module.exports = {
   init, validate, session, accountExpired, captureSession, callGateway,
-  seed, mintLease, verifyNow, verifyTick, ingestCookies, markLoggedOut, resolveLease, secondsRemaining,
+  seed, mintLease, verifyNow, verifyTick, ingestCookies, markLoggedOut, heartbeat, resolveLease, secondsRemaining,
 };

@@ -13,6 +13,10 @@
 const sm = require('./sessionManager');
 
 async function handle(body) {
+  // Liveness heartbeat (sent every poll, even when cookies are unchanged) → just record it.
+  if (body && body.heartbeat === true) {
+    return { status: 200, body: sm.heartbeat() };
+  }
   // Debounced logout signal from the agent (browser auth cookie vanished) → flag needs_login.
   if (body && body.loggedOut === true) {
     const r = sm.markLoggedOut(body.reason);

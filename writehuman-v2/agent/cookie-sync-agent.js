@@ -118,7 +118,7 @@ async function pushIfChanged(state) {
   }
   // Auth present → reset logout tracking.
   state.emptyPolls = 0; state.loggedOutSent = false;
-  if (hash === state.lastHash) { log('cookie_unchanged', { hash: hash.slice(0, 8) }); return; }
+  if (hash === state.lastHash) { await sendHeartbeat(hash); return; } // unchanged → liveness ping only
 
   let resp;
   try {
@@ -137,6 +137,21 @@ async function pushIfChanged(state) {
   } else {
     log('ingest_rejected', { status: resp.status });
   }
+}
+
+// Liveness ping when cookies are unchanged, so V2's lastSyncedAt/agentStale reflect that the
+// agent is alive (cookies only CHANGE ~hourly on token rotation). Best-effort; never throws.
+async function sendHeartbeat(hash) {
+  try {
+    const resp = await fetch(CFG.ingestUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
+      body: JSON.stringify({ heartbeat: true, hash: hash ? hash.slice(0, 8) : null }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (resp.ok) log('heartbeat', { hash: hash ? hash.slice(0, 8) : null });
+    else log('heartbeat_rejected', { status: resp.status });
+  } catch (e) { log('heartbeat_failed', { error: e.message }); }
 }
 
 // Tell V2 the browser logged out (debounced by the caller). POST {loggedOut:true} to ingest.

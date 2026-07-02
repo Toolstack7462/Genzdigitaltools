@@ -94,6 +94,15 @@ async function main() {
   const hSync = await req(port, 'GET', '/v2/health');
   check('health shows lastSyncedAt + agentStale=false + syncCount>=1', !!hSync.json.account.lastSyncedAt && hSync.json.account.agentStale === false && hSync.json.account.syncCount >= 1, hSync.json.account);
 
+  realLog('\n── heartbeat (liveness, no cookie change) ────────');
+  const scBefore = hSync.json.account.syncCount;
+  const hb = await req(port, 'POST', '/v2/cookies/ingest', { headers: agentH, body: { heartbeat: true, hash: 'abcd1234' } });
+  check('heartbeat accepted', hb.status === 200 && hb.json && hb.json.heartbeat === true, hb.json);
+  const hHb = await req(port, 'GET', '/v2/health');
+  check('heartbeat advances syncCount + keeps agentStale=false', hHb.json.account.syncCount > scBefore && hHb.json.account.agentStale === false, { before: scBefore, after: hHb.json.account.syncCount, stale: hHb.json.account.agentStale });
+  const hb403 = await req(port, 'POST', '/v2/cookies/ingest', { body: { heartbeat: true } });
+  check('heartbeat without key → 403', hb403.status === 403, hb403.status);
+
   realLog('\n── logout signal (Fix #2) ────────────────────────');
   const lo403 = await req(port, 'POST', '/v2/cookies/ingest', { body: { loggedOut: true } });
   check('logout signal without key → 403', lo403.status === 403, lo403.status);
