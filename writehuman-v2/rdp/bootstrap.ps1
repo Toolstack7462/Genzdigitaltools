@@ -84,8 +84,16 @@ $healthUrl = ($IngestUrl -replace '^(https?://[^/]+).*$','$1/')  # origin reacha
   ConvertTo-Json | Set-Content (Join-Path $InstallDir 'rdp\config.json') -Encoding ASCII
 
 # 4) Launchers (resolved paths + config) ---------------------------------------
-$chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
-if(-not (Test-Path $chromeExe)){ $chromeExe = 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe' }
+# Auto-detect Chrome (Program Files, x86, per-user LocalAppData, then the App Paths registry) so a
+# fresh box "just works" regardless of how Chrome was installed.
+$chromeExe = @(
+  "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+  "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+  "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if(-not $chromeExe){ try { $chromeExe = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction Stop).'(default)' } catch {} }
+if(-not $chromeExe){ $chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'; Info 'WARNING: Chrome not auto-detected; using the default path. Install Chrome or edit chrome-debug.cmd.' }
+Info ("Chrome: " + $chromeExe)
 # Anti-throttle flags keep the WriteHuman tab's Supabase auto-refresh timer running even when the
 # RDP desktop is locked / the window is occluded, so the access token is rotated BY THE BROWSER
 # before it expires (the agent then syncs the fresh cookie). Without these, a backgrounded tab is

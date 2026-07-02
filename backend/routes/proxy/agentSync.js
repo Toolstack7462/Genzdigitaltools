@@ -55,7 +55,8 @@ function sanitizeReport(r) {
     host: s(r.host, 80), version: s(r.version, 40), cdp: s(r.cdp, 12),
     chrome: r.chrome === true || r.chrome === 'true',
     pollCount: i(r.pollCount), authCookies: i(r.authCookies), uptimeSec: i(r.uptimeSec),
-    lastError: s(r.lastError, 200), receivedAt: new Date(),
+    lastError: s(r.lastError, 200), lastCommand: s(r.lastCommand, 40), lastCommandAt: s(r.lastCommandAt, 40),
+    receivedAt: new Date(),
   };
 }
 
@@ -119,19 +120,22 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
   const newHash = authCookieHash(merged, projectRef);
   touchLiveness();
 
-  // Unchanged auth cookies → cheap liveness update only (no re-encrypt / no verify).
-  if (account.cookieHash && newHash && account.cookieHash === newHash) {
+  // Unchanged auth cookies → cheap liveness update only (no re-encrypt / no verify) UNLESS the
+  // agent asked to force it (dashboard "Re-sync" / reverify command) — then we re-apply + re-verify
+  // the current cookies even though the hash matches (otherwise Re-sync would be a silent no-op).
+  const unchanged = !!(account.cookieHash && newHash && account.cookieHash === newHash);
+  if (unchanged && body.force !== true) {
     if (pending) account.pendingCommand = null; await account.save();
     return res.json({ ok: true, changed: false, command: pending });
   }
 
-  // Changed → the shared write path (encrypt + revoke in-flight leases + auto-verify).
+  // Changed (or forced) → the shared write path (encrypt + revoke in-flight leases + auto-verify).
   const r = await applyAccountSession(account, merged, { tool, source: 'agent', actorType: 'AGENT', actorId: 'cookie-sync-agent', ip });
   account.cookieHash = newHash;
   if (report !== undefined) account.agentReport = report;
   if (pending) account.pendingCommand = null;
   await account.save();
-  return res.json({ ok: true, changed: true, result: r.verifyResult, command: pending });
+  return res.json({ ok: true, changed: !unchanged, forced: body.force === true, result: r.verifyResult, command: pending });
 });
 
 module.exports = router;

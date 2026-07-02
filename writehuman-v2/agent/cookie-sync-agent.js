@@ -24,13 +24,13 @@
  *   WHV2_TARGET_DOMAIN default writehuman.ai
  *   WHV2_SUPABASE_REF default hicfsbrfkzsxbwayibfm
  *   WHV2_POLL_MS      default 120000 (2 min)
+ *   WHV2_CHROME_TASK  default WriteHumanChromeDebug (scheduled task used for relaunch-chrome)
  */
 const crypto = require('crypto');
 const os = require('os');
-const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '2.1.0';
+const AGENT_VERSION = '2.2.0';
 
 const CFG = {
   ingestUrl: process.env.WHV2_INGEST_URL || 'http://127.0.0.1:3100/v2/cookies/ingest',
@@ -41,9 +41,13 @@ const CFG = {
   pollMs: Math.max(15000, parseInt(process.env.WHV2_POLL_MS, 10) || 120000),
   // Consecutive empty (no-auth) polls before we treat it as a real logout and signal V2.
   logoutDebounce: Math.max(1, parseInt(process.env.WHV2_LOGOUT_DEBOUNCE, 10) || 2),
+  // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
+  // agent runs as SYSTEM (session 0), so relaunch must go through this task, never a direct spawn.
+  chromeTask: process.env.WHV2_CHROME_TASK || 'WriteHumanChromeDebug',
 };
 
-function log(event, fields) { try { console.log(`[wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
+// Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
+function log(event, fields) { try { console.log(`[${new Date().toISOString()}] [wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
 
 // ── pure helpers (exported for tests) ─────────────────────────────────────────
 function authTokenBase(ref) { return 'sb-' + ref + '-auth-token'; }
@@ -107,6 +111,8 @@ function buildReport(state) {
     authCookies: state.authCount, lastError: state.lastError,
     host: os.hostname(), version: AGENT_VERSION,
     uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
+    lastCommand: state.lastCommand || null,
+    lastCommandAt: state.lastCommandAt ? new Date(state.lastCommandAt).toISOString() : null,
   };
 }
 
@@ -133,11 +139,20 @@ async function postToServer(state, payload) {
 // Execute a whitelisted remote command from the dashboard. Best-effort; never throws.
 function handleCommand(state, cmd) {
   try {
-    if (cmd === 'reverify') { state.lastHash = null; log('command_reverify', {}); return; } // force re-push next cycle
+    state.lastCommand = cmd; state.lastCommandAt = Date.now();
+    if (cmd === 'reverify') {
+      // Force a real re-sync + server-side re-verify on the next poll: clear lastHash AND set the
+      // force flag so the push is honoured even if the cookie hash is unchanged (the server no-ops
+      // an unchanged hash otherwise, which made "Re-sync" a silent no-op).
+      state.lastHash = null; state.forceNext = true; log('command_reverify', {}); return;
+    }
     if (cmd === 'relaunch-chrome') {
-      const cmdPath = path.join(__dirname, '..', 'chrome-debug.cmd');
-      log('command_relaunch_chrome', { path: cmdPath });
-      const p = spawn('cmd.exe', ['/c', cmdPath], { detached: true, stdio: 'ignore', windowsHide: true });
+      // Run the ChromeDebug SCHEDULED TASK (registered in the interactive user session). The agent
+      // runs as SYSTEM (session 0) — a direct chrome spawn would launch invisibly in session 0 and
+      // collide with the user-session profile lock, so it must go through the task.
+      log('command_relaunch_chrome', { task: CFG.chromeTask });
+      const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true });
+      p.on('error', (e) => log('command_relaunch_failed', { error: e.message }));
       p.unref();
       return;
     }
@@ -177,30 +192,47 @@ async function pushIfChanged(state) {
     return;
   }
   state.emptyPolls = 0; state.loggedOutSent = false;
-  if (hash === state.lastHash) {
+  const forced = !!state.forceNext;
+  if (!forced && hash === state.lastHash) {
     const r = await postToServer(state, { heartbeat: true, hash: hash.slice(0, 8) });
     if (r && r._err) log('heartbeat_failed', { error: r._err });
     else if (r && r._status) log('heartbeat_rejected', { status: r._status });
     else log('heartbeat', { hash: hash.slice(0, 8) });
     return;
   }
-  const r = await postToServer(state, { cookies: auth });
-  if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // keep lastHash → retry next tick
+  const r = await postToServer(state, forced ? { cookies: auth, force: true } : { cookies: auth });
+  if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // keep lastHash + forceNext → retry next tick
   if (r && r._status) { log('ingest_rejected', { status: r._status }); return; }
-  state.lastHash = hash;
-  log('cookie_synchronized', { hash: hash.slice(0, 8), changed: r.changed, result: r.result });
+  state.lastHash = hash; state.forceNext = false;
+  log('cookie_synchronized', { hash: hash.slice(0, 8), changed: r.changed, result: r.result, forced });
 }
 
 function start() {
   if (!CFG.agentKey) { log('fatal', { reason: 'WHV2_AGENT_KEY not set' }); process.exit(1); }
-  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs });
-  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false };
-  const tick = () => { pushIfChanged(state).catch((e) => log('tick_error', { error: e && e.message })); };
-  tick(); // run once immediately
-  const timer = setInterval(tick, CFG.pollMs);
-  const shutdown = () => { clearInterval(timer); log('stopping', {}); process.exit(0); };
+  if (!/^https:/i.test(CFG.ingestUrl) && !/(127\.0\.0\.1|localhost)/i.test(CFG.ingestUrl)) {
+    log('warn_insecure_ingest', { note: 'ingest URL is not https — the agent key would travel in cleartext' });
+  }
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask });
+
+  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false };
+  let timer = null;
+  // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
+  // (a slow CDP read + ingest can exceed the poll interval). unref'd so it never blocks shutdown.
+  const schedule = () => { if (state.stopped) return; timer = setTimeout(loop, CFG.pollMs); if (timer.unref) timer.unref(); };
+  const loop = async () => {
+    try { await pushIfChanged(state); } catch (e) { log('tick_error', { error: e && e.message }); }
+    schedule();
+  };
+
+  const shutdown = () => { state.stopped = true; if (timer) clearTimeout(timer); log('stopping', {}); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // Fail-fast on an unknown-state crash so the supervisor (task/watchdog/NSSM) restarts clean;
+  // a stray promise rejection is logged and tolerated (the next poll recovers).
+  process.on('uncaughtException', (e) => { log('uncaught_exception', { error: e && e.message }); process.exit(1); });
+  process.on('unhandledRejection', (e) => { log('unhandled_rejection', { error: (e && e.message) || String(e) }); });
+
+  loop(); // run once immediately, then self-reschedule
 }
 
 module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, AGENT_VERSION, CFG };
