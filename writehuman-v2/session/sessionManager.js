@@ -180,6 +180,7 @@ function ingestCookies(incoming) {
 }
 async function _ingestCore(incoming) {
   const a = store.get();
+  store.markSynced(); // the agent contacted us → record liveness (changed or not)
   const list = Array.isArray(incoming) ? incoming : [];
   const incomingAuth = list.filter((c) => c && cookieManager.isAuthCookieName(c.name));
   // Require the primary auth-token cookie before replacing — a partial/transient read must
@@ -227,6 +228,17 @@ function captureSession(token, body) {
   return ok({ ok: true, cookiesSaved: bundle.cookies.length });
 }
 
+// Explicit logout signal from the Cookie Sync Agent (the browser's auth cookie vanished). The
+// agent DEBOUNCES this, so it means a real logout — flag the session needs_login so it isn't
+// served. This is how logout is detected in read-only mode (V2 never exchanges to find out).
+function markLoggedOut(reason) {
+  store.markSynced(); // still a live contact from the agent
+  store.setStatus('session_expired', 'needs_login');
+  store.setVerification({ result: 'session_expired', httpStatus: 0 });
+  log.browserNotAuthenticated({ source: 'agent_logout_signal', reason: reason || null });
+  return { ok: true, loggedOut: true };
+}
+
 // In-process dispatch used by the gateway's injected backend (server.js).
 function callGateway(subpath, token, body) {
   if (subpath === '/session') return Promise.resolve(session(token));
@@ -272,5 +284,5 @@ async function verifyNow() {
 
 module.exports = {
   init, validate, session, accountExpired, captureSession, callGateway,
-  seed, mintLease, verifyNow, verifyTick, ingestCookies, resolveLease, secondsRemaining,
+  seed, mintLease, verifyNow, verifyTick, ingestCookies, markLoggedOut, resolveLease, secondsRemaining,
 };

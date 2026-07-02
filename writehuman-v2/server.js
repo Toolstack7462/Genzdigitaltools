@@ -127,6 +127,10 @@ function healthBody() {
       hasCookieHash: !!a.cookieHash,            // boolean only — never the hash value
       lastVerifiedAt: a.lastVerifiedAt || null,
       verificationResult: (a.verification && a.verification.result) || null,
+      lastSyncedAt: a.lastSyncedAt || null,
+      syncCount: a.syncCount || 0,
+      // Cookie Sync Agent liveness: null = never synced; true = no sync within the stale window.
+      agentStale: a.lastSyncedAt ? ((Date.now() - new Date(a.lastSyncedAt).getTime()) > config.agentStaleMin * 60000) : null,
     },
     scheduler: { running: scheduler.isRunning() }, // inert in Step 1
   };

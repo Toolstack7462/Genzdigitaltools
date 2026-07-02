@@ -34,6 +34,8 @@ const CFG = {
   domain: process.env.WHV2_TARGET_DOMAIN || 'writehuman.ai',
   ref: process.env.WHV2_SUPABASE_REF || 'hicfsbrfkzsxbwayibfm',
   pollMs: Math.max(15000, parseInt(process.env.WHV2_POLL_MS, 10) || 120000),
+  // Consecutive empty (no-auth) polls before we treat it as a real logout and signal V2.
+  logoutDebounce: Math.max(1, parseInt(process.env.WHV2_LOGOUT_DEBOUNCE, 10) || 2),
 };
 
 function log(event, fields) { try { console.log(`[wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
@@ -99,7 +101,23 @@ async function pushIfChanged(state) {
   catch (e) { log('cdp_read_failed', { error: e.message }); return; } // retry next tick
   const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
   const hash = hashAuthCookies(auth);
-  if (!hash) { log('browser_not_authenticated', { auth_cookies: 0 }); return; }
+  if (!hash) {
+    // No auth cookies. If we previously HAD a session, this may be a real logout — debounce,
+    // then signal V2 ONCE so it flags needs_login (read-only V2 can't detect logout otherwise).
+    if (state.lastHash !== null) {
+      state.emptyPolls = (state.emptyPolls || 0) + 1;
+      if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
+        if (await signalLogout()) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
+      } else {
+        log('browser_not_authenticated', { auth_cookies: 0, empty_polls: state.emptyPolls });
+      }
+    } else {
+      log('browser_not_authenticated', { auth_cookies: 0 });
+    }
+    return;
+  }
+  // Auth present → reset logout tracking.
+  state.emptyPolls = 0; state.loggedOutSent = false;
   if (hash === state.lastHash) { log('cookie_unchanged', { hash: hash.slice(0, 8) }); return; }
 
   let resp;
@@ -119,6 +137,20 @@ async function pushIfChanged(state) {
   } else {
     log('ingest_rejected', { status: resp.status });
   }
+}
+
+// Tell V2 the browser logged out (debounced by the caller). POST {loggedOut:true} to ingest.
+async function signalLogout() {
+  try {
+    const resp = await fetch(CFG.ingestUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
+      body: JSON.stringify({ loggedOut: true, reason: 'auth_cookie_absent' }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!resp.ok) { log('logout_signal_rejected', { status: resp.status }); return false; }
+    return true;
+  } catch (e) { log('logout_signal_failed', { error: e.message }); return false; }
 }
 
 function start() {

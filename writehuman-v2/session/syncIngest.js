@@ -13,6 +13,11 @@
 const sm = require('./sessionManager');
 
 async function handle(body) {
+  // Debounced logout signal from the agent (browser auth cookie vanished) → flag needs_login.
+  if (body && body.loggedOut === true) {
+    const r = sm.markLoggedOut(body.reason);
+    return { status: 200, body: r };
+  }
   const list = body && body.cookies;
   if (!Array.isArray(list)) return { status: 400, body: { ok: false, code: 'bad_cookies' } };
   const r = await sm.ingestCookies(list);

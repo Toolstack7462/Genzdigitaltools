@@ -59,6 +59,8 @@
       <div class="stat"><div class="k">Session</div><div class="v" id="s_session">—</div></div>
       <div class="stat"><div class="k">Has cookies</div><div class="v" id="s_bundle">—</div></div>
       <div class="stat"><div class="k">Last verified</div><div class="v" id="s_verified">—</div></div>
+      <div class="stat"><div class="k">Last cookie sync</div><div class="v" id="s_synced">—</div></div>
+      <div class="stat"><div class="k">Sync agent</div><div class="v" id="s_agent">—</div></div>
       <div class="stat"><div class="k">Smart timer</div><div class="v" id="s_sched">—</div></div>
       <div class="stat"><div class="k">Store</div><div class="v" id="s_store">—</div></div>
       <div class="stat"><div class="k">Target</div><div class="v" id="s_target">—</div></div>
@@ -115,6 +117,8 @@
     $('#s_session').textContent=a.sessionStatus||'—';
     $('#s_bundle').innerHTML = a.hasBundle?pill('yes','ok'):pill('no','warn');
     $('#s_verified').textContent=a.lastVerifiedAt?new Date(a.lastVerifiedAt).toLocaleString():'never';
+    $('#s_synced').textContent=a.lastSyncedAt?new Date(a.lastSyncedAt).toLocaleString():'never';
+    $('#s_agent').innerHTML = (a.agentStale===null)?pill('unknown','warn'):(a.agentStale?pill('stale','bad'):pill('live','ok'));
     $('#s_sched').innerHTML = (h.scheduler&&h.scheduler.running)?pill('running','ok'):pill('off','warn');
     $('#s_store').textContent=h.store||'—';
     $('#s_target').textContent=h.target||'—';

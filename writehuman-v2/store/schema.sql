@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS account (
   verification      TEXT,                     -- JSON: { result, maskedId, httpStatus, checkedAt }
   cookie_hash       TEXT,                     -- hash of the AUTH cookies only (Step-2 change detection)
   last_verified_at  TEXT,
+  last_synced_at    TEXT,                     -- last successful cookie ingest from the sync agent
+  sync_count        INTEGER NOT NULL DEFAULT 0,
   created_at        TEXT NOT NULL,
   updated_at        TEXT NOT NULL
 );

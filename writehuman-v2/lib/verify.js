@@ -16,6 +16,7 @@
  * Returns only safe fields. Never logs cookies, tokens, or secrets.
  */
 const { supabaseConfig } = require('./supabase');
+const { config } = require('./config');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
@@ -147,6 +148,15 @@ async function verifyAccountCookies(cookieHeader, expectedIdentifier) {
   if (!refreshToken) {
     // No Supabase session in the bundle → the httpOnly auth-token cookie wasn't captured.
     return { result: 'session_expired', httpStatus: 0, loggedOut: true, maskedId: null };
+  }
+
+  // READ-ONLY (default): the browser is the sole refresh-token rotator. With an aged-out access
+  // token we do NOT exchange (which would rotate and risk revoking the live session); we report
+  // 'unknown' (stale) and wait for the agent's next push of fresh cookies. _verifyCore leaves
+  // status unchanged on 'unknown', so a working session is never falsely expired. The exchange
+  // below runs ONLY when explicitly enabled (standalone/no-agent).
+  if (!config.verifyExchange) {
+    return { result: 'unknown', httpStatus: 0, reason: 'stale_access_token', maskedId: cookieEmail ? maskEmail(cookieEmail) : null };
   }
 
   let resp;

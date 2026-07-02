@@ -115,6 +115,14 @@ const config = {
   verifyIntervalMs: Math.max(30000, intEnv('WRITEHUMAN_V2_VERIFY_INTERVAL_MS', 10 * 60 * 1000)),
   verifyRetryMs: Math.max(2000, intEnv('WRITEHUMAN_V2_VERIFY_RETRY_MS', 60 * 1000)),
   verifyMaxRetries: Math.max(0, intEnv('WRITEHUMAN_V2_VERIFY_MAX_RETRIES', 3)),
+  // Agent model: V2 must NOT exchange (and thereby ROTATE) the refresh token automatically —
+  // the live browser is the SOLE rotator, and a competing server-side exchange can trip
+  // Supabase reuse-detection and revoke the real session. OFF by default (read-only verify):
+  // a still-valid access token → working; an aged-out token → 'unknown' (await the agent's next
+  // push), never expire/rotate. Enable ONLY for standalone/no-agent use (e.g. tests).
+  verifyExchange: bool('WRITEHUMAN_V2_VERIFY_EXCHANGE', false),
+  // The Cookie Sync Agent is considered stale if no successful sync within this many minutes.
+  agentStaleMin: Math.max(1, intEnv('WRITEHUMAN_V2_AGENT_STALE_MIN', 10)),
   // Supabase config for the supabase_refresh verifier. The anon key is PUBLIC (the same key
   // WriteHuman ships to every browser) — not a secret, never logged. Overridable via env.
   supabase: {

@@ -114,6 +114,9 @@ async function main() {
     WRITEHUMAN_V2_SCHEDULER: '0',
     WRITEHUMAN_V2_VERIFY_MAX_RETRIES: '1',
     WRITEHUMAN_V2_VERIFY_RETRY_MS: '10',
+    // This suite exercises the refresh-token EXCHANGE path, so enable it here. (Default is
+    // read-only/agent mode — covered by test/readonly.js.)
+    WRITEHUMAN_V2_VERIFY_EXCHANGE: '1',
   });
 
   const { server } = require('../server');

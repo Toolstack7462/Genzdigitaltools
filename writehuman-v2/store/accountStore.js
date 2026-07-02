@@ -52,12 +52,12 @@ function sqliteBackend() {
   db.exec(schema);
   const sel = db.prepare('SELECT * FROM account WHERE id = ?');
   const ins = db.prepare(`INSERT INTO account
-    (id,label,status,session_status,session_encrypted,session_meta,verification,cookie_hash,last_verified_at,created_at,updated_at)
-    VALUES (@id,@label,@status,@session_status,@session_encrypted,@session_meta,@verification,@cookie_hash,@last_verified_at,@created_at,@updated_at)
+    (id,label,status,session_status,session_encrypted,session_meta,verification,cookie_hash,last_verified_at,last_synced_at,sync_count,created_at,updated_at)
+    VALUES (@id,@label,@status,@session_status,@session_encrypted,@session_meta,@verification,@cookie_hash,@last_verified_at,@last_synced_at,@sync_count,@created_at,@updated_at)
     ON CONFLICT(id) DO UPDATE SET
       label=@label,status=@status,session_status=@session_status,session_encrypted=@session_encrypted,
       session_meta=@session_meta,verification=@verification,cookie_hash=@cookie_hash,
-      last_verified_at=@last_verified_at,updated_at=@updated_at`);
+      last_verified_at=@last_verified_at,last_synced_at=@last_synced_at,sync_count=@sync_count,updated_at=@updated_at`);
   function getRaw() {
     const row = sel.get(ACCOUNT_ID);
     if (!row) return null;
@@ -68,6 +68,8 @@ function sqliteBackend() {
       verification: row.verification ? safeParse(row.verification) : null,
       cookieHash: row.cookie_hash || null,
       lastVerifiedAt: row.last_verified_at || null,
+      lastSyncedAt: row.last_synced_at || null,
+      syncCount: row.sync_count || 0,
       createdAt: row.created_at, updatedAt: row.updated_at,
     };
   }
@@ -79,6 +81,8 @@ function sqliteBackend() {
       verification: o.verification ? JSON.stringify(o.verification) : null,
       cookie_hash: o.cookieHash || null,
       last_verified_at: o.lastVerifiedAt || null,
+      last_synced_at: o.lastSyncedAt || null,
+      sync_count: o.syncCount || 0,
       created_at: o.createdAt, updated_at: o.updatedAt,
     });
   }
@@ -99,7 +103,7 @@ function init() {
     backend.putRaw({
       id: ACCOUNT_ID, label: 'WriteHuman V2', status: 'pending', session_status: 'pending_verification',
       sessionEncrypted: null, sessionMeta: null, verification: null, cookieHash: null,
-      lastVerifiedAt: null, createdAt: t, updatedAt: t,
+      lastVerifiedAt: null, lastSyncedAt: null, syncCount: 0, createdAt: t, updatedAt: t,
     });
   }
   return backend.kind;
@@ -149,7 +153,13 @@ function setVerification(v) {
 
 function setCookieHash(hash) { return update({ cookieHash: hash || null }); }
 
+// Record a successful cookie sync from the agent (visibility for the admin panel / health).
+function markSynced() {
+  const cur = get() || {};
+  return update({ lastSyncedAt: nowIso(), syncCount: (cur.syncCount || 0) + 1 });
+}
+
 module.exports = {
-  ACCOUNT_ID, init, get, update, getDecryptedBundle, setBundle, setStatus, setVerification, setCookieHash,
+  ACCOUNT_ID, init, get, update, getDecryptedBundle, setBundle, setStatus, setVerification, setCookieHash, markSynced,
   driver: () => (backend ? backend.kind : null),
 };
