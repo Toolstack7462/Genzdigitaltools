@@ -76,10 +76,13 @@ const StatCard = ({ icon: Icon, label, value, color }) => (
   </div>
 );
 
-const AdminProxyTools = () => {
+// fixedTool: lock to one tool + hide the tool-tab switcher (used to embed a single tool's full
+// vault + client UI inside that tool's own dedicated page, e.g. WriteHuman).
+// embedded: skip the AdminLayoutEnhanced wrapper + page header (the host page provides them).
+const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   const { showSuccess, showError } = useToast();
   const [toolDefs, setToolDefs] = useState([]);
-  const [tool, setTool] = useState('hix');
+  const [tool, setTool] = useState(fixedTool || 'hix');
   const [section, setSection] = useState('accounts'); // 'accounts' | 'clients'
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState(null);
@@ -216,10 +219,11 @@ const AdminProxyTools = () => {
     return clients.filter(c => clientMatchesFilter(c, cliFilter) && clientMatchesSearch(c, q));
   }, [clients, cliSearch, cliFilter]);
 
-  return (
-    <AdminLayoutEnhanced>
+  const inner = (
+    <>
       <div className="max-w-7xl mx-auto space-y-5" data-testid="admin-proxy-tools-page">
         {/* Header */}
+        {!embedded && (
         <div className="flex items-center gap-3">
           <span className="ds-icon-grad w-10 h-10 rounded-xl flex items-center justify-center"><Zap size={20} /></span>
           <div>
@@ -228,16 +232,20 @@ const AdminProxyTools = () => {
           </div>
           <button onClick={load} className="ml-auto text-genz-muted hover:text-genz-navy" title="Refresh"><RefreshCw size={18} /></button>
         </div>
+        )}
 
-        {/* Tool tabs (each tool is fully independent) */}
+        {/* Tool tabs (each tool is fully independent) — hidden when locked to one tool.
+            WriteHuman is excluded here: it has its own dedicated sidebar section. */}
+        {!fixedTool && (
         <div className="flex items-center gap-2">
-          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).map(t => (
+          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).filter(t => t.tool !== 'writehuman').map(t => (
             <button key={t.tool} onClick={() => setTool(t.tool)}
               className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors ${tool === t.tool ? 'btn-grad' : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'}`}>
               {t.name}
             </button>
           ))}
         </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -312,8 +320,9 @@ const AdminProxyTools = () => {
       {showAccountModal && <AccountModal account={editAccount} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
       {showSessionModal && <SessionModal account={showSessionModal} onClose={() => setShowSessionModal(null)} onSave={saveSession} />}
       {showClientModal && <ClientModal client={editClient} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={searchCrmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
-    </AdminLayoutEnhanced>
+    </>
   );
+  return embedded ? inner : <AdminLayoutEnhanced>{inner}</AdminLayoutEnhanced>;
 };
 
 // ── Account Vault list ────────────────────────────────────────────────────────

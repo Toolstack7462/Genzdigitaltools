@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Link } from 'react-router-dom';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
+import AdminProxyTools from './AdminProxyTools';
 import {
-  PenTool, Activity, RefreshCw, Loader2, Chrome, KeyRound, CheckCircle2, AlertTriangle,
-  Server, Cpu, Clock, Zap, RotateCw, Play, ExternalLink, ShieldCheck, Cookie, Wifi, WifiOff,
+  PenTool, Activity, RefreshCw, Loader2, Chrome, CheckCircle2, AlertTriangle,
+  Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff,
 } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
 import { useToast } from '../../components/Toast';
@@ -111,9 +111,6 @@ const AdminWriteHuman = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Link to="/admin/proxy-tools" className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50">
-            <KeyRound size={15} /> Account vault &amp; clients <ExternalLink size={13} />
-          </Link>
           <button onClick={loadState} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-slate-800 hover:bg-slate-700"><RefreshCw size={15} /> Refresh</button>
         </div>
       </div>
@@ -183,7 +180,7 @@ const AdminWriteHuman = () => {
             </Panel>
 
             <Panel icon={Zap} title="Actions" tint="text-cyan-500">
-              <p className="text-[12px] text-slate-400 mb-3">Diagnostics &amp; remote control. Account vault and client assignment are managed in <Link to="/admin/proxy-tools" className="text-genz-teal hover:underline">Proxy Tools</Link>.</p>
+              <p className="text-[12px] text-slate-400 mb-3">Diagnostics &amp; remote control. Account vault and client assignment are managed below.</p>
               <div className="flex flex-wrap gap-2">
                 <button disabled={!!busy || conn !== 'live' || !a.id} onClick={() => act(() => writeHumanV2Admin.verify(a.id), 'Verify triggered')} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-blue-600 to-cyan-500 disabled:opacity-50"><CheckCircle2 size={15} /> Verify now</button>
                 <button disabled={!!busy || conn !== 'live'} onClick={() => act(() => writeHumanV2Admin.command('reverify'), 'Re-sync queued')} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RotateCw size={15} /> Re-sync</button>
@@ -208,6 +205,14 @@ const AdminWriteHuman = () => {
           </div>
         </>
       )}
+
+      {/* Full WriteHuman management in its OWN section — account vault + client assignment.
+          Reuses the Proxy-Tools management UI locked to WriteHuman (embedded, no extra layout),
+          reading/writing the SAME MySQL ProxyAccount vault + ProxyClient assignments as the live
+          status above. Single source of truth; no separate store, no duplicate UI. */}
+      <div className="mt-8 pt-6 border-t border-slate-200">
+        <AdminProxyTools fixedTool="writehuman" embedded />
+      </div>
     </AdminLayoutEnhanced>
   );
 };

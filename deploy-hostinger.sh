@@ -115,12 +115,14 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/utils/proxy/accountSelect.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/accountSelect.js" \
   -T backend/utils/proxy/cookies.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/cookies.js" \
   -T backend/utils/proxy/verify.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verify.js" \
+  -T backend/utils/proxy/applySession.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/models/proxy/ProxyClient.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyClient.js" \
   -T backend/models/proxy/ProxyLease.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyLease.js" \
   -T backend/models/proxy/ProxyAccount.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyAccount.js" \
   -T backend/routes/admin/proxyTools.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
   -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
+  -T backend/routes/proxy/agentSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   -T backend/routes/admin/writehumanV2.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/writehumanV2.js" \
   -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
