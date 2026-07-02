@@ -119,7 +119,10 @@ async function postToServer(state, payload) {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
       body: JSON.stringify(Object.assign({ agent: buildReport(state) }, payload)),
-      signal: AbortSignal.timeout(10000),
+      // 20s: a cookie push triggers a server-side verify, and the FIRST request after a Passenger
+      // reload is slow (cold start). 10s occasionally aborted -> ingest_post_failed{timeout}; the
+      // write still landed but the ack was lost. 20s absorbs cold starts; steady posts are fast.
+      signal: AbortSignal.timeout(20000),
     });
   } catch (e) { return { _err: e.message }; }
   let body = null; try { body = await resp.json(); } catch (_) {}

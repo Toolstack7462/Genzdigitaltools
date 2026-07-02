@@ -106,6 +106,14 @@ const AdminWriteHuman = () => {
               {conn === 'live' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600"><Wifi size={13} /> live</span>}
               {conn === 'offline' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-500"><WifiOff size={13} /> offline</span>}
               {conn === 'not_configured' && <span className="text-xs font-semibold text-amber-600">not configured</span>}
+              {conn === 'live' && state?.health && (
+                <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                  state.health === 'up' ? 'bg-emerald-100 text-emerald-700'
+                  : state.health === 'degraded' ? 'bg-amber-100 text-amber-700'
+                  : state.health === 'down' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-600'}`}>
+                  {state.health === 'up' ? 'healthy' : state.health}
+                </span>
+              )}
             </h1>
             <p className="text-sm text-slate-500">Live session, agent, cookie-sync &amp; diagnostics for the WriteHuman V2 proxy.</p>
           </div>
@@ -143,6 +151,7 @@ const AdminWriteHuman = () => {
               <Row k="Session state">{a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>
+              <Row k="Access token valid">{a.accessTokenExpiresInSec == null ? '—' : a.accessTokenExpiresInSec <= 0 ? <Badge tone="warn">expired</Badge> : `~${dur(a.accessTokenExpiresInSec)}`}</Row>
             </Panel>
 
             <Panel icon={CheckCircle2} title="Verification" tint="text-emerald-500">

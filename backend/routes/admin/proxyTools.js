@@ -23,7 +23,7 @@ const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/aut
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
-const { verifyAccountCookies, maskEmail, applySupabaseRefresh } = require('../../utils/proxy/verify');
+const { verifyAccountCookies, maskEmail, applySupabaseRefresh, jwtExp, extractSupabaseSession } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
@@ -606,11 +606,35 @@ router.get('/:tool/agent-state', async (req, res) => {
       verifyExchange: tools.verifyMode(tool) === 'supabase_refresh' && !isLive,
       scheduler: { running: isLive && sched.running, intervalMin: isLive ? sched.intervalMin : 0 },
       clientsCount };
-    if (!account) return res.json({ ...base, account: null, agent: null, pendingCommand: null });
+    if (!account) return res.json({ ...base, account: null, agent: null, pendingCommand: null, health: 'unknown' });
     const lastSyncedAt = account.lastSyncedAt || null;
     const staleMs = lastSyncedAt ? (Date.now() - new Date(lastSyncedAt).getTime()) : null;
+    const agentStale = lastSyncedAt ? (staleMs > AGENT_STALE_MIN * 60000) : null;
+
+    // Access-token age — decode the JWT exp SERVER-SIDE only; the token itself is NEVER returned.
+    // Gives the admin an "attention ETA" (how long the current session's access token is valid).
+    let accessTokenExpiresInSec = null;
+    try {
+      if (account.sessionEncrypted) {
+        const b = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted));
+        const ref = (tools.supabaseConfig(tool) || {}).projectRef;
+        const { accessToken } = extractSupabaseSession(buildCookieHeader(b, tools.targetHost(tool)), ref);
+        const exp = jwtExp(accessToken);
+        if (exp) accessTokenExpiresInSec = Math.round(exp - Date.now() / 1000);
+      }
+    } catch (_) { /* best-effort; never expose or log the token */ }
+
+    // Overall health rollup for the dashboard chip: down (a down-state), degraded (working but the
+    // agent is stale / still pending), up (working + agent fresh).
+    const ss = account.session_status;
+    let health;
+    if (['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'].includes(ss)) health = 'down';
+    else if (ss === 'working') health = agentStale ? 'degraded' : 'up';
+    else health = account.sessionEncrypted ? 'degraded' : 'down'; // pending_verification etc.
+
     return res.json({
       ...base,
+      health,
       account: {
         id: account._id,
         label: account.label || null,
@@ -624,7 +648,8 @@ router.get('/:tool/agent-state', async (req, res) => {
         lastSyncedAt,
         syncCount: account.syncCount || 0,
         staleSec: staleMs != null ? Math.round(staleMs / 1000) : null,
-        agentStale: lastSyncedAt ? (staleMs > AGENT_STALE_MIN * 60000) : null,
+        agentStale,
+        accessTokenExpiresInSec,
       },
       agent: account.agentReport || null,
       pendingCommand: account.pendingCommand || null,

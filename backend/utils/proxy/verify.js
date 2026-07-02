@@ -324,4 +324,4 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
   return { result: 'unknown', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId: null };
 }
 
-module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh };
+module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh, jwtExp, extractSupabaseSession };

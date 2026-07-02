@@ -25,11 +25,18 @@ const ProxyAccount = require('../models/proxy/ProxyAccount');
 const tools = require('../utils/proxy/tools');
 const { selectAccount } = require('../utils/proxy/accountSelect');
 const { verifyAndApply } = require('../utils/proxy/verifyAndApply');
+const healthAlerts = require('../utils/proxy/healthAlerts');
 
 const INTERVAL_MS   = Math.max(60_000, Number(process.env.PROXY_VERIFY_INTERVAL_MS || 7 * 60_000));
 const RETRY_MS      = Math.max(5_000,  Number(process.env.PROXY_VERIFY_RETRY_MS   || 45_000));
 const MAX_RETRIES   = Math.max(0,      Number(process.env.PROXY_VERIFY_MAX_RETRIES || 2));
-const STALE_MS      = Math.max(60_000, Number(process.env.PROXY_VERIFY_STALE_MS   || 8 * 60_000));
+// Stale gate MUST be < INTERVAL_MS, otherwise a fresh verify at tick T blocks the next tick
+// (T+interval) from re-verifying, doubling the effective cadence. 5min < 7min interval keeps the
+// real verify cadence inside the required 5-10min window while still skipping right after an
+// agent-driven verify.
+const STALE_MS      = Math.max(60_000, Number(process.env.PROXY_VERIFY_STALE_MS   || 5 * 60_000));
+// Alert when the Cookie Sync Agent hasn't reported for this long (RDP/agent likely down).
+const AGENT_STALE_ALERT_MIN = Math.max(5, Number(process.env.PROXY_AGENT_STALE_ALERT_MIN || 15));
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 const ENABLED = process.env.PROXY_VERIFY_SCHEDULER !== '0';
 
@@ -41,7 +48,14 @@ async function verifyOne(tool) {
   const accounts = await ProxyAccount.find({ tool });
   if (!accounts.length) return;
   const account = accounts.find((a) => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0];
-  if (!account || !account.sessionEncrypted) return;                 // nothing to verify
+  if (!account) return;
+  // Agent-liveness alert: a previously-reporting agent gone silent => RDP/agent likely down. Only
+  // alerts if it EVER reported (no false alarms on never-synced accounts). Fire-and-forget.
+  const syncedMs = account.lastSyncedAt ? (Date.now() - new Date(account.lastSyncedAt).getTime()) : null;
+  if (syncedMs != null && syncedMs > AGENT_STALE_ALERT_MIN * 60_000) {
+    try { healthAlerts.onAgentStale(account, tool, Math.round(syncedMs / 60_000)).catch(() => {}); } catch (_) {}
+  }
+  if (!account.sessionEncrypted) return;                             // nothing to verify
   if (account.session_status === 'needs_login') return;              // PAUSE when logged out
   if (!['active', 'standby'].includes(account.status)) return;       // only live-ish accounts
   const last = account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : 0;

@@ -17,8 +17,15 @@ const vaultCrypto = require('./vaultCrypto');
 const tools = require('./tools');
 const { verifyAccountCookies, applySupabaseRefresh } = require('./verify');
 const { buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('./cookies');
+const healthAlerts = require('./healthAlerts');
+
+// Fire a health alert on a meaningful transition (live-agent tools only; fire-and-forget).
+function alertTransition(account, tool, prevSs) {
+  if (tools.hasLiveAgent(tool)) { try { healthAlerts.onVerifyApplied(account, tool, prevSs).catch(() => {}); } catch (_) {} }
+}
 
 async function verifyAndApply(account, tool, opts = {}) {
+  const prevSs = account.session_status;
   const host = tools.targetHost(tool);
   let bundle = opts.bundle || null;
   if (!bundle) { try { bundle = account.sessionEncrypted ? JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)) : null; } catch (_) { bundle = null; } }
@@ -35,6 +42,7 @@ async function verifyAndApply(account, tool, opts = {}) {
     account.session_status = 'missing_required_session_cookie';
     account.lastVerifiedAt = now;
     if (!opts.skipSave) await account.save();
+    alertTransition(account, tool, prevSs);
     return { result: 'missing_required_session_cookie', effResult: 'missing_required_session_cookie', v: null, cookieNames: names, cookieCount };
   }
 
@@ -67,6 +75,7 @@ async function verifyAndApply(account, tool, opts = {}) {
   }
 
   if (!opts.skipSave) await account.save();
+  alertTransition(account, tool, prevSs);
   return { result: effResult, effResult, v, cookieNames: names, cookieCount };
 }
 
