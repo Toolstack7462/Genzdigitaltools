@@ -30,7 +30,7 @@ const crypto = require('crypto');
 const os = require('os');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '2.2.0';
+const AGENT_VERSION = '2.3.0';
 
 const CFG = {
   ingestUrl: process.env.WHV2_INGEST_URL || 'http://127.0.0.1:3100/v2/cookies/ingest',
@@ -44,6 +44,12 @@ const CFG = {
   // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
   // agent runs as SYSTEM (session 0), so relaunch must go through this task, never a direct spawn.
   chromeTask: process.env.WHV2_CHROME_TASK || 'WriteHumanChromeDebug',
+  // Auto-recovery: relaunch Chrome after this many consecutive CDP failures (faster than the 5-min
+  // watchdog), rate-limited by a cooldown so it never relaunch-spams.
+  cdpRelaunchAfter: Math.max(1, parseInt(process.env.WHV2_CDP_RELAUNCH_AFTER, 10) || 3),
+  relaunchCooldownMs: Math.max(30000, parseInt(process.env.WHV2_RELAUNCH_COOLDOWN_MS, 10) || 120000),
+  // Backoff cap when the backend is unreachable (poll delay grows exponentially, then recovers).
+  maxBackoffMs: Math.max(60000, parseInt(process.env.WHV2_MAX_BACKOFF_MS, 10) || 300000),
 };
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
@@ -130,10 +136,15 @@ async function postToServer(state, payload) {
       // write still landed but the ack was lost. 20s absorbs cold starts; steady posts are fast.
       signal: AbortSignal.timeout(20000),
     });
-  } catch (e) { return { _err: e.message }; }
+  } catch (e) { state.ingestFails = (state.ingestFails || 0) + 1; return { _err: e.message }; }
   let body = null; try { body = await resp.json(); } catch (_) {}
-  if (resp.ok && body && body.command) handleCommand(state, body.command);
-  return resp.ok ? (body || {}) : { _status: resp.status };
+  if (resp.ok) {
+    state.ingestFails = 0;                                    // reachable again -> clear backoff
+    if (body && body.command) handleCommand(state, body.command);
+    return body || {};
+  }
+  state.ingestFails = (state.ingestFails || 0) + 1;
+  return { _status: resp.status };
 }
 
 // Execute a whitelisted remote command from the dashboard. Best-effort; never throws.
@@ -165,10 +176,19 @@ async function pushIfChanged(state) {
   let cookies;
   try {
     cookies = await getAllCookiesViaCDP(CFG.cdpUrl);
-    state.cdp = '200'; state.chrome = true; state.lastError = null;
+    state.cdp = '200'; state.chrome = true; state.lastError = null; state.cdpFails = 0;
   } catch (e) {
     state.cdp = 'DOWN'; state.chrome = false; state.lastError = e.message;
-    log('cdp_read_failed', { error: e.message });
+    state.cdpFails = (state.cdpFails || 0) + 1;
+    log('cdp_read_failed', { error: e.message, consecutive: state.cdpFails });
+    // AUTO-RECOVERY: after N consecutive CDP failures the debug Chrome is likely dead/closed —
+    // relaunch it via its task (faster than the 5-min watchdog). Cooldown-gated so it can't
+    // relaunch-spam while Chrome is still coming back up.
+    if (state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+      state.lastRelaunchAt = Date.now();
+      log('cdp_auto_relaunch', { after_fails: state.cdpFails, task: CFG.chromeTask });
+      try { const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true }); p.on('error', (er) => log('cdp_auto_relaunch_failed', { error: er.message })); p.unref(); } catch (_) {}
+    }
     await postToServer(state, { heartbeat: true, hash: null }); // report CDP-down so the dashboard sees it live
     return;
   }
@@ -214,12 +234,21 @@ function start() {
   }
   log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask });
 
-  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false };
+  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0 };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
   // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
   // so this timer is what keeps the process alive; shutdown() clears it + exits explicitly.
-  const schedule = () => { if (state.stopped) return; timer = setTimeout(loop, CFG.pollMs); };
+  // Exponential backoff when the backend is unreachable (consecutive ingest failures) so a down
+  // backend isn't hammered every poll; snaps back to the base interval on the first success.
+  const schedule = () => {
+    if (state.stopped) return;
+    const fails = state.ingestFails || 0;
+    const delay = fails > 0 ? Math.min(CFG.maxBackoffMs, CFG.pollMs * Math.min(2 ** fails, 8)) : CFG.pollMs;
+    if (delay !== CFG.pollMs && delay !== state.lastDelay) log('backoff', { next_ms: delay, ingest_fails: fails });
+    state.lastDelay = delay;
+    timer = setTimeout(loop, delay);
+  };
   const loop = async () => {
     try { await pushIfChanged(state); } catch (e) { log('tick_error', { error: e && e.message }); }
     schedule();
