@@ -56,17 +56,26 @@ if ! curl -sS --fail-with-body -u "${SFTP_USER}:${SFTP_PASS}" "${args[@]}"; then
 fi
 echo "   ✓ ${#FILES[@]} files uploaded"
 
-# Restart Passenger by touching tmp/restart.txt (mtime change triggers a reload).
-TMP="$(mktemp)"; date > "$TMP"
+# Restart Passenger by touching tmp/restart.txt (mtime change triggers a reload). Use a
+# high-resolution, always-increasing marker and poke the app a few times — Passenger only acts
+# on the NEXT request after the mtime bump, so a single request+short sleep can miss the reload.
+TMP="$(mktemp)"; date +%s%N > "$TMP" 2>/dev/null || date > "$TMP"
 curl -sS --ftp-create-dirs -u "${SFTP_USER}:${SFTP_PASS}" -T "$TMP" "sftp://${SFTP_HOST}:${SFTP_PORT}${SERVER_DIR}/tmp/restart.txt" >/dev/null 2>&1 || true
 rm -f "$TMP"
 echo "   ✓ restart triggered (tmp/restart.txt)"
 
-# Verify. /v2/health should return 200 JSON {ok:true}. (000 = mid-restart; retry.)
-sleep 4
-CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${VHOST}/v2/health" || echo 000)"
+# Verify the NEW code is live: poll /v2/health until it responds, then check that a marker
+# from this deploy is present (the /v2/admin/state route exists in >=this build). Retries so a
+# slow Passenger reload doesn't report a false failure.
+for i in 1 2 3 4 5 6; do
+  curl -s -o /dev/null "https://${VHOST}/v2/health" >/dev/null 2>&1 || true   # poke → force reload
+  sleep 3
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${VHOST}/v2/health" || echo 000)"
+  [ "$CODE" = "200" ] && break
+done
+STATE="$(curl -s -o /dev/null -w '%{http_code}' -X GET "https://${VHOST}/v2/admin/state" || echo 000)"  # 403 = new route present+gated
 case "$CODE" in
-  200) echo "   ✓ https://${VHOST}/v2/health -> 200 (V2 live)";;
+  200) if [ "$STATE" = "403" ] || [ "$STATE" = "200" ]; then echo "   ✓ https://${VHOST}/v2/health -> 200 (V2 live, new build serving)"; else echo "   ~ /v2/health 200 but /v2/admin/state=${STATE} — Passenger may still be serving the old worker; re-run or bump tmp/restart.txt"; fi;;
   000) echo "   ~ no response yet (Passenger may still be restarting) — retry /v2/health shortly";;
   *)   echo "   ~ /v2/health returned HTTP ${CODE} — check the app .env / Passenger logs";;
 esac
