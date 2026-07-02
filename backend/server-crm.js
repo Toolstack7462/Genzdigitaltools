@@ -301,6 +301,8 @@ const stealthScheduler        = require('./cron/stealthScheduler');
 const adminProxyToolsRoutes   = require('./routes/admin/proxyTools');
 const clientProxyToolsRoutes  = require('./routes/client/proxyTools');
 const proxyGatewayRoutes      = require('./routes/proxy/gateway');
+// WriteHuman V2 monitoring module (isolated) — read-mostly proxy to the standalone V2 service.
+const adminWriteHumanV2Routes = require('./routes/admin/writehumanV2');
 
 // Mount routes
 app.use('/api/crm/auth',             authRoutes);
@@ -340,6 +342,9 @@ app.use('/api/crm/stealth/gateway',  stealthGatewayRoutes);
 app.use('/api/crm/admin/proxy-tools', express.json({ limit: '10mb' }), adminProxyToolsRoutes);
 app.use('/api/crm/client/proxy-tools', clientProxyToolsRoutes);
 app.use('/api/crm/proxy/gateway',     proxyGatewayRoutes);
+// WriteHuman V2 monitoring (isolated, admin-gated). Small body limit (commands only).
+// Dormant (503) until WRITEHUMAN_V2_ADMIN_KEY is set — mounting it changes nothing existing.
+app.use('/api/crm/admin/writehuman-v2', express.json({ limit: '256kb' }), adminWriteHumanV2Routes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check
