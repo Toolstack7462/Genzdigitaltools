@@ -80,8 +80,15 @@ Deploy (Join-Path $repoRoot 'test\soak-monitor.js') (Join-Path $InstallDir 'soak
 
 # 3) Machine config (non-secret) for status/watchdog ---------------------------
 $healthUrl = ($IngestUrl -replace '^(https?://[^/]+).*$','$1/')  # origin reachability probe (agent ingest is POST-only + key-gated)
-[ordered]@{ installDir=$InstallDir; nodeExe=$nodeExe; ingestUrl=$IngestUrl; cdpUrl=$CdpUrl; chromeProfile=$ChromeProfile; healthUrl=$healthUrl; adminUser=$AdminUser } |
+# Single config source: config.json holds ALL non-secret settings, read by BOTH the agent (via
+# WHV2_CONFIG) and the watchdog. The secret agent key goes in a separate locked-down file.
+$agentKeyFile = Join-Path $InstallDir 'agent.key'
+[ordered]@{ installDir=$InstallDir; nodeExe=$nodeExe; ingestUrl=$IngestUrl; cdpUrl=$CdpUrl; domain=$TargetDomain; ref=$SupabaseRef; pollMs=$PollMs; chromeTask='WriteHumanChromeDebug'; agentKeyFile=$agentKeyFile; chromeProfile=$ChromeProfile; healthUrl=$healthUrl; adminUser=$AdminUser } |
   ConvertTo-Json | Set-Content (Join-Path $InstallDir 'rdp\config.json') -Encoding ASCII
+# Agent key AT REST: written to a file locked to SYSTEM + Administrators only (icacls), so the secret
+# is not sitting in the world-readable launcher/config. The agent reads it via WHV2_AGENT_KEY_FILE.
+Set-Content -Path $agentKeyFile -Value $AgentKey -Encoding ASCII -NoNewline
+try { & icacls $agentKeyFile /inheritance:r /grant:r 'SYSTEM:R' 'Administrators:R' | Out-Null; Info 'Wrote locked-down agent.key (SYSTEM + Administrators read-only).' } catch { Info 'WARNING: could not restrict agent.key ACL.' }
 
 # 4) Launchers (resolved paths + config) ---------------------------------------
 # Auto-detect Chrome (Program Files, x86, per-user LocalAppData, then the App Paths registry) so a
@@ -100,7 +107,9 @@ Info ("Chrome: " + $chromeExe)
 # throttled and the token drifts expired.
 $chromeCmd = "@echo off`r`ntaskkill /im chrome.exe /f >nul 2>&1`r`nping -n 3 127.0.0.1 >nul`r`nstart `"`" `"$chromeExe`" --user-data-dir=`"$ChromeProfile`" --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding https://$TargetDomain`r`n"
 Set-Content (Join-Path $InstallDir 'chrome-debug.cmd') $chromeCmd -Encoding ASCII -NoNewline
-$runCmd = "@echo off`r`nset `"WHV2_INGEST_URL=$IngestUrl`"`r`nset `"WHV2_AGENT_KEY=$AgentKey`"`r`nset `"WHV2_CDP_URL=$CdpUrl`"`r`nset `"WHV2_TARGET_DOMAIN=$TargetDomain`"`r`nset `"WHV2_SUPABASE_REF=$SupabaseRef`"`r`nset `"WHV2_POLL_MS=$PollMs`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
+# Launcher now just points the agent at the config + the locked key file (no plaintext secret in it).
+$cfgPath = Join-Path $InstallDir 'rdp\config.json'
+$runCmd = "@echo off`r`nset `"WHV2_CONFIG=$cfgPath`"`r`nset `"WHV2_AGENT_KEY_FILE=$agentKeyFile`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
 Set-Content (Join-Path $InstallDir 'run-agent.cmd') $runCmd -Encoding ASCII -NoNewline
 
 # 5) Scheduled tasks (idempotent: end + delete + recreate) ---------------------

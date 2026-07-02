@@ -27,9 +27,10 @@ if($cdp -ne 200){
   }
 }
 
-# 3) rotate the agent log
+# 3) rotate the agent log, keeping 5 generations (.1 newest .. .5 oldest)
 $logf = Join-Path $cfg.installDir 'agent.log'
 if((Test-Path $logf) -and ((Get-Item $logf).Length -gt 5MB)){
-  Move-Item $logf ($logf + '.1') -Force
-  Log 'rotated agent.log (>5MB)'
+  for($i=4; $i -ge 1; $i--){ $src = "$logf.$i"; if(Test-Path $src){ Move-Item $src "$logf.$($i+1)" -Force } }
+  Move-Item $logf "$logf.1" -Force
+  Log 'rotated agent.log (>5MB); keeping 5 generations'
 }

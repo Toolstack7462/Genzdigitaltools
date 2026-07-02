@@ -28,28 +28,46 @@
  */
 const crypto = require('crypto');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '2.3.0';
+const AGENT_VERSION = '2.4.0';
+
+// Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
+// read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
+// The AGENT KEY is read from ENV or a locked-down key FILE (WHV2_AGENT_KEY_FILE) — never from the
+// shared config.json — so the secret isn't sitting in a world-readable launcher/config.
+function readJsonFile(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } }
+function readKeyFile(p) { if (!p) return ''; try { return fs.readFileSync(p, 'utf8').trim(); } catch (_) { return ''; } }
+const CONFIG_PATH = process.env.WHV2_CONFIG || path.join(__dirname, '..', 'config.json');
+const FILE_CFG = readJsonFile(CONFIG_PATH) || {};
+const CONFIG_SOURCE = readJsonFile(CONFIG_PATH) ? CONFIG_PATH : 'env-only';
+function pick(env, fileKey, dflt) {
+  const e = process.env[env];
+  if (e != null && e !== '') return e;
+  if (FILE_CFG[fileKey] != null) return String(FILE_CFG[fileKey]);
+  return dflt;
+}
 
 const CFG = {
-  ingestUrl: process.env.WHV2_INGEST_URL || 'http://127.0.0.1:3100/v2/cookies/ingest',
-  agentKey: process.env.WHV2_AGENT_KEY || '',
-  cdpUrl: (process.env.WHV2_CDP_URL || 'http://127.0.0.1:9222').replace(/\/$/, ''),
-  domain: process.env.WHV2_TARGET_DOMAIN || 'writehuman.ai',
-  ref: process.env.WHV2_SUPABASE_REF || 'hicfsbrfkzsxbwayibfm',
-  pollMs: Math.max(15000, parseInt(process.env.WHV2_POLL_MS, 10) || 120000),
+  ingestUrl: pick('WHV2_INGEST_URL', 'ingestUrl', 'http://127.0.0.1:3100/v2/cookies/ingest'),
+  agentKey: process.env.WHV2_AGENT_KEY || readKeyFile(process.env.WHV2_AGENT_KEY_FILE) || readKeyFile(FILE_CFG.agentKeyFile) || '',
+  cdpUrl: pick('WHV2_CDP_URL', 'cdpUrl', 'http://127.0.0.1:9222').replace(/\/$/, ''),
+  domain: pick('WHV2_TARGET_DOMAIN', 'domain', 'writehuman.ai'),
+  ref: pick('WHV2_SUPABASE_REF', 'ref', 'hicfsbrfkzsxbwayibfm'),
+  pollMs: Math.max(15000, parseInt(pick('WHV2_POLL_MS', 'pollMs', ''), 10) || 120000),
   // Consecutive empty (no-auth) polls before we treat it as a real logout and signal V2.
-  logoutDebounce: Math.max(1, parseInt(process.env.WHV2_LOGOUT_DEBOUNCE, 10) || 2),
+  logoutDebounce: Math.max(1, parseInt(pick('WHV2_LOGOUT_DEBOUNCE', 'logoutDebounce', ''), 10) || 2),
   // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
   // agent runs as SYSTEM (session 0), so relaunch must go through this task, never a direct spawn.
-  chromeTask: process.env.WHV2_CHROME_TASK || 'WriteHumanChromeDebug',
+  chromeTask: pick('WHV2_CHROME_TASK', 'chromeTask', 'WriteHumanChromeDebug'),
   // Auto-recovery: relaunch Chrome after this many consecutive CDP failures (faster than the 5-min
   // watchdog), rate-limited by a cooldown so it never relaunch-spams.
-  cdpRelaunchAfter: Math.max(1, parseInt(process.env.WHV2_CDP_RELAUNCH_AFTER, 10) || 3),
-  relaunchCooldownMs: Math.max(30000, parseInt(process.env.WHV2_RELAUNCH_COOLDOWN_MS, 10) || 120000),
+  cdpRelaunchAfter: Math.max(1, parseInt(pick('WHV2_CDP_RELAUNCH_AFTER', 'cdpRelaunchAfter', ''), 10) || 3),
+  relaunchCooldownMs: Math.max(30000, parseInt(pick('WHV2_RELAUNCH_COOLDOWN_MS', 'relaunchCooldownMs', ''), 10) || 120000),
   // Backoff cap when the backend is unreachable (poll delay grows exponentially, then recovers).
-  maxBackoffMs: Math.max(60000, parseInt(process.env.WHV2_MAX_BACKOFF_MS, 10) || 300000),
+  maxBackoffMs: Math.max(60000, parseInt(pick('WHV2_MAX_BACKOFF_MS', 'maxBackoffMs', ''), 10) || 300000),
 };
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
@@ -232,7 +250,8 @@ function start() {
   if (!/^https:/i.test(CFG.ingestUrl) && !/(127\.0\.0\.1|localhost)/i.test(CFG.ingestUrl)) {
     log('warn_insecure_ingest', { note: 'ingest URL is not https — the agent key would travel in cleartext' });
   }
-  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask });
+  const keySource = process.env.WHV2_AGENT_KEY ? 'env' : ((process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile) ? 'file' : 'none');
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource });
 
   const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0 };
   let timer = null;

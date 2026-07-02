@@ -588,6 +588,9 @@ router.delete('/:tool/accounts/:id', async (req, res) => {
 // the SAME ProxyClient assignments — no separate store. "Verify now" reuses the existing
 // /accounts/:id/verify route; "commands" queue on the account for the agent's next poll.
 const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
+// Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
+// when the reporting agent is behind so an operator knows to update it.
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '2.4.0';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -653,10 +656,13 @@ router.get('/:tool/agent-state', async (req, res) => {
     const working = ss === 'working';
     const workingUnverified = working && health !== 'up';
 
+    const agentOutdated = agentRep && agentRep.version ? (agentRep.version !== EXPECTED_AGENT_VERSION) : null;
     return res.json({
       ...base,
       health,
       statusReason,
+      expectedAgentVersion: EXPECTED_AGENT_VERSION,
+      agentOutdated,
       account: {
         id: account._id,
         label: account.label || null,

@@ -73,5 +73,26 @@ Also rotate the SFTP password if it may have leaked.
 
 ## Useful env (api app)
 `PROXY_AGENT_SYNC_KEY` (required to activate ingest) · `PROXY_AGENT_SYNC_ALLOW_IPS` (pin to the RDP
-egress IP) · `PROXY_ALERT_EMAIL` (alerts) · `PROXY_VERIFY_SCHEDULER=0` (disable auto-verify) ·
-`PROXY_VERIFY_INTERVAL_MS` / `PROXY_VERIFY_STALE_MS` (cadence).
+egress IP) · `PROXY_ALERT_EMAIL` (alerts) · `PROXY_EXPECTED_AGENT_VERSION` (dashboard flags an older
+agent) · `PROXY_VERIFY_SCHEDULER=0` (disable auto-verify) · `PROXY_VERIFY_INTERVAL_MS` /
+`PROXY_VERIFY_STALE_MS` (cadence).
+
+## Agent box: config, security, maintenance
+- **Single config source:** `C:\Projects\writehuman-v2\rdp\config.json` holds all non-secret agent
+  settings (ingest URL, cdp, domain, ref, pollMs, chromeTask) and is read by BOTH the agent (via
+  `WHV2_CONFIG`) and the watchdog. ENV still overrides it. Edit it once, restart the agent task.
+- **Secret at rest:** the agent key lives in `agent.key`, locked to `SYSTEM` + `Administrators`
+  (icacls) — NOT in the launcher. The agent reads it via `WHV2_AGENT_KEY_FILE`. To rotate: overwrite
+  `agent.key` (keep the ACL) and set the same value as `PROXY_AGENT_SYNC_KEY` on the api app.
+- **CDP is loopback-only + unauthenticated** by design (`127.0.0.1:9222`) — safe on a dedicated box;
+  do NOT expose port 9222. Keep Chrome/Node patched.
+- **Self-test after any change:** `powershell -ExecutionPolicy Bypass -File rdp\verify-install.ps1`
+  (checks Node 22, files, the 3 tasks, agent process, CDP, recent log activity — green/red).
+- **Logs:** `agent.log` is timestamped; the watchdog rotates it at >5 MB keeping 5 generations
+  (`.1`..`.5`).
+- **Update the agent:** replace `agent\cookie-sync-agent.js` + restart `WriteHumanV2Agent`; the
+  dashboard's Agent-version row flags "update available" vs `PROXY_EXPECTED_AGENT_VERSION`.
+- **Faster crash-recovery (optional):** the agent self-restarts on a fatal exit via the task +
+  watchdog (up to ~5 min). For near-instant restarts, run it under **NSSM** instead
+  (`nssm install WriteHumanV2Agent <node> <agent.js>`, set AppEnvironmentExtra for `WHV2_CONFIG` /
+  `WHV2_AGENT_KEY_FILE`, AppExit=Restart) — the agent already emits clean fatal exits for a supervisor.

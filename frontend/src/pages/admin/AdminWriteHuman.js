@@ -187,7 +187,7 @@ const AdminWriteHuman = () => {
             <Panel icon={Cpu} title="Agent diagnostics" tint="text-violet-500">
               {ag ? (<>
                 <Row k="Host">{ag.host || '—'}</Row>
-                <Row k="Agent version">{ag.version || '—'}</Row>
+                <Row k="Agent version">{ag.version || '—'} {state?.agentOutdated ? <Badge tone="warn">update available → {state.expectedAgentVersion}</Badge> : state?.agentOutdated === false ? <Badge tone="ok">latest</Badge> : null}</Row>
                 <Row k="CDP / Chrome">{cdpUp ? <Badge tone="ok">cdp 200</Badge> : <Badge tone="bad">cdp {ag.cdp || '?'}</Badge>} {ag.chrome ? <Badge tone="ok">chrome</Badge> : <Badge tone="warn">no chrome</Badge>}</Row>
                 <Row k="Polls · auth cookies">{(ag.pollCount ?? '—') + ' · ' + (ag.authCookies ?? '—')}</Row>
                 <Row k="Uptime">{dur(ag.uptimeSec)}</Row>
