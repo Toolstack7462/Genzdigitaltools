@@ -86,7 +86,11 @@ $healthUrl = ($IngestUrl -replace '^(https?://[^/]+).*$','$1/')  # origin reacha
 # 4) Launchers (resolved paths + config) ---------------------------------------
 $chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 if(-not (Test-Path $chromeExe)){ $chromeExe = 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe' }
-$chromeCmd = "@echo off`r`ntaskkill /im chrome.exe /f >nul 2>&1`r`nping -n 3 127.0.0.1 >nul`r`nstart `"`" `"$chromeExe`" --user-data-dir=`"$ChromeProfile`" --remote-debugging-port=9222 --no-first-run --no-default-browser-check https://$TargetDomain`r`n"
+# Anti-throttle flags keep the WriteHuman tab's Supabase auto-refresh timer running even when the
+# RDP desktop is locked / the window is occluded, so the access token is rotated BY THE BROWSER
+# before it expires (the agent then syncs the fresh cookie). Without these, a backgrounded tab is
+# throttled and the token drifts expired.
+$chromeCmd = "@echo off`r`ntaskkill /im chrome.exe /f >nul 2>&1`r`nping -n 3 127.0.0.1 >nul`r`nstart `"`" `"$chromeExe`" --user-data-dir=`"$ChromeProfile`" --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding https://$TargetDomain`r`n"
 Set-Content (Join-Path $InstallDir 'chrome-debug.cmd') $chromeCmd -Encoding ASCII -NoNewline
 $runCmd = "@echo off`r`nset `"WHV2_INGEST_URL=$IngestUrl`"`r`nset `"WHV2_AGENT_KEY=$AgentKey`"`r`nset `"WHV2_CDP_URL=$CdpUrl`"`r`nset `"WHV2_TARGET_DOMAIN=$TargetDomain`"`r`nset `"WHV2_SUPABASE_REF=$SupabaseRef`"`r`nset `"WHV2_POLL_MS=$PollMs`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
 Set-Content (Join-Path $InstallDir 'run-agent.cmd') $runCmd -Encoding ASCII -NoNewline
