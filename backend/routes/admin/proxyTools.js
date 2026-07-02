@@ -23,9 +23,12 @@ const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/aut
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
-const { verifyAccountCookies, maskEmail, applySupabaseRefresh } = require('../../utils/proxy/verify');
+const { verifyAccountCookies, maskEmail, applySupabaseRefresh, jwtExp, extractSupabaseSession } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
+const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
+const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
+const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
 // reflects exactly which account clients will get (default auto_failover).
@@ -249,19 +252,6 @@ router.post('/:tool/leases/:leaseId/revoke', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════════════
 // ACCOUNT VAULT (per tool) — encrypted at rest, secrets never returned/logged
 // ════════════════════════════════════════════════════════════════════════════
-function buildSessionMeta(tool, bundle) {
-  const host = tools.targetHost(tool);
-  const ls = bundle && bundle.localStorage;
-  return {
-    cookieCount: Array.isArray(bundle && bundle.cookies) ? bundle.cookies.length : 0,
-    attachableCount: countCookies(bundle, host),
-    hasSessionCookie: hasSessionCookie(bundle),
-    hasLocalStorage: !!(ls && typeof ls === 'object' && Object.keys(ls).length > 0),
-    origin: (bundle && bundle.origin) || '',
-    updatedAt: new Date(),
-  };
-}
-
 function presentAccount(account, activeLeaseCount = 0) {
   return {
     id: account._id,
@@ -430,70 +420,12 @@ router.post('/:tool/accounts/:id/session', validate(schemas.accountSession), asy
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     const bundle = normalizeCookieBundle(req.body.sessionBundle);
     if (!bundle) return res.status(400).json({ error: 'Invalid session bundle' });
-    // Remember who the vault thought this account was BEFORE the update so we can warn if
-    // the "new" cookies resolve to the very same (old) account — the #1 real-world cause of
-    // "I updated the cookies but the client still shows the old account": the cookies were
-    // exported from a browser still logged into the old account.
-    const prevMaskedId = account.verification?.maskedId || null;
-
-    account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
-    account.sessionMeta = buildSessionMeta(req.proxyTool, bundle);
-    if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
-    account.session_status = 'pending_verification';
-    await account.save();
-
-    // Cookies were just REPLACED. Any in-flight lease bound to this account is still
-    // serving the OLD session (the gateway caches the decrypted bundle per-lease for up
-    // to 60s, and an open lease keeps the old account until it expires). Revoke those
-    // leases so the next open mints a FRESH lease (new jti → gateway cache miss → re-fetch
-    // of the new bundle) and re-runs account selection. This is what makes the new account
-    // take effect immediately instead of after the lease/cache window. No gateway restart
-    // needed; the gateway re-validates leases on navigation and blocks revoked ones.
-    let revokedLeases = 0;
-    try {
-      const r = await ProxyLease.updateMany(
-        { accountId: account._id, revoked: false },
-        { $set: { revoked: true, revokedReason: 'session_refreshed', revokedAt: new Date() } }
-      );
-      revokedLeases = (r && (r.modifiedCount != null ? r.modifiedCount : r.nModified)) || 0;
-    } catch (_) { /* non-fatal: cookies are saved; stale lease self-heals within ~60s */ }
-
-    // ── Auto-verify the just-saved cookies (immediate, safe feedback) ──────────
-    // Hit the tool live with ONLY the new bundle and report whose account it actually is
-    // (masked) so the admin sees at save time "this is still the OLD account" instead of
-    // discovering it on the client. Best-effort; cookies are saved regardless. No secrets.
-    let verifyResult = null, warning = null;
-    const host = tools.targetHost(req.proxyTool);
-    const names = cookieNames(bundle, host);
-    try {
-      const cookieHeader = buildCookieHeader(bundle, host);
-      // A bundle with no attachable cookie, or no recognizable session/auth cookie at all,
-      // cannot log in — this is the "missing httpOnly session cookie" case (a manual export
-      // that dropped the httpOnly session cookie). Never mark it working/available; tell the
-      // admin exactly what's wrong and steer them to capture-via-proxy (which DOES grab
-      // httpOnly cookies). No upstream call needed.
-      if (!cookieHeader || !hasSessionCookie(bundle)) {
-        account.verification = { result: 'missing_required_session_cookie', maskedId: null, httpStatus: 0, checkedAt: new Date() };
-        account.status = 'session_expired'; account.session_status = 'missing_required_session_cookie';
-        verifyResult = 'missing_required_session_cookie'; warning = 'missing_required_session_cookie';
-      } else {
-        const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier);
-        account.verification = { result: v.result, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
-        account.lastVerifiedAt = new Date();
-        if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
-        else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
-        else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-        else if (v.result === 'unsupported') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
-        verifyResult = v.result;
-        if (v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
-        else if (v.result === 'wrong_account') warning = 'cookies_wrong_account';
-        else if (v.result === 'session_expired') warning = v.loggedOut ? 'needs_login' : 'session_expired';
-      }
-      await account.save();
-    } catch (_) { /* verify is best-effort; the cookies are already saved + leases revoked */ }
-
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_SESSION_REFRESHED', { tool: req.proxyTool, accountId: account._id, label: account.label, revokedLeases, verifyResult, warning, cookieCount: names.length, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), revokedLeases, verifyResult, warning, sessionStatus: account.session_status, maskedIdentifier: account.verification?.maskedId || null, cookieNames: names });
+    // Single shared write path (also used by the RDP Cookie Sync Agent): encrypt → meta →
+    // revoke in-flight leases (so the next open re-fetches the new bundle) → auto-verify.
+    const r = await applyAccountSession(account, bundle, {
+      tool: req.proxyTool, actorType: 'ADMIN', actorId: req.userId, source: 'admin', ip: getClientIp(req),
+    });
+    return res.json({ success: true, account: presentAccount(account), revokedLeases: r.revokedLeases, verifyResult: r.verifyResult, warning: r.warning, sessionStatus: account.session_status, maskedIdentifier: r.maskedId, cookieNames: r.cookieNames });
   } catch (err) {
     console.error('Proxy refresh session error:', err.message);
     return res.status(500).json({ error: 'Failed to refresh session' });
@@ -506,61 +438,15 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     if (!account.sessionEncrypted) return res.status(400).json({ error: 'No cookie bundle saved for this account' });
 
-    const host = tools.targetHost(req.proxyTool);
-    let bundle = null, cookieHeader = '';
-    try { bundle = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); cookieHeader = buildCookieHeader(bundle, host); } catch (_) {}
-    const cookie_count = countCookies(bundle, host);
-    const names = cookieNames(bundle, host);
-
-    // No attachable cookie, or no recognizable session/auth cookie → can't log in.
-    // Distinguish "missing required session cookie" from a generic expiry so the admin
-    // knows the bundle is incomplete (httpOnly session cookie was not captured).
-    if (!cookieHeader || !hasSessionCookie(bundle)) {
-      const code = 'missing_required_session_cookie';
-      account.verification = { result: code, maskedId: null, httpStatus: 0, checkedAt: new Date() };
-      account.status = 'session_expired';
-      account.session_status = code;
-      account.lastVerifiedAt = new Date();
-      await account.save();
-      console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, has_session_cookie: false, upstream_status: 0 }));
-      return res.json({ success: true, account: presentAccount(account), result: code, cookieNames: names });
-    }
-
-    const v = await verifyAccountCookies(req.proxyTool, cookieHeader, account.expectedIdentifier);
-    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count, upstream_status: v.httpStatus, final_path: v.finalPath, redirected_to_sign_in: v.redirectedToSignIn, logged_out: !!v.loggedOut }));
-
-    // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
-    const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
-    account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: new Date() };
-    account.lastVerifiedAt = new Date();
-    if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
-    else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
-    else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-    // The tool is behind an anti-bot challenge a proxy can't pass → mark blocked so it is
-    // never auto-selected for a client (who would just hit the "unsupported" page); the
-    // recorded verification.result='unsupported' tells the admin exactly why.
-    else if (v.result === 'unsupported') { account.status = 'blocked'; }
-    else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
-
-    // WriteHuman (supabase_refresh): a successful verify ROTATED the session. Persist the
-    // refreshed tokens back into the stored cookie bundle so the account stays live and the
-    // admin never has to re-export — exactly "auto-refresh/update the stored session and keep
-    // Working". Fail-safe: only when the cookie round-trips cleanly (else leave it untouched).
-    // refreshedSession is only ever set for supabase_refresh, so no other tool is affected.
-    if (v.result === 'working' && v.refreshedSession && bundle) {
-      try {
-        const ref = (tools.supabaseConfig(req.proxyTool) || {}).projectRef;
-        const updated = applySupabaseRefresh(bundle, ref, v.refreshedSession);
-        if (updated) {
-          account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(updated));
-          account.sessionMeta = Object.assign({}, account.sessionMeta || {}, { updatedAt: new Date() });
-        }
-      } catch (_) { /* persist is best-effort; verify result still stands */ }
-    }
-
-    await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: effResult, ip: getClientIp(req) });
-    return res.json({ success: true, account: presentAccount(account), result: effResult, cookieNames: names });
+    // Live-agent tools (WriteHuman): READ-ONLY verify — a manual check must never rotate the
+    // refresh token and compete with the RDP browser (the sole rotator), which would revoke the
+    // live session. Static-vault tools keep forceLive (the server IS their rotator). One shared
+    // verify->apply path (also used by the on-sync write + the periodic auto-verify scheduler).
+    const opts = tools.hasLiveAgent(req.proxyTool) ? { readOnly: true } : { forceLive: true };
+    const r = await verifyAndApply(account, req.proxyTool, opts);
+    console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count: r.cookieCount, upstream_status: r.v ? r.v.httpStatus : 0, result: r.result, mode: opts.readOnly ? 'readonly' : 'forcelive' }));
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: r.result, ip: getClientIp(req) });
+    return res.json({ success: true, account: presentAccount(account), result: r.result, cookieNames: r.cookieNames });
   } catch (err) {
     console.error('Proxy verify account error:', err.message);
     return res.status(500).json({ error: 'Failed to verify account' });
@@ -693,6 +579,145 @@ router.delete('/:tool/accounts/:id', async (req, res) => {
   } catch (err) {
     console.error('Proxy delete account error:', err.message);
     return res.status(500).json({ error: 'Failed to delete account' });
+  }
+});
+
+// ── Unified tool dashboard (MySQL-backed single source of truth) ──────────────
+// Aggregates the PRIMARY account's live state + Cookie Sync Agent telemetry in the shape the
+// admin WriteHuman dashboard renders. Reads the SAME ProxyAccount the client gateway serves and
+// the SAME ProxyClient assignments — no separate store. "Verify now" reuses the existing
+// /accounts/:id/verify route; "commands" queue on the account for the agent's next poll.
+const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
+function primaryAccount(accounts) {
+  return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
+}
+
+router.get('/:tool/agent-state', async (req, res) => {
+  try {
+    const tool = req.proxyTool;
+    const accounts = await ProxyAccount.find({ tool });
+    const account = primaryAccount(accounts);
+    const clientsCount = (await ProxyClient.find({ tool })).length;
+    // Live-agent tools verify READ-ONLY (no server-side exchange), so verifyExchange is false for
+    // them; the smart-timer state reflects the real periodic auto-verify scheduler.
+    const sched = proxyVerifyScheduler.status();
+    const isLive = tools.hasLiveAgent(tool);
+    const base = { ok: true, tool, mode: 'production-mysql', target: tools.targetHost(tool), store: 'mysql',
+      verifyExchange: tools.verifyMode(tool) === 'supabase_refresh' && !isLive,
+      scheduler: { running: isLive && sched.running, intervalMin: isLive ? sched.intervalMin : 0 },
+      clientsCount };
+    if (!account) return res.json({ ...base, account: null, agent: null, pendingCommand: null, health: 'unknown' });
+    const lastSyncedAt = account.lastSyncedAt || null;
+    const staleMs = lastSyncedAt ? (Date.now() - new Date(lastSyncedAt).getTime()) : null;
+    const agentStale = lastSyncedAt ? (staleMs > AGENT_STALE_MIN * 60000) : null;
+
+    // Access-token age — decode the JWT exp SERVER-SIDE only; the token itself is NEVER returned.
+    // Gives the admin an "attention ETA" (how long the current session's access token is valid).
+    let accessTokenExpiresInSec = null;
+    try {
+      if (account.sessionEncrypted) {
+        const b = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted));
+        const ref = (tools.supabaseConfig(tool) || {}).projectRef;
+        const { accessToken } = extractSupabaseSession(buildCookieHeader(b, tools.targetHost(tool)), ref);
+        const exp = jwtExp(accessToken);
+        if (exp) accessTokenExpiresInSec = Math.round(exp - Date.now() / 1000);
+      }
+    } catch (_) { /* best-effort; never expose or log the token */ }
+
+    // COHERENT health + reason — the single source of truth for the dashboard. Reconciles ALL
+    // signals so cards can no longer contradict each other:
+    //  - browserAuthCookies (agent report) = ground truth for "is the browser logged in RIGHT NOW";
+    //    0 means the RDP browser has no auth cookie -> it is logged out (even if the stored status
+    //    still reads 'working', because read-only verify won't downgrade a not-yet-expired JWT).
+    //  - tokenExpired (vault access-token exp, decoded above) = a hard local fact.
+    //  - agentStale = the agent isn't reporting, so freshness/liveness can't be trusted.
+    // A stored 'working' is only shown as truly UP when the browser is logged in, the agent is
+    // fresh, and the access token is still valid — otherwise it degrades (or goes down).
+    const ss = account.session_status;
+    const agentRep = account.agentReport || null;
+    const browserAuthCookies = agentRep && typeof agentRep.authCookies === 'number' ? agentRep.authCookies : null;
+    const tokenExpired = accessTokenExpiresInSec != null && accessTokenExpiresInSec <= 0;
+    const DOWN_STATES = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'];
+
+    let health, statusReason;
+    if (!account.sessionEncrypted) { health = 'down'; statusReason = 'No session bundle saved.'; }
+    else if (DOWN_STATES.includes(ss)) { health = 'down'; statusReason = ss === 'needs_login' ? 'Logged out — log back into WriteHuman in the RDP Chrome.' : 'Session ' + ss.replace(/_/g, ' ') + '.'; }
+    else if (browserAuthCookies === 0) { health = 'down'; statusReason = 'The RDP browser has no auth cookie right now — it is logged out. Log back in on the RDP; cached cookies may still be served briefly.'; }
+    else if (ss === 'working') {
+      if (agentStale) { health = 'degraded'; statusReason = 'Was working, but the Cookie Sync Agent is stale — current state is unverified.'; }
+      else if (tokenExpired) { health = 'degraded'; statusReason = 'Access token has expired and no fresh cookie arrived — the browser may be logged out or idle. Unverified.'; }
+      else { health = 'up'; statusReason = 'Working — browser logged in, agent fresh, access token valid.'; }
+    } else { health = 'degraded'; statusReason = 'Verification pending — not yet confirmed working.'; }
+    // A 'working' that is only degraded (not confidently up) is surfaced as unverified so cards
+    // don't render a confident green.
+    const working = ss === 'working';
+    const workingUnverified = working && health !== 'up';
+
+    return res.json({
+      ...base,
+      health,
+      statusReason,
+      account: {
+        id: account._id,
+        label: account.label || null,
+        status: account.status || null,
+        sessionStatus: account.session_status || null,
+        workingUnverified,
+        hasBundle: !!account.sessionEncrypted,
+        cookieCount: (account.sessionMeta && account.sessionMeta.cookieCount) || 0,
+        hasCookieHash: !!account.cookieHash,
+        verification: account.verification || null,
+        lastVerifiedAt: account.lastVerifiedAt || null,
+        lastSyncedAt,
+        syncCount: account.syncCount || 0,
+        staleSec: staleMs != null ? Math.round(staleMs / 1000) : null,
+        agentStale,
+        accessTokenExpiresInSec,
+        tokenExpired,
+        browserAuthCookies,
+      },
+      agent: account.agentReport || null,
+      pendingCommand: account.pendingCommand || null,
+    });
+  } catch (err) {
+    console.error('Proxy agent-state error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load agent state' });
+  }
+});
+
+router.post('/:tool/agent-command', async (req, res) => {
+  try {
+    const tool = req.proxyTool;
+    const command = req.body && req.body.command;
+    if (!['relaunch-chrome', 'reverify'].includes(command)) return res.status(400).json({ ok: false, error: 'Unknown command' });
+    const account = primaryAccount(await ProxyAccount.find({ tool }));
+    if (!account) return res.status(404).json({ ok: false, error: 'No account' });
+    account.pendingCommand = command;
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_AGENT_COMMAND_QUEUED', { tool, accountId: account._id, command, ip: getClientIp(req) });
+    return res.json({ ok: true, queued: command });
+  } catch (err) {
+    console.error('Proxy agent-command error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to queue command' });
+  }
+});
+
+router.get('/:tool/agent-logs', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    const events = []; let seq = 1;
+    const push = (t, level, event, fields) => { if (t) events.push({ seq: seq++, t: new Date(t).toISOString(), level, event, fields: fields || {} }); };
+    if (account) {
+      const v = account.verification || {}; const ag = account.agentReport || {};
+      push(account.lastSyncedAt, 'info', 'cookie_synced', { syncCount: account.syncCount || 0 });
+      push(account.lastVerifiedAt, v.result === 'session_expired' ? 'warn' : 'info', 'verify_' + (v.result || 'unknown'), { httpStatus: v.httpStatus || 0 });
+      if (v.checkedAt) push(v.checkedAt, 'info', 'verification', { result: v.result || null });
+      if (ag.receivedAt) push(ag.receivedAt, ag.lastError ? 'warn' : 'info', 'agent_report', { cdp: ag.cdp || null, pollCount: ag.pollCount ?? null, error: ag.lastError || null });
+    }
+    events.sort((a, b) => new Date(a.t) - new Date(b.t));
+    return res.json({ ok: true, events });
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: 'Failed to load logs' });
   }
 });
 

@@ -1,0 +1,17 @@
+{
+  "name": "writehuman-v2",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WriteHuman V2 — isolated standalone proxy clone (Step 1). Experimental; must not touch production.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/harness.js && node test/prodmode.js && node test/readonly.js && node test/hardening.js && node test/dashboard.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.3.0"
+  }
+}

@@ -1,14 +1,11 @@
 'use strict';
 /**
- * Cookie-bundle parsing + Cookie-header building for the Proxy-Tools vaults.
- * Isolated copy of the StealthWriter cookie logic, generalized so it is not tied to
- * a single tool's session-cookie name. Never logs cookie names/values.
+ * WriteHuman V2 — cookie-bundle parsing + Cookie-header building.
+ * Isolated clone of backend/utils/proxy/cookies.js (no env/runtime dependencies).
+ * Never logs cookie names/values.
  *
  * Canonical bundle: { cookies: [{ name, value, domain?, path? }], localStorage?, sessionStorage?, origin? }
- * Accepts: JSON object, JSON cookie array, pairs array, flat map, or a raw
- * "name=value; ..." header string.
  */
-const crypto = require('crypto');
 
 function parseCookieString(s) {
   return String(s).split(';').map(p => p.trim()).filter(Boolean).map(p => {
@@ -93,8 +90,7 @@ function countCookies(bundle, targetHost) {
 }
 
 // SAFE diagnostic: the NAMES (never values) of the cookies that would attach to the tool
-// host. Lets an admin see whether the required session cookie is present without ever
-// exposing a cookie value/secret. Capped + de-duped.
+// host. Capped + de-duped.
 function cookieNames(bundle, targetHost) {
   const cookies = (bundle && Array.isArray(bundle.cookies)) ? bundle.cookies : [];
   const seen = new Set();
@@ -106,38 +102,4 @@ function cookieNames(bundle, targetHost) {
   return [...seen].slice(0, 50);
 }
 
-// ── Supabase auth-cookie identity (Cookie Sync Agent path) ────────────────────
-// The authentication cookies are the Supabase auth-token cookie `sb-<projectRef>-auth-token`
-// (and its `.0`/`.1` chunks) plus the static `sb-session-token`. Mirrors the WriteHuman V2
-// cookie manager EXACTLY so the agent's change-detection + replace-not-merge behave
-// identically on both sides. Analytics/tracking cookies are ignored here.
-const STATIC_AUTH_NAMES = ['sb-session-token'];
-function isSupabaseAuthName(name, projectRef) {
-  if (!name) return false;
-  if (STATIC_AUTH_NAMES.includes(name)) return true;
-  if (!projectRef) return false;
-  const base = 'sb-' + projectRef + '-auth-token';
-  return name === base || name.startsWith(base + '.');
-}
-function supabaseAuthCookies(bundle, projectRef) {
-  const arr = (bundle && Array.isArray(bundle.cookies)) ? bundle.cookies : [];
-  return arr.filter(c => c && isSupabaseAuthName(c.name, projectRef));
-}
-// Stable, order-independent sha256 of ONLY the auth cookies (name+value). One-way digest —
-// never logs or exposes a value. Returns null when no auth cookie is present.
-function authCookieHash(bundle, projectRef) {
-  const auth = supabaseAuthCookies(bundle, projectRef).map(c => `${c.name}=${c.value == null ? '' : c.value}`).sort();
-  if (!auth.length) return null;
-  return crypto.createHash('sha256').update(auth.join('\n')).digest('hex');
-}
-// Replace (NOT merge) the auth cookies: drop ALL existing auth cookies, keep every other
-// cookie byte-for-byte, then append the incoming auth cookies. Returns a NEW bundle and never
-// mutates the input.
-function replaceAuthCookies(bundle, incomingAuthCookies, projectRef) {
-  const base = (bundle && Array.isArray(bundle.cookies)) ? bundle.cookies : [];
-  const kept = base.filter(c => !(c && isSupabaseAuthName(c.name, projectRef)));
-  const incoming = (incomingAuthCookies || []).filter(c => c && isSupabaseAuthName(c.name, projectRef));
-  return Object.assign({}, bundle || {}, { cookies: kept.concat(incoming) });
-}
-
-module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, parseCookieString, hostMatchesCookieDomain, hasSessionCookie, isSupabaseAuthName, supabaseAuthCookies, authCookieHash, replaceAuthCookies };
+module.exports = { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, parseCookieString, hostMatchesCookieDomain, hasSessionCookie };

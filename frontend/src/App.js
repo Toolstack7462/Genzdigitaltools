@@ -116,6 +116,7 @@ const AdminAnalytics = lazy(() => import('./pages/admin/AdminAnalytics'));
 const AdminSecurityAlerts = lazy(() => import('./pages/admin/AdminSecurityAlerts'));
 const AdminStealthWriter = lazy(() => import('./pages/admin/AdminStealthWriter'));
 const AdminProxyTools = lazy(() => import('./pages/admin/AdminProxyTools'));
+const AdminWriteHuman = lazy(() => import('./pages/admin/AdminWriteHuman'));
 const AdminExtension = lazy(() => import('./pages/admin/AdminExtension'));
 
 // Client Pages — code-split
@@ -206,6 +207,7 @@ function App() {
             <Route path="/admin/security" element={<ErrorBoundary><AdminRoute><AdminSecurityAlerts /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/stealthwriter" element={<ErrorBoundary><AdminRoute><AdminStealthWriter /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/proxy-tools" element={<ErrorBoundary><AdminRoute><AdminProxyTools /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/writehuman" element={<ErrorBoundary><AdminRoute><AdminWriteHuman /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/extension" element={<ErrorBoundary><AdminRoute><AdminExtension /></AdminRoute></ErrorBoundary>} />
 
             {/* ── Client Routes (untouched) ────────────────────── */}

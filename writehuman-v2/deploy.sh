@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Deploy WriteHuman V2 to its OWN Hostinger Passenger app (a NEW subdomain — never the
+# production WriteHuman gateway). Isolated by design: this script only ever writes under the
+# V2 server dir and never touches proxy-gateway / backend / any production app.
+#
+# PREREQUISITES (one-time, done in hPanel — this script cannot do them):
+#   1. Create a subdomain, e.g.  writehuman2.genzdigitalstore.com
+#   2. Create a Node.js app for it (Passenger). Set the app root to the V2 server dir below
+#      and the startup file to app.js (or server.js). Node >= 18.
+#   3. On the server, create the app's .env from .env.example with REAL V2 secrets
+#      (WRITEHUMAN_V2_SECRET / _LEASE_SECRET / _VAULT_KEY / _GATEWAY_KEY / _ADMIN_KEY /
+#       _AGENT_KEY) and WRITEHUMAN_V2_PUBLIC_ORIGIN=https://<the subdomain>.
+#      Do NOT commit or upload .env — this script never uploads it.
+#
+# USAGE:  SFTP_PASS='…' bash writehuman-v2/deploy.sh
+#   Overridable: SERVER_DIR, VHOST, SFTP_HOST, SFTP_PORT, SFTP_USER
+#
+# Safe to re-run. Never prints the password. Uploads code only; the server keeps its own .env.
+set -uo pipefail
+
+SFTP_HOST="${SFTP_HOST:-147.79.103.253}"
+SFTP_PORT="${SFTP_PORT:-65002}"
+SFTP_USER="${SFTP_USER:-u171982351}"
+SERVER_DIR="${SERVER_DIR:-/home/${SFTP_USER}/writehuman-v2}"
+VHOST="${VHOST:-writehuman2.genzdigitalstore.com}"
+: "${SFTP_PASS:?Set SFTP_PASS env (Hostinger SFTP password)}"
+
+# Run from the writehuman-v2 directory regardless of CWD.
+cd "$(dirname "$0")"
+
+# Runtime files only — NOT .env, node_modules, store/data, tests, or docs.
+FILES=(
+  app.js server.js package.json
+  gateway/proxy.js
+  public/overlay.js public/overlay.css public/admin.html public/dashboard.html
+  lib/config.js lib/log.js lib/cookies.js lib/vaultCrypto.js lib/lease.js lib/verify.js lib/supabase.js lib/rateLimit.js lib/events.js
+  store/accountStore.js store/schema.sql
+  session/sessionManager.js session/cookieManager.js session/scheduler.js session/syncIngest.js
+  agent/cookie-sync-agent.js
+)
+
+echo "==> Deploying WriteHuman V2  ->  ${SFTP_USER}@${SFTP_HOST}:${SERVER_DIR}  (vhost ${VHOST})"
+
+# Build one curl invocation with many -T pairs so a single SFTP connection is reused
+# (per-file curl invocations get throttled/timed out by this server).
+args=()
+for f in "${FILES[@]}"; do
+  [ -f "$f" ] || { echo "   !! missing local file: $f"; exit 1; }
+  args+=( --ftp-create-dirs -T "$f" "sftp://${SFTP_HOST}:${SFTP_PORT}${SERVER_DIR}/${f}" )
+done
+
+if ! curl -sS --fail-with-body -u "${SFTP_USER}:${SFTP_PASS}" "${args[@]}"; then
+  echo "   !! upload failed (host-key? libssh2 needs the RSA key in known_hosts:"
+  echo "      ssh-keygen -R \"[${SFTP_HOST}]:${SFTP_PORT}\"; ssh-keyscan -t rsa -p ${SFTP_PORT} ${SFTP_HOST} >> ~/.ssh/known_hosts )"
+  exit 1
+fi
+echo "   ✓ ${#FILES[@]} files uploaded"
+
+# Restart Passenger by touching tmp/restart.txt (mtime change triggers a reload). Use a
+# high-resolution, always-increasing marker and poke the app a few times — Passenger only acts
+# on the NEXT request after the mtime bump, so a single request+short sleep can miss the reload.
+TMP="$(mktemp)"; date +%s%N > "$TMP" 2>/dev/null || date > "$TMP"
+curl -sS --ftp-create-dirs -u "${SFTP_USER}:${SFTP_PASS}" -T "$TMP" "sftp://${SFTP_HOST}:${SFTP_PORT}${SERVER_DIR}/tmp/restart.txt" >/dev/null 2>&1 || true
+rm -f "$TMP"
+echo "   ✓ restart triggered (tmp/restart.txt)"
+
+# Verify the NEW code is live: poll /v2/health until it responds, then check that a marker
+# from this deploy is present (the /v2/admin/state route exists in >=this build). Retries so a
+# slow Passenger reload doesn't report a false failure.
+for i in 1 2 3 4 5 6; do
+  curl -s -o /dev/null "https://${VHOST}/v2/health" >/dev/null 2>&1 || true   # poke → force reload
+  sleep 3
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' "https://${VHOST}/v2/health" || echo 000)"
+  [ "$CODE" = "200" ] && break
+done
+STATE="$(curl -s -o /dev/null -w '%{http_code}' -X GET "https://${VHOST}/v2/admin/state" || echo 000)"  # 403 = new route present+gated
+case "$CODE" in
+  200) if [ "$STATE" = "403" ] || [ "$STATE" = "200" ]; then echo "   ✓ https://${VHOST}/v2/health -> 200 (V2 live, new build serving)"; else echo "   ~ /v2/health 200 but /v2/admin/state=${STATE} — Passenger may still be serving the old worker; re-run or bump tmp/restart.txt"; fi;;
+  000) echo "   ~ no response yet (Passenger may still be restarting) — retry /v2/health shortly";;
+  *)   echo "   ~ /v2/health returned HTTP ${CODE} — check the app .env / Passenger logs";;
+esac
+echo "==> Done. Next: create the app .env with real secrets if you haven't, then seed the"
+echo "    account (/v2/admin/seed) and run the Cookie Sync Agent on the RDP (agent/README.md)."

@@ -25,6 +25,15 @@ function unavailableReason(a) {
   if (a.status === 'blocked') return 'blocked';
   if (a.status === 'limit_reached') return 'status_limit_reached';
   if (!accountHasSessionCookie(a)) return 'no_session_cookie';
+  // Live-agent tools (WriteHuman): the Cookie Sync Agent's freshest report is the ground truth for
+  // "is the browser logged in RIGHT NOW". authCookies===0 => the RDP browser is logged out, so the
+  // cached vault cookie is dead — never serve it to a client (read-only verify can't catch this
+  // because the stored access-token JWT stays exp-valid ~1h after logout). Only trust a report from
+  // the last 10 min. No-op for tools without an agent report (agentReport is undefined -> skipped).
+  if (a.agentReport && a.agentReport.authCookies === 0) {
+    const recv = a.agentReport.receivedAt ? new Date(a.agentReport.receivedAt).getTime() : 0;
+    if (recv && (Date.now() - recv) < 10 * 60000) return 'browser_logged_out';
+  }
   const ss = a.session_status || 'pending_verification';
   if (ss === 'session_expired') return 'session_expired';
   if (ss === 'needs_login') return 'needs_login';
