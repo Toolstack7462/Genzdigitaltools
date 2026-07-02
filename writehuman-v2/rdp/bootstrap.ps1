@@ -1,6 +1,6 @@
 #requires -Version 5.1
 <#
-  WriteHuman V2 — RDP bootstrap / provisioner (IDEMPOTENT).
+  WriteHuman V2 - RDP bootstrap / provisioner (IDEMPOTENT).
 
   Provisions a fresh (or existing) Windows box to run the Cookie Sync Agent 24/7:
     - installs Node 22 (if missing)
@@ -9,7 +9,7 @@
       watchdog (SYSTEM/every 5 min)
     - (optional) configures autologon via Sysinternals Autologon (-AdminPassword)
 
-  Run in an ELEVATED PowerShell. Safe to re-run. Secrets are PARAMETERS — never committed.
+  Run in an ELEVATED PowerShell. Safe to re-run. Secrets are PARAMETERS - never committed.
 
   Migrate to a new RDP:
     git clone -b writehuman-v2-clone <repo>; cd writehuman-v2\rdp
@@ -43,7 +43,7 @@ if(-not $AgentKey){ throw 'AgentKey required: pass -AgentKey <key> or set $env:W
 # 1) Node 22 (install if missing) ----------------------------------------------
 $nodeDirEntry = Get-ChildItem $NodeDir -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } | Select-Object -First 1
 if(-not $nodeDirEntry){
-  Info 'Node not found — installing Node 22...'
+  Info 'Node not found - installing Node 22...'
   $shas = Invoke-RestMethod 'https://nodejs.org/dist/latest-v22.x/SHASUMS256.txt'
   $file = (($shas -split "`n") | Where-Object { $_ -match 'node-v22\.[0-9.]+-win-x64\.zip' } | Select-Object -First 1) -replace '.*\s(\S+)$','$1'
   $file = $file.Trim()
@@ -86,14 +86,17 @@ Set-Content (Join-Path $InstallDir 'chrome-debug.cmd') $chromeCmd -Encoding ASCI
 $runCmd = "@echo off`r`nset `"WHV2_INGEST_URL=$IngestUrl`"`r`nset `"WHV2_AGENT_KEY=$AgentKey`"`r`nset `"WHV2_CDP_URL=$CdpUrl`"`r`nset `"WHV2_TARGET_DOMAIN=$TargetDomain`"`r`nset `"WHV2_SUPABASE_REF=$SupabaseRef`"`r`nset `"WHV2_POLL_MS=$PollMs`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
 Set-Content (Join-Path $InstallDir 'run-agent.cmd') $runCmd -Encoding ASCII -NoNewline
 
-# 5) Scheduled tasks (idempotent: delete + recreate) ---------------------------
+# 5) Scheduled tasks (idempotent: end + delete + recreate) ---------------------
 $user = "$env:COMPUTERNAME\$AdminUser"
-& schtasks /delete /tn WriteHumanV2Agent /f     2>&1 | Out-Null
+function Reset-Task($name){ cmd /c "schtasks /end /tn $name >nul 2>&1"; cmd /c "schtasks /delete /tn $name /f >nul 2>&1" }
+Reset-Task 'WriteHumanV2Agent'
 & schtasks /create /tn WriteHumanV2Agent     /tr ("cmd /c "+$InstallDir+"\run-agent.cmd")   /sc ONSTART /ru SYSTEM /rl HIGHEST /f | Out-Null
-& schtasks /delete /tn WriteHumanChromeDebug /f 2>&1 | Out-Null
+Reset-Task 'WriteHumanChromeDebug'
 & schtasks /create /tn WriteHumanChromeDebug /tr ("cmd /c "+$InstallDir+"\chrome-debug.cmd") /sc ONLOGON /ru $user /rl HIGHEST /f | Out-Null
-& schtasks /delete /tn WriteHumanWatchdog /f    2>&1 | Out-Null
+Reset-Task 'WriteHumanWatchdog'
 & schtasks /create /tn WriteHumanWatchdog    /tr ("powershell -NoProfile -ExecutionPolicy Bypass -File "+$InstallDir+"\rdp\watchdog.ps1") /sc MINUTE /mo 5 /ru SYSTEM /rl HIGHEST /f | Out-Null
+# taskkill any orphaned node agent from a prior run before the fresh /run below
+Get-CimInstance Win32_Process -Filter "name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'cookie-sync-agent' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Info 'Tasks registered: WriteHumanV2Agent, WriteHumanChromeDebug, WriteHumanWatchdog'
 
 # 6) Autologon (optional; needs -AdminPassword) --------------------------------

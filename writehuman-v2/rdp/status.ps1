@@ -1,9 +1,9 @@
 #requires -Version 5.1
-<# WriteHuman V2 — one-shot status report for the RDP runtime. Read-only. #>
+<# WriteHuman V2 - one-shot status report for the RDP runtime. Read-only. #>
 $ErrorActionPreference = 'SilentlyContinue'
 $cfg = Get-Content (Join-Path $PSScriptRoot 'config.json') | ConvertFrom-Json
 
-Write-Host "==== WriteHuman V2 — RDP status ===="
+Write-Host "==== WriteHuman V2 - RDP status ===="
 Write-Host ("Node        : " + (& $cfg.nodeExe --version))
 foreach($n in 'WriteHumanV2Agent','WriteHumanChromeDebug','WriteHumanWatchdog'){
   $t = Get-ScheduledTask -TaskName $n -ErrorAction SilentlyContinue

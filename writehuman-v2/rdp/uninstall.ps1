@@ -1,6 +1,6 @@
 #requires -Version 5.1
 <#
-  WriteHuman V2 — teardown. Removes the scheduled tasks; optionally disables autologon and
+  WriteHuman V2 - teardown. Removes the scheduled tasks; optionally disables autologon and
   purges files. Use before migrating a box or decommissioning it.
     -DisableAutologon : set AutoAdminLogon=0 (does not remove the LSA secret)
     -Purge            : also delete C:\Projects\writehuman-v2 and C:\wh-profile

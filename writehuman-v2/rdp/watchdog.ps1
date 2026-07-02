@@ -1,6 +1,6 @@
 #requires -Version 5.1
 <#
-  WriteHuman V2 — self-healing watchdog. Runs every 5 min (SYSTEM task).
+  WriteHuman V2 - self-healing watchdog. Runs every 5 min (SYSTEM task).
     1. agent task not Running  -> start it
     2. CDP 9222 down + a user is logged on -> trigger the ChromeDebug task (relaunch Chrome
        in the user's session; SYSTEM can't render GUI itself)
@@ -15,7 +15,7 @@ function Log($m){ Add-Content (Join-Path $cfg.installDir 'watchdog.log') ("[" + 
 $t = Get-ScheduledTask -TaskName WriteHumanV2Agent
 if($t -and $t.State -ne 'Running'){ Start-ScheduledTask -TaskName WriteHumanV2Agent; Log "agent task was $($t.State) -> started" }
 
-# 2) CDP up? (only fixable if someone is logged on — Chrome needs an interactive session)
+# 2) CDP up? (only fixable if someone is logged on - Chrome needs an interactive session)
 $cdp = try { (Invoke-WebRequest ($cfg.cdpUrl + '/json/version') -UseBasicParsing -TimeoutSec 5).StatusCode } catch { 0 }
 if($cdp -ne 200){
   $sessions = @(quser 2>$null)
