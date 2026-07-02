@@ -8,15 +8,17 @@
  * consistent set of events. Helpers used by Step-1 code are wired now; the rest are
  * ready for Step 2.
  */
-function emit(event, fields) {
+const events = require('./events');
+function emit(event, fields, level) {
   try { console.log(`[wh-v2] ${event} ${JSON.stringify(fields || {})}`); } catch (_) { /* never throw from logging */ }
+  try { events.push(level || 'info', event, fields); } catch (_) {}
 }
 
 const log = {
   emit,
-  info: (event, f) => emit(event, f),
-  warn: (event, f) => emit('warn:' + event, f),
-  error: (event, f) => emit('error:' + event, f),
+  info: (event, f) => emit(event, f, 'info'),
+  warn: (event, f) => emit('warn:' + event, f, 'warn'),
+  error: (event, f) => emit('error:' + event, f, 'error'),
   // Step-2 session-management vocabulary (see plan / spec).
   cookieHashChanged: (f) => emit('cookie_hash_changed', f),
   cookieSynchronized: (f) => emit('cookie_synchronized', f),

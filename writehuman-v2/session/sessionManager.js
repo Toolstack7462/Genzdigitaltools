@@ -34,7 +34,71 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let _verifyInFlight = null;
 let _ingestChain = Promise.resolve();
 
+// Transient runtime state for the dashboard (NOT persisted in the encrypted vault): the latest
+// agent diagnostics report and a single pending remote command for the agent.
+let _agentReport = null;
+let _pendingCommand = null;
+const ALLOWED_COMMANDS = ['relaunch-chrome', 'reverify'];
+
 function init() { store.init(); }
+
+// ── Agent telemetry + remote command channel (dashboard ↔ agent) ──────────────
+function setAgentReport(r) {
+  if (!r || typeof r !== 'object') return;
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  const str = (v, n) => (v == null ? null : String(v).slice(0, n));
+  _agentReport = {
+    cdp: str(r.cdp, 20),
+    chrome: !!r.chrome,
+    pollCount: num(r.pollCount),
+    authCookies: num(r.authCookies),
+    lastError: str(r.lastError, 200),
+    host: str(r.host, 80),
+    version: str(r.version, 20),
+    uptimeSec: num(r.uptimeSec),
+    receivedAt: new Date().toISOString(),
+  };
+}
+function getAgentReport() { return _agentReport; }
+function queueCommand(cmd) {
+  if (!ALLOWED_COMMANDS.includes(cmd)) return { ok: false, code: 'bad_command', allowed: ALLOWED_COMMANDS };
+  _pendingCommand = cmd;
+  log.info('command_queued', { command: cmd });
+  return { ok: true, queued: cmd };
+}
+function takeCommand() { const c = _pendingCommand; _pendingCommand = null; if (c) log.info('command_dispatched', { command: c }); return c; }
+
+// Aggregated dashboard state (one object the UI renders). Safe fields only — maskedId is masked.
+function getState() {
+  const a = store.get() || {};
+  const staleMs = a.lastSyncedAt ? (Date.now() - new Date(a.lastSyncedAt).getTime()) : null;
+  return {
+    ok: true,
+    service: 'writehuman-v2',
+    ts: new Date().toISOString(),
+    mode: config.productionBacked ? 'production-backed' : 'standalone',
+    target: (() => { try { return new URL(config.targetOrigin).host; } catch (_) { return null; } })(),
+    store: store.driver(),
+    verifyExchange: !!config.verifyExchange,
+    scheduler: { running: scheduler.isRunning(), intervalMin: Math.round(config.verifyIntervalMs / 60000) },
+    account: {
+      label: a.label || null,
+      status: a.status || null,
+      sessionStatus: a.session_status || null,
+      hasBundle: !!a.sessionEncrypted,
+      cookieCount: (a.sessionMeta && a.sessionMeta.cookieCount) || 0,
+      hasCookieHash: !!a.cookieHash,
+      verification: a.verification || null,        // { result, maskedId(masked), httpStatus, checkedAt }
+      lastVerifiedAt: a.lastVerifiedAt || null,
+      lastSyncedAt: a.lastSyncedAt || null,
+      syncCount: a.syncCount || 0,
+      staleSec: staleMs != null ? Math.round(staleMs / 1000) : null,
+      agentStale: a.lastSyncedAt ? (staleMs > config.agentStaleMin * 60000) : null,
+    },
+    agent: _agentReport,
+    pendingCommand: _pendingCommand,
+  };
+}
 
 // Resolve + validate a lease token. Returns { payload } or { error: {status,code} }.
 function resolveLease(token) {
@@ -293,4 +357,5 @@ async function verifyNow() {
 module.exports = {
   init, validate, session, accountExpired, captureSession, callGateway,
   seed, mintLease, verifyNow, verifyTick, ingestCookies, markLoggedOut, heartbeat, resolveLease, secondsRemaining,
+  setAgentReport, getAgentReport, queueCommand, takeCommand, getState,
 };

@@ -27,13 +27,14 @@ const sm = require('./session/sessionManager');
 const scheduler = require('./session/scheduler');
 const syncIngest = require('./session/syncIngest');
 const rateLimit = require('./lib/rateLimit');
+const events = require('./lib/events');
 const gateway = require('./gateway/proxy'); // required AFTER applyGatewayEnv()
 
 // Self-contained admin panel (served at /v2/admin). Read once at boot. All of its actions
 // are gated by the admin key entered in the page → sent as x-admin-key. The HTML itself
 // carries no secret. Kept separate from the production admin app (V2 stays isolated).
-let ADMIN_HTML = '<!doctype html><title>WriteHuman V2</title><p>admin panel missing</p>';
-try { ADMIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'admin.html'), 'utf8'); } catch (_) {}
+let ADMIN_HTML = '<!doctype html><title>WriteHuman V2</title><p>dashboard missing</p>';
+try { ADMIN_HTML = fs.readFileSync(path.join(__dirname, 'public', 'dashboard.html'), 'utf8'); } catch (_) {}
 
 store.init();
 sm.init();
@@ -111,6 +112,39 @@ function keyMatches(got, expected) {
 }
 function hasGatewayKey(req) { return keyMatches(req.headers['x-gateway-key'], config.gatewayKey); }
 function hasAdminKey(req) { return keyMatches(req.headers['x-admin-key'], config.adminKey); }
+
+// Short-lived tokens for the SSE stream (EventSource can't send custom headers). Minted from
+// the admin key; validated on connect; expire so a leaked URL is only briefly useful.
+const streamTokens = new Map(); // token -> expiresAt
+function mintStreamToken() {
+  const token = crypto.randomBytes(24).toString('hex');
+  streamTokens.set(token, Date.now() + 30 * 60000);
+  if (streamTokens.size > 200) { const now = Date.now(); for (const [k, exp] of streamTokens) if (exp < now) streamTokens.delete(k); }
+  return token;
+}
+function validStreamToken(token) {
+  const exp = streamTokens.get(token);
+  if (!exp) return false;
+  if (Date.now() > exp) { streamTokens.delete(token); return false; }
+  return true;
+}
+
+// Server-Sent Events: live state + log tail. Pushes state on connect + every 5s (covers agent
+// telemetry that doesn't emit a log event) and every log event as it happens. Cleans up on close.
+function sse(req, res) {
+  res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-content-type-options': 'nosniff' });
+  res.write('retry: 5000\n\n');
+  const write = (event, data) => { try { res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch (_) {} };
+  write('state', sm.getState());
+  for (const e of events.recent(60)) write('log', e);
+  const unsub = events.subscribe((e) => write('log', e));
+  const stateTimer = setInterval(() => write('state', sm.getState()), 5000);
+  const ka = setInterval(() => { try { res.write(': ka\n\n'); } catch (_) {} }, 15000);
+  if (stateTimer.unref) stateTimer.unref();
+  if (ka.unref) ka.unref();
+  const cleanup = () => { unsub(); clearInterval(stateTimer); clearInterval(ka); };
+  req.on('close', cleanup); req.on('error', cleanup); res.on('error', cleanup);
+}
 // Ingest accepts the admin key OR the dedicated agent key (so the long-lived sync agent
 // doesn't carry the full admin key). Check both header slots against both keys.
 function hasIngestKey(req) {
@@ -162,6 +196,22 @@ async function handleV2(req, res, pathName) {
 
   if (pathName === '/v2/health') return send(res, 200, healthBody());
 
+  // ── Dashboard read APIs (admin-key gated; GET) ──────────────────────────────
+  if (pathName === '/v2/admin/state' && method === 'GET') {
+    if (!hasAdminKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
+    return send(res, 200, sm.getState());
+  }
+  if (pathName === '/v2/admin/logs' && method === 'GET') {
+    if (!hasAdminKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
+    let limit = 100; try { limit = parseInt(new URL(req.url, 'http://localhost').searchParams.get('limit'), 10) || 100; } catch (_) {}
+    return send(res, 200, { ok: true, events: events.recent(limit) });
+  }
+  if (pathName === '/v2/admin/stream' && method === 'GET') {
+    let token = ''; try { token = new URL(req.url, 'http://localhost').searchParams.get('token') || ''; } catch (_) {}
+    if (!validStreamToken(token)) return send(res, 403, { ok: false, code: 'forbidden' });
+    return sse(req, res);
+  }
+
   // Read the body once for POST routes that need it.
   const needsBody = method === 'POST';
   const body = needsBody ? await readJson(req) : {};
@@ -210,6 +260,17 @@ async function handleV2(req, res, pathName) {
     if (!hasAdminKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
     const r = await sm.verifyNow();
     return send(res, r.status, r.body);
+  }
+
+  if (pathName === '/v2/admin/stream-token' && method === 'POST') {
+    if (!hasAdminKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
+    return send(res, 200, { ok: true, token: mintStreamToken(), expiresInSec: 1800 });
+  }
+
+  if (pathName === '/v2/admin/command' && method === 'POST') {
+    if (!hasAdminKey(req)) return send(res, 403, { ok: false, code: 'forbidden' });
+    const r = sm.queueCommand(body && body.command);
+    return send(res, r.ok ? 200 : 400, r);
   }
 
   return send(res, 404, { ok: false, code: 'not_found' });

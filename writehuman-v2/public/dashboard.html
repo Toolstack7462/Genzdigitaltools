@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WriteHuman V2 — Console</title>
+<style>
+  :root{--bg:#061528;--bg2:#0a2440;--card:#0e2038;--card2:#0b192c;--line:rgba(6,182,212,.18);--cyan:#22d3ee;--blue:#3b82f6;--txt:#e6eefb;--mut:#8ea3c0;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:radial-gradient(1200px 600px at 20% -10%,#0c2b4d 0,var(--bg) 55%);color:var(--txt);min-height:100vh}
+  a{color:var(--cyan)}
+  .wrap{max-width:1160px;margin:0 auto;padding:20px 18px 60px}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  h1{font-size:19px;margin:0;display:flex;align-items:center;gap:9px;letter-spacing:.2px}
+  .sub{color:var(--mut);font-size:12.5px;margin:0 0 18px}
+  .dot{width:9px;height:9px;border-radius:50%;display:inline-block;background:var(--mut);box-shadow:0 0 0 3px rgba(255,255,255,.03)}
+  .dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+  .spacer{flex:1}
+  .conn{font-size:12px;color:var(--mut);display:flex;align-items:center;gap:7px}
+  input,textarea{background:#07182b;border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:9px 11px;font:inherit;font-size:13px;width:100%}
+  textarea{min-height:96px;font-family:ui-monospace,Consolas,monospace;font-size:12px}
+  button{font:inherit;font-weight:600;font-size:13px;border:0;border-radius:9px;padding:9px 14px;cursor:pointer;color:#fff;background:linear-gradient(135deg,var(--blue),var(--cyan))}
+  button.ghost{background:transparent;color:#8fe6f5;border:1px solid var(--line)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+  .pillrow{display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 18px}
+  .bigpill{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 14px;min-width:150px;flex:1}
+  .bigpill .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .bigpill .v{font-size:16px;font-weight:700;margin-top:3px;display:flex;align-items:center;gap:8px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+  .card{background:linear-gradient(180deg,var(--card),var(--card2));border:1px solid var(--line);border-radius:14px;padding:15px 16px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px dashed rgba(255,255,255,.05);font-size:13px}
+  .kv:last-child{border-bottom:0}
+  .kv .k{color:var(--mut)}.kv .v{font-weight:600;text-align:right;word-break:break-word}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:700}
+  .pill.ok{background:rgba(34,197,94,.16);color:#8ff0b0}.pill.warn{background:rgba(245,158,11,.16);color:#fcd97a}
+  .pill.bad{background:rgba(239,68,68,.16);color:#ffb0b0}.pill.mut{background:rgba(142,163,192,.14);color:#b9c8e0}
+  pre#log{background:#050f1d;border:1px solid var(--line);border-radius:10px;padding:10px 12px;max-height:340px;overflow:auto;font-size:12px;line-height:1.5;white-space:pre-wrap;margin:0}
+  .lg{color:#9fb4d4}.lw{color:#fcd97a}.le{color:#ff9b9b}
+  .lt{color:#5c7495}
+  a.lease{color:#8fe6f5;word-break:break-all;font-size:12px}
+  .mut{color:var(--mut);font-size:12px}.hide{display:none}
+  .gate{max-width:440px;margin:60px auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px}
+  .gate h2{margin:0 0 6px}
+  code{background:#07182b;padding:1px 6px;border-radius:6px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="gate" class="gate">
+    <h2>🛡️ WriteHuman V2 Console</h2>
+    <p class="mut" style="margin:0 0 16px">Enter the admin key to open the live management console. The key stays in this tab only.</p>
+    <div class="row"><input id="key" type="password" placeholder="WRITEHUMAN_V2_ADMIN_KEY" style="flex:1"><button id="unlock">Unlock</button></div>
+    <p id="gateMsg" class="mut" style="margin:12px 0 0"></p>
+  </div>
+
+  <div id="app" class="hide">
+    <header>
+      <h1>🛡️ WriteHuman V2 <span class="pill warn">console</span></h1>
+      <span class="spacer"></span>
+      <span class="conn"><span id="connDot" class="dot"></span><span id="connTxt">connecting…</span></span>
+      <button class="ghost" id="lock">Lock</button>
+    </header>
+    <p class="sub">Real-time management console · <span id="svcVer" class="mut"></span></p>
+
+    <div class="pillrow">
+      <div class="bigpill"><div class="k">Session</div><div class="v" id="p_session">—</div></div>
+      <div class="bigpill"><div class="k">Sync agent</div><div class="v" id="p_agent">—</div></div>
+      <div class="bigpill"><div class="k">Chrome / CDP</div><div class="v" id="p_cdp">—</div></div>
+      <div class="bigpill"><div class="k">Cookie sync</div><div class="v" id="p_sync">—</div></div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Account</h2>
+        <div class="kv"><span class="k">Label</span><span class="v" id="a_label">—</span></div>
+        <div class="kv"><span class="k">Status</span><span class="v" id="a_status">—</span></div>
+        <div class="kv"><span class="k">Session status</span><span class="v" id="a_session">—</span></div>
+        <div class="kv"><span class="k">Cookies stored</span><span class="v" id="a_cookies">—</span></div>
+        <div class="kv"><span class="k">Bundle present</span><span class="v" id="a_bundle">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Verification</h2>
+        <div class="kv"><span class="k">Result</span><span class="v" id="v_result">—</span></div>
+        <div class="kv"><span class="k">Account (masked)</span><span class="v" id="v_masked">—</span></div>
+        <div class="kv"><span class="k">HTTP</span><span class="v" id="v_http">—</span></div>
+        <div class="kv"><span class="k">Last verification</span><span class="v" id="v_last">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Cookie sync</h2>
+        <div class="kv"><span class="k">Last sync</span><span class="v" id="s_last">—</span></div>
+        <div class="kv"><span class="k">Sync count</span><span class="v" id="s_count">—</span></div>
+        <div class="kv"><span class="k">Staleness</span><span class="v" id="s_stale">—</span></div>
+        <div class="kv"><span class="k">Cookie hash</span><span class="v" id="s_hash">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Agent diagnostics</h2>
+        <div class="kv"><span class="k">Host</span><span class="v" id="ag_host">—</span></div>
+        <div class="kv"><span class="k">Version</span><span class="v" id="ag_ver">—</span></div>
+        <div class="kv"><span class="k">CDP / Chrome</span><span class="v" id="ag_cdp">—</span></div>
+        <div class="kv"><span class="k">Polls · auth cookies</span><span class="v" id="ag_polls">—</span></div>
+        <div class="kv"><span class="k">Uptime</span><span class="v" id="ag_up">—</span></div>
+        <div class="kv"><span class="k">Last error</span><span class="v" id="ag_err">—</span></div>
+        <div class="kv"><span class="k">Last report</span><span class="v" id="ag_rx">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>System / health</h2>
+        <div class="kv"><span class="k">Mode</span><span class="v" id="h_mode">—</span></div>
+        <div class="kv"><span class="k">Target</span><span class="v" id="h_target">—</span></div>
+        <div class="kv"><span class="k">Store</span><span class="v" id="h_store">—</span></div>
+        <div class="kv"><span class="k">Smart timer</span><span class="v" id="h_sched">—</span></div>
+        <div class="kv"><span class="k">Verify exchange</span><span class="v" id="h_exch">—</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Actions</h2>
+        <div class="row" style="margin-bottom:10px">
+          <button id="act_verify">Verify now</button>
+          <button class="ghost" id="act_resync">Re-sync</button>
+          <button class="ghost" id="act_chrome">Relaunch Chrome</button>
+          <button class="ghost" id="act_lease">Mint lease</button>
+        </div>
+        <p id="leaseOut" class="hide"><span class="mut">Open URL:</span> <a class="lease" id="leaseUrl" target="_blank" rel="noopener"></a></p>
+        <details><summary class="mut" style="cursor:pointer">Seed cookies (manual fallback)</summary>
+          <textarea id="seedIn" placeholder='{"cookies":[{"name":"sb-…-auth-token","value":"base64-…"}]}' style="margin-top:8px"></textarea>
+          <div class="row" style="margin-top:8px"><button id="act_seed">Seed</button></div>
+        </details>
+        <p id="actMsg" class="mut" style="margin:10px 0 0"></p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>Live logs <span class="mut" id="logMeta"></span></h2>
+      <pre id="log"></pre>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var $=function(s){return document.querySelector(s);};
+  var KEY='whv2_admin_key';
+  function key(){return sessionStorage.getItem(KEY)||'';}
+  var es=null, backoff=2000, seenSeq=0, reconnectTimer=null;
+
+  function hdr(){return {'x-admin-key':key()};}
+  function api(path,opts){opts=opts||{};opts.headers=Object.assign({'x-admin-key':key()},opts.headers||{});return fetch(path,opts);}
+
+  // ---- gate ----
+  function showGate(msg){$('#app').classList.add('hide');$('#gate').classList.remove('hide');if(msg)$('#gateMsg').textContent=msg;}
+  function showApp(){$('#gate').classList.add('hide');$('#app').classList.remove('hide');}
+  $('#unlock').onclick=function(){var v=$('#key').value.trim();if(!v)return;sessionStorage.setItem(KEY,v);$('#key').value='';start();};
+  $('#key').addEventListener('keydown',function(e){if(e.key==='Enter')$('#unlock').click();});
+  $('#lock').onclick=function(){sessionStorage.removeItem(KEY);if(es){es.close();es=null;}showGate('');};
+
+  function setConn(state){ // 'live' | 'reconnecting' | 'down'
+    var d=$('#connDot'),t=$('#connTxt');
+    d.className='dot '+(state==='live'?'ok':state==='reconnecting'?'warn':'bad');
+    t.textContent=state==='live'?'live':state==='reconnecting'?'reconnecting…':'disconnected';
+  }
+
+  // ---- start: verify key by minting a stream token, then open SSE ----
+  async function start(){
+    try{
+      var r=await api('/v2/admin/stream-token',{method:'POST'});
+      if(r.status===403){showGate('Invalid admin key.');return;}
+      if(!r.ok){showGate('Could not start (HTTP '+r.status+').');return;}
+      var j=await r.json();
+      showApp();
+      connect(j.token);
+    }catch(e){showGate('Network error: '+e.message);}
+  }
+
+  function connect(token){
+    if(es){es.close();es=null;}
+    setConn('reconnecting');
+    es=new EventSource('/v2/admin/stream?token='+encodeURIComponent(token));
+    es.addEventListener('open',function(){backoff=2000;setConn('live');});
+    es.addEventListener('state',function(ev){try{renderState(JSON.parse(ev.data));}catch(e){}});
+    es.addEventListener('log',function(ev){try{appendLog(JSON.parse(ev.data));}catch(e){}});
+    es.onerror=function(){
+      if(es && es.readyState===EventSource.CLOSED){
+        setConn('down');
+        // token likely rejected/expired -> mint a fresh one and reconnect with backoff
+        clearTimeout(reconnectTimer);
+        reconnectTimer=setTimeout(function(){ if(key()) start(); }, backoff);
+        backoff=Math.min(backoff*1.6,20000);
+      } else { setConn('reconnecting'); }
+    };
+  }
+
+  // ---- rendering ----
+  function pill(t,c){return '<span class="pill '+c+'">'+t+'</span>';}
+  function rel(iso){ if(!iso) return 'never'; var d=(Date.now()-new Date(iso).getTime())/1000; if(d<0)d=0;
+    if(d<60)return Math.round(d)+'s ago'; if(d<3600)return Math.round(d/60)+'m ago'; if(d<86400)return Math.round(d/3600)+'h ago'; return Math.round(d/86400)+'d ago'; }
+  function dur(sec){ if(sec==null)return '—'; if(sec<60)return sec+'s'; if(sec<3600)return Math.round(sec/60)+'m'; return Math.round(sec/3600)+'h'; }
+  function txt(id,v){var e=$('#'+id); if(e)e.textContent=(v==null||v==='')?'—':v;}
+  function html(id,v){var e=$('#'+id); if(e)e.innerHTML=v;}
+
+  function renderState(s){
+    if(!s||!s.account)return;
+    var a=s.account, ag=s.agent;
+    txt('svcVer','service '+s.service+' · '+s.mode);
+    // big pills
+    var st=a.status;
+    html('p_session', st==='active'?pill('active','ok'):(st==='session_expired'?pill('expired','bad'):pill(st||'—','warn')));
+    var agState = ag ? (a.agentStale? pill('stale','warn') : pill('live','ok')) : pill('no report','mut');
+    html('p_agent', agState);
+    var cdpUp = ag && ag.cdp==='200';
+    html('p_cdp', ag ? (cdpUp?pill('connected','ok'):pill('down','bad')) : pill('unknown','mut'));
+    html('p_sync', a.agentStale===null?pill('never','mut'):(a.agentStale?pill('stale','warn'):pill('fresh','ok')));
+    // account
+    txt('a_label',a.label); html('a_status', st?pill(st, st==='active'?'ok':st==='session_expired'?'bad':'warn'):'—');
+    txt('a_session',a.sessionStatus); txt('a_cookies',a.cookieCount);
+    html('a_bundle', a.hasBundle?pill('yes','ok'):pill('no','warn'));
+    // verification
+    var v=a.verification||{};
+    html('v_result', v.result?pill(v.result, v.result==='working'?'ok':v.result==='session_expired'?'bad':'mut'):'—');
+    txt('v_masked', v.maskedId); txt('v_http', v.httpStatus); txt('v_last', rel(a.lastVerifiedAt));
+    // sync
+    txt('s_last', rel(a.lastSyncedAt)); txt('s_count', a.syncCount);
+    txt('s_stale', a.staleSec==null?'—':dur(a.staleSec)); html('s_hash', a.hasCookieHash?pill('present','ok'):pill('none','warn'));
+    // agent diagnostics
+    if(ag){ txt('ag_host',ag.host); txt('ag_ver',ag.version);
+      html('ag_cdp', (ag.cdp==='200'?pill('cdp 200','ok'):pill('cdp '+(ag.cdp||'?'),'bad'))+' '+(ag.chrome?pill('chrome','ok'):pill('no chrome','warn')));
+      txt('ag_polls', (ag.pollCount==null?'—':ag.pollCount)+' · '+(ag.authCookies==null?'—':ag.authCookies));
+      txt('ag_up', dur(ag.uptimeSec)); txt('ag_err', ag.lastError||'none'); txt('ag_rx', rel(ag.receivedAt));
+    } else { ['ag_host','ag_ver','ag_polls','ag_up','ag_err','ag_rx'].forEach(function(i){txt(i,'—');}); html('ag_cdp',pill('no agent report','mut')); }
+    // system
+    txt('h_mode',s.mode); txt('h_target',s.target); txt('h_store',s.store);
+    html('h_sched', s.scheduler&&s.scheduler.running?pill('running · '+s.scheduler.intervalMin+'m','ok'):pill('off','warn'));
+    html('h_exch', s.verifyExchange?pill('on','warn'):pill('off (read-only)','ok'));
+  }
+
+  var logEl, logCount=0;
+  function appendLog(e){
+    if(!logEl)logEl=$('#log');
+    if(e.seq<=seenSeq)return; seenSeq=e.seq;
+    var cls=e.level==='error'?'le':e.level==='warn'?'lw':'lg';
+    var t=new Date(e.t).toLocaleTimeString();
+    var line=document.createElement('div');
+    line.innerHTML='<span class="lt">'+t+'</span> <span class="'+cls+'">'+e.event+'</span> <span class="lt">'+escapeHtml(JSON.stringify(e.fields))+'</span>';
+    logEl.appendChild(line); logCount++;
+    while(logEl.childNodes.length>400)logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop=logEl.scrollHeight;
+    $('#logMeta').textContent='('+logCount+' events)';
+  }
+  function escapeHtml(s){return String(s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+
+  // ---- actions ----
+  function msg(m){$('#actMsg').textContent=m;}
+  async function post(path,body){var r=await api(path,{method:'POST',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):'{}'});var j=null;try{j=await r.json();}catch(e){}return {status:r.status,j:j};}
+  $('#act_verify').onclick=async function(){this.disabled=true;msg('verifying…');var r=await post('/v2/admin/verify');msg('verify → '+(r.j&&r.j.result||r.status));this.disabled=false;};
+  $('#act_resync').onclick=async function(){msg('queuing re-sync…');var r=await post('/v2/admin/command',{command:'reverify'});msg(r.status===200?'re-sync queued (agent will re-push next poll)':'failed: '+JSON.stringify(r.j));};
+  $('#act_chrome').onclick=async function(){msg('queuing Chrome relaunch…');var r=await post('/v2/admin/command',{command:'relaunch-chrome'});msg(r.status===200?'Chrome relaunch queued (agent will run it next poll)':'failed: '+JSON.stringify(r.j));};
+  $('#act_lease').onclick=async function(){this.disabled=true;var r=await post('/v2/admin/lease',{});this.disabled=false;if(r.status===200&&r.j&&r.j.url){$('#leaseOut').classList.remove('hide');var el=$('#leaseUrl');el.href=r.j.url;el.textContent=r.j.url;msg('lease minted, '+r.j.secondsRemaining+'s');}else msg('lease failed');};
+  $('#act_seed').onclick=async function(){var raw=$('#seedIn').value.trim();if(!raw){msg('paste a cookie bundle first');return;}var data;try{data=JSON.parse(raw);}catch(e){msg('invalid JSON: '+e.message);return;}this.disabled=true;var r=await post('/v2/admin/seed',data);this.disabled=false;msg('seed → '+r.status+' '+(r.j&&r.j.cookiesSaved!=null?r.j.cookiesSaved+' cookies':''));};
+
+  // ---- boot ----
+  if(key())start(); else showGate('');
+})();
+</script>
+</body>
+</html>

@@ -26,6 +26,11 @@
  *   WHV2_POLL_MS      default 120000 (2 min)
  */
 const crypto = require('crypto');
+const os = require('os');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const AGENT_VERSION = '2.1.0';
 
 const CFG = {
   ingestUrl: process.env.WHV2_INGEST_URL || 'http://127.0.0.1:3100/v2/cookies/ingest',
@@ -95,83 +100,98 @@ async function getAllCookiesViaCDP(cdpUrl) {
   });
 }
 
-async function pushIfChanged(state) {
-  let cookies;
-  try { cookies = await getAllCookiesViaCDP(CFG.cdpUrl); }
-  catch (e) { log('cdp_read_failed', { error: e.message }); return; } // retry next tick
-  const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
-  const hash = hashAuthCookies(auth);
-  if (!hash) {
-    // No auth cookies. If we previously HAD a session, this may be a real logout — debounce,
-    // then signal V2 ONCE so it flags needs_login (read-only V2 can't detect logout otherwise).
-    if (state.lastHash !== null) {
-      state.emptyPolls = (state.emptyPolls || 0) + 1;
-      if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
-        if (await signalLogout()) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
-      } else {
-        log('browser_not_authenticated', { auth_cookies: 0, empty_polls: state.emptyPolls });
-      }
-    } else {
-      log('browser_not_authenticated', { auth_cookies: 0 });
-    }
-    return;
-  }
-  // Auth present → reset logout tracking.
-  state.emptyPolls = 0; state.loggedOutSent = false;
-  if (hash === state.lastHash) { await sendHeartbeat(hash); return; } // unchanged → liveness ping only
+// Diagnostics report attached to EVERY server call (drives the dashboard).
+function buildReport(state) {
+  return {
+    cdp: state.cdp, chrome: state.chrome, pollCount: state.pollCount,
+    authCookies: state.authCount, lastError: state.lastError,
+    host: os.hostname(), version: AGENT_VERSION,
+    uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
+  };
+}
 
+// One POST to /v2/cookies/ingest (cookie push / heartbeat / logout), always carrying the agent
+// report. Executes any command the server hands back. Returns the parsed body, or {_err}/{_status}.
+async function postToServer(state, payload) {
   let resp;
   try {
     resp = await fetch(CFG.ingestUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
-      body: JSON.stringify({ cookies: auth }),
+      body: JSON.stringify(Object.assign({ agent: buildReport(state) }, payload)),
       signal: AbortSignal.timeout(10000),
     });
-  } catch (e) { log('ingest_post_failed', { error: e.message }); return; } // keep lastHash → retry next tick
+  } catch (e) { return { _err: e.message }; }
+  let body = null; try { body = await resp.json(); } catch (_) {}
+  if (resp.ok && body && body.command) handleCommand(state, body.command);
+  return resp.ok ? (body || {}) : { _status: resp.status };
+}
 
-  if (resp.ok) {
-    state.lastHash = hash;
-    let body = null; try { body = await resp.json(); } catch (_) {}
-    log('cookie_synchronized', { hash: hash.slice(0, 8), changed: body && body.changed, result: body && body.result });
-  } else {
-    log('ingest_rejected', { status: resp.status });
+// Execute a whitelisted remote command from the dashboard. Best-effort; never throws.
+function handleCommand(state, cmd) {
+  try {
+    if (cmd === 'reverify') { state.lastHash = null; log('command_reverify', {}); return; } // force re-push next cycle
+    if (cmd === 'relaunch-chrome') {
+      const cmdPath = path.join(__dirname, '..', 'chrome-debug.cmd');
+      log('command_relaunch_chrome', { path: cmdPath });
+      const p = spawn('cmd.exe', ['/c', cmdPath], { detached: true, stdio: 'ignore', windowsHide: true });
+      p.unref();
+      return;
+    }
+    log('command_unknown', { command: cmd });
+  } catch (e) { log('command_failed', { command: cmd, error: e.message }); }
+}
+
+async function pushIfChanged(state) {
+  state.pollCount = (state.pollCount || 0) + 1;
+  let cookies;
+  try {
+    cookies = await getAllCookiesViaCDP(CFG.cdpUrl);
+    state.cdp = '200'; state.chrome = true; state.lastError = null;
+  } catch (e) {
+    state.cdp = 'DOWN'; state.chrome = false; state.lastError = e.message;
+    log('cdp_read_failed', { error: e.message });
+    await postToServer(state, { heartbeat: true, hash: null }); // report CDP-down so the dashboard sees it live
+    return;
   }
-}
-
-// Liveness ping when cookies are unchanged, so V2's lastSyncedAt/agentStale reflect that the
-// agent is alive (cookies only CHANGE ~hourly on token rotation). Best-effort; never throws.
-async function sendHeartbeat(hash) {
-  try {
-    const resp = await fetch(CFG.ingestUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
-      body: JSON.stringify({ heartbeat: true, hash: hash ? hash.slice(0, 8) : null }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (resp.ok) log('heartbeat', { hash: hash ? hash.slice(0, 8) : null });
-    else log('heartbeat_rejected', { status: resp.status });
-  } catch (e) { log('heartbeat_failed', { error: e.message }); }
-}
-
-// Tell V2 the browser logged out (debounced by the caller). POST {loggedOut:true} to ingest.
-async function signalLogout() {
-  try {
-    const resp = await fetch(CFG.ingestUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
-      body: JSON.stringify({ loggedOut: true, reason: 'auth_cookie_absent' }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!resp.ok) { log('logout_signal_rejected', { status: resp.status }); return false; }
-    return true;
-  } catch (e) { log('logout_signal_failed', { error: e.message }); return false; }
+  const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
+  state.authCount = auth.length;
+  const hash = hashAuthCookies(auth);
+  if (!hash) {
+    if (state.lastHash !== null) {
+      state.emptyPolls = (state.emptyPolls || 0) + 1;
+      if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
+        const r = await postToServer(state, { loggedOut: true, reason: 'auth_cookie_absent' });
+        if (r && !r._err && r._status == null) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
+      } else {
+        await postToServer(state, { heartbeat: true, hash: null });
+        log('browser_not_authenticated', { auth_cookies: 0, empty_polls: state.emptyPolls });
+      }
+    } else {
+      await postToServer(state, { heartbeat: true, hash: null });
+      log('browser_not_authenticated', { auth_cookies: 0 });
+    }
+    return;
+  }
+  state.emptyPolls = 0; state.loggedOutSent = false;
+  if (hash === state.lastHash) {
+    const r = await postToServer(state, { heartbeat: true, hash: hash.slice(0, 8) });
+    if (r && r._err) log('heartbeat_failed', { error: r._err });
+    else if (r && r._status) log('heartbeat_rejected', { status: r._status });
+    else log('heartbeat', { hash: hash.slice(0, 8) });
+    return;
+  }
+  const r = await postToServer(state, { cookies: auth });
+  if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // keep lastHash → retry next tick
+  if (r && r._status) { log('ingest_rejected', { status: r._status }); return; }
+  state.lastHash = hash;
+  log('cookie_synchronized', { hash: hash.slice(0, 8), changed: r.changed, result: r.result });
 }
 
 function start() {
   if (!CFG.agentKey) { log('fatal', { reason: 'WHV2_AGENT_KEY not set' }); process.exit(1); }
-  log('starting', { ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs });
-  const state = { lastHash: null };
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs });
+  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false };
   const tick = () => { pushIfChanged(state).catch((e) => log('tick_error', { error: e && e.message })); };
   tick(); // run once immediately
   const timer = setInterval(tick, CFG.pollMs);
@@ -180,6 +200,6 @@ function start() {
   process.on('SIGTERM', shutdown);
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, CFG };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, AGENT_VERSION, CFG };
 
 if (require.main === module) start();
