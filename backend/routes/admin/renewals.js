@@ -16,12 +16,15 @@
 const express = require('express');
 const router = express.Router();
 const ToolAssignment = require('../../models/ToolAssignment');
+const ProxyClient = require('../../models/proxy/ProxyClient');
+const StealthClient = require('../../models/stealth/StealthClient');
 const User = require('../../models/User');
 const ActivityLog = require('../../models/ActivityLog');
 const RenewalReminderLog = require('../../models/RenewalReminderLog');
 const RenewalFollowup = require('../../models/RenewalFollowup');
 const { requireAuth, requireAdmin } = require('../../middleware/authEnhanced');
 const { isEmailEnabled, sendRenewalReminderEmail } = require('../../utils/email');
+const proxyTools = require('../../utils/proxy/tools');
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -71,31 +74,84 @@ async function upsertFollowup(clientId, patch, adminId) {
   return f;
 }
 
-// Build the list of a client's tool assignments that are expiring within `days`
-// or already expired. `rows` are populated ToolAssignment docs. Returns a flat
-// array of { assignmentId, toolId, toolName, endDate, daysLeft, expired }.
-function expiringToolsFromRows(rows, days, now = new Date()) {
-  const out = [];
-  for (const row of rows || []) {
-    if (!row || row.status === 'revoked') continue;
-    const boundary = ToolAssignment.effectiveEndBoundary(row.endDate);
-    if (!boundary) continue; // no expiry (lifetime access) → nothing to renew
+// A service assignment counts as "access removed" (not a renewal candidate) when it's in one of
+// these states — the same intent as ToolAssignment skipping 'revoked', extended to the dedicated
+// modules (ProxyClient/StealthClient use 'disabled'). A swept 'expired' ToolAssignment is KEPT
+// (that's exactly what Renewals surfaces).
+const REMOVED_STATES = new Set(['revoked', 'disabled']);
+
+// SINGLE renewal aggregator. Collects a client's expiring/expired services from ALL assignment
+// stores — core tools (ToolAssignment), proxy tools (ProxyClient: HIX/BypassGPT/WriteHuman/…) and
+// StealthWriter (StealthClient) — into ONE unified shape the engine already understands:
+//   { assignmentId, toolId, toolName, endDate, daysLeft, expired, module }
+// Every store's expiry boundary is computed with the EXISTING ToolAssignment.effectiveEndBoundary()
+// so the inclusive end-of-day rule is identical everywhere. Pass `onlyClientId` to scope to one
+// client (used by the reminder + extend routes). Returns flat entries { clientId, client, tool }.
+async function collectServiceEntries(days, now, onlyClientId = null) {
+  const entries = [];
+  const within = (endDate) => {
+    const boundary = ToolAssignment.effectiveEndBoundary(endDate);
+    if (!boundary) return null; // no expiry (lifetime access) → nothing to renew
     const daysLeft = Math.ceil((boundary.getTime() - now.getTime()) / DAY_MS);
     const expired = boundary.getTime() < now.getTime();
-    if (!expired && daysLeft > days) continue; // still comfortably active
+    if (!expired && daysLeft > days) return null; // still comfortably active
+    return { daysLeft, expired };
+  };
+  const push = (clientRef, tool) => {
+    const client = clientRef && typeof clientRef === 'object' ? clientRef : null;
+    const clientId = client ? String(client._id) : String(clientRef || '');
+    if (!clientId) return;
+    if (onlyClientId && clientId !== String(onlyClientId)) return;
+    entries.push({
+      clientId,
+      client: client ? { fullName: client.fullName, email: client.email, status: client.status, phone: client.phone || null } : null,
+      tool,
+    });
+  };
+
+  // 1) Core tools (ToolAssignment) — behaviour identical to before.
+  const taRows = await ToolAssignment.find(onlyClientId ? { clientId: onlyClientId } : {})
+    .populate('toolId', 'name category')
+    .populate('clientId', 'fullName email status phone');
+  for (const row of taRows || []) {
+    if (!row || REMOVED_STATES.has(row.status)) continue;
+    const w = within(row.endDate); if (!w) continue;
     const tool = row.toolId && typeof row.toolId === 'object' ? row.toolId : null;
-    out.push({
-      assignmentId: row._id,
-      toolId: tool ? tool._id : row.toolId,
-      toolName: tool ? tool.name : 'Tool',
-      endDate: row.endDate || null,
-      daysLeft,
-      expired,
+    push(row.clientId, {
+      assignmentId: String(row._id), toolId: tool ? String(tool._id) : String(row.toolId || ''),
+      toolName: tool ? tool.name : 'Tool', endDate: row.endDate || null,
+      daysLeft: w.daysLeft, expired: w.expired, module: 'core',
     });
   }
-  // Soonest / most-overdue first.
-  out.sort((a, b) => a.daysLeft - b.daysLeft);
-  return out;
+
+  // 2) Proxy tools (ProxyClient) — HIX / BypassGPT / WriteHuman / …, keyed by userId + tool.
+  const pxRows = await ProxyClient.find(onlyClientId ? { userId: onlyClientId } : {})
+    .populate('userId', 'fullName email status phone');
+  for (const row of pxRows || []) {
+    if (!row || REMOVED_STATES.has(row.status)) continue;
+    const w = within(row.expiryDate); if (!w) continue;
+    const meta = proxyTools.getTool(row.tool);
+    push(row.userId, {
+      assignmentId: String(row._id), toolId: String(row.tool || ''),
+      toolName: (meta && meta.name) || row.tool || 'Proxy tool', endDate: row.expiryDate || null,
+      daysLeft: w.daysLeft, expired: w.expired, module: 'proxy',
+    });
+  }
+
+  // 3) StealthWriter (StealthClient) — keyed by userId.
+  const swRows = await StealthClient.find(onlyClientId ? { userId: onlyClientId } : {})
+    .populate('userId', 'fullName email status phone');
+  for (const row of swRows || []) {
+    if (!row || REMOVED_STATES.has(row.status)) continue;
+    const w = within(row.expiryDate); if (!w) continue;
+    push(row.userId, {
+      assignmentId: String(row._id), toolId: 'stealthwriter',
+      toolName: row.planName || 'StealthWriter', endDate: row.expiryDate || null,
+      daysLeft: w.daysLeft, expired: w.expired, module: 'stealth',
+    });
+  }
+
+  return entries;
 }
 
 // GET / — clients with tools expiring within ?days (default 14) or already expired.
@@ -105,43 +161,30 @@ router.get('/', async (req, res) => {
     const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 14));
     const now = new Date();
 
-    const rows = await ToolAssignment.find({})
-      .populate('toolId', 'name category')
-      .populate('clientId', 'fullName email status phone');
+    // Unified across ALL assignment stores (core tools + proxy tools + StealthWriter).
+    const entries = await collectServiceEntries(days, now);
 
-    // Group expiring/expired rows by client.
+    // Group expiring/expired services by client. A client with services in more than one module
+    // gets a single card listing every expiring service.
     const byClient = new Map();
-    for (const row of rows || []) {
-      if (!row || row.status === 'revoked') continue;
-      const boundary = ToolAssignment.effectiveEndBoundary(row.endDate);
-      if (!boundary) continue;
-      const daysLeft = Math.ceil((boundary.getTime() - now.getTime()) / DAY_MS);
-      const expired = boundary.getTime() < now.getTime();
-      if (!expired && daysLeft > days) continue;
-
-      const client = row.clientId && typeof row.clientId === 'object' ? row.clientId : null;
-      const clientId = client ? String(client._id) : String(row.clientId || '');
-      if (!clientId) continue;
-
-      if (!byClient.has(clientId)) {
-        byClient.set(clientId, {
-          clientId,
-          fullName: client ? client.fullName : null,
-          email: client ? client.email : null,
-          status: client ? client.status : null,
-          phone: client ? (client.phone || null) : null,
+    for (const e of entries) {
+      if (!byClient.has(e.clientId)) {
+        byClient.set(e.clientId, {
+          clientId: e.clientId,
+          fullName: e.client ? e.client.fullName : null,
+          email: e.client ? e.client.email : null,
+          status: e.client ? e.client.status : null,
+          phone: e.client ? (e.client.phone || null) : null,
           tools: [],
         });
       }
-      const tool = row.toolId && typeof row.toolId === 'object' ? row.toolId : null;
-      byClient.get(clientId).tools.push({
-        assignmentId: row._id,
-        toolId: tool ? tool._id : row.toolId,
-        toolName: tool ? tool.name : 'Tool',
-        endDate: row.endDate || null,
-        daysLeft,
-        expired,
-      });
+      const g = byClient.get(e.clientId);
+      // Backfill client identity if the first entry for this client had no populated user.
+      if (e.client && g.fullName == null && g.email == null) {
+        g.fullName = e.client.fullName; g.email = e.client.email;
+        g.status = e.client.status; g.phone = e.client.phone || null;
+      }
+      g.tools.push(e.tool);
     }
 
     // Attach the latest reminder per client (single bounded read).
@@ -220,8 +263,9 @@ router.post('/:clientId/remind', async (req, res) => {
     const client = await User.findOne({ _id: clientId, role: 'CLIENT' });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    const rows = await ToolAssignment.find({ clientId }).populate('toolId', 'name');
-    let tools = expiringToolsFromRows(rows, days);
+    // Gather the client's expiring/expired services across ALL modules (core + proxy + stealth).
+    let tools = (await collectServiceEntries(days, new Date(), clientId)).map(e => e.tool);
+    tools.sort((a, b) => a.daysLeft - b.daysLeft); // soonest / most-overdue first
     if (toolIds && toolIds.length) {
       tools = tools.filter(t => toolIds.includes(String(t.assignmentId)) || toolIds.includes(String(t.toolId)));
     }
@@ -328,6 +372,63 @@ router.post('/:clientId/followup', async (req, res) => {
   } catch (error) {
     console.error('Update renewal follow-up error:', error);
     res.status(500).json({ error: 'Failed to update follow-up' });
+  }
+});
+
+// POST /:clientId/extend — one-click renew of a SINGLE expiring service, in whichever store owns
+// it. Unifies the "+N days" action across the dedicated modules so Renewals can renew every service
+// consistently. Body: { module: 'proxy'|'stealth'|'core', id, durationDays? }.
+//   - Core tools are renewed via the existing /admin/assignments/:id/extend route (the frontend
+//     calls that directly and it is left untouched); this handler also accepts 'core' as a safe
+//     fallback. Proxy/StealthWriter extend their own expiryDate here.
+// Extends from the current (still-future) expiry, else from today — same rule as assignments/extend.
+router.post('/:clientId/extend', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const moduleName = ['proxy', 'stealth', 'core'].includes(req.body && req.body.module) ? req.body.module : 'core';
+    const id = String((req.body && req.body.id) || '');
+    const days = Math.min(3650, Math.max(1, parseInt(req.body && req.body.durationDays, 10) || 30));
+    if (!id) return res.status(400).json({ error: 'Missing service id' });
+
+    const now = new Date();
+    const extendFrom = (cur) => {
+      const c = cur ? new Date(cur) : null;
+      const base = c && !isNaN(c.getTime()) && c.getTime() > now.getTime() ? c : now;
+      return new Date(base.getTime() + days * DAY_MS);
+    };
+
+    if (moduleName === 'proxy') {
+      const pc = await ProxyClient.findById(id);
+      if (!pc || String(pc.userId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+      pc.expiryDate = extendFrom(pc.expiryDate);
+      if (pc.status === 'disabled') pc.status = 'active'; // renewing re-activates a disabled grant
+      await pc.save();
+      await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_EXTENDED', { clientId: String(clientId), module: 'proxy', tool: pc.tool, days, endDate: pc.expiryDate });
+      return res.json({ success: true, module: 'proxy', newEndDate: pc.expiryDate });
+    }
+
+    if (moduleName === 'stealth') {
+      const sc = await StealthClient.findById(id);
+      if (!sc || String(sc.userId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+      sc.expiryDate = extendFrom(sc.expiryDate);
+      if (sc.status === 'disabled') sc.status = 'active';
+      await sc.save();
+      await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_EXTENDED', { clientId: String(clientId), module: 'stealth', days, endDate: sc.expiryDate });
+      return res.json({ success: true, module: 'stealth', newEndDate: sc.expiryDate });
+    }
+
+    // core (ToolAssignment) — fallback path (frontend normally uses /admin/assignments/:id/extend).
+    const a = await ToolAssignment.findById(id);
+    if (!a || String(a.clientId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+    a.endDate = extendFrom(a.endDate);
+    a.status = 'active';
+    a.revokedAt = null;
+    await a.save();
+    await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_EXTENDED', { clientId: String(clientId), module: 'core', toolId: String(a.toolId || ''), days, endDate: a.endDate });
+    return res.json({ success: true, module: 'core', newEndDate: a.endDate });
+  } catch (error) {
+    console.error('Renewal extend error:', error);
+    res.status(500).json({ error: 'Failed to renew this service' });
   }
 });
 

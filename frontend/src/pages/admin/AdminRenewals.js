@@ -163,7 +163,13 @@ const AdminRenewals = () => {
   const quickRenew = async (c, tool) => {
     setBusyFor(tool.assignmentId, true);
     try {
-      await api.post(`/admin/assignments/${tool.assignmentId}/extend`, { durationDays: 30 });
+      // Dedicated modules (proxy tools / StealthWriter) renew through the unified renewals
+      // dispatcher; core tools keep using the existing, proven assignments extend endpoint.
+      if (tool.module && tool.module !== 'core') {
+        await api.post(`/admin/renewals/${c.clientId}/extend`, { module: tool.module, id: tool.assignmentId, durationDays: 30 });
+      } else {
+        await api.post(`/admin/assignments/${tool.assignmentId}/extend`, { durationDays: 30 });
+      }
       showSuccess(`${tool.toolName} renewed +30 days for ${c.fullName || c.email}`);
       load(days);
     } catch (e) { showError(e.response?.data?.error || 'Could not renew this tool.'); }
