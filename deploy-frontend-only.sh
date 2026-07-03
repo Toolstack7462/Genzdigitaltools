@@ -58,5 +58,17 @@ curl --silent --show-error --fail-with-body --ftp-create-dirs \
 rm -f "${FRONT_CFG}"
 
 LOCAL_MAIN="$(grep -o 'main\.[a-z0-9]*\.js' "${BUILD_DIR}/index.html" | head -1)"
-echo "==> DONE. Frontend published to both roots (backend untouched, no restart)."
-echo "    Verify: curl -s https://app.genzdigitalstore.com/ | grep -o 'main\\.[a-z0-9]*\\.js'  (expect ${LOCAL_MAIN})"
+# ENFORCED post-deploy check: a big -K multi-transfer can silently drop files, so confirm BOTH live
+# roots actually serve this build's main bundle before declaring success (fail loudly otherwise).
+echo "==> Verifying both roots serve ${LOCAL_MAIN}"
+verify_fail=0
+for vhost in genzdigitalstore.com app.genzdigitalstore.com; do
+  live="$(curl -s -L -m 20 "https://${vhost}/" | grep -o 'main\.[a-z0-9]*\.js' | head -1)"
+  if [[ "${live}" == "${LOCAL_MAIN}" ]]; then echo "  ✓ ${vhost} -> ${live}"; else echo "  ✗ ${vhost} -> ${live:-<none>} (expected ${LOCAL_MAIN})"; verify_fail=1; fi
+done
+if [[ "${verify_fail}" == 0 ]]; then
+  echo "==> DONE + VERIFIED. Frontend published to both roots (backend untouched, no restart)."
+else
+  echo "FATAL: a live root is not serving ${LOCAL_MAIN} — the upload may be incomplete. Re-run the deploy." >&2
+  exit 1
+fi
