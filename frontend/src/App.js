@@ -67,6 +67,7 @@ import { RefreshProvider } from './contexts/RefreshContext';
 import AdminRoute from './components/AdminRoute';
 import ClientRoute from './components/ClientRoute';
 import ErrorBoundary from './components/ErrorBoundary';
+import RouteSeo from './components/RouteSeo';
 import PageLoader from './components/PageLoader';
 
 // Public Pages (existing) — code-split
@@ -148,6 +149,7 @@ function App() {
       <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
           <ScrollToTop />
+          <RouteSeo />
           <Suspense fallback={<PageLoader />}>
           <Routes>
 
