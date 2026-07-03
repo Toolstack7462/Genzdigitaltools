@@ -29,58 +29,11 @@ const proxyTools = require('../../utils/proxy/tools');
 router.use(requireAuth);
 router.use(requireAdmin);
 
-const DAY_MS = 86400000;
+// Pure, unit-tested date-window + sort logic (single source of truth; no duplicated business logic).
+const { DAY_MS, ARCHIVE_AFTER_DAYS, resolveWindow, classifyExpiry, compareClients } = require('../../utils/renewalWindow');
 
 const OFFERS = ['none', 'discount10', 'bonus2'];
 const FOLLOWUP_STATUSES = ['open', 'snoozed', 'lost', 'recovered'];
-
-// A service overdue by MORE than this is "old / archived" — it drops out of the upcoming windows and
-// the default queue, and always sorts to the bottom. Env-overridable.
-const ARCHIVE_AFTER_DAYS = Math.max(1, parseInt(process.env.RENEWAL_ARCHIVE_AFTER_DAYS, 10) || 30);
-// Default (no explicit range) actionable horizon into the future.
-const DEFAULT_HORIZON_DAYS = Math.max(1, parseInt(process.env.RENEWAL_DEFAULT_HORIZON_DAYS, 10) || 60);
-
-// UTC day boundaries (the expiry boundary itself is computed in UTC via effectiveEndBoundary).
-function startOfDay(d) { const x = new Date(d); x.setUTCHours(0, 0, 0, 0); return x; }
-function endOfDay(d) { const x = new Date(d); x.setUTCHours(23, 59, 59, 999); return x; }
-function addDays(d, n) { return new Date(d.getTime() + n * DAY_MS); }
-function parseYMD(s) {
-  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!m) return null;
-  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
-  return isNaN(d.getTime()) ? null : d;
-}
-
-// Resolve the query into an inclusive expiry window { start, end } (either may be null = unbounded)
-// plus a `mode`. Presets are computed server-side so the date math is timezone-consistent.
-//   range=today|tomorrow|next7|next14|next30|overdue|archived|all | (from[/to] for custom)
-// Back-compat: ?days=N with no range → the default actionable window (recently overdue → +N days).
-function resolveWindow(query, now) {
-  const today = startOfDay(now);
-  const range = String(query.range || '').toLowerCase();
-  const from = parseYMD(query.from);
-  const to = parseYMD(query.to);
-  if (from || to) {                         // custom single date (from only) or range (from+to)
-    return { start: from ? startOfDay(from) : null, end: to ? endOfDay(to) : (from ? endOfDay(from) : null), mode: 'custom' };
-  }
-  switch (range) {
-    case 'today': return { start: today, end: endOfDay(today), mode: 'today' };
-    case 'tomorrow': { const t = addDays(today, 1); return { start: t, end: endOfDay(t), mode: 'tomorrow' }; }
-    case 'next7': return { start: today, end: endOfDay(addDays(today, 7)), mode: 'next7' };
-    case 'next14': return { start: today, end: endOfDay(addDays(today, 14)), mode: 'next14' };
-    case 'next30': return { start: today, end: endOfDay(addDays(today, 30)), mode: 'next30' };
-    // Recently expired but still worth chasing (overdue within the archive grace).
-    case 'overdue': return { start: startOfDay(addDays(today, -ARCHIVE_AFTER_DAYS)), end: endOfDay(addDays(today, -1)), mode: 'overdue' };
-    // Old / long-expired only.
-    case 'archived': return { start: null, end: endOfDay(addDays(today, -ARCHIVE_AFTER_DAYS - 1)), mode: 'archived' };
-    case 'all': return { start: null, end: null, mode: 'all' };
-    default: {
-      const days = Math.min(90, Math.max(1, parseInt(query.days, 10) || DEFAULT_HORIZON_DAYS));
-      // Actionable queue: recently overdue (within grace) through `days` ahead — excludes long-expired.
-      return { start: startOfDay(addDays(today, -ARCHIVE_AFTER_DAYS)), end: endOfDay(addDays(today, days)), mode: 'default', days };
-    }
-  }
-}
 
 // Derive the recovery STAGE from how overdue the client's most-urgent tool is.
 // Stages are computed (not stored) so they always reflect live expiry data.
@@ -139,21 +92,8 @@ const REMOVED_STATES = new Set(['revoked', 'disabled']);
 // filters). Pass `onlyClientId` to scope to one client. Returns flat entries { clientId, client, tool }.
 async function collectServiceEntries(win, now, onlyClientId = null) {
   const entries = [];
-  const nowT = now.getTime();
-  const startT = win && win.start ? win.start.getTime() : null;
-  const endT = win && win.end ? win.end.getTime() : null;
-  const within = (endDate) => {
-    const boundary = ToolAssignment.effectiveEndBoundary(endDate);
-    if (!boundary) return null; // no expiry (lifetime access) → nothing to renew
-    const t = boundary.getTime();
-    if (startT != null && t < startT) return null; // expiry is before the window
-    if (endT != null && t > endT) return null;     // expiry is after the window
-    const daysLeft = Math.ceil((t - nowT) / DAY_MS);
-    const expired = t < nowT;
-    const overdueDays = expired ? Math.max(0, Math.floor((nowT - t) / DAY_MS)) : 0;
-    const archived = expired && overdueDays > ARCHIVE_AFTER_DAYS; // long-expired
-    return { daysLeft, expired, overdueDays, archived };
-  };
+  // Classify each service by its expiry boundary against the window (pure, unit-tested logic).
+  const within = (endDate) => classifyExpiry(ToolAssignment.effectiveEndBoundary(endDate), now, win);
   const push = (clientRef, tool) => {
     const client = clientRef && typeof clientRef === 'object' ? clientRef : null;
     const clientId = client ? String(client._id) : String(clientRef || '');
@@ -298,20 +238,11 @@ router.get('/', async (req, res) => {
       };
     });
 
-    // Sort order (top → bottom):
-    //   1) UPCOMING (not yet expired) — nearest expiry first (soonest at the very top),
-    //   2) recently EXPIRED — most-recent first,
-    //   3) OLD/archived expired — oldest at the very bottom.
-    // The upcoming-above-expired split and the "oldest last" tiebreak are by daysLeft, NOT the
-    // archive flag — so a long-dead record can NEVER surface at the top even if it isn't flagged.
-    clients.sort((a, b) => {
-      const aDl = a.soonestDaysLeft, bDl = b.soonestDaysLeft;
-      const aExp = aDl != null && aDl < 0;
-      const bExp = bDl != null && bDl < 0;
-      if (aExp !== bExp) return aExp ? 1 : -1;            // upcoming (incl. today) above all expired
-      if (!aExp) return (aDl ?? 9999) - (bDl ?? 9999);    // upcoming: soonest expiry first
-      return (bDl ?? -99999) - (aDl ?? -99999);           // expired: most-recent first → oldest last
-    });
+    // Sort: Expired → Today → Next 7 → Next 14 → Next 30 (soonestDaysLeft ascending), with
+    // old/archived clients pinned to the very bottom. Long-expired is already excluded from active
+    // windows by resolveWindow, so the active queue only ever contains recently-expired + upcoming.
+    // (compareClients is pure + unit-tested in tests/renewalWindow.test.js.)
+    clients.sort(compareClients);
 
     const counts = {
       clients: clients.length,

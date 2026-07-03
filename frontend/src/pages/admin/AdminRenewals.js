@@ -61,6 +61,12 @@ const fmtAgo = (d) => {
   if (days < 7) return `${days}d ago`;
   return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
+// Short exact date for expiry display ("10 Jul 2026").
+const fmtDate = (d) => {
+  if (!d) return '—';
+  const dt = new Date(d); if (isNaN(dt.getTime())) return '—';
+  return dt.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+};
 // Exact date+time for reminder history ("Jul 3, 2026, 2:15 PM").
 const fmtExact = (d) => {
   if (!d) return '';
@@ -239,32 +245,49 @@ const AdminRenewals = () => {
             </h1>
             <p className="text-sm text-genz-muted mt-0.5">Clients with tools expiring soon or already expired. Remind by email or WhatsApp, or renew in one click.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 justify-end">
-            {/* Date window: presets + Today/Tomorrow/Next-N/Overdue/Old, plus custom date & range. */}
-            <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} aria-label="Date window"
-              className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium focus:outline-none focus:border-genz-teal/50">
-              {DATE_PRESETS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
-              <option value="customDate">Custom date…</option>
-              <option value="customRange">Custom range…</option>
-            </select>
-            {dateFilter === 'customDate' && (
-              <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} aria-label="Custom date"
-                className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
-            )}
-            {dateFilter === 'customRange' && (
-              <>
-                <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} aria-label="From date"
-                  className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
-                <span className="text-genz-muted text-sm">to</span>
-                <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} aria-label="To date"
-                  className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
-              </>
-            )}
+          <div className="flex items-center gap-2 justify-end">
             <button onClick={() => load()} title="Refresh"
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium hover:border-genz-teal/50 transition-colors">
               <RefreshCw size={15} /> Refresh
             </button>
           </div>
+        </div>
+
+        {/* Date-window TABS (real ranges) + custom day / range picker */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-genz-muted mr-1">When</span>
+          {DATE_PRESETS.map(p => (
+            <button key={p.key} onClick={() => setDateFilter(p.key)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${dateFilter === p.key ? 'bg-genz-teal/10 text-genz-teal border-genz-teal/30' : 'bg-white text-genz-muted border-genz-border hover:text-genz-navy hover:border-genz-teal/40'}`}>
+              {p.label}
+            </button>
+          ))}
+          <button onClick={() => setDateFilter(dateFilter === 'customRange' ? 'customRange' : 'customDate')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${(dateFilter === 'customDate' || dateFilter === 'customRange') ? 'bg-genz-teal/10 text-genz-teal border-genz-teal/30' : 'bg-white text-genz-muted border-genz-border hover:text-genz-navy hover:border-genz-teal/40'}`}>
+            Custom…
+          </button>
+          {(dateFilter === 'customDate' || dateFilter === 'customRange') && (
+            <div className="inline-flex items-center gap-1.5 ml-1">
+              <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} aria-label="Custom mode"
+                className="px-2 py-1.5 rounded-lg border border-genz-border bg-white text-genz-navy text-xs focus:outline-none focus:border-genz-teal/50">
+                <option value="customDate">Single day</option>
+                <option value="customRange">Date range</option>
+              </select>
+              {dateFilter === 'customDate' && (
+                <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} aria-label="Custom date"
+                  className="px-2 py-1.5 rounded-lg border border-genz-border bg-white text-genz-navy text-xs focus:outline-none focus:border-genz-teal/50" />
+              )}
+              {dateFilter === 'customRange' && (
+                <>
+                  <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} aria-label="From date"
+                    className="px-2 py-1.5 rounded-lg border border-genz-border bg-white text-genz-navy text-xs focus:outline-none focus:border-genz-teal/50" />
+                  <span className="text-genz-muted text-xs">to</span>
+                  <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} aria-label="To date"
+                    className="px-2 py-1.5 rounded-lg border border-genz-border bg-white text-genz-navy text-xs focus:outline-none focus:border-genz-teal/50" />
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Search + status filters */}
@@ -391,11 +414,22 @@ const AdminRenewals = () => {
                       {c.email || 'no email on file'}
                       {c.phone && <span className="ml-2 inline-flex items-center gap-1 text-emerald-600"><MessageCircle size={11} /> +{c.phone}</span>}
                     </p>
-                    {/* Tool chips with quick renew */}
+                    {/* Prominent NEXT EXPIRY (exact date + days left/overdue) */}
+                    {c.soonestEndDate && (
+                      <p className="mt-1.5 inline-flex items-center gap-1.5 text-[13px] font-semibold text-genz-navy">
+                        <CalendarClock size={13} className="text-genz-teal flex-shrink-0" />
+                        Next expiry: {fmtDate(c.soonestEndDate)}
+                        <span className={`text-[11px] font-bold ${c.soonestDaysLeft < 0 ? 'text-red-600' : c.soonestDaysLeft <= 3 ? 'text-amber-600' : 'text-genz-teal'}`}>
+                          • {c.soonestDaysLeft < 0 ? `${-c.soonestDaysLeft} day${c.soonestDaysLeft === -1 ? '' : 's'} overdue` : c.soonestDaysLeft === 0 ? 'today' : `${c.soonestDaysLeft} day${c.soonestDaysLeft === 1 ? '' : 's'} left`}
+                        </span>
+                      </p>
+                    )}
+                    {/* Tool chips with quick renew — each tool shows its OWN exact expiry date */}
                     <div className="flex flex-wrap gap-1.5 mt-2.5">
                       {c.tools.map(t => (
-                        <span key={t.assignmentId} className={`group inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium border max-w-full ${toolCls(t)}`}>
-                          <span className="truncate max-w-[160px]">{t.toolName}</span>
+                        <span key={t.assignmentId} className={`group inline-flex items-center gap-1.5 pl-2.5 pr-1 py-1 rounded-full text-xs font-medium border max-w-full ${toolCls(t)}`} title={`${t.toolName} — expires ${fmtDate(t.endDate)}`}>
+                          <span className="truncate max-w-[140px] font-semibold">{t.toolName}</span>
+                          <span className="opacity-70 flex-shrink-0">· {fmtDate(t.endDate)}</span>
                           <span className="opacity-70 flex-shrink-0">· {toolLabel(t)}</span>
                           <button onClick={() => quickRenew(c, t)} disabled={!!busy[t.assignmentId]}
                             title="Renew +30 days"
