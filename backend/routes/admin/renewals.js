@@ -298,12 +298,19 @@ router.get('/', async (req, res) => {
       };
     });
 
-    // Old/long-expired clients always sink to the BOTTOM. Within each group, sort chronologically by
-    // nearest expiry: active → most-recently-overdue/soonest first; archived → least-old first.
+    // Sort order (top → bottom):
+    //   1) UPCOMING (not yet expired) — nearest expiry first (soonest at the very top),
+    //   2) recently EXPIRED — most-recent first,
+    //   3) OLD/archived expired — oldest at the very bottom.
+    // The upcoming-above-expired split and the "oldest last" tiebreak are by daysLeft, NOT the
+    // archive flag — so a long-dead record can NEVER surface at the top even if it isn't flagged.
     clients.sort((a, b) => {
-      if (a.archived !== b.archived) return a.archived ? 1 : -1;
-      if (a.archived) return (b.soonestDaysLeft ?? -99999) - (a.soonestDaysLeft ?? -99999);
-      return (a.soonestDaysLeft ?? 9999) - (b.soonestDaysLeft ?? 9999);
+      const aDl = a.soonestDaysLeft, bDl = b.soonestDaysLeft;
+      const aExp = aDl != null && aDl < 0;
+      const bExp = bDl != null && bDl < 0;
+      if (aExp !== bExp) return aExp ? 1 : -1;            // upcoming (incl. today) above all expired
+      if (!aExp) return (aDl ?? 9999) - (bDl ?? 9999);    // upcoming: soonest expiry first
+      return (bDl ?? -99999) - (aDl ?? -99999);           // expired: most-recent first → oldest last
     });
 
     const counts = {
