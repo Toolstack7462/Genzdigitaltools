@@ -8,7 +8,17 @@ const ExtensionRelease = require('../../models/ExtensionRelease');
 const User = require('../../models/User');
 const { readManifestFromZip } = require('../../utils/zipManifest');
 const { writeExtensionZip, ZIP_FILENAME, readDiskExtensionVersion, versionedFilename } = require('../../utils/extensionDownloads');
-const { isValidVersion, compareVersions, isOlder } = require('../../utils/semver');
+const { isValidVersion, compareVersions, isOlder, maxVersion } = require('../../utils/semver');
+
+// The effective PUBLISHED version = the newer of the on-disk ZIP and the DB release row. A freshly
+// deployed ZIP can be newer than the last DB publish row, so BOTH must be considered. This is the
+// SINGLE source of truth for "published version" — /release (what the admin sees), the save-policy
+// ceiling, and the notify route all use it, so they can never disagree (the root cause of the
+// "minVersion cannot be greater than the published version" false error). Disk wins ties, matching
+// /release's original preference.
+function effectiveLatest(dbVersion, diskVersion) {
+  return maxVersion(diskVersion, dbVersion);
+}
 
 // Admin auth — same pattern as the other admin routers.
 router.use(requireAuth);
@@ -27,8 +37,7 @@ router.get('/release', async (req, res) => {
     const rel = await ExtensionRelease.getLatest();
     const diskVersion = readDiskExtensionVersion();
     const dbVersion = rel ? rel.version : null;
-    let latest = diskVersion || dbVersion || null;
-    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+    const latest = effectiveLatest(dbVersion, diskVersion);
     const minVersion = rel ? (rel.minVersion || null) : null;
     const forceUpdate = rel ? !!rel.updateRequired : false;
     const effectiveMin = minVersion || (forceUpdate ? latest : null);
@@ -172,16 +181,20 @@ async function handleSetPolicy(req, res) {
     // Ensure a release row exists — seed from the on-disk ZIP if needed.
     let latest = await ExtensionRelease.getLatest();
     if (!latest) {
-      const diskVersion = readDiskExtensionVersion();
-      if (!diskVersion) return res.status(409).json({ error: 'No extension ZIP available yet' });
+      const seedVersion = readDiskExtensionVersion();
+      if (!seedVersion) return res.status(409).json({ error: 'No extension ZIP available yet' });
       latest = await ExtensionRelease.publish({
-        version: diskVersion, filename: ZIP_FILENAME, size: 0,
+        version: seedVersion, filename: ZIP_FILENAME, size: 0,
         manifestName: 'auto (from existing download)',
         publishedBy: req.userId || (req.user && req.user._id) || null,
       });
     }
-    if (minVersion && compareVersions(minVersion, latest.version) > 0) {
-      return res.status(400).json({ error: 'minVersion cannot be greater than the published version' });
+    // Validate against the EFFECTIVE published version (newer of on-disk ZIP + DB row) — the same
+    // value /release shows the admin. Using latest.version (DB only) here was the root-cause bug:
+    // a stale DB row older than the on-disk ZIP wrongly rejected a valid, lower minVersion.
+    const publishedVersion = effectiveLatest(latest.version, readDiskExtensionVersion());
+    if (minVersion && publishedVersion && compareVersions(minVersion, publishedVersion) > 0) {
+      return res.status(400).json({ error: 'minVersion cannot be greater than the published version', code: 'min_version_too_high' });
     }
 
     const doc = await ExtensionRelease.setPolicy({ minVersion, updateRequired }, req.userId || (req.user && req.user._id));
@@ -229,8 +242,7 @@ router.post('/notify', express.json({ limit: '64kb' }), async (req, res) => {
     const rel = await ExtensionRelease.getLatest();
     const diskVersion = readDiskExtensionVersion();
     const dbVersion = rel ? rel.version : null;
-    let latest = diskVersion || dbVersion || null;
-    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+    const latest = effectiveLatest(dbVersion, diskVersion);
     if (!latest) return res.status(409).json({ error: 'No published extension version yet' });
     const minVersion = rel ? (rel.minVersion || null) : null;
     const forceUpdate = rel ? !!rel.updateRequired : false;
