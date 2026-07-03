@@ -447,4 +447,47 @@ router.post('/:clientId/extend', async (req, res) => {
   }
 });
 
+// POST /:clientId/remove — REVOKE a single service for a client who isn't renewing. This removes the
+// client's access AND drops the service off the renewals list (revoked/disabled are excluded by the
+// aggregator's REMOVED_STATES). It does NOT delete history — it's reversible from the tool's own
+// module page. Body: { module: 'proxy'|'stealth'|'core', id }.
+router.post('/:clientId/remove', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const moduleName = ['proxy', 'stealth', 'core'].includes(req.body && req.body.module) ? req.body.module : 'core';
+    const id = String((req.body && req.body.id) || '');
+    if (!id) return res.status(400).json({ error: 'Missing service id' });
+
+    if (moduleName === 'proxy') {
+      const pc = await ProxyClient.findById(id);
+      if (!pc || String(pc.userId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+      pc.status = 'disabled'; // revoke access (reversible from the Proxy-Tools page)
+      await pc.save();
+      await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_REMOVED', { clientId: String(clientId), module: 'proxy', tool: pc.tool });
+      return res.json({ success: true, module: 'proxy', removed: true });
+    }
+
+    if (moduleName === 'stealth') {
+      const sc = await StealthClient.findById(id);
+      if (!sc || String(sc.userId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+      sc.status = 'disabled';
+      await sc.save();
+      await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_REMOVED', { clientId: String(clientId), module: 'stealth' });
+      return res.json({ success: true, module: 'stealth', removed: true });
+    }
+
+    // core (ToolAssignment) → revoke.
+    const a = await ToolAssignment.findById(id);
+    if (!a || String(a.clientId) !== String(clientId)) return res.status(404).json({ error: 'Service not found for this client' });
+    a.status = 'revoked';
+    a.revokedAt = new Date();
+    await a.save();
+    await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_REMOVED', { clientId: String(clientId), module: 'core', toolId: String(a.toolId || '') });
+    return res.json({ success: true, module: 'core', removed: true });
+  } catch (error) {
+    console.error('Renewal remove error:', error);
+    res.status(500).json({ error: 'Failed to remove this service' });
+  }
+});
+
 module.exports = router;

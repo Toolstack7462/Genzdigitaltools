@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
 import {
   CalendarClock, RefreshCw, Mail, MessageCircle, AlertTriangle, Clock,
-  Loader2, CheckCircle2, Plus, MailWarning, Search, X,
+  Loader2, CheckCircle2, Plus, Minus, MailWarning, Search, X,
   ChevronDown, Gift, BellOff, XCircle, RotateCcw,
 } from 'lucide-react';
 import api from '../../services/api';
@@ -205,6 +205,19 @@ const AdminRenewals = () => {
       showSuccess(`${tool.toolName} renewed +30 days for ${c.fullName || c.email}`);
       load();
     } catch (e) { showError(e.response?.data?.error || 'Could not renew this tool.'); }
+    finally { setBusyFor(tool.assignmentId, false); }
+  };
+
+  // Revoke a single service for a client who isn't renewing — removes their access and drops the
+  // service off the list (reversible from the tool's own module page). Confirms first.
+  const removeTool = async (c, tool) => {
+    if (!window.confirm(`Remove "${tool.toolName}" access for ${c.fullName || c.email}?\n\nThe client will lose access to this service and it will drop off the renewals list. You can re-grant it later from the tool's own page.`)) return;
+    setBusyFor(tool.assignmentId, true);
+    try {
+      await api.post(`/admin/renewals/${c.clientId}/remove`, { module: tool.module || 'core', id: tool.assignmentId });
+      showSuccess(`${tool.toolName} access removed for ${c.fullName || c.email}`);
+      load();
+    } catch (e) { showError(e.response?.data?.error || 'Could not remove this service.'); }
     finally { setBusyFor(tool.assignmentId, false); }
   };
 
@@ -435,6 +448,11 @@ const AdminRenewals = () => {
                             title="Renew +30 days"
                             className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 hover:bg-white text-genz-blue disabled:opacity-50">
                             {busy[t.assignmentId] ? <Loader2 size={11} className="animate-spin" /> : <Plus size={11} />}
+                          </button>
+                          <button onClick={() => removeTool(c, t)} disabled={!!busy[t.assignmentId]}
+                            title="Remove this service (revoke access)"
+                            className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-white/70 hover:bg-red-50 text-red-500 disabled:opacity-50">
+                            <Minus size={11} />
                           </button>
                         </span>
                       ))}
