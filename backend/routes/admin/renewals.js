@@ -34,6 +34,54 @@ const DAY_MS = 86400000;
 const OFFERS = ['none', 'discount10', 'bonus2'];
 const FOLLOWUP_STATUSES = ['open', 'snoozed', 'lost', 'recovered'];
 
+// A service overdue by MORE than this is "old / archived" — it drops out of the upcoming windows and
+// the default queue, and always sorts to the bottom. Env-overridable.
+const ARCHIVE_AFTER_DAYS = Math.max(1, parseInt(process.env.RENEWAL_ARCHIVE_AFTER_DAYS, 10) || 30);
+// Default (no explicit range) actionable horizon into the future.
+const DEFAULT_HORIZON_DAYS = Math.max(1, parseInt(process.env.RENEWAL_DEFAULT_HORIZON_DAYS, 10) || 60);
+
+// UTC day boundaries (the expiry boundary itself is computed in UTC via effectiveEndBoundary).
+function startOfDay(d) { const x = new Date(d); x.setUTCHours(0, 0, 0, 0); return x; }
+function endOfDay(d) { const x = new Date(d); x.setUTCHours(23, 59, 59, 999); return x; }
+function addDays(d, n) { return new Date(d.getTime() + n * DAY_MS); }
+function parseYMD(s) {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Resolve the query into an inclusive expiry window { start, end } (either may be null = unbounded)
+// plus a `mode`. Presets are computed server-side so the date math is timezone-consistent.
+//   range=today|tomorrow|next7|next14|next30|overdue|archived|all | (from[/to] for custom)
+// Back-compat: ?days=N with no range → the default actionable window (recently overdue → +N days).
+function resolveWindow(query, now) {
+  const today = startOfDay(now);
+  const range = String(query.range || '').toLowerCase();
+  const from = parseYMD(query.from);
+  const to = parseYMD(query.to);
+  if (from || to) {                         // custom single date (from only) or range (from+to)
+    return { start: from ? startOfDay(from) : null, end: to ? endOfDay(to) : (from ? endOfDay(from) : null), mode: 'custom' };
+  }
+  switch (range) {
+    case 'today': return { start: today, end: endOfDay(today), mode: 'today' };
+    case 'tomorrow': { const t = addDays(today, 1); return { start: t, end: endOfDay(t), mode: 'tomorrow' }; }
+    case 'next7': return { start: today, end: endOfDay(addDays(today, 7)), mode: 'next7' };
+    case 'next14': return { start: today, end: endOfDay(addDays(today, 14)), mode: 'next14' };
+    case 'next30': return { start: today, end: endOfDay(addDays(today, 30)), mode: 'next30' };
+    // Recently expired but still worth chasing (overdue within the archive grace).
+    case 'overdue': return { start: startOfDay(addDays(today, -ARCHIVE_AFTER_DAYS)), end: endOfDay(addDays(today, -1)), mode: 'overdue' };
+    // Old / long-expired only.
+    case 'archived': return { start: null, end: endOfDay(addDays(today, -ARCHIVE_AFTER_DAYS - 1)), mode: 'archived' };
+    case 'all': return { start: null, end: null, mode: 'all' };
+    default: {
+      const days = Math.min(90, Math.max(1, parseInt(query.days, 10) || DEFAULT_HORIZON_DAYS));
+      // Actionable queue: recently overdue (within grace) through `days` ahead — excludes long-expired.
+      return { start: startOfDay(addDays(today, -ARCHIVE_AFTER_DAYS)), end: endOfDay(addDays(today, days)), mode: 'default', days };
+    }
+  }
+}
+
 // Derive the recovery STAGE from how overdue the client's most-urgent tool is.
 // Stages are computed (not stored) so they always reflect live expiry data.
 function deriveStage(soonestDaysLeft) {
@@ -83,19 +131,28 @@ const REMOVED_STATES = new Set(['revoked', 'disabled']);
 // SINGLE renewal aggregator. Collects a client's expiring/expired services from ALL assignment
 // stores — core tools (ToolAssignment), proxy tools (ProxyClient: HIX/BypassGPT/WriteHuman/…) and
 // StealthWriter (StealthClient) — into ONE unified shape the engine already understands:
-//   { assignmentId, toolId, toolName, endDate, daysLeft, expired, module }
+//   { assignmentId, toolId, toolName, endDate, daysLeft, expired, overdueDays, archived, module }
 // Every store's expiry boundary is computed with the EXISTING ToolAssignment.effectiveEndBoundary()
-// so the inclusive end-of-day rule is identical everywhere. Pass `onlyClientId` to scope to one
-// client (used by the reminder + extend routes). Returns flat entries { clientId, client, tool }.
-async function collectServiceEntries(days, now, onlyClientId = null) {
+// so the inclusive end-of-day rule is identical everywhere. `win` is the {start,end} expiry window
+// from resolveWindow (either bound may be null = unbounded) — this bounds BOTH sides, so a service is
+// included only if its expiry actually falls in the window (fixes long-expired leaking into upcoming
+// filters). Pass `onlyClientId` to scope to one client. Returns flat entries { clientId, client, tool }.
+async function collectServiceEntries(win, now, onlyClientId = null) {
   const entries = [];
+  const nowT = now.getTime();
+  const startT = win && win.start ? win.start.getTime() : null;
+  const endT = win && win.end ? win.end.getTime() : null;
   const within = (endDate) => {
     const boundary = ToolAssignment.effectiveEndBoundary(endDate);
     if (!boundary) return null; // no expiry (lifetime access) → nothing to renew
-    const daysLeft = Math.ceil((boundary.getTime() - now.getTime()) / DAY_MS);
-    const expired = boundary.getTime() < now.getTime();
-    if (!expired && daysLeft > days) return null; // still comfortably active
-    return { daysLeft, expired };
+    const t = boundary.getTime();
+    if (startT != null && t < startT) return null; // expiry is before the window
+    if (endT != null && t > endT) return null;     // expiry is after the window
+    const daysLeft = Math.ceil((t - nowT) / DAY_MS);
+    const expired = t < nowT;
+    const overdueDays = expired ? Math.max(0, Math.floor((nowT - t) / DAY_MS)) : 0;
+    const archived = expired && overdueDays > ARCHIVE_AFTER_DAYS; // long-expired
+    return { daysLeft, expired, overdueDays, archived };
   };
   const push = (clientRef, tool) => {
     const client = clientRef && typeof clientRef === 'object' ? clientRef : null;
@@ -120,7 +177,7 @@ async function collectServiceEntries(days, now, onlyClientId = null) {
     push(row.clientId, {
       assignmentId: String(row._id), toolId: tool ? String(tool._id) : String(row.toolId || ''),
       toolName: tool ? tool.name : 'Tool', endDate: row.endDate || null,
-      daysLeft: w.daysLeft, expired: w.expired, module: 'core',
+      daysLeft: w.daysLeft, expired: w.expired, overdueDays: w.overdueDays, archived: w.archived, module: 'core',
     });
   }
 
@@ -136,7 +193,7 @@ async function collectServiceEntries(days, now, onlyClientId = null) {
       push(row.userId, {
         assignmentId: String(row._id), toolId: String(row.tool || ''),
         toolName: (meta && meta.name) || row.tool || 'Proxy tool', endDate: row.expiryDate || null,
-        daysLeft: w.daysLeft, expired: w.expired, module: 'proxy',
+        daysLeft: w.daysLeft, expired: w.expired, overdueDays: w.overdueDays, archived: w.archived, module: 'proxy',
       });
     }
   } catch (e) { console.error('Renewals: proxy source read failed:', e.message); }
@@ -151,7 +208,7 @@ async function collectServiceEntries(days, now, onlyClientId = null) {
       push(row.userId, {
         assignmentId: String(row._id), toolId: 'stealthwriter',
         toolName: row.planName || 'StealthWriter', endDate: row.expiryDate || null,
-        daysLeft: w.daysLeft, expired: w.expired, module: 'stealth',
+        daysLeft: w.daysLeft, expired: w.expired, overdueDays: w.overdueDays, archived: w.archived, module: 'stealth',
       });
     }
   } catch (e) { console.error('Renewals: stealth source read failed:', e.message); }
@@ -163,11 +220,11 @@ async function collectServiceEntries(days, now, onlyClientId = null) {
 // Grouped by client, most urgent first, each annotated with its last reminder.
 router.get('/', async (req, res) => {
   try {
-    const days = Math.min(90, Math.max(1, parseInt(req.query.days, 10) || 14));
     const now = new Date();
+    const win = resolveWindow(req.query, now); // date-range window (presets / custom / default)
 
     // Unified across ALL assignment stores (core tools + proxy tools + StealthWriter).
-    const entries = await collectServiceEntries(days, now);
+    const entries = await collectServiceEntries(win, now);
 
     // Group expiring/expired services by client. A client with services in more than one module
     // gets a single card listing every expiring service.
@@ -215,34 +272,48 @@ router.get('/', async (req, res) => {
     } catch (_) { /* best-effort; never breaks the list */ }
 
     const clients = Array.from(byClient.values()).map(c => {
+      // Within a client: nearest expiry first (most-overdue → today → upcoming).
       c.tools.sort((a, b) => a.daysLeft - b.daysLeft);
-      const expiredCount = c.tools.filter(t => t.expired).length;
-      const expiringCount = c.tools.length - expiredCount;
-      const soonest = c.tools[0] || null;
-      const soonestDaysLeft = soonest ? soonest.daysLeft : null;
+      const archivedCount = c.tools.filter(t => t.archived).length;
+      const expiredCount = c.tools.filter(t => t.expired && !t.archived).length; // recently expired
+      const expiringCount = c.tools.filter(t => !t.expired).length;              // still upcoming
+      const activeTools = c.tools.filter(t => !t.archived);
+      // A client with NO actionable (non-archived) service is itself old/archived.
+      const clientArchived = activeTools.length === 0;
+      // Urgency reference = soonest ACTIONABLE service; fall back to the soonest archived one.
+      const ref = activeTools[0] || c.tools[0] || null;
+      const soonestDaysLeft = ref ? ref.daysLeft : null;
       return {
         ...c,
         expiredCount,
         expiringCount,
+        archivedCount,
+        archived: clientArchived,
         soonestDaysLeft,
-        soonestEndDate: soonest ? soonest.endDate : null,
+        soonestEndDate: ref ? ref.endDate : null,
         overdueDays: soonestDaysLeft != null && soonestDaysLeft < 0 ? -soonestDaysLeft : 0,
-        suggestedStage: deriveStage(soonestDaysLeft),
+        suggestedStage: deriveStage(clientArchived ? null : soonestDaysLeft),
         lastReminder: lastReminderByClient[c.clientId] || null,
         followup: followupDTO(followupByClient[c.clientId]),
       };
     });
 
-    // Most urgent clients first (lowest/most-negative daysLeft).
-    clients.sort((a, b) => (a.soonestDaysLeft ?? 9999) - (b.soonestDaysLeft ?? 9999));
+    // Old/long-expired clients always sink to the BOTTOM. Within each group, sort chronologically by
+    // nearest expiry: active → most-recently-overdue/soonest first; archived → least-old first.
+    clients.sort((a, b) => {
+      if (a.archived !== b.archived) return a.archived ? 1 : -1;
+      if (a.archived) return (b.soonestDaysLeft ?? -99999) - (a.soonestDaysLeft ?? -99999);
+      return (a.soonestDaysLeft ?? 9999) - (b.soonestDaysLeft ?? 9999);
+    });
 
     const counts = {
       clients: clients.length,
       expiring: clients.reduce((n, c) => n + c.expiringCount, 0),
       expired: clients.reduce((n, c) => n + c.expiredCount, 0),
+      archived: clients.reduce((n, c) => n + c.archivedCount, 0),
     };
 
-    res.json({ success: true, days, emailEnabled: isEmailEnabled(), clients, counts });
+    res.json({ success: true, range: win.mode, days: win.days || null, archiveAfterDays: ARCHIVE_AFTER_DAYS, emailEnabled: isEmailEnabled(), clients, counts });
   } catch (error) {
     console.error('List renewals error:', error);
     res.status(500).json({ error: 'Failed to load renewals' });
@@ -268,8 +339,9 @@ router.post('/:clientId/remind', async (req, res) => {
     const client = await User.findOne({ _id: clientId, role: 'CLIENT' });
     if (!client) return res.status(404).json({ error: 'Client not found' });
 
-    // Gather the client's expiring/expired services across ALL modules (core + proxy + stealth).
-    let tools = (await collectServiceEntries(days, new Date(), clientId)).map(e => e.tool);
+    // Gather ALL the client's expiring/expired services across every module (core + proxy + stealth),
+    // unbounded window — a reminder should cover every renewable service the client has.
+    let tools = (await collectServiceEntries({ start: null, end: null }, new Date(), clientId)).map(e => e.tool);
     tools.sort((a, b) => a.daysLeft - b.daysLeft); // soonest / most-overdue first
     if (toolIds && toolIds.length) {
       tools = tools.filter(t => toolIds.includes(String(t.assignmentId)) || toolIds.includes(String(t.toolId)));

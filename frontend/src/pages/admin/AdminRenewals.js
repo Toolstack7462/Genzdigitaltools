@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import AdminLayoutEnhanced, { ADMIN_CARD_VARIANTS } from '../../components/AdminLayoutEnhanced';
 import {
   CalendarClock, RefreshCw, Mail, MessageCircle, AlertTriangle, Clock,
@@ -10,10 +10,17 @@ import { useToast } from '../../components/Toast';
 import { buildRenewalMessage, buildFollowupMessage } from '../../components/admin/whatsappTemplates';
 import WhatsAppSendDialog from '../../components/admin/WhatsAppSendDialog';
 
-const WINDOWS = [
-  { key: 7, label: '7 days' },
-  { key: 14, label: '14 days' },
-  { key: 30, label: '30 days' },
+// Date-window presets. Sent to the backend as ?range=… (or from/to for custom); the backend
+// resolves the exact inclusive expiry window, so records outside the window never appear.
+const DATE_PRESETS = [
+  { key: 'default', label: 'All active' },
+  { key: 'today', label: 'Today' },
+  { key: 'tomorrow', label: 'Tomorrow' },
+  { key: 'next7', label: 'Next 7 days' },
+  { key: 'next14', label: 'Next 14 days' },
+  { key: 'next30', label: 'Next 30 days' },
+  { key: 'overdue', label: 'Overdue' },
+  { key: 'archived', label: 'Old expired' },
 ];
 
 // Status filters (client-side over the already-fetched window). Distinct from the
@@ -54,14 +61,23 @@ const fmtAgo = (d) => {
   if (days < 7) return `${days}d ago`;
   return dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
-const toolLabel = (t) => (t.expired ? 'Expired' : (t.daysLeft === 0 ? 'Today' : `${t.daysLeft}d`));
+// Exact date+time for reminder history ("Jul 3, 2026, 2:15 PM").
+const fmtExact = (d) => {
+  if (!d) return '';
+  const dt = new Date(d); if (isNaN(dt.getTime())) return '';
+  return dt.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+};
+const toolLabel = (t) => (t.expired ? (t.archived ? 'Old' : 'Expired') : (t.daysLeft === 0 ? 'Today' : `${t.daysLeft}d`));
 const toolCls = (t) => t.expired
   ? 'bg-red-50 text-red-700 border-red-200'
   : (t.daysLeft <= 3 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-cyan-50 text-cyan-700 border-cyan-200');
 
 const AdminRenewals = () => {
   const { showSuccess, showError, showWarning, showInfo } = useToast();
-  const [days, setDays] = useState(14);
+  const [dateFilter, setDateFilter] = useState('default'); // preset key | 'customDate' | 'customRange'
+  const [customDate, setCustomDate] = useState('');        // single date (YYYY-MM-DD)
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
   const [data, setData] = useState({ clients: [], counts: {}, emailEnabled: true });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -87,10 +103,20 @@ const AdminRenewals = () => {
     return () => clearTimeout(t);
   }, [search]);
 
-  const load = useCallback(async (d = days) => {
+  // Turn the current date filter into the backend query string (server resolves the exact window).
+  const buildQuery = useCallback(() => {
+    if (dateFilter === 'customDate') return customDate ? `?from=${customDate}` : null;
+    if (dateFilter === 'customRange') return (customFrom && customTo) ? `?from=${customFrom}&to=${customTo}` : null;
+    if (dateFilter === 'default') return ''; // actionable queue (recently overdue → horizon)
+    return `?range=${dateFilter}`;
+  }, [dateFilter, customDate, customFrom, customTo]);
+
+  const load = useCallback(async () => {
+    const q = buildQuery();
+    if (q === null) return; // incomplete custom input — wait for both dates
     try {
       setLoading(true); setError(false);
-      const res = await api.get(`/admin/renewals?days=${d}`);
+      const res = await api.get(`/admin/renewals${q}`);
       setData({
         clients: res.data?.clients || [],
         counts: res.data?.counts || {},
@@ -98,20 +124,20 @@ const AdminRenewals = () => {
       });
     } catch (_) { setError(true); }
     finally { setLoading(false); }
-  }, [days]);
+  }, [buildQuery]);
 
-  useEffect(() => { load(); }, [load]); // load is keyed on `days`, so this re-runs on window change
+  useEffect(() => { load(); }, [load]); // re-runs whenever the date filter changes
 
   const setBusyFor = (id, v) => setBusy(b => { const c = { ...b }; if (v) c[id] = true; else delete c[id]; return c; });
 
   const sendEmail = async (c) => {
     setBusyFor(c.clientId, true);
     try {
-      const res = await api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'email', days, offer: getOffer(c), stage: c.suggestedStage });
+      const res = await api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'email', offer: getOffer(c), stage: c.suggestedStage });
       if (res.data?.success) showSuccess(`Renewal email sent to ${c.fullName || c.email}`);
       else if (res.data?.emailEnabled === false) showWarning('Email is not configured on the server. Use WhatsApp instead.');
       else showError(res.data?.error || 'Could not send the email.');
-      load(days);
+      load();
     } catch (e) { showError(e.response?.data?.error || 'Could not send the email.'); }
     finally { setBusyFor(c.clientId, false); }
   };
@@ -123,8 +149,8 @@ const AdminRenewals = () => {
   // Fired once WhatsApp has actually been opened from the dialog: record the touch
   // (best-effort) so the follow-up stage + "last reminded" update.
   const onWhatsAppOpened = (c) => {
-    api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'whatsapp', days, offer: getOffer(c), stage: c.suggestedStage })
-      .then(() => { showInfo('WhatsApp opened — marked as followed up.'); load(days); })
+    api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'whatsapp', offer: getOffer(c), stage: c.suggestedStage })
+      .then(() => { showInfo('WhatsApp opened — marked as followed up.'); load(); })
       .catch(() => {});
   };
 
@@ -138,7 +164,7 @@ const AdminRenewals = () => {
     try {
       await api.post(`/admin/renewals/${c.clientId}/followup`, body);
       if (successMsg) showSuccess(successMsg);
-      load(days);
+      load();
     } catch (e) { showError(e.response?.data?.error || 'Could not update follow-up'); }
     finally { setBusyFor(key, false); }
   };
@@ -156,7 +182,7 @@ const AdminRenewals = () => {
   const saveClientNumber = (c, number) => {
     if (!c) return;
     api.put(`/admin/clients/${c.clientId}`, { phone: number })
-      .then(() => { showSuccess('Number saved to client profile'); load(days); })
+      .then(() => { showSuccess('Number saved to client profile'); load(); })
       .catch((e) => showError(e.response?.data?.error || 'Could not save the number'));
   };
 
@@ -171,7 +197,7 @@ const AdminRenewals = () => {
         await api.post(`/admin/assignments/${tool.assignmentId}/extend`, { durationDays: 30 });
       }
       showSuccess(`${tool.toolName} renewed +30 days for ${c.fullName || c.email}`);
-      load(days);
+      load();
     } catch (e) { showError(e.response?.data?.error || 'Could not renew this tool.'); }
     finally { setBusyFor(tool.assignmentId, false); }
   };
@@ -214,15 +240,27 @@ const AdminRenewals = () => {
             <p className="text-sm text-genz-muted mt-0.5">Clients with tools expiring soon or already expired. Remind by email or WhatsApp, or renew in one click.</p>
           </div>
           <div className="flex flex-wrap items-center gap-2 justify-end">
-            <div className="inline-flex rounded-xl border border-genz-border overflow-hidden">
-              {WINDOWS.map(w => (
-                <button key={w.key} onClick={() => setDays(w.key)}
-                  className={`px-3 py-2 text-sm font-semibold transition-colors ${days === w.key ? 'bg-genz-teal/10 text-genz-teal' : 'bg-white text-genz-muted hover:text-genz-navy'}`}>
-                  {w.label}
-                </button>
-              ))}
-            </div>
-            <button onClick={() => load(days)} title="Refresh"
+            {/* Date window: presets + Today/Tomorrow/Next-N/Overdue/Old, plus custom date & range. */}
+            <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} aria-label="Date window"
+              className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium focus:outline-none focus:border-genz-teal/50">
+              {DATE_PRESETS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value="customDate">Custom date…</option>
+              <option value="customRange">Custom range…</option>
+            </select>
+            {dateFilter === 'customDate' && (
+              <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} aria-label="Custom date"
+                className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
+            )}
+            {dateFilter === 'customRange' && (
+              <>
+                <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} aria-label="From date"
+                  className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
+                <span className="text-genz-muted text-sm">to</span>
+                <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} aria-label="To date"
+                  className="px-3 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm focus:outline-none focus:border-genz-teal/50" />
+              </>
+            )}
+            <button onClick={() => load()} title="Refresh"
               className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-genz-border bg-white text-genz-navy text-sm font-medium hover:border-genz-teal/50 transition-colors">
               <RefreshCw size={15} /> Refresh
             </button>
@@ -267,6 +305,11 @@ const AdminRenewals = () => {
           <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold bg-red-50 text-red-700 border border-red-200">
             <AlertTriangle size={14} /> {counts.expired || 0} expired
           </span>
+          {(counts.archived || 0) > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold bg-slate-100 text-slate-600 border border-slate-200" title="Long-expired — shown at the bottom / under the 'Old expired' window">
+              {counts.archived} old expired
+            </span>
+          )}
           {!data.emailEnabled && (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold bg-amber-50 text-amber-700 border border-amber-200" title="RESEND_API_KEY / EMAIL_FROM not set on the server">
               <MailWarning size={14} /> Email disabled — use WhatsApp
@@ -283,7 +326,7 @@ const AdminRenewals = () => {
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-10 text-center`}>
             <AlertTriangle size={26} className="mx-auto mb-2 text-genz-muted" />
             <p className="text-sm font-semibold text-genz-navy">Couldn't load renewals</p>
-            <button onClick={() => load(days)} className="text-xs text-genz-teal hover:underline mt-1.5">Try again</button>
+            <button onClick={() => load()} className="text-xs text-genz-teal hover:underline mt-1.5">Try again</button>
           </div>
         ) : data.clients.length === 0 ? (
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
@@ -291,7 +334,7 @@ const AdminRenewals = () => {
               <CheckCircle2 size={30} className="text-green-600" />
             </div>
             <h3 className="text-lg font-bold text-genz-navy mb-1">All clear</h3>
-            <p className="text-sm text-genz-muted">No tools are expiring within {days} days. Try a wider window above.</p>
+            <p className="text-sm text-genz-muted">No services fall in this window. Try a different date filter above.</p>
           </div>
         ) : visibleClients.length === 0 ? (
           <div className={`${ADMIN_CARD_VARIANTS.elevated} rounded-2xl p-12 text-center`}>
@@ -310,8 +353,9 @@ const AdminRenewals = () => {
                 <button onClick={clearFilters} className="text-xs font-semibold text-genz-teal hover:underline">Clear filters</button>
               </div>
             )}
-            {visibleClients.map(c => {
+            {visibleClients.map((c, ci) => {
               const fu = c.followup;
+              const showOldDivider = c.archived && (ci === 0 || !visibleClients[ci - 1].archived);
               const isLost = fu?.status === 'lost';
               const isSnoozed = fu?.status === 'snoozed' && fu?.snoozeUntil && new Date(fu.snoozeUntil) > new Date();
               const stageMeta = STAGE_META[c.suggestedStage] || STAGE_META.before_expiry;
@@ -319,7 +363,15 @@ const AdminRenewals = () => {
               const lastAt = fu?.lastFollowupAt || c.lastReminder?.at;
               const lastChannel = fu?.lastChannel || c.lastReminder?.channel;
               return (
-              <div key={c.clientId} className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 ${isLost ? 'opacity-70' : ''}`}>
+              <Fragment key={c.clientId}>
+              {showOldDivider && (
+                <div className="flex items-center gap-2 pt-1" aria-label="Old expired section">
+                  <div className="h-px flex-1 bg-genz-border" />
+                  <span className="text-[11px] font-bold uppercase tracking-wide text-genz-muted">Old expired (archived)</span>
+                  <div className="h-px flex-1 bg-genz-border" />
+                </div>
+              )}
+              <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 ${isLost ? 'opacity-70' : ''} ${c.archived ? 'opacity-60' : ''}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   {/* Client + tools */}
                   <div className="min-w-0 flex-1">
@@ -354,8 +406,8 @@ const AdminRenewals = () => {
                       ))}
                     </div>
                     {lastAt && (
-                      <p className="text-[11px] text-genz-muted/80 mt-2">
-                        Followed up {fmtAgo(lastAt)}{lastChannel ? ` · ${lastChannel}` : ''}
+                      <p className="text-[11px] text-genz-muted/80 mt-2" title={`Last reminder: ${fmtExact(lastAt)}`}>
+                        Last reminder: {fmtExact(lastAt)}{lastChannel ? ` · ${lastChannel}` : ''} <span className="text-genz-muted/60">({fmtAgo(lastAt)})</span>
                         {fu?.lastStage && STAGE_META[fu.lastStage] ? ` · ${STAGE_META[fu.lastStage].label}` : ''}
                         {fu?.offer && fu.offer !== 'none' ? ` · ${offerLabel(fu.offer)} offered` : ''}
                       </p>
@@ -436,6 +488,7 @@ const AdminRenewals = () => {
                   </div>
                 )}
               </div>
+              </Fragment>
               );
             })}
           </div>
