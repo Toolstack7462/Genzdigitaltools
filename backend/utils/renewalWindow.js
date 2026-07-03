@@ -73,13 +73,20 @@ function classifyExpiry(boundary, now, win) {
   return { daysLeft, expired, overdueDays, archived };
 }
 
-// Client sort comparator. Archived (old-expired) always sinks to the bottom (safety net — they're
-// already excluded from active windows), then the logical renewal order:
-//   Expired → Today → Next 7 → Next 14 → Next 30   (soonestDaysLeft ascending: most-overdue/nearest
-//   expiry first). Clients with no expiry sort last.
+// Client sort comparator. Order (top → bottom):
+//   1) UPCOMING (not yet expired, incl. today) — soonest expiry first: Today → Next 7 → 14 → 30,
+//   2) EXPIRED — most-recently expired first (freshest → oldest),
+//   3) OLD / archived (long-expired) — always pinned to the very bottom (also excluded from active
+//      windows by resolveWindow, so it never clutters the top regardless of the flag).
+// This keeps the actionable upcoming renewals at the top; expired never disrupts their order.
 function compareClients(a, b) {
   if (!!a.archived !== !!b.archived) return a.archived ? 1 : -1;
-  return (a.soonestDaysLeft ?? 9999) - (b.soonestDaysLeft ?? 9999);
+  const aDl = a.soonestDaysLeft, bDl = b.soonestDaysLeft;
+  const aExp = aDl != null && aDl < 0;
+  const bExp = bDl != null && bDl < 0;
+  if (aExp !== bExp) return aExp ? 1 : -1;          // upcoming (incl. today) above all expired
+  if (!aExp) return (aDl ?? 9999) - (bDl ?? 9999);  // upcoming: soonest first
+  return (bDl ?? -99999) - (aDl ?? -99999);         // expired: most-recent first → oldest last
 }
 
 module.exports = {

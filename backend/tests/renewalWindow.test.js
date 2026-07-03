@@ -78,13 +78,13 @@ test('classifyExpiry derives expired / overdueDays / archived; null for lifetime
   assert.equal(classifyExpiry(null, NOW, win), null, 'no expiry → not a renewal candidate');
 });
 
-test('compareClients: Expired → Today → Next N, archived pinned to the bottom', () => {
+test('compareClients: upcoming first (Today → Next N), then expired most-recent first, archived last', () => {
   const mk = (soonestDaysLeft, archived = false) => ({ soonestDaysLeft, archived });
   const clients = [ mk(10), mk(-3), mk(0), mk(-60, true), mk(2), mk(-1) ];
   clients.sort(compareClients);
   assert.deepEqual(
     clients.map(c => c.soonestDaysLeft),
-    [-3, -1, 0, 2, 10, -60],
-    'recently-expired → today → upcoming, then archived (old) at the very bottom',
+    [0, 2, 10, -1, -3, -60],
+    'today/upcoming soonest-first, then expired freshest-first, then archived (old) at the very bottom',
   );
 });
