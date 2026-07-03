@@ -4,9 +4,13 @@
 export const SITE_ORIGIN = 'https://genzdigitalstore.com';
 const BRAND = 'Gen Z Digital Store';
 
+// Fallback tab title for routes not in the map (admin/client/auth/404) so the browser tab never
+// keeps a previous public page's title. Matches the static title in index.html.
+export const DEFAULT_TITLE = `${BRAND} | All-in-One AI & Digital Tools Hub`;
+
 export const SEO_BY_PATH = {
   '/': {
-    title: `${BRAND} | All-in-One AI & Digital Tools Hub`,
+    title: DEFAULT_TITLE,
     description: 'Access AI, academic, SEO, design, productivity, marketing, and business tools from one secure Gen Z Digital Store dashboard.',
   },
   '/services': {

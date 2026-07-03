@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useLocation } from 'react-router-dom';
-import { SEO_BY_PATH, SITE_ORIGIN } from '../seoConfig';
+import { SEO_BY_PATH, SITE_ORIGIN, DEFAULT_TITLE } from '../seoConfig';
 
 // Dependency-free per-route SEO: on every public-route change, set a unique <title>, meta description,
 // canonical, and OG/Twitter title+description. Purely additive DOM head updates — touches no page
@@ -32,7 +32,12 @@ export default function RouteSeo() {
 
   useEffect(() => {
     const seo = SEO_BY_PATH[pathname];
-    if (!seo) return; // non-marketing / dynamic routes manage their own metadata
+    if (!seo) {
+      // Non-marketing route without its own metadata (admin/client/auth/404) → restore the default
+      // title so the tab never shows the previous page's title. /blog/:slug sets its own (BlogDetail).
+      if (!pathname.startsWith('/blog/')) document.title = DEFAULT_TITLE;
+      return;
+    }
     const url = SITE_ORIGIN + (pathname === '/' ? '' : pathname);
     if (seo.title) document.title = seo.title;
     upsertMeta('name', 'description', seo.description);

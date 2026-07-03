@@ -67,7 +67,8 @@
   :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
-    border-radius: 4px;
+    /* No border-radius here — modern browsers already draw the outline following the element's own
+       radius, and setting it would change the element's shape on focus. */
   }
   :where(a, button, input, select, textarea, summary, [tabindex]):focus:not(:focus-visible) {
     outline: none;
