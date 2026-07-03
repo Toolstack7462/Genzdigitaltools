@@ -125,31 +125,36 @@ async function collectServiceEntries(days, now, onlyClientId = null) {
   }
 
   // 2) Proxy tools (ProxyClient) — HIX / BypassGPT / WriteHuman / …, keyed by userId + tool.
-  const pxRows = await ProxyClient.find(onlyClientId ? { userId: onlyClientId } : {})
-    .populate('userId', 'fullName email status phone');
-  for (const row of pxRows || []) {
-    if (!row || REMOVED_STATES.has(row.status)) continue;
-    const w = within(row.expiryDate); if (!w) continue;
-    const meta = proxyTools.getTool(row.tool);
-    push(row.userId, {
-      assignmentId: String(row._id), toolId: String(row.tool || ''),
-      toolName: (meta && meta.name) || row.tool || 'Proxy tool', endDate: row.expiryDate || null,
-      daysLeft: w.daysLeft, expired: w.expired, module: 'proxy',
-    });
-  }
+  // Wrapped so a problem reading this ADDITIVE store can never break the core-tool renewals above.
+  try {
+    const pxRows = await ProxyClient.find(onlyClientId ? { userId: onlyClientId } : {})
+      .populate('userId', 'fullName email status phone');
+    for (const row of pxRows || []) {
+      if (!row || REMOVED_STATES.has(row.status)) continue;
+      const w = within(row.expiryDate); if (!w) continue;
+      const meta = proxyTools.getTool(row.tool);
+      push(row.userId, {
+        assignmentId: String(row._id), toolId: String(row.tool || ''),
+        toolName: (meta && meta.name) || row.tool || 'Proxy tool', endDate: row.expiryDate || null,
+        daysLeft: w.daysLeft, expired: w.expired, module: 'proxy',
+      });
+    }
+  } catch (e) { console.error('Renewals: proxy source read failed:', e.message); }
 
-  // 3) StealthWriter (StealthClient) — keyed by userId.
-  const swRows = await StealthClient.find(onlyClientId ? { userId: onlyClientId } : {})
-    .populate('userId', 'fullName email status phone');
-  for (const row of swRows || []) {
-    if (!row || REMOVED_STATES.has(row.status)) continue;
-    const w = within(row.expiryDate); if (!w) continue;
-    push(row.userId, {
-      assignmentId: String(row._id), toolId: 'stealthwriter',
-      toolName: row.planName || 'StealthWriter', endDate: row.expiryDate || null,
-      daysLeft: w.daysLeft, expired: w.expired, module: 'stealth',
-    });
-  }
+  // 3) StealthWriter (StealthClient) — keyed by userId. Also wrapped (additive, non-fatal).
+  try {
+    const swRows = await StealthClient.find(onlyClientId ? { userId: onlyClientId } : {})
+      .populate('userId', 'fullName email status phone');
+    for (const row of swRows || []) {
+      if (!row || REMOVED_STATES.has(row.status)) continue;
+      const w = within(row.expiryDate); if (!w) continue;
+      push(row.userId, {
+        assignmentId: String(row._id), toolId: 'stealthwriter',
+        toolName: row.planName || 'StealthWriter', endDate: row.expiryDate || null,
+        daysLeft: w.daysLeft, expired: w.expired, module: 'stealth',
+      });
+    }
+  } catch (e) { console.error('Renewals: stealth source read failed:', e.message); }
 
   return entries;
 }
