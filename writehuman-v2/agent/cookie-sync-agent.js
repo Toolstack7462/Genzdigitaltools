@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '2.4.0';
+const AGENT_VERSION = '2.5.2';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -68,10 +68,23 @@ const CFG = {
   relaunchCooldownMs: Math.max(30000, parseInt(pick('WHV2_RELAUNCH_COOLDOWN_MS', 'relaunchCooldownMs', ''), 10) || 120000),
   // Backoff cap when the backend is unreachable (poll delay grows exponentially, then recovers).
   maxBackoffMs: Math.max(60000, parseInt(pick('WHV2_MAX_BACKOFF_MS', 'maxBackoffMs', ''), 10) || 300000),
+  // Single-instance lock FILE (PID + heartbeat). See acquireLock(): a dedicated file can't be
+  // blocked by an unrelated process (unlike a shared port), and the heartbeat lets us tell a LIVE
+  // duplicate from a stale/crashed/PID-reused lock and take the latter over.
+  lockFile: process.env.WHV2_LOCK_FILE || FILE_CFG.lockFile || path.join(__dirname, '..', 'agent.lock'),
 };
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
 function log(event, fields) { try { console.log(`[${new Date().toISOString()}] [wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
+
+// Sticky error tracker. Unlike the momentary per-poll `state.lastError`, these PERSIST across
+// recovery so the dashboard can show "last error … Xm ago (N×)" instead of a field that snaps back
+// to "none" on the next good poll. errorCount is cumulative since this agent instance started.
+function recordError(state, msg) {
+  state.errorCount = (state.errorCount || 0) + 1;
+  state.lastErrorMsg = msg ? String(msg).slice(0, 200) : 'error';
+  state.lastErrorAt = Date.now();
+}
 
 // ── pure helpers (exported for tests) ─────────────────────────────────────────
 function authTokenBase(ref) { return 'sb-' + ref + '-auth-token'; }
@@ -132,7 +145,11 @@ async function getAllCookiesViaCDP(cdpUrl) {
 function buildReport(state) {
   return {
     cdp: state.cdp, chrome: state.chrome, pollCount: state.pollCount,
-    authCookies: state.authCount, lastError: state.lastError,
+    authCookies: state.authCount,
+    // Sticky last error (persists across recovery) + when + cumulative count since start.
+    lastError: state.lastErrorMsg || null,
+    lastErrorAt: state.lastErrorAt ? new Date(state.lastErrorAt).toISOString() : null,
+    errorCount: state.errorCount || 0,
     host: os.hostname(), version: AGENT_VERSION,
     uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
     lastCommand: state.lastCommand || null,
@@ -154,7 +171,7 @@ async function postToServer(state, payload) {
       // write still landed but the ack was lost. 20s absorbs cold starts; steady posts are fast.
       signal: AbortSignal.timeout(20000),
     });
-  } catch (e) { state.ingestFails = (state.ingestFails || 0) + 1; return { _err: e.message }; }
+  } catch (e) { state.ingestFails = (state.ingestFails || 0) + 1; recordError(state, 'post_failed: ' + e.message); return { _err: e.message }; }
   let body = null; try { body = await resp.json(); } catch (_) {}
   if (resp.ok) {
     state.ingestFails = 0;                                    // reachable again -> clear backoff
@@ -162,6 +179,7 @@ async function postToServer(state, payload) {
     return body || {};
   }
   state.ingestFails = (state.ingestFails || 0) + 1;
+  recordError(state, 'ingest_http_' + resp.status);
   return { _status: resp.status };
 }
 
@@ -198,6 +216,7 @@ async function pushIfChanged(state) {
   } catch (e) {
     state.cdp = 'DOWN'; state.chrome = false; state.lastError = e.message;
     state.cdpFails = (state.cdpFails || 0) + 1;
+    recordError(state, 'cdp: ' + e.message);
     log('cdp_read_failed', { error: e.message, consecutive: state.cdpFails });
     // AUTO-RECOVERY: after N consecutive CDP failures the debug Chrome is likely dead/closed —
     // relaunch it via its task (faster than the 5-min watchdog). Cooldown-gated so it can't
@@ -245,15 +264,73 @@ async function pushIfChanged(state) {
   log('cookie_synchronized', { hash: hash.slice(0, 8), changed: r.changed, result: r.result, forced });
 }
 
+// ── single-instance lock (PID + heartbeat file) ───────────────────────────────
+// A dedicated lock FILE (not a shared port) so an unrelated process can never block us, and a
+// heartbeat timestamp so we can distinguish a LIVE duplicate (PID alive AND recently refreshed ->
+// we exit) from a stale lock (crashed / wedged / PID reused -> we take it over). The running agent
+// refreshes it every poll; releaseLock only ever removes OUR OWN lock.
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }   // signal 0 = existence probe, never kills
+  catch (e) { return e.code === 'EPERM'; }      // EPERM = exists but owned by another user
+}
+function lockStaleMs() { return Math.max(3 * CFG.pollMs, 90000); }
+function lockPayload() { return JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }); }
+function refreshLock() { try { fs.writeFileSync(CFG.lockFile, lockPayload()); } catch (_) { /* best-effort heartbeat */ } }
+function releaseLock() {
+  try { const cur = JSON.parse(fs.readFileSync(CFG.lockFile, 'utf8')); if (cur && cur.pid === process.pid) fs.unlinkSync(CFG.lockFile); }
+  catch (_) { /* not ours / already gone */ }
+}
+// true = we hold the lock; false = a live agent already holds it.
+function acquireLock() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(CFG.lockFile, 'wx');   // atomic create — only one racer wins
+      fs.writeSync(fd, lockPayload()); fs.closeSync(fd);
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') { log('lock_error', { error: e.message, note: 'proceeding without file lock' }); return true; }
+      let holder = 0, ageMs = Infinity;
+      try {
+        const cur = JSON.parse(fs.readFileSync(CFG.lockFile, 'utf8'));
+        holder = parseInt(cur && cur.pid, 10) || 0;
+        const at = cur && Date.parse(cur.at);
+        ageMs = Number.isFinite(at) ? (Date.now() - at) : (Date.now() - fs.statSync(CFG.lockFile).mtimeMs);
+      } catch (_) { try { ageMs = Date.now() - fs.statSync(CFG.lockFile).mtimeMs; } catch (_) {} }
+      // Live duplicate: known holder, PID alive, and the heartbeat is fresh.
+      if (holder && holder !== process.pid && pidAlive(holder) && ageMs < lockStaleMs()) return false;
+      // Unknown holder but the lock was written a heartbeat ago (a racing starter mid-write): defer.
+      if (!holder && ageMs < 5000) return false;
+      try { fs.unlinkSync(CFG.lockFile); } catch (_) {}   // stale (dead/old/corrupt) -> clear + retry
+    }
+  }
+  return false;
+}
+
+// Acquire the single-instance lock, then hand off to run(). A duplicate is not an error (it's
+// correctly refused), so we exit 0 — the supervisor won't flap-restart on a benign double-launch.
 function start() {
-  if (!CFG.agentKey) { log('fatal', { reason: 'WHV2_AGENT_KEY not set' }); process.exit(1); }
+  if (!acquireLock()) {
+    log('singleton_conflict', { lock_file: CFG.lockFile, note: 'another agent holds the lock — exiting' });
+    process.exit(0);
+  }
+  process.on('exit', releaseLock);   // sync cleanup on any exit; only removes our own lock
+  run();
+}
+
+function run() {
+  if (!CFG.agentKey) {
+    const kf = process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile;
+    log('fatal', { reason: kf ? 'agent key file configured but empty/unreadable' : 'no agent key configured (set WHV2_AGENT_KEY or config.agentKeyFile)', key_file: kf || null });
+    process.exit(1);
+  }
   if (!/^https:/i.test(CFG.ingestUrl) && !/(127\.0\.0\.1|localhost)/i.test(CFG.ingestUrl)) {
     log('warn_insecure_ingest', { note: 'ingest URL is not https — the agent key would travel in cleartext' });
   }
   const keySource = process.env.WHV2_AGENT_KEY ? 'env' : ((process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile) ? 'file' : 'none');
-  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource });
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile });
 
-  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0 };
+  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0 };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
   // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
@@ -269,11 +346,12 @@ function start() {
     timer = setTimeout(loop, delay);
   };
   const loop = async () => {
+    refreshLock();   // heartbeat the lock each poll so a stale/crashed lock is detectable by the next starter
     try { await pushIfChanged(state); } catch (e) { log('tick_error', { error: e && e.message }); }
     schedule();
   };
 
-  const shutdown = () => { state.stopped = true; if (timer) clearTimeout(timer); log('stopping', {}); process.exit(0); };
+  const shutdown = () => { state.stopped = true; if (timer) clearTimeout(timer); releaseLock(); log('stopping', {}); process.exit(0); };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   // Fail-fast on an unknown-state crash so the supervisor (task/watchdog/NSSM) restarts clean;

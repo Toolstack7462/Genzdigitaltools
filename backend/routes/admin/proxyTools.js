@@ -29,6 +29,8 @@ const { unavailableReason, selectAccount } = require('../../utils/proxy/accountS
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
+const healthAlerts = require('../../utils/proxy/healthAlerts');
+const { isEmailEnabled } = require('../../utils/email');
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
 // reflects exactly which account clients will get (default auto_failover).
@@ -55,6 +57,11 @@ const schemas = {
     // Per-client session length / countdown (minutes). null → use tool/global default.
     leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
   }),
+  alertConfig: Joi.object({
+    // Empty string clears the dashboard override (falls back to the env default recipient).
+    email: Joi.string().email({ tlds: { allow: false } }).max(160).allow('', null),
+    enabled: Joi.boolean(),
+  }).min(1),
   updateClient: Joi.object({
     planName: Joi.string().max(120).allow('', null),
     expiryDate: Joi.date().iso().allow(null),
@@ -590,7 +597,7 @@ router.delete('/:tool/accounts/:id', async (req, res) => {
 const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '2.4.0';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '2.5.2';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -724,6 +731,57 @@ router.get('/:tool/agent-logs', async (req, res) => {
     return res.json({ ok: true, events });
   } catch (err) {
     return res.status(500).json({ ok: false, error: 'Failed to load logs' });
+  }
+});
+
+// ── Alert email configuration (dashboard-managed, per primary account) ────────
+// Where health alerts (session down / recovered / agent stale) are emailed. Stored on the primary
+// ProxyAccount so it takes effect immediately (no redeploy). The full address is NEVER returned —
+// only a masked form — so a shoulder-surfer / screenshot can't read the recipient.
+router.get('/:tool/alert-config', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    const { recipient, enabled, source } = healthAlerts.resolveAlert(account);
+    return res.json({
+      ok: true,
+      emailMasked: recipient ? maskEmail(recipient) : null,
+      emailSet: !!recipient,
+      enabled,
+      source,                       // 'db' (dashboard) | 'env' (server default) | 'none'
+      smtpConfigured: isEmailEnabled(),
+      canConfigure: !!account,
+    });
+  } catch (err) {
+    console.error('Proxy alert-config get error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load alert config' });
+  }
+});
+
+router.post('/:tool/alert-config', validate(schemas.alertConfig), async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.status(404).json({ ok: false, error: 'No account' });
+    const cfg = Object.assign({}, account.alertConfig || {});
+    if (req.body.email !== undefined) cfg.email = (req.body.email || '').trim(); // '' clears → env fallback
+    if (req.body.enabled !== undefined) cfg.enabled = !!req.body.enabled;
+    cfg.updatedAt = new Date();
+    account.alertConfig = cfg;
+    await account.save();
+    const { recipient, enabled, source } = healthAlerts.resolveAlert(account);
+    // Log only the masked recipient — never the raw address.
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ALERT_CONFIG_SET',
+      { tool: req.proxyTool, accountId: account._id, source, enabled, emailMasked: recipient ? maskEmail(recipient) : null, ip: getClientIp(req) });
+    return res.json({
+      ok: true,
+      emailMasked: recipient ? maskEmail(recipient) : null,
+      emailSet: !!recipient,
+      enabled,
+      source,
+      smtpConfigured: isEmailEnabled(),
+    });
+  } catch (err) {
+    console.error('Proxy alert-config set error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to save alert config' });
   }
 });
 

@@ -117,6 +117,17 @@ $user = "$env:COMPUTERNAME\$AdminUser"
 function Reset-Task($name){ cmd /c "schtasks /end /tn $name >nul 2>&1"; cmd /c "schtasks /delete /tn $name /f >nul 2>&1" }
 Reset-Task 'WriteHumanV2Agent'
 & schtasks /create /tn WriteHumanV2Agent     /tr ("cmd /c "+$InstallDir+"\run-agent.cmd")   /sc ONSTART /ru SYSTEM /rl HIGHEST /f | Out-Null
+# Harden the agent task to native Windows service semantics (no third-party supervisor):
+#  - MultipleInstances IgnoreNew  → OS-level single-instance (belt to the agent's own port lock)
+#  - RestartCount/RestartInterval → auto-restart on crash (node exits 1) every 1 min, up to 999x
+#  - ExecutionTimeLimit 0         → never force-killed (it's a daemon)
+# schtasks can't set these, so apply them via the ScheduledTasks module after creation.
+try {
+  $agS = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
+  $agS.DisallowStartIfOnBatteries = $false; $agS.StopIfGoingOnBatteries = $false
+  Set-ScheduledTask -TaskName WriteHumanV2Agent -Settings $agS | Out-Null
+  Info 'Agent task hardened: single-instance + auto-restart-on-crash + no time limit.'
+} catch { Info 'WARNING: could not apply hardened task settings (agent still runs on boot).' }
 Reset-Task 'WriteHumanChromeDebug'
 & schtasks /create /tn WriteHumanChromeDebug /tr ("cmd /c "+$InstallDir+"\chrome-debug.cmd") /sc ONLOGON /ru $user /rl HIGHEST /f | Out-Null
 Reset-Task 'WriteHumanWatchdog'

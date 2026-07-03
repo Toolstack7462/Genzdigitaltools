@@ -17,4 +17,7 @@ export const writeHumanV2Admin = {
   verify: (accountId) => api.post(`/admin/proxy-tools/${TOOL}/accounts/${accountId}/verify`),
   // Queue a remote command (relaunch-chrome / reverify) for the agent's next poll.
   command: (command) => api.post(`/admin/proxy-tools/${TOOL}/agent-command`, { command }),
+  // Health-alert email (masked read; write to set/change/clear the recipient or toggle alerts).
+  getAlertConfig: () => api.get(`/admin/proxy-tools/${TOOL}/alert-config`),
+  setAlertConfig: (payload) => api.post(`/admin/proxy-tools/${TOOL}/alert-config`, payload),
 };
