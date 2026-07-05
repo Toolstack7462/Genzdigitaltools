@@ -340,6 +340,22 @@ function matchesQuery(obj, query = {}) {
   return true;
 }
 
+// A single top-level field with a plain STRING equality is safe to push into SQL as a JSON filter.
+// _findRaw ALWAYS re-filters with matchesQuery afterward, so this only NARROWS candidate rows — it
+// must never exclude a true match. String equality via JSON_UNQUOTE is faithful to valuesEqual()
+// (numbers/booleans/nulls/operators are NOT pushed — they fall back to the full scan). Returns the
+// field name, or null when nothing is safely pushable.
+function pushableStringKey(criteria) {
+  if (!criteria || typeof criteria !== 'object') return null;
+  for (const [k, v] of Object.entries(criteria)) {
+    if (k === '_id' || k.startsWith('$')) continue;
+    if (typeof v !== 'string') continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue; // top-level, injection-safe JSON path key
+    return k;
+  }
+  return null;
+}
+
 function applyUpdate(data, update = {}) {
   const out = deepClone(data) || {};
   if (update.$set || update.$inc || update.$unset) {
@@ -613,8 +629,38 @@ function createModel(name, options = {}) {
       return out;
     }
 
+    // Narrow the candidate rows with a SQL WHERE when it's provably safe (PK for _id equality/$in,
+    // JSON_EXTRACT for a top-level string equality), instead of always scanning the whole table into
+    // Node. Falls back to a full read on anything it can't push OR on any SQL error, so behaviour is
+    // never worse than before. _findRaw ALWAYS re-filters with matchesQuery, so correctness does NOT
+    // depend on this narrowing.
+    static async _candidateRows(criteria) {
+      const c = criteria || {};
+      const idv = c._id;
+      if (typeof idv === 'string') {
+        try {
+          const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id = ?`, [idv]);
+          return rows.map(r => deserializeData(r.data));
+        } catch (_) { /* fall through to full scan */ }
+      }
+      if (idv && typeof idv === 'object' && Array.isArray(idv.$in)) {
+        try { return await this._getRawByIds(idv.$in); } catch (_) { /* fall through */ }
+      }
+      const key = pushableStringKey(c);
+      if (key) {
+        try {
+          const [rows] = await runQuery(
+            `SELECT data FROM \`${table}\` WHERE JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?`,
+            [`$.${key}`, c[key]],
+          );
+          return rows.map(r => deserializeData(r.data));
+        } catch (_) { /* JSON functions unsupported / error → full scan */ }
+      }
+      return this._allRows();
+    }
+
     static async _findRaw(criteria = {}) {
-      const rows = await this._allRows();
+      const rows = await this._candidateRows(criteria);
       return rows.filter(row => matchesQuery(row, criteria));
     }
 
