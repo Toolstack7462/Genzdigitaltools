@@ -518,11 +518,33 @@ class Query {
       const refName = populateModelByPath[pop.path];
       const RefModel = registry[refName];
       if (!RefModel) continue;
+
+      // Collect the referenced id at this path for every doc, then fetch them all in ONE batched
+      // query (was findById per doc — the N+1). Semantics are preserved exactly: same id resolution,
+      // same .select() projection, only-assign-when-found, and the same save() bookkeeping.
+      const idByDoc = new Map(); // doc -> original id value (for __populatedPaths)
+      const ids = [];
       for (const doc of docs) {
         const rawId = getByPath(doc, pop.path);
         const id = rawId?._id || rawId;
         if (!id) continue;
-        const ref = await RefModel.findById(id).select(pop.select || '').exec();
+        idByDoc.set(doc, id);
+        ids.push(String(id));
+      }
+      if (!idByDoc.size) continue;
+
+      const sel = pop.select || '';
+      const refMap = new Map(); // idString -> hydrated (+projected) ref doc
+      for (const raw of await RefModel._getRawByIds(ids)) {
+        let ref = RefModel._hydrate(raw);
+        if (sel) ref = RefModel._hydrate(projectObject(ref.toObject(), sel)); // mirror .select().exec()
+        refMap.set(String(ref._id), ref);
+      }
+
+      for (const doc of docs) {
+        const id = idByDoc.get(doc);
+        if (id == null) continue;
+        const ref = refMap.get(String(id));
         if (ref) {
           doc.__populatedPaths[pop.path] = id;
           setByPath(doc, pop.path, ref);
@@ -572,6 +594,23 @@ function createModel(name, options = {}) {
       if (!id) return null;
       const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id = ? LIMIT 1`, [String(id)]);
       return rows[0] ? deserializeData(rows[0].data) : null;
+    }
+
+    // Batch-fetch many rows by id in ONE query per chunk (uses the PRIMARY KEY index). Used to
+    // eliminate populate()'s N+1 (was one findById round-trip per row). Order not guaranteed —
+    // callers key results by _id.
+    static async _getRawByIds(ids) {
+      const uniq = [...new Set((ids || []).map(String))].filter(Boolean);
+      if (!uniq.length) return [];
+      const CHUNK = 1000; // keep the IN(...) list well under max_allowed_packet
+      const out = [];
+      for (let i = 0; i < uniq.length; i += CHUNK) {
+        const slice = uniq.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id IN (${placeholders})`, slice);
+        for (const r of rows) out.push(deserializeData(r.data));
+      }
+      return out;
     }
 
     static async _findRaw(criteria = {}) {
@@ -779,4 +818,7 @@ module.exports = {
   setByPath,
   matchesQuery,
   sanitizeUrl,
+  // Test-only seam: inject a fake pool so the query layer can be unit-tested without a real DB.
+  // Never used in production paths.
+  __test: { setPool: (p) => { pool = p; } },
 };
