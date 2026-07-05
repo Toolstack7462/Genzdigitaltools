@@ -79,14 +79,15 @@ test('countDocuments: empty → SELECT COUNT(*) (no rows loaded)', async () => {
   assert.ok(queries[0].sql.includes('COUNT(*)') && !queries[0].sql.includes('WHERE'));
 });
 
-test('countDocuments: single string field → COUNT(*) WHERE (indexed if available)', async () => {
+test('countDocuments: single string field → exact load-count (NOT SQL COUNT — collation/type safe)', async () => {
   const { pool, queries } = fakePool();
   adapter.__test.setPool(pool);
   const M = adapter.createModel('IdxTest');
   adapter.__test.markIndexed('idxtest', 'tool');
   const n = await M.countDocuments({ tool: 'writehuman' });
-  assert.equal(n, 2);
-  assert.ok(queries[0].sql.includes('COUNT(*)') && queries[0].sql.includes('`gc_tool` = ?'));
+  assert.equal(n, 2, 'exact count via matchesQuery re-filter');
+  assert.ok(!queries.some(q => q.sql.includes('COUNT(*)')), 'string-field count must NOT use bare SQL COUNT');
+  assert.ok(queries.some(q => q.sql.includes('`gc_tool` = ?')), 'still narrows via the find pushdown (loads only matching rows)');
 });
 
 test('countDocuments: single _id → COUNT(*) WHERE id = ?', async () => {

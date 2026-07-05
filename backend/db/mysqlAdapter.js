@@ -753,10 +753,13 @@ function createModel(name, options = {}) {
     static async countDocuments(criteria = {}) {
       const c = criteria || {};
       const keys = Object.keys(c);
-      // Exact SQL COUNT(*) when the WHOLE criteria is representable by one safe WHERE (empty, a single
-      // _id equality, or a single top-level string equality) — avoids loading/hydrating every matching
-      // row just to count it. Any other shape (or a SQL error) falls back to load-and-count, which is
-      // exact via matchesQuery.
+      // Exact SQL COUNT(*) ONLY for the provably case/type-safe shapes: empty criteria (counts all),
+      // or a single _id equality (id is unique lowercase hex — no collation ambiguity). String-field
+      // counts are deliberately NOT pushed to SQL COUNT: the columns are case-INSENSITIVE
+      // (utf8mb4_unicode_ci) and JSON_EXTRACT type-juggles, so a bare COUNT could disagree with the
+      // case-sensitive matchesQuery (and there's no JS re-filter to correct a count). Those fall back
+      // to the exact load-and-count below, which still benefits from the find pushdown (only matching
+      // rows are loaded, not the whole table).
       try {
         if (keys.length === 0) {
           const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\``);
@@ -764,12 +767,6 @@ function createModel(name, options = {}) {
         }
         if (keys.length === 1 && typeof c._id === 'string') {
           const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE id = ?`, [c._id]);
-          return Number(r[0].c) || 0;
-        }
-        const key = keys.length === 1 ? pushableStringKey(c) : null;
-        if (key) {
-          const { sql, params } = whereForStringKey(table, key, c[key]);
-          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE ${sql}`, params);
           return Number(r[0].c) || 0;
         }
       } catch (_) { /* fall back to the exact JS count */ }
