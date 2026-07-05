@@ -100,3 +100,33 @@ test('SQL error on the pushdown → falls back to full scan, still correct', asy
   assert.ok(queries.some(q => q.sql.includes('JSON_EXTRACT')), 'attempted the pushdown');
   assert.ok(queries.some(q => !q.sql.includes('WHERE')), 'then fell back to full scan');
 });
+
+test('INVARIANT: a SQL over-match (e.g. case-insensitive collation) is corrected by the JS re-filter', async () => {
+  // The pushdown WHERE can over-match (utf8mb4_unicode_ci is case-insensitive; JSON_EXTRACT
+  // type-juggles). This proves the safety net: whatever the WHERE returns, matchesQuery re-filters
+  // it exactly, so find() results are always correct regardless of collation/type quirks.
+  const CASE = [
+    { _id: 'a', tool: 'writehuman' },
+    { _id: 'b', tool: 'WriteHuman' }, // a ci collation would ALSO return this row
+    { _id: 'c', tool: 'writehuman' },
+  ];
+  const pool = {
+    query: async (sql, params = []) => {
+      if (sql.includes('JSON_EXTRACT') || sql.includes('gc_')) {
+        const want = String(params[params.length - 1]).toLowerCase(); // simulate case-INSENSITIVE SQL
+        return [CASE.filter(d => d.tool.toLowerCase() === want).map(r => ({ data: JSON.stringify(r) }))];
+      }
+      return [CASE.map(r => ({ data: JSON.stringify(r) }))];
+    },
+  };
+  adapter.__test.setPool(pool);
+  const docs = await adapter.createModel('CaseTest').find({ tool: 'writehuman' });
+  assert.deepEqual(ids(docs), ['a', 'c'], 'case-variant SQL over-match is dropped by the case-sensitive JS filter');
+});
+
+test('_id $in [] → matches nothing, issues no id query', async () => {
+  const { M, queries } = setup();
+  const docs = await M.find({ _id: { $in: [] } });
+  assert.equal(docs.length, 0);
+  assert.ok(!queries.some(q => q.sql.includes('WHERE id IN')), 'empty $in short-circuits — no query');
+});
