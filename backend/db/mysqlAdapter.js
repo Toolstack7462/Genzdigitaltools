@@ -56,6 +56,22 @@ const tableNames = {
   ProxyAccount: 'proxy_accounts',
 };
 
+// Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated
+// column (gc_<field>) so find({field:'x'}) becomes an INDEX SEEK instead of a JSON scan. Only add
+// fields that are (a) frequently filtered by exact value and (b) always strings. Adding a field here
+// is safe: creation is idempotent + non-fatal, and the pushdown falls back to JSON_EXTRACT / full
+// scan if the column doesn't exist.
+const INDEXED_FIELDS = {
+  users: ['email', 'role'],
+  tool_assignments: ['clientId', 'toolId'],
+  proxy_clients: ['userId', 'tool'],
+  proxy_accounts: ['tool'],
+  stealth_clients: ['userId'],
+};
+const GC_MAX = 191; // index-safe utf8mb4 prefix; values longer than this bypass the gc (use JSON_EXTRACT)
+// Populated by ensureTables once a gc_<field> column is confirmed to exist: { tableName: Set(fields) }.
+const indexedColumns = {};
+
 const populateModelByPath = {
   author: 'User',
   createdBy: 'User',
@@ -193,6 +209,43 @@ async function ensureTables() {
         INDEX idx_${table}_updatedAt (updatedAt)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await ensureGeneratedColumns(db, table);
+  }
+}
+
+// Idempotently + NON-FATALLY add indexed VIRTUAL generated columns (gc_<field>) for a table's hot
+// lookup fields, so find({field:'x'}) can index-seek. VIRTUAL = metadata-only add (no table rewrite).
+// Any failure (permissions, old MySQL/MariaDB, JSON unsupported) is swallowed and the field is simply
+// left un-indexed — the pushdown then uses JSON_EXTRACT / full scan, so behaviour is never worse.
+async function ensureGeneratedColumns(db, table) {
+  const fields = INDEXED_FIELDS[table];
+  if (!fields || !fields.length) return;
+  const set = indexedColumns[table] || (indexedColumns[table] = new Set());
+  for (const field of fields) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) continue;
+    const col = `gc_${field}`;
+    const idx = `idx_${table}_${col}`;
+    try {
+      const [cRows] = await db.query(
+        `SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [table, col],
+      );
+      if (!(cRows && cRows[0] && Number(cRows[0].c) > 0)) {
+        await db.query(
+          `ALTER TABLE \`${table}\` ADD COLUMN \`${col}\` VARCHAR(${GC_MAX}) GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.${field}'))) VIRTUAL`,
+        );
+      }
+      set.add(field); // column exists → pushdown/count may use WHERE gc_<field> = ?
+      const [iRows] = await db.query(
+        `SELECT COUNT(*) AS c FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+        [table, idx],
+      );
+      if (!(iRows && iRows[0] && Number(iRows[0].c) > 0)) {
+        await db.query(`ALTER TABLE \`${table}\` ADD INDEX \`${idx}\` (\`${col}\`)`);
+      }
+    } catch (err) {
+      console.warn(`[mysqlAdapter] generated column ${table}.${col} skipped (non-fatal): ${err.message}`);
+    }
   }
 }
 
@@ -354,6 +407,16 @@ function pushableStringKey(criteria) {
     return k;
   }
   return null;
+}
+
+// WHERE fragment for a top-level string equality. Uses the indexed generated column when it exists
+// AND the value fits the index prefix (fast INDEX SEEK); otherwise the JSON_EXTRACT expression
+// (correct for any length, unindexed scan). Returns { sql, params }.
+function whereForStringKey(table, key, value) {
+  if (indexedColumns[table] && indexedColumns[table].has(key) && value.length <= GC_MAX) {
+    return { sql: `\`gc_${key}\` = ?`, params: [value] };
+  }
+  return { sql: `JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?`, params: [`$.${key}`, value] };
 }
 
 function applyUpdate(data, update = {}) {
@@ -649,12 +712,10 @@ function createModel(name, options = {}) {
       const key = pushableStringKey(c);
       if (key) {
         try {
-          const [rows] = await runQuery(
-            `SELECT data FROM \`${table}\` WHERE JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?`,
-            [`$.${key}`, c[key]],
-          );
+          const { sql, params } = whereForStringKey(table, key, c[key]);
+          const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE ${sql}`, params);
           return rows.map(r => deserializeData(r.data));
-        } catch (_) { /* JSON functions unsupported / error → full scan */ }
+        } catch (_) { /* generated column / JSON functions unsupported → full scan */ }
       }
       return this._allRows();
     }
@@ -690,6 +751,28 @@ function createModel(name, options = {}) {
     }
 
     static async countDocuments(criteria = {}) {
+      const c = criteria || {};
+      const keys = Object.keys(c);
+      // Exact SQL COUNT(*) when the WHOLE criteria is representable by one safe WHERE (empty, a single
+      // _id equality, or a single top-level string equality) — avoids loading/hydrating every matching
+      // row just to count it. Any other shape (or a SQL error) falls back to load-and-count, which is
+      // exact via matchesQuery.
+      try {
+        if (keys.length === 0) {
+          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\``);
+          return Number(r[0].c) || 0;
+        }
+        if (keys.length === 1 && typeof c._id === 'string') {
+          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE id = ?`, [c._id]);
+          return Number(r[0].c) || 0;
+        }
+        const key = keys.length === 1 ? pushableStringKey(c) : null;
+        if (key) {
+          const { sql, params } = whereForStringKey(table, key, c[key]);
+          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE ${sql}`, params);
+          return Number(r[0].c) || 0;
+        }
+      } catch (_) { /* fall back to the exact JS count */ }
       return (await this._findRaw(criteria)).length;
     }
 
@@ -866,5 +949,9 @@ module.exports = {
   sanitizeUrl,
   // Test-only seam: inject a fake pool so the query layer can be unit-tested without a real DB.
   // Never used in production paths.
-  __test: { setPool: (p) => { pool = p; } },
+  __test: {
+    setPool: (p) => { pool = p; },
+    markIndexed: (t, f) => { (indexedColumns[t] || (indexedColumns[t] = new Set())).add(f); },
+    clearIndexed: (t) => { if (t) delete indexedColumns[t]; else for (const k of Object.keys(indexedColumns)) delete indexedColumns[k]; },
+  },
 };
