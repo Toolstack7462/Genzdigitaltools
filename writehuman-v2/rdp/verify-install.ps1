@@ -33,6 +33,18 @@ Check "agent (node) running" ((Get-Process node -ErrorAction SilentlyContinue | 
 $cdpUrl = if ($cfg -and $cfg.cdpUrl) { $cfg.cdpUrl } else { 'http://127.0.0.1:9222' }
 $cdp = try { (Invoke-WebRequest ($cdpUrl + '/json/version') -UseBasicParsing -TimeoutSec 5).StatusCode } catch { 0 }
 Check ("CDP reachable (" + $cdpUrl + ")") ($cdp -eq 200) "run chrome-debug.cmd + log into WriteHuman"
+if ($cdp -ne 200) {
+  # Pinpoint the usual cause: a Chrome is up but was launched WITHOUT --remote-debugging-port, so the
+  # debug port was never opened and the agent reports 'cdp: fetch failed'.
+  $withFlag = @(Get-CimInstance Win32_Process -Filter "name='chrome.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'remote-debugging-port' }).Count
+  $anyChrome = @(Get-CimInstance Win32_Process -Filter "name='chrome.exe'" -ErrorAction SilentlyContinue).Count
+  if ($anyChrome -gt 0 -and $withFlag -eq 0) {
+    Write-Host "        -> Chrome is running WITHOUT --remote-debugging-port (a no-flag Chrome owns the profile)."
+    Write-Host "           Fix: run ensure-chrome-debug.ps1 (kills + relaunches with the flag, verifies the port)."
+  } elseif ($anyChrome -eq 0) {
+    Write-Host "        -> No Chrome running. Ensure a desktop session is active (autologon) so the ONLOGON task can launch it."
+  }
+}
 
 $logf = Join-Path $InstallDir 'agent.log'
 $recent = if (Test-Path $logf) { (Get-Item $logf).LastWriteTime -gt (Get-Date).AddMinutes(-5) } else { $false }

@@ -75,7 +75,7 @@ function Deploy($src,$dst){
   if($s -ne $d){ Copy-Item $src $dst -Force }
 }
 Deploy (Join-Path $repoRoot 'agent\cookie-sync-agent.js') (Join-Path $InstallDir 'agent\cookie-sync-agent.js')
-foreach($f in 'watchdog.ps1','status.ps1','uninstall.ps1'){ Deploy (Join-Path $PSScriptRoot $f) (Join-Path $InstallDir "rdp\$f") }
+foreach($f in 'watchdog.ps1','status.ps1','uninstall.ps1','ensure-chrome-debug.ps1'){ Deploy (Join-Path $PSScriptRoot $f) (Join-Path $InstallDir "rdp\$f") }
 Deploy (Join-Path $repoRoot 'test\soak-monitor.js') (Join-Path $InstallDir 'soak-monitor.js')
 
 # 3) Machine config (non-secret) for status/watchdog ---------------------------
@@ -101,11 +101,15 @@ $chromeExe = @(
 if(-not $chromeExe){ try { $chromeExe = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction Stop).'(default)' } catch {} }
 if(-not $chromeExe){ $chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'; Info 'WARNING: Chrome not auto-detected; using the default path. Install Chrome or edit chrome-debug.cmd.' }
 Info ("Chrome: " + $chromeExe)
-# Anti-throttle flags keep the WriteHuman tab's Supabase auto-refresh timer running even when the
-# RDP desktop is locked / the window is occluded, so the access token is rotated BY THE BROWSER
-# before it expires (the agent then syncs the fresh cookie). Without these, a backgrounded tab is
-# throttled and the token drifts expired.
-$chromeCmd = "@echo off`r`ntaskkill /im chrome.exe /f >nul 2>&1`r`nping -n 3 127.0.0.1 >nul`r`nstart `"`" `"$chromeExe`" --user-data-dir=`"$ChromeProfile`" --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding https://$TargetDomain`r`n"
+# chrome-debug.cmd is now a THIN WRAPPER around ensure-chrome-debug.ps1, which is self-verifying and
+# idempotent: it no-ops when CDP 9222 is already up, else kills stray Chrome, clears a stale profile
+# lock, launches Chrome WITH --remote-debugging-port + the anti-throttle flags (these keep the
+# WriteHuman tab's Supabase auto-refresh timer alive when the desktop is locked/occluded so the token
+# is rotated before expiry), then POLLS until the debug port actually opens and retries. Every trigger
+# (ONLOGON task, watchdog, and the agent's 'relaunch-chrome') routes through this, so a no-flag Chrome
+# owning the profile — the usual "cdp: fetch failed" cause — now self-heals instead of looping.
+$ensurePs1 = Join-Path $InstallDir 'rdp\ensure-chrome-debug.ps1'
+$chromeCmd = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$ensurePs1`"`r`n"
 Set-Content (Join-Path $InstallDir 'chrome-debug.cmd') $chromeCmd -Encoding ASCII -NoNewline
 # Launcher now just points the agent at the config + the locked key file (no plaintext secret in it).
 $cfgPath = Join-Path $InstallDir 'rdp\config.json'
