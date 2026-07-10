@@ -183,7 +183,13 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
       } else if (d.warning === 'no_session_cookie' || d.verifyResult === 'session_expired') {
         showError('Saved, but these cookies do not log in (no valid session). Re-export the new account including its httpOnly session cookie, or use "Capture session".');
       } else if (d.verifyResult === 'working') {
-        showSuccess(`Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
+        showSuccess(tool === 'claude'
+          ? 'Claude account session updated and verified successfully.'
+          : `Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
+      } else if (tool === 'claude' && d.verifyResult === 'unknown') {
+        // Claude sits behind Cloudflare, so a server-side verify can be inconclusive even when the
+        // cookies are valid. The new bundle IS saved — surface it honestly, don't imply failure.
+        showSuccess('Claude cookies updated. Verification is pending (Cloudflare) — open Claude to confirm the session.');
       } else {
         showSuccess('Cookies updated.');
       }

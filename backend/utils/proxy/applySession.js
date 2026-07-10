@@ -68,7 +68,13 @@ async function applyAccountSession(account, bundle, opts = {}) {
     const r = await verifyAndApply(account, tool, { readOnly: tools.hasLiveAgent(tool), bundle });
     verifyResult = r.result; names = r.cookieNames;
     const v = r.v;
-    if (v && v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
+    // Claude: re-uploading the SAME identity's fresh cookies is a legitimate SESSION REFRESH
+    // (the operator is updating an aged session for the same account), NOT a botched attempt to
+    // switch accounts — so do NOT flag it. The new bundle is already encrypted+replaced, meta
+    // (cookieCount/updatedAt) rebuilt, stale leases revoked and the session re-verified above, so
+    // the outcome falls through to the real verify result (working / needs_login / session_expired
+    // / unknown). Every other tool keeps the "same account as before" guard for account switches.
+    if (tool !== 'claude' && v && v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
     else if (r.result === 'wrong_account') warning = 'cookies_wrong_account';
     else if (r.result === 'needs_login' || r.result === 'session_expired') warning = r.result;
     else if (r.result === 'missing_required_session_cookie') warning = 'missing_required_session_cookie';
