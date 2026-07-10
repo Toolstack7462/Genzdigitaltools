@@ -94,6 +94,13 @@ async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier, opts
     return require('./claudeVerify').verifyClaudeApi(tool, cookieHeader, expectedIdentifier, opts);
   }
 
+  // ChatGPT (chatgpt.com): same as Claude — verify against the JSON session API instead of the
+  // Cloudflare-challenged HTML page (which the generic path misread as 'unsupported' → wrongly
+  // blocked). Isolated, chatgpt-only; every other tool falls through to the default verify.
+  if (tools.verifyMode && tools.verifyMode(tool) === 'chatgpt_api') {
+    return require('./chatgptVerify').verifyChatgptApi(tool, cookieHeader, expectedIdentifier, opts);
+  }
+
   let resp;
   try {
     resp = await fetch(TARGET + VERIFY_PATH, {

@@ -51,6 +51,10 @@ const TOOLS = {
     defaultPathEnv: 'CHATGPT_DEFAULT_PATH',
     defaultPath: '/',
     verifyPathEnv: 'CHATGPT_VERIFY_PATH',
+    // chatgpt.com is Cloudflare-fronted; its HTML gets bot-challenged from a datacenter IP, which
+    // the generic verifier read as 'unsupported' → wrongly BLOCKED the account. Verify against the
+    // JSON session API instead (see backend/utils/proxy/chatgptVerify.js). ChatGPT-only.
+    verifyMode: 'chatgpt_api',
   },
   ryne: {
     key: 'ryne',
