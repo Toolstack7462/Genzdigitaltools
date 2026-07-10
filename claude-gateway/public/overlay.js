@@ -248,6 +248,44 @@
   // Text of a WORKSPACE / ORG row that must stay visible in the native dropdown (never hidden).
   var WS_KEEP_RE = /(workspace|personal|team|organization|organisation|switch to|business|enterprise plan)/i;
 
+  // ── Workspace switch in the always-visible widget (RELIABLE version) ─────────────────────────
+  // Uses claude's OWN `lastActiveOrg` cookie: the overlay sets it in the browser and the gateway
+  // forwards it upstream, so claude.ai serves that workspace. The choice lives in the BROWSER (not
+  // per-worker server memory), so it works on every request/worker — this is the version that
+  // actually switched to Personal. Reads the real workspaces from claude's /api/organizations;
+  // no id is shown to the user.
+  function currentWs() { return getCookie('lastActiveOrg'); }
+  function switchWs(uuid) {
+    if (!uuid) return;
+    try { document.cookie = 'lastActiveOrg=' + uuid + '; Path=/; Max-Age=31536000; SameSite=Lax'; } catch (e) {}
+    toast('Switching workspace…');
+    setTimeout(function () { location.reload(); }, 250);
+  }
+  function buildClaudeWorkspaces() {
+    if (!CLAUDE || !el.widget) return;
+    fetch('/api/organizations', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (list) {
+        if (!Array.isArray(list) || !list.length) return;
+        var personal = null, team = null;
+        for (var i = 0; i < list.length; i++) { var o = list[i]; if (!o || !o.uuid) continue; var nm = String(o.name || ''); if (/@|'s organization|personal/i.test(nm)) { if (!personal) personal = o; } else if (!team) team = o; }
+        if (!personal) personal = list[list.length - 1];
+        if (personal === team) team = null;
+        var body = el.widget.querySelector('.genz-sw-body'); if (!body) return;
+        var wrap = el.widget.querySelector('#genz-ws-row');
+        if (!wrap) { wrap = document.createElement('div'); wrap.id = 'genz-ws-row'; var cd = body.querySelector('.genz-sw-cd'); if (cd && cd.nextSibling) body.insertBefore(wrap, cd.nextSibling); else body.appendChild(wrap); }
+        var cur = currentWs();
+        function mk(label, o) {
+          if (!o || !o.uuid) return '';
+          var on = cur && cur === o.uuid;
+          return '<button class="genz-ws-btn' + (on ? ' on' : '') + '" data-uuid="' + o.uuid + '"' + (on ? ' disabled' : '') + '>' + label + (on ? ' ✓' : '') + '</button>';
+        }
+        wrap.innerHTML = '<div class="genz-ws-lbl">Workspace</div><div class="genz-ws-btns">' + mk('Personal', personal) + mk('Team', team) + '</div>';
+        var bs = wrap.querySelectorAll('.genz-ws-btn');
+        for (var j = 0; j < bs.length; j++) { (function (bb) { bb.addEventListener('click', function () { if (!bb.disabled) switchWs(bb.getAttribute('data-uuid')); }); })(bs[j]); }
+      }).catch(function () {});
+  }
+
   // Relabel ONLY the local avatar to "GEN Z" and hide the account name/email on the native
   // bottom-left button, keeping the button (and thus the native dropdown) fully functional.
   function relabelClaudeAccount() {
@@ -457,6 +495,7 @@
     buildChatgptAccountCard();
     injectHideStyle();
     runHiding();
+    if (CLAUDE) { buildClaudeWorkspaces(); setTimeout(buildClaudeWorkspaces, 3000); }
     var mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { childList: true, subtree: true });
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); scheduleFull(); return r; };

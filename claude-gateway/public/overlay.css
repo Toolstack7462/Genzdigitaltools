@@ -77,5 +77,11 @@
 /* Sidebar is hidden on narrow screens — don't float the card over the chat. */
 @media (max-width:767px){ #genz-acct-card{ display:none; } }
 
-/* Claude uses its NATIVE account button + dropdown (no custom switcher). The overlay only
-   relabels the local avatar to "GEN Z" and hides name/email/menu items via JS — no CSS here. */
+/* Claude: relabel the local avatar to "GEN Z" + hide name/email/menu items via JS.
+   Plus a Personal/Team workspace switch inside the always-visible widget. */
+#genz-sw-widget #genz-ws-row{ margin:8px 0 2px; }
+#genz-sw-widget .genz-ws-lbl{ font-size:9px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:#8aa2b8; margin-bottom:5px; }
+#genz-sw-widget .genz-ws-btns{ display:flex; gap:6px; }
+#genz-sw-widget .genz-ws-btn{ flex:1; padding:6px 8px; border-radius:8px; border:1px solid rgba(6,182,212,.3); background:rgba(255,255,255,.05); color:#e6f6fb; font:700 11.5px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; cursor:pointer; transition:background .15s; }
+#genz-sw-widget .genz-ws-btn:hover{ background:rgba(6,182,212,.16); }
+#genz-sw-widget .genz-ws-btn.on{ background:linear-gradient(135deg,#34d399,#22d3ee); color:#052e2b; border-color:transparent; cursor:default; }
