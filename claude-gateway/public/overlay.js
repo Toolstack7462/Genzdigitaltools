@@ -106,6 +106,9 @@
   // pricing / billing / subscription / API-keys / logout and brand the identity.
   // ════════════════════════════════════════════════════════════════════════════
   var HIDE_RE = /^(account|my account|account settings|account details|profile|my profile|settings|preferences|log\s?out|sign\s?out|logout|plans?\s*&?\s*pricing|pricing|faq|faqs|help|help center|support|contact us|discord|community|affiliate|affiliate program|refer|refer a friend|invite friends?|earn|rewards|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|api keys?|api key|developer|get more|starter plan|free plan|basic plan|pro plan|premium( plan)?|enterprise)$/i;
+  // Claude-only account-menu items to hide from the client view (beyond the shared HIDE_RE):
+  // Language, Apps, Gift Claude, Learn More, Get help, etc. Applied ONLY when CFG.tool==='claude'.
+  var CLAUDE_HIDE_RE = /^(language|apps?|get the app|gift claude|gift|learn more|get help|help( ?& ?support| center)?|what'?s new|news|download( apps?| for .+)?|desktop app|mobile app|ios app|android app|keyboard shortcuts|shortcuts|role|feedback|send feedback|status|changelog|release notes|privacy( policy)?|terms( of service)?|usage policy|acceptable use|cookie preferences|manage cookies|switch account|add account|log ?in to another|sign ?in to another)$/i;
   var USAGE_RE = /(\d+\s*\/\s*\d+\s*(humaniz|scan|word|credit)|words?\s+(left|remaining)|credits?\s+left|resets?\s+(in|at|on|every|daily|tomorrow)|usage\s+resets)/i;
   var EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
   var FORBIDDEN_RE = /^(forbidden|403\s*forbidden|403|access denied|unauthorized|401)\.?$/i;
@@ -175,16 +178,20 @@
   // never reach it, so for ChatGPT we HIDE the account control entirely and show our own
   // "Gen Z Digital Store" card on the left instead of branding the control in place.
   var CHATGPT = (CFG.tool === 'chatgpt');
-  function brandOrHide(n) { if (CHATGPT) hide(n); else brandifyControl(n); }
+  var CLAUDE = (CFG.tool === 'claude');
+  // ChatGPT and Claude both expose the real account bottom-left; HIDE it (our own switcher/card
+  // replaces it) rather than branding it in place. Every other tool keeps the in-place branding.
+  function brandOrHide(n) { if (CHATGPT || CLAUDE) hide(n); else brandifyControl(n); }
   function isIdentityControl(n) {
     if (!n || hasEditor(n)) return false;
+    if (n.closest && n.closest('#genz-claude-switch')) return false;   // never our own switcher
     if (n.querySelector && n.querySelector('[class*="avatar" i],[class*="initial" i],[class*="userpic" i],[data-avatar]')) return true;
     var a = ((n.getAttribute && (n.getAttribute('aria-label') || n.getAttribute('title') || n.getAttribute('data-testid') || '')) || '').toLowerCase();
     if (/(^|[\s_-])(user[\s_-]?menu|usermenu|avatar)([\s_-]|$)/.test(a)) return true;
     if (n.getAttribute && n.getAttribute('aria-haspopup') && /(^|[\s_-])(account|profile|my[\s_-]?account)([\s_-]|$)/.test(a)) return true;
-    // ChatGPT: a bottom-left button/link carrying an avatar image is the account switcher.
-    if (CHATGPT && n.querySelector && n.querySelector('img')) {
-      try { var r = n.getBoundingClientRect(); if (r.width && r.left < 360 && r.top > window.innerHeight * 0.55) return true; } catch (e) {}
+    // ChatGPT / Claude: a bottom-left button/link carrying an avatar/initials is the account switcher.
+    if ((CHATGPT || CLAUDE) && n.querySelector && n.querySelector('img,svg,[class*="avatar" i],[class*="initial" i]')) {
+      try { var r = n.getBoundingClientRect(); if (r.width && r.left < 380 && r.top > window.innerHeight * 0.55) return true; } catch (e) {}
     }
     return false;
   }
@@ -211,6 +218,140 @@
     c.innerHTML = '<span class="genz-acct-ava">G</span>' +
       '<span class="genz-acct-txt"><b>Gen Z Digital Store</b><i>Member access</i></span>';
     document.documentElement.appendChild(c);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════════
+  // Claude (claude.ai) — compact custom WORKSPACE SWITCHER (bottom-left).
+  //
+  // claude.ai's real account control (bottom-left: avatar initials + name) opens a menu with
+  // email, Settings, Language, Help, Upgrade, Apps, Gift Claude, Learn More, Log out and the
+  // workspace list — none of which the client may see. So for Claude we HIDE the native control
+  // (hideClaudeNative + the identity sweep) and render OUR OWN switcher showing ONLY:
+  //   • Team workspace     • Personal workspace
+  // The visible avatar reads "GEN Z" (local label only — the real account name is never shown).
+  //
+  // Discovery reads claude.ai's own /api/organizations (same-origin through the gateway) to learn
+  // which workspaces exist + whether Team is available — NAMES / IDS ARE NEVER DISPLAYED. Switching
+  // uses claude.ai's own mechanism: the choice is stored in a gateway-origin cookie (via
+  // /__genz/set-ws) and the gateway overrides `lastActiveOrg` on the UPSTREAM request, then we
+  // reload. No org id / email / plan / token / session is exposed; auth cookies are never touched;
+  // logout + security stay in the admin panel only.
+  var claudeSw = { built: false, open: false, loading: false, team: null, personal: null,
+                   teamAvail: false, perAvail: false, active: 'personal' };
+  var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  // Split claude.ai's org list into a Team org + a Personal org WITHOUT surfacing names/ids.
+  function classifyOrgs(list) {
+    var team = null, personal = null;
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i]; if (!o || !o.uuid) continue;
+      var nm = String(o.name || '').toLowerCase();
+      var isPersonal = /personal/.test(nm) || o.organization_type === 'individual' ||
+        (o.settings && o.settings.claude_personal === true);
+      if (isPersonal) { if (!personal) personal = o; }
+      else if (!team) team = o;
+    }
+    if (!personal && team) { for (var j = 0; j < list.length; j++) { if (list[j] && list[j].uuid && list[j] !== team) { personal = list[j]; break; } } }
+    if (!team && !personal && list.length) { var only = list[0]; if (/personal/.test(String(only.name || '').toLowerCase())) personal = only; else team = only; }
+    return { team: team, personal: personal };
+  }
+
+  function claudeDiscover(retry) {
+    if (!CLAUDE || claudeSw.loading) return;
+    claudeSw.loading = true;
+    fetch('/api/organizations', { credentials: 'same-origin', headers: { 'accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (list) {
+        claudeSw.loading = false;
+        if (Array.isArray(list) && list.length) { var c = classifyOrgs(list); claudeSw.team = c.team; claudeSw.personal = c.personal; }
+        claudeSw.teamAvail = !!(claudeSw.team && claudeSw.team.uuid);
+        claudeSw.perAvail = !!(claudeSw.personal && claudeSw.personal.uuid);
+        // Active = the client's saved choice (genz_ws), else Team when available, else Personal.
+        // If Team is unavailable/suspended, Personal is forced active (requirement).
+        var choice = getCookie('genz_ws');
+        if (choice && claudeSw.team && choice === claudeSw.team.uuid && claudeSw.teamAvail) claudeSw.active = 'team';
+        else if (choice && claudeSw.personal && choice === claudeSw.personal.uuid) claudeSw.active = 'personal';
+        else claudeSw.active = claudeSw.teamAvail ? 'team' : 'personal';
+        if (!claudeSw.teamAvail) claudeSw.active = 'personal';
+        renderClaudeSwitcher();
+        // /api/organizations can 401 for a beat right after load; retry a couple of times.
+        if (!claudeSw.teamAvail && !claudeSw.perAvail && (retry || 0) < 3) setTimeout(function () { claudeDiscover((retry || 0) + 1); }, 1500);
+      })
+      .catch(function () { claudeSw.loading = false; renderClaudeSwitcher(); if ((retry || 0) < 3) setTimeout(function () { claudeDiscover((retry || 0) + 1); }, 1500); });
+  }
+
+  function buildClaudeSwitcher() {
+    if (!CLAUDE || claudeSw.built) return;
+    claudeSw.built = true;
+    var box = document.createElement('div'); box.id = 'genz-claude-switch';
+    box.innerHTML =
+      '<button class="genz-cs-btn" id="genz-cs-btn" type="button" aria-haspopup="true" aria-expanded="false" title="Workspace">' +
+        '<span class="genz-cs-ava">GEN Z</span>' +
+        '<span class="genz-cs-meta"><b class="genz-cs-brand">Gen Z Digital Store</b><i class="genz-cs-ws" id="genz-cs-ws">Workspace</i></span>' +
+        '<svg class="genz-cs-chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>' +
+      '</button>' +
+      '<div class="genz-cs-menu" id="genz-cs-menu" role="menu" hidden>' +
+        '<div class="genz-cs-mtitle">Workspaces</div>' +
+        '<button class="genz-cs-item" type="button" data-ws="team" role="menuitem"><span class="genz-cs-ico" aria-hidden="true">▣</span><span class="genz-cs-lbl">Team workspace</span><span class="genz-cs-tag" data-tag="team"></span></button>' +
+        '<button class="genz-cs-item" type="button" data-ws="personal" role="menuitem"><span class="genz-cs-ico" aria-hidden="true">◐</span><span class="genz-cs-lbl">Personal workspace</span><span class="genz-cs-tag" data-tag="personal"></span></button>' +
+      '</div>';
+    document.documentElement.appendChild(box);
+    box.querySelector('#genz-cs-btn').addEventListener('click', function (e) { e.stopPropagation(); toggleClaudeMenu(); });
+    var items = box.querySelectorAll('.genz-cs-item');
+    for (var i = 0; i < items.length; i++) { (function (it) { it.addEventListener('click', function (e) { e.stopPropagation(); claudeSwitch(it.getAttribute('data-ws')); }); })(items[i]); }
+    document.addEventListener('click', function () { if (claudeSw.open) toggleClaudeMenu(false); });
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && claudeSw.open) toggleClaudeMenu(false); });
+    renderClaudeSwitcher();
+  }
+  function toggleClaudeMenu(force) {
+    var menu = document.getElementById('genz-cs-menu'), btn = document.getElementById('genz-cs-btn'), box = document.getElementById('genz-claude-switch');
+    if (!menu) return;
+    claudeSw.open = (typeof force === 'boolean') ? force : !claudeSw.open;
+    if (claudeSw.open) menu.removeAttribute('hidden'); else menu.setAttribute('hidden', '');
+    if (btn) btn.setAttribute('aria-expanded', claudeSw.open ? 'true' : 'false');
+    if (box) box.classList.toggle('genz-cs-open', claudeSw.open);
+  }
+  function setRow(row, available, active) {
+    if (!row) return;
+    var tag = row.querySelector('.genz-cs-tag');
+    row.classList.toggle('genz-cs-active', !!active);
+    row.classList.toggle('genz-cs-unavail', !available && !active);
+    row.disabled = (!available && !active);
+    if (tag) tag.textContent = active ? 'Active' : (available ? 'Switch' : 'Unavailable');
+    row.setAttribute('aria-current', active ? 'true' : 'false');
+  }
+  function renderClaudeSwitcher() {
+    var ws = document.getElementById('genz-cs-ws'); if (ws) ws.textContent = claudeSw.active === 'team' ? 'Team workspace' : 'Personal workspace';
+    var menu = document.getElementById('genz-cs-menu'); if (!menu) return;
+    setRow(menu.querySelector('[data-ws="team"]'), claudeSw.teamAvail, claudeSw.active === 'team');
+    setRow(menu.querySelector('[data-ws="personal"]'), claudeSw.perAvail, claudeSw.active === 'personal');
+  }
+  function claudeSwitch(ws) {
+    var org = ws === 'team' ? claudeSw.team : claudeSw.personal;
+    var available = ws === 'team' ? claudeSw.teamAvail : claudeSw.perAvail;
+    if (claudeSw.active === ws) { toggleClaudeMenu(false); return; }
+    if (!org || !UUID_RE.test(String(org.uuid || '')) || !available) { toast(ws === 'team' ? 'Team workspace is unavailable right now.' : 'This workspace is unavailable right now.'); toggleClaudeMenu(false); return; }
+    toggleClaudeMenu(false);
+    toast('Switching workspace…');
+    // Persist the choice server-side (gateway-origin cookie) so the upstream lastActiveOrg is
+    // overridden; then reload so claude.ai serves the chosen workspace. No id shown to the user.
+    fetch('/__genz/set-ws?org=' + encodeURIComponent(org.uuid), { method: 'POST', credentials: 'same-origin', headers: { 'authorization': 'Bearer ' + (LEASE || '') } })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (j) { if (j && j.ok) { location.reload(); } else { toast('Could not switch workspace. Please try again.'); } })
+      .catch(function () { toast('Could not switch workspace. Please try again.'); });
+  }
+  // Neutralise claude.ai's native bottom-left account control (by testid/aria + the identity
+  // sweep) so the client can never open its menu. Our switcher is the only account surface.
+  function hideClaudeNative() {
+    if (!CLAUDE) return;
+    try {
+      var sel = '[data-testid*="account" i],[data-testid*="profile" i],[data-testid*="user-menu" i],[data-testid*="userMenu" i],[aria-label*="account" i],[aria-label*="profile" i],[aria-label*="user menu" i]';
+      var marked = document.querySelectorAll(sel);
+      for (var i = 0; i < marked.length; i++) {
+        var c = marked[i].closest('button,[role="button"],a') || marked[i];
+        if (c && c.closest && !c.closest('#genz-sw-widget,#genz-claude-switch,#genz-cs-menu')) hide(c);
+      }
+    } catch (e) {}
   }
   function enforceBranding() {
     for (var i = brandControls.length - 1; i >= 0; i--) {
@@ -247,7 +388,7 @@
   var SWEEP_SEL = 'a,button,[role="button"],li,span,div,p,h1,h2,h3,h4';
   function processOne(n) {
     if (!n || n.nodeType !== 1) return;
-    if (n.__genz || n.id === 'genz-sw-widget' || (n.closest && n.closest('#genz-sw-widget'))) return;
+    if (n.__genz || n.id === 'genz-sw-widget' || n.id === 'genz-claude-switch' || (n.closest && n.closest('#genz-sw-widget,#genz-claude-switch'))) return;
     if (isCaptchaNode(n)) return;   // NEVER hide/brand a captcha/challenge widget
     n.__genz = true;
     var ctag = (n.tagName || '').toLowerCase();
@@ -258,6 +399,7 @@
     if (hasEditor(n)) return;
     if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); return; }
     if (EMAIL_RE.test(t)) { brandOrHide(nearestControl(n)); return; }
+    if (CLAUDE && CLAUDE_HIDE_RE.test(t)) { hide(nearestControl(n)); return; }
     if (HIDE_RE.test(t)) { hide(nearestControl(n)); return; }
     if (USAGE_RE.test(t)) { hide(n); }
   }
@@ -281,7 +423,7 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); hideClaudeNative(); } catch (e) {} }
 
   // PERF: process only added subtrees on mutations (debounced); reserve the full pass for first
   // paint, SPA route change and a low-frequency safety tick. The maintenance helpers
@@ -294,7 +436,7 @@
     try {
       if (fullPending) { fullPending = false; pending.length = 0; sweep(document); }
       else { var b = pending; pending = []; for (var i = 0; i < b.length; i++) sweep(b[i]); }
-      enforceBranding(); checkCaptcha(); hideChatgptAccount();
+      enforceBranding(); checkCaptcha(); hideChatgptAccount(); hideClaudeNative();
     } catch (e) {}
   }
   function schedule() { if (!flushTimer) flushTimer = setTimeout(flush, 150); }
@@ -313,8 +455,10 @@
     if (CFG.capture) { buildCaptureUI(); return; }
     buildWidget();
     buildChatgptAccountCard();
+    buildClaudeSwitcher();
     injectHideStyle();
     runHiding();
+    if (CLAUDE) claudeDiscover();
     var mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { childList: true, subtree: true });
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); scheduleFull(); return r; };

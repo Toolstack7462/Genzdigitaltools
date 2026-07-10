@@ -162,6 +162,15 @@ function mergeCookieHeaders(a, b) {
   return [...map.entries()].map(([n, v]) => `${n}=${v}`).join('; ');
 }
 
+// Read a single named cookie from a raw browser Cookie header (used for the Claude workspace
+// choice, genz_ws — a gateway-origin cookie that survives the browser-cookie strip).
+function readBrowserCookie(rawCookieHeader, name) {
+  const parts = String(rawCookieHeader || '').split(';');
+  for (const p of parts) { const s = p.trim(); const i = s.indexOf('='); if (i < 0) continue; if (s.slice(0, i).trim() === name) { try { return decodeURIComponent(s.slice(i + 1)); } catch (_) { return s.slice(i + 1); } } }
+  return null;
+}
+const CLAUDE_ORG_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 if (!TARGET_ORIGIN) { console.error('FATAL: TARGET_ORIGIN is required'); process.exit(1); }
 if (!API_BASE) { console.error('FATAL: API_BASE is required'); process.exit(1); }
 if (!LEASE_SECRET || LEASE_SECRET.length < 32) {
@@ -822,6 +831,14 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
       const cf = extractCfCookies(req.headers.cookie);
       if (cf) headers.cookie = mergeCookieHeaders(headers.cookie, cf);
     }
+    // Claude workspace switch: the client's chosen workspace (genz_ws — a gateway-origin cookie
+    // set via /__genz/set-ws, so it survives the browser-cookie strip above) overrides
+    // `lastActiveOrg` in the UPSTREAM cookie so claude.ai serves that org. Only a valid org UUID
+    // is honoured; it NEVER touches the auth/session cookies and is a workspace preference only.
+    if (TOOL_KEY === 'claude') {
+      const ws = readBrowserCookie(req.headers.cookie, 'genz_ws');
+      if (ws && CLAUDE_ORG_RE.test(ws)) headers.cookie = mergeCookieHeaders(headers.cookie, 'lastActiveOrg=' + ws);
+    }
   }
   else if (session && session.noAccount) { const p = stripLeaseCookie(req.headers.cookie); if (p) headers.cookie = p; }
   return headers;
@@ -1122,6 +1139,23 @@ const server = http.createServer(async (req, res) => {
   const local = verifyLeaseLocal(token);
   if (local === null) return sendBlockPage(res, 'lease_invalid');
   const capture = !!(local && local.cap);
+
+  // Claude workspace switch: remember the client's chosen org in a gateway-origin cookie
+  // (genz_ws) so attachUpstreamCookies can override `lastActiveOrg` on the upstream request.
+  // Lease-gated; the org MUST be a UUID; no org id is ever returned in the body or logged. This
+  // is a workspace display/preference switch only — it never changes auth, session or account data.
+  if (pathName === '/__genz/set-ws') {
+    if (TOOL_KEY !== 'claude') { res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end('{"ok":false}'); }
+    const org = (u.searchParams.get('org') || '').trim();
+    if (!CLAUDE_ORG_RE.test(org)) { res.writeHead(400, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end('{"ok":false,"code":"bad_org"}'); }
+    const secure = PUBLIC_ORIGIN.startsWith('https://') ? ' Secure;' : '';
+    safeLog('set-ws', { lease_id: local && local.jti, account_id: (local && local.acid) || null }); // no org id logged
+    res.writeHead(200, {
+      'set-cookie': `genz_ws=${org}; Path=/; SameSite=Lax;${secure} Max-Age=86400`,
+      'content-type': 'application/json', 'cache-control': 'no-store',
+    });
+    return res.end('{"ok":true}');
+  }
 
   // Capture-mode save: collect the cookies accumulated under this gateway host and
   // post them to the backend (server-side) to (re)fill the account.
