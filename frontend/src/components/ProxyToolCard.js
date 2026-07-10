@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Zap, ShieldCheck, ExternalLink, Lock, AlertTriangle, Loader2 } from 'lucide-react';
+import { Zap, ShieldCheck, ExternalLink, Lock, AlertTriangle, Loader2, User } from 'lucide-react';
 import { proxyToolsClient } from '../services/proxyToolsService';
 import { useToast } from './Toast';
 
@@ -69,8 +69,15 @@ const ProxyToolCard = ({ tool }) => {
         <Lock size={12} /> Expiry: <span className="text-genz-navy font-semibold">{fmtDate(tool.expiryDate)}</span>
       </p>
 
-      <div className="flex items-center gap-1.5 mb-3 text-[11.5px] text-genz-muted">
-        <ShieldCheck size={12} className={theme.text} /> Secure {tool.leaseMinutes || 30}-minute session
+      <div className="flex items-center flex-wrap gap-x-1.5 gap-y-1 mb-3 text-[11.5px] text-genz-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <ShieldCheck size={12} className={theme.text} /> Secure {tool.leaseMinutes || 30}-minute session
+        </span>
+        {tool.accountLabel && (
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-genz-soft font-semibold ${theme.text}`}>
+            <User size={11} /> Using {tool.accountLabel}
+          </span>
+        )}
       </div>
 
       <div className="mt-auto pt-1">

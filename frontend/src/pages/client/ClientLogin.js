@@ -322,7 +322,7 @@ const ClientLogin = () => {
                   <p className="text-[12px] text-genz-muted">
                     Error ID: <span className="font-mono text-genz-navy/80 select-all">{errorId}</span>
                   </p>
-                  {errDiag && (
+                  {errDiag && loginDebugEnabled() && (
                     <details className="mt-1 inline-block text-left">
                       <summary className="text-[11px] text-genz-muted cursor-pointer select-none">Connection details</summary>
                       <div className="mt-1 text-[11px] text-genz-muted/80 font-mono break-all leading-relaxed">

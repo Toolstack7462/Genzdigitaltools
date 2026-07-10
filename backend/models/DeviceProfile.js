@@ -77,6 +77,36 @@ const DeviceProfile = createModel('DeviceProfile', {
         return { status: 'approved', profile: match };
       }
 
+      // Fingerprint-drift resilience. The machine fingerprint (OS + screen + timezone +
+      // CPU cores) can legitimately change on the SAME browser — display-scaling change,
+      // an external monitor connect/disconnect, an HDR/color-depth toggle, a resolution
+      // change, or a browser/ICU update that recanonicalizes the timezone string. Any of
+      // those rotates deviceGroupId and, with a fingerprint-only match, would flag an
+      // already-known browser as a brand-new device. The per-browser instance id (hash of
+      // the browser's stable localStorage device id) survives refresh, logout/login,
+      // restart and normal browser updates, and is ALREADY recorded on this browser's
+      // existing profile. So if THIS browser instance is already known under one of the
+      // client's profiles, honour that profile's decision instead of treating it as new.
+      // A genuinely new browser has a new instance id (fresh localStorage) that is on no
+      // profile, so it still falls through to pending — and a blocked profile still blocks.
+      if (browserInstanceId) {
+        const known = profiles.find(p =>
+          Array.isArray(p.browserInstanceIds) && p.browserInstanceIds.includes(browserInstanceId));
+        if (known) {
+          if (known.status === 'blocked') return { status: 'blocked', profile: known };
+          if (known.status === 'pending') return { status: 'pending', profile: known };
+          // Approved → same trusted browser whose fingerprint merely drifted. Refresh
+          // metadata only (do NOT rewrite deviceGroupId — keep the record structure intact).
+          if (info.browser) known.browser = info.browser;
+          if (info.os && !known.os) known.os = info.os;
+          if (info.extensionVersion) known.extensionVersion = info.extensionVersion;
+          known.clientEmail = known.clientEmail || client.email || null;
+          known.lastSeenAt = now;
+          await known.save();
+          return { status: 'approved', profile: known, reason: 'browser_instance_match' };
+        }
+      }
+
       // New/different physical system → pending admin approval.
       const profile = await this.create({
         clientId,

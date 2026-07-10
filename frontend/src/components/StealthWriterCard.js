@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, ExternalLink, Lock, AlertTriangle, Gauge, ScanSearch } from 'lucide-react';
+import { Sparkles, ExternalLink, Lock, AlertTriangle, Gauge, ScanSearch, User } from 'lucide-react';
 
 /**
  * StealthWriter shown as a normal assigned-tool card on the Dashboard / My Tools.
@@ -60,10 +60,17 @@ const StealthWriterCard = ({ stealth }) => {
       </h3>
       <p className="text-[12px] font-semibold mb-2 text-fuchsia-600">{plan.planName || 'AI Humanizer & Detector'}</p>
 
-      {/* expiry */}
-      <p className="text-[12px] text-genz-muted mb-2.5 flex items-center gap-1.5">
-        <Lock size={12} /> Expiry: <span className="text-genz-navy font-semibold">{fmtDate(plan.expiryDate)}</span>
-      </p>
+      {/* expiry + which backend account is in use (safe label only — no secrets) */}
+      <div className="flex items-center flex-wrap gap-x-1.5 gap-y-1 mb-2.5 text-[12px] text-genz-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <Lock size={12} /> Expiry: <span className="text-genz-navy font-semibold">{fmtDate(plan.expiryDate)}</span>
+        </span>
+        {stealth.accountLabel && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-genz-soft font-semibold text-fuchsia-600">
+            <User size={11} /> Using {stealth.accountLabel}
+          </span>
+        )}
+      </div>
 
       {/* limits */}
       <div className="space-y-1.5 mb-3 p-2.5 bg-genz-bg rounded-lg border border-genz-border">

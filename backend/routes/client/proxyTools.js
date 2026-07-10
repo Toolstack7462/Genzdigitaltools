@@ -33,8 +33,20 @@ function resolveLeaseMinutes(pc) {
 router.use(requireAuth);
 router.use(requireRole('CLIENT'));
 
-function presentAssigned(pc) {
+async function presentAssigned(pc) {
   const info = tools.publicInfo(pc.tool) || { tool: pc.tool, name: pc.tool, category: 'AI', tagline: '' };
+
+  // Safe name of the backend account that will serve this tool (e.g. "Account 1").
+  // Runs the SAME selection the open route uses, but exposes ONLY the operator's
+  // chosen label — never the email, cookies, tokens or session ids. Fail-safe:
+  // any error just omits the label. Display-only; does not affect selection.
+  let accountLabel = null;
+  try {
+    const accounts = await ProxyAccount.find({ tool: pc.tool });
+    const account = accounts.length ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    if (account) accountLabel = account.label || 'Account';
+  } catch (_) { /* non-fatal — card simply omits the account label */ }
+
   return {
     tool: pc.tool,
     name: info.name,
@@ -46,6 +58,7 @@ function presentAssigned(pc) {
     expired: pc.isExpired(),
     expiryDate: pc.expiryDate || null,
     leaseMinutes: resolveLeaseMinutes(pc), // drives the "Secure N-minute session" card label
+    accountLabel,                          // small safe "Using <account>" label on the card
   };
 }
 
@@ -53,7 +66,7 @@ function presentAssigned(pc) {
 router.get('/', async (req, res) => {
   try {
     const rows = await ProxyClient.find({ userId: req.userId });
-    const items = (rows || []).filter(r => tools.isValidTool(r.tool)).map(presentAssigned);
+    const items = await Promise.all((rows || []).filter(r => tools.isValidTool(r.tool)).map(presentAssigned));
     return res.json({ success: true, tools: items });
   } catch (err) {
     console.error('Proxy client list error:', err.message);

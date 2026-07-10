@@ -18,6 +18,7 @@
   var CFG = window.__GENZ_GATEWAY__ || {};
   var API = (CFG.api || '').replace(/\/$/, '');
   var TOOL_NAME = CFG.toolName || 'AI Tool';
+  var ACCOUNT_LABEL = CFG.accountLabel || '';   // safe operator label (no secrets); '' = hide row
   var SUPPORT_URL = CFG.support || 'https://app.genzdigitalstore.com/client/dashboard';
   // Per-tool exact selectors from the gateway env (HIDE_SELECTORS). Already shipped in
   // the critical hide CSS server-side; re-applied here so SPA re-renders stay hidden.
@@ -63,6 +64,7 @@
         '<button class="genz-sw-min" title="Minimize" aria-label="Minimize">–</button>' +
       '</div>' +
       '<div class="genz-sw-body">' +
+        '<div class="genz-sw-row genz-sw-acct" id="genz-sw-acct-row" style="display:none"><span>Account</span><b id="genz-sw-acct"></b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
@@ -71,6 +73,11 @@
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
     w.querySelector('.genz-sw-sub').textContent = TOOL_NAME; // textContent → no HTML injection
+    if (ACCOUNT_LABEL) {                                     // show which account is in use (safe label)
+      var acctRow = w.querySelector('#genz-sw-acct-row');
+      w.querySelector('#genz-sw-acct').textContent = ACCOUNT_LABEL; // textContent → no HTML injection
+      acctRow.style.display = '';
+    }
     el.min.addEventListener('click', toggleCollapse);
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
@@ -234,25 +241,34 @@
       }
     }
   }
+  // Per-node rules (identical to before). PERF: the observer below sweeps only ADDED subtrees,
+  // so cost scales with new content instead of re-scanning the whole DOM on every mutation —
+  // essential on streaming SPAs (ChatGPT/Grok) where the DOM changes constantly.
+  var SWEEP_SEL = 'a,button,[role="button"],li,span,div,p,h1,h2,h3,h4';
+  function processOne(n) {
+    if (!n || n.nodeType !== 1) return;
+    if (n.__genz || n.id === 'genz-sw-widget' || (n.closest && n.closest('#genz-sw-widget'))) return;
+    if (isCaptchaNode(n)) return;   // NEVER hide/brand a captcha/challenge widget
+    n.__genz = true;
+    var ctag = (n.tagName || '').toLowerCase();
+    if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) { brandOrHide(n); return; }
+    var t = ownText(n);
+    if (!t || t.length > 60) return;
+    if (KEEP_RE.test(t)) return;
+    if (hasEditor(n)) return;
+    if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); return; }
+    if (EMAIL_RE.test(t)) { brandOrHide(nearestControl(n)); return; }
+    if (HIDE_RE.test(t)) { hide(nearestControl(n)); return; }
+    if (USAGE_RE.test(t)) { hide(n); }
+  }
   function sweep(root) {
-    var nodes;
-    try { nodes = (root && root.querySelectorAll ? root : document).querySelectorAll('a,button,[role="button"],li,span,div,p,h1,h2,h3,h4'); } catch (e) { return; }
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      if (n.__genz || n.id === 'genz-sw-widget' || (n.closest && n.closest('#genz-sw-widget'))) continue;
-      if (isCaptchaNode(n)) continue;   // NEVER hide/brand a captcha/challenge widget (re-checked each sweep)
-      n.__genz = true;
-      var ctag = (n.tagName || '').toLowerCase();
-      if ((ctag === 'button' || ctag === 'a' || (n.getAttribute && n.getAttribute('role') === 'button')) && isIdentityControl(n)) { brandOrHide(n); continue; }
-      var t = ownText(n);
-      if (!t || t.length > 60) continue;
-      if (KEEP_RE.test(t)) continue;
-      if (hasEditor(n)) continue;
-      if (FORBIDDEN_RE.test(t)) { showFriendlyError(); hide(nearestControl(n)); continue; }
-      if (EMAIL_RE.test(t)) { brandOrHide(nearestControl(n)); continue; }
-      if (HIDE_RE.test(t)) { hide(nearestControl(n)); continue; }
-      if (USAGE_RE.test(t)) { hide(n); }
-    }
+    var base = (root && root.nodeType === 1) ? root : (document.body || document.documentElement);
+    if (!base) return;
+    try {
+      if (base.matches && base.matches(SWEEP_SEL)) processOne(base); // the subtree root itself
+      var nodes = base.querySelectorAll(SWEEP_SEL);
+      for (var i = 0; i < nodes.length; i++) processOne(nodes[i]);
+    } catch (e) {}
   }
   function injectHideStyle() {
     var hrefs = ['pricing', 'billing', 'account', 'affiliate', 'discord', '/faq', 'support', 'subscription',
@@ -267,6 +283,31 @@
   }
   function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); } catch (e) {} }
 
+  // PERF: process only added subtrees on mutations (debounced); reserve the full pass for first
+  // paint, SPA route change and a low-frequency safety tick. The maintenance helpers
+  // (branding/captcha/chatgpt-account) run once per debounced flush instead of once per mutation.
+  var pending = [];
+  var flushTimer = null;
+  var fullPending = false;
+  function flush() {
+    flushTimer = null;
+    try {
+      if (fullPending) { fullPending = false; pending.length = 0; sweep(document); }
+      else { var b = pending; pending = []; for (var i = 0; i < b.length; i++) sweep(b[i]); }
+      enforceBranding(); checkCaptcha(); hideChatgptAccount();
+    } catch (e) {}
+  }
+  function schedule() { if (!flushTimer) flushTimer = setTimeout(flush, 150); }
+  function scheduleFull() { fullPending = true; schedule(); }
+  function onMutations(muts) {
+    for (var i = 0; i < muts.length; i++) {
+      var added = muts[i].addedNodes;
+      for (var j = 0; j < added.length; j++) { var n = added[j]; if (n && n.nodeType === 1) pending.push(n); }
+    }
+    if (pending.length > 2000) { fullPending = true; pending.length = 0; } // huge burst → one full sweep
+    if (pending.length || fullPending) schedule();
+  }
+
   function start() {
     if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
     if (CFG.capture) { buildCaptureUI(); return; }
@@ -274,11 +315,11 @@
     buildChatgptAccountCard();
     injectHideStyle();
     runHiding();
-    var mo = new MutationObserver(function () { runHiding(); });
+    var mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { childList: true, subtree: true });
-    var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); setTimeout(runHiding, 60); return r; };
-    window.addEventListener('popstate', function () { setTimeout(runHiding, 60); });
-    setInterval(runHiding, 1500);
+    var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); scheduleFull(); return r; };
+    window.addEventListener('popstate', scheduleFull);
+    setInterval(scheduleFull, 3000);
     validate();
     setInterval(tick, 1000);
     setInterval(validate, 30000);
