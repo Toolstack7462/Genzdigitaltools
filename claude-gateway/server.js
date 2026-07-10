@@ -211,6 +211,52 @@ function parseCookies(header) {
   return out;
 }
 function getLease(req) { return parseCookies(req.headers.cookie)[LEASE_COOKIE] || null; }
+// Resolve the lease JWT for THIS request: Claude reads it from the opaque server-side session
+// (via the __Host-claude_session cookie); every other tool reads the pg_lease cookie unchanged.
+function resolveLeaseToken(req) {
+  if (TOOL_KEY === 'claude') { const s = claudeGetSession(req); return s ? s.jwt : null; }
+  return getLease(req);
+}
+
+// ── Claude opaque session store ──────────────────────────────────────────────
+// SECURITY: the browser must NOT hold the readable lease JWT (it embeds tool/account/lease/exp
+// claims and, being non-HttpOnly, is readable by page JS and any cookie-editor extension). For
+// Claude we instead issue a short-lived, opaque, HttpOnly, host-only `__Host-claude_session`
+// token that maps to THIS server-side record; the lease JWT is kept here and used only for
+// server→backend /validate calls. The opaque token reveals no user/account/tool/lease/expiry.
+// A cookie-editor can still READ the opaque token, but it is useless without this record and is
+// revocable + short-lived + rotated. In-memory (Passenger single-worker); a restart just makes
+// clients re-open from the dashboard (leases are short). Never logged.
+const CLAUDE_SESSION_COOKIE = '__Host-claude_session';
+const claudeSessions = new Map(); // sid -> { jwt, jti, exp(ms), cap, createdAt, lastSeen, rotatedAt }
+function newSid() { return crypto.randomBytes(32).toString('base64url'); }
+function claudeCreateSession(jwt, payload) {
+  const sid = newSid();
+  const exp = payload && payload.exp ? payload.exp * 1000 : Date.now() + 30 * 60 * 1000;
+  claudeSessions.set(sid, { jwt, jti: (payload && payload.jti) || null, exp, cap: !!(payload && payload.cap), createdAt: Date.now(), lastSeen: Date.now(), rotatedAt: Date.now() });
+  return sid;
+}
+function claudeGetSession(req) {
+  const sid = parseCookies(req.headers.cookie)[CLAUDE_SESSION_COOKIE];
+  if (!sid) return null;
+  const s = claudeSessions.get(sid);
+  if (!s) return null;
+  if (Date.now() > s.exp) { claudeSessions.delete(sid); return null; }
+  s.lastSeen = Date.now();
+  return Object.assign({ sid }, s);
+}
+function claudeRevoke(sid) { if (sid) claudeSessions.delete(sid); }
+// Rotate the opaque id (session-fixation defence + limits token lifetime); keeps the same record.
+function claudeRotate(sid) {
+  const s = claudeSessions.get(sid); if (!s) return null;
+  claudeSessions.delete(sid); const nsid = newSid(); s.rotatedAt = Date.now(); claudeSessions.set(nsid, s); return nsid;
+}
+// __Host- prefix REQUIRES Secure + Path=/ + NO Domain (host-only). HttpOnly + SameSite=Lax.
+function claudeSessionCookie(sid, maxAgeSec) {
+  return `${CLAUDE_SESSION_COOKIE}=${sid}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${Math.max(30, maxAgeSec)}`;
+}
+function claudeExpireCookie() { return `${CLAUDE_SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`; }
+setInterval(() => { const now = Date.now(); for (const [sid, s] of claudeSessions) if (now > s.exp) claudeSessions.delete(sid); }, 60000).unref();
 
 // Strip ONLY the lease cookie, preserving every other cookie byte-for-byte.
 function stripLeaseCookie(rawCookieHeader) {
@@ -305,8 +351,33 @@ async function getSession(token, jti) {
 }
 
 // Safe structured log — IDs / counts / status only. NEVER cookie names or values.
+// Redact anything that looks like a secret before it can reach a log line: emails, JWTs,
+// long hex/base64 blobs (cookie/token values), UUIDs (org/account/device ids) and known
+// sensitive keys. Callers already pass only counts/booleans, but this makes leakage impossible.
+const REDACT_KEY_RE = /(cookie|token|auth|authorization|secret|jwt|lease|sid|session|email|password|bearer|set-cookie|org|account|device|clearance)/i;
+function redactValue(v) {
+  if (v == null) return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return v;
+  const s = String(v);
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(s)) return '[redacted:email]';
+  if (/^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}$/.test(s)) return '[redacted:jwt]';
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) return '[redacted:uuid]';
+  if (/^[A-Za-z0-9+/_=-]{24,}$/.test(s)) return '[redacted]';
+  return s;
+}
+function redactFields(f) {
+  if (!f || typeof f !== 'object') return f;
+  const out = Array.isArray(f) ? [] : {};
+  for (const k of Object.keys(f)) {
+    const val = f[k];
+    if (val && typeof val === 'object') out[k] = redactFields(val);
+    else if (REDACT_KEY_RE.test(k) && typeof val === 'string') out[k] = val ? '[redacted]' : val;
+    else out[k] = redactValue(val);
+  }
+  return out;
+}
 function safeLog(event, fields) {
-  try { console.log(`[proxy-gw:${TOOL_KEY || '?'}] ${event} ${JSON.stringify(fields)}`); } catch (_) {}
+  try { console.log(`[proxy-gw:${TOOL_KEY || '?'}] ${event} ${JSON.stringify(redactFields(fields))}`); } catch (_) {}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -669,9 +740,32 @@ const STRIP_RESP_HEADERS = new Set([
   'content-security-policy', 'content-security-policy-report-only',
   'x-frame-options', 'content-encoding', 'content-length', 'transfer-encoding',
   'strict-transport-security',
+  // Upstream / infra / debug identifiers — never surface claude.ai / Cloudflare / Anthropic /
+  // origin details or tracing ids to the client (this gateway is Claude-only, so this is scoped).
+  'server', 'x-powered-by', 'via', 'x-served-by', 'x-cache', 'x-cache-hits', 'x-timer',
+  'cf-ray', 'cf-cache-status', 'cf-request-id', 'report-to', 'reporting-endpoints', 'nel',
+  'expect-ct', 'server-timing', 'x-request-id', 'x-amzn-trace-id', 'x-amz-cf-id', 'x-amz-cf-pop',
+  'x-envoy-upstream-service-time', 'x-anthropic-ratelimit-requests-remaining', 'x-should-retry',
+  'x-runtime', 'x-vercel-id', 'x-vercel-cache', 'x-anthropic-organization-id', 'anthropic-organization-id',
 ]);
-function rewriteSetCookie(values) {
-  return [].concat(values || []).map(v => v.replace(/;\s*Domain=[^;]+/ig, ''));
+function rewriteSetCookie(values, capture) {
+  const list = [].concat(values || []);
+  // Claude (client sessions): NEVER leak claude.ai's own Set-Cookie to the browser. The account's
+  // auth/session/refresh/org/device/tracking cookies live ONLY in the server-side vault and are
+  // attached upstream in-process — the browser needs none of them. Forward ONLY Cloudflare
+  // challenge cookies (cf_clearance / __cf_bm / cf_chl*) and ONLY when passthrough is on, because
+  // the browser must store + resend those to complete a challenge it solves. Everything else is
+  // dropped, so anthropic-device-id / activitySessionId / sessionKey / lastActiveOrg / ajs_* /
+  // analytics cookies never appear in DevTools or a cookie-editor.
+  // EXCEPTION — capture mode: the admin is logging into claude.ai THROUGH the gateway to save a
+  // session, so the login cookies MUST reach the admin's browser to be captured. Pass them through
+  // (admin-only, authenticated capture lease) — this never happens for a client session.
+  if (TOOL_KEY === 'claude' && !capture) {
+    if (!CF_CHALLENGE_PASSTHROUGH) return [];
+    return list.filter(v => { const n = String(v).split('=')[0].trim(); return CF_COOKIE_RE.test(n); })
+               .map(v => v.replace(/;\s*Domain=[^;]+/ig, ''));  // host-only even for CF cookies
+  }
+  return list.map(v => v.replace(/;\s*Domain=[^;]+/ig, ''));
 }
 
 // ── Overlay injection ─────────────────────────────────────────────────────────
@@ -949,7 +1043,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
         if (STRIP_RESP_HEADERS.has(k.toLowerCase())) continue;
-        if (k.toLowerCase() === 'set-cookie') { outHeaders[k] = rewriteSetCookie(v); continue; }
+        if (k.toLowerCase() === 'set-cookie') { outHeaders[k] = rewriteSetCookie(v, ctx && ctx.capture); continue; }
         if (k.toLowerCase() === 'location' && typeof v === 'string') { outHeaders[k] = rewriteUpstreamUrls(v).text; continue; }
         outHeaders[k] = v;
       }
@@ -1105,7 +1199,7 @@ const server = http.createServer(async (req, res) => {
     const mm = after.match(/^(\d+)(\/[\s\S]*)?$/);
     const idx = mm ? parseInt(mm[1], 10) : -1;
     const entry = PROXIED_ORIGINS[idx];
-    const token = getLease(req);
+    const token = resolveLeaseToken(req);
     if (!entry || !token || verifyLeaseLocal(token) === null) {
       res.writeHead(404, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
       return res.end('Not found');
@@ -1122,6 +1216,24 @@ const server = http.createServer(async (req, res) => {
   if (pathName === '/gateway') {
     const token = u.searchParams.get('lease');
     if (!token) return sendBlockPage(res, 'lease_missing');
+    // Claude: exchange the one-time lease JWT (in the URL) for an OPAQUE server-side session.
+    // The JWT is stored server-side and NEVER written to the browser; the browser gets only the
+    // random __Host-claude_session token. A fresh sid per open = session-fixation safe.
+    if (TOOL_KEY === 'claude') {
+      const payload = verifyLeaseLocal(token);
+      if (payload === null) return sendBlockPage(res, 'lease_invalid');
+      const landing = payload.cap ? SIGNIN_PATH : DEFAULT_PATH;
+      const sid = claudeCreateSession(token, payload);
+      const maxAge = Math.floor(((payload.exp ? payload.exp * 1000 : Date.now() + 1800000) - Date.now()) / 1000);
+      safeLog('session_open', { jti: payload.jti, cap: !!payload.cap }); // opaque sid + JWT never logged
+      res.writeHead(302, {
+        // Set the opaque session AND proactively clear any legacy readable pg_lease cookie a
+        // previous build may have left in the browser (host-only expiry).
+        'set-cookie': [claudeSessionCookie(sid, maxAge), `${LEASE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
+        'location': landing, 'cache-control': 'no-store',
+      });
+      return res.end();
+    }
     const secure = (PUBLIC_ORIGIN.startsWith('https://')) ? ' Secure;' : '';
     const cap = !!(verifyLeaseLocal(token) || {}).cap;
     const landing = cap ? SIGNIN_PATH : DEFAULT_PATH;
@@ -1133,12 +1245,41 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
 
-  const token = getLease(req);
+  // Claude resolves the lease JWT from the OPAQUE server-side session (via __Host-claude_session);
+  // every other tool reads the pg_lease cookie unchanged. Keep the session ref so an invalid lease
+  // (admin revoke / expiry) also revokes the opaque session.
+  const claudeSess = (TOOL_KEY === 'claude') ? claudeGetSession(req) : null;
+  const token = (TOOL_KEY === 'claude') ? (claudeSess ? claudeSess.jwt : null) : getLease(req);
   if (!token) return sendBlockPage(res, 'lease_missing');
 
   const local = verifyLeaseLocal(token);
-  if (local === null) return sendBlockPage(res, 'lease_invalid');
+  if (local === null) { if (claudeSess) claudeRevoke(claudeSess.sid); return sendBlockPage(res, 'lease_invalid'); }
   const capture = !!(local && local.cap);
+
+  // Claude: overlay session/lease check. The browser holds ONLY the opaque HttpOnly session
+  // cookie (it cannot read the JWT), so the overlay calls THIS same-origin endpoint instead of the
+  // backend directly. We validate the server-side JWT with the backend and return ONLY
+  // {valid, secondsRemaining} — no token/claims. Rotate the opaque sid periodically (session-
+  // fixation defence) and revoke + clear the cookie on an invalid/expired/revoked lease.
+  if (pathName === '/__genz/validate') {
+    if (TOOL_KEY !== 'claude') { res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end('{"valid":false}'); }
+    const r = await gatewayApiPost('/validate', token, {});
+    const headers = { 'content-type': 'application/json', 'cache-control': 'no-store' };
+    let out;
+    if (r.status === 200 && r.body && r.body.valid) {
+      out = { valid: true, secondsRemaining: r.body.secondsRemaining || 0 };
+      if (claudeSess && Date.now() - claudeSess.rotatedAt > 600000) {
+        const nsid = claudeRotate(claudeSess.sid); const s = nsid && claudeSessions.get(nsid);
+        if (s) headers['set-cookie'] = claudeSessionCookie(nsid, Math.floor((s.exp - Date.now()) / 1000));
+      }
+    } else {
+      if (claudeSess) claudeRevoke(claudeSess.sid);
+      headers['set-cookie'] = claudeExpireCookie();
+      out = { valid: false, code: (r.body && r.body.code) || 'lease_invalid' };
+    }
+    res.writeHead(200, headers);
+    return res.end(JSON.stringify(out));
+  }
 
   // Claude workspace switch: remember the client's chosen org in a gateway-origin cookie
   // (genz_ws) so attachUpstreamCookies can override `lastActiveOrg` on the upstream request.

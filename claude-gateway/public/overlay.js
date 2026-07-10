@@ -94,7 +94,14 @@
   }
   function validate() {
     if (state.terminal) return Promise.resolve();
-    return apiCall('/validate', {}).then(function (r) {
+    // Claude holds only the OPAQUE HttpOnly session cookie (it cannot read the lease JWT), so it
+    // validates via the gateway's own same-origin endpoint (cookie sent automatically) rather than
+    // sending a Bearer token to the backend. Every other tool keeps the Bearer flow unchanged.
+    var p = (CFG.tool === 'claude')
+      ? fetch('/__genz/validate', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' } })
+          .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); })
+      : apiCall('/validate', {});
+    return p.then(function (r) {
       if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; clearMessage(); render(); }
       else showMessage(friendly(r.body && r.body.code), true);
     }).catch(function () {});
@@ -451,7 +458,9 @@
   }
 
   function start() {
-    if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
+    // Claude uses the opaque HttpOnly __Host-claude_session cookie (unreadable by JS), so there is
+    // no pg_lease to read here — proceed and let /__genz/validate confirm the session server-side.
+    if (!LEASE && CFG.tool !== 'claude') { buildWidget(); showMessage(MSG.lease_missing, true); return; }
     if (CFG.capture) { buildCaptureUI(); return; }
     buildWidget();
     buildChatgptAccountCard();
