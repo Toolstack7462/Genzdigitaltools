@@ -128,6 +128,33 @@ test('a pending browser stays pending and creates NO duplicate profile on finger
   assert.equal(store.size, countAfterFirst, 'no duplicate pending profile created for the same browser instance');
 });
 
+test('approved wins over a stale pending duplicate that shares the browserInstanceId (order-independent)', async () => {
+  const { pool, store } = makeFakePool();
+  adapter.__test.setPool(pool);
+  // Reproduce an already-affected client: the original approved profile PLUS a stale
+  // pending duplicate the drift bug created — BOTH carrying the same browserInstanceId.
+  const hashedBrowser = DeviceProfile.sha256(BROWSER_ID);
+  const approvedRow = {
+    _id: 'p-approved', clientId: CLIENT._id, deviceGroupId: DeviceProfile.sha256(FP_ORIGINAL),
+    browserInstanceIds: [hashedBrowser], status: 'approved',
+  };
+  const pendingDupRow = {
+    _id: 'p-pending', clientId: CLIENT._id, deviceGroupId: DeviceProfile.sha256(FP_DRIFTED),
+    browserInstanceIds: [hashedBrowser], status: 'pending',
+  };
+  // Insert the PENDING duplicate FIRST so a naive first-match would wrongly pick it.
+  store.set(pendingDupRow._id, JSON.stringify(pendingDupRow));
+  store.set(approvedRow._id, JSON.stringify(approvedRow));
+
+  const decision = await DeviceProfile.resolve(CLIENT, {
+    fingerprint: `${OS}|800x600|24|Asia/Kolkata|8|0`, // yet another drift → no deviceGroupId match
+    browserInstanceId: BROWSER_ID, os: OS, browser: 'Chrome',
+  });
+  assert.equal(decision.status, 'approved', 'approved profile must win over the stale pending duplicate');
+  assert.equal(decision.profile._id, 'p-approved', 'resolved to the approved profile regardless of scan order');
+  assert.equal(decision.reason, 'browser_instance_match');
+});
+
 test('a blocked profile still blocks when reached via the browser-instance fallback', async () => {
   const { pool, store } = makeFakePool();
   adapter.__test.setPool(pool);

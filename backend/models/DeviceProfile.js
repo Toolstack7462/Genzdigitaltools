@@ -90,20 +90,31 @@ const DeviceProfile = createModel('DeviceProfile', {
       // A genuinely new browser has a new instance id (fresh localStorage) that is on no
       // profile, so it still falls through to pending — and a blocked profile still blocks.
       if (browserInstanceId) {
-        const known = profiles.find(p =>
+        const known = profiles.filter(p =>
           Array.isArray(p.browserInstanceIds) && p.browserInstanceIds.includes(browserInstanceId));
-        if (known) {
-          if (known.status === 'blocked') return { status: 'blocked', profile: known };
-          if (known.status === 'pending') return { status: 'pending', profile: known };
-          // Approved → same trusted browser whose fingerprint merely drifted. Refresh
-          // metadata only (do NOT rewrite deviceGroupId — keep the record structure intact).
-          if (info.browser) known.browser = info.browser;
-          if (info.os && !known.os) known.os = info.os;
-          if (info.extensionVersion) known.extensionVersion = info.extensionVersion;
-          known.clientEmail = known.clientEmail || client.email || null;
-          known.lastSeenAt = now;
-          await known.save();
-          return { status: 'approved', profile: known, reason: 'browser_instance_match' };
+        if (known.length) {
+          // A browser can appear on MORE THAN ONE of a client's profiles — e.g. an
+          // approved profile PLUS stale pending duplicates that the fingerprint-drift
+          // bug created before this fix, all carrying the same browserInstanceId. find()
+          // relies on unspecified DB scan order (ids are random hex, no ORDER BY), so it
+          // could return a pending duplicate and leave an already-approved browser locked
+          // out. Resolve by explicit security precedence instead: an admin block wins,
+          // else restore trust from the approved profile, else stay pending.
+          const blocked = known.find(p => p.status === 'blocked');
+          if (blocked) return { status: 'blocked', profile: blocked };
+          const approved = known.find(p => p.status === 'approved');
+          if (approved) {
+            // Same trusted browser whose fingerprint merely drifted. Refresh metadata
+            // only (do NOT rewrite deviceGroupId — keep the record structure intact).
+            if (info.browser) approved.browser = info.browser;
+            if (info.os && !approved.os) approved.os = info.os;
+            if (info.extensionVersion) approved.extensionVersion = info.extensionVersion;
+            approved.clientEmail = approved.clientEmail || client.email || null;
+            approved.lastSeenAt = now;
+            await approved.save();
+            return { status: 'approved', profile: approved, reason: 'browser_instance_match' };
+          }
+          return { status: 'pending', profile: known[0] };
         }
       }
 
