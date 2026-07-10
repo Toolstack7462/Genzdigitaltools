@@ -235,10 +235,10 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
         )}
 
         {/* Tool tabs (each tool is fully independent) — hidden when locked to one tool.
-            WriteHuman is excluded here: it has its own dedicated sidebar section. */}
+            WriteHuman and Claude are excluded here: each has its own dedicated sidebar section. */}
         {!fixedTool && (
         <div className="flex items-center gap-2">
-          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).filter(t => t.tool !== 'writehuman').map(t => (
+          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).filter(t => t.tool !== 'writehuman' && t.tool !== 'claude').map(t => (
             <button key={t.tool} onClick={() => setTool(t.tool)}
               className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors ${tool === t.tool ? 'btn-grad' : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'}`}>
               {t.name}

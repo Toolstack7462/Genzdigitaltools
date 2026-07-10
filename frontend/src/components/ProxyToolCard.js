@@ -20,6 +20,7 @@ const THEME = {
   hix:       { from: 'from-sky-500',     to: 'to-cyan-500',    text: 'text-cyan-600',    grad: 'linear-gradient(135deg,#0ea5e9,#06b6d4)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fbff 100%)' },
   bypassgpt: { from: 'from-emerald-500', to: 'to-green-500',   text: 'text-emerald-600', grad: 'linear-gradient(135deg,#10b981,#22c55e)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fef8 100%)' },
   grok:      { from: 'from-slate-700',   to: 'to-slate-900',   text: 'text-slate-700',   grad: 'linear-gradient(135deg,#334155,#0f172a)', soft: 'linear-gradient(167deg,#ffffff 0%,#f4f6fa 100%)' },
+  claude:    { from: 'from-orange-500',  to: 'to-amber-600',   text: 'text-orange-600',  grad: 'linear-gradient(135deg,#da7756,#c15f3c)', soft: 'linear-gradient(167deg,#ffffff 0%,#fff7f2 100%)' },
 };
 
 const ProxyToolCard = ({ tool }) => {

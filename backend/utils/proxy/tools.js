@@ -128,6 +128,46 @@ const TOOLS = {
     // Per-tool session-length override (minutes). Falls back to PROXY_LEASE_MINUTES, then 30.
     leaseMinutesEnv: 'GROK_LEASE_MINUTES',
   },
+  claude: {
+    key: 'claude',
+    name: 'Claude',
+    category: 'AI',
+    tagline: 'Anthropic Claude Assistant',
+    // claude.ai is Anthropic's standalone, cookie-session web app. It authenticates with an
+    // httpOnly `sessionKey` cookie that the server reads on every request (a server-rendered
+    // cookie-session app like HIX/Grok — NOT a client-side Supabase SPA like WriteHuman), so
+    // attaching the vault account's cookies SERVER-SIDE signs the session in. Isolated from
+    // StealthWriter/HIX/BypassGPT/ChatGPT/Ryne/WriteHuman/Grok: own subdomain, own encrypted
+    // cookie vault (ProxyAccount rows tagged tool='claude'), own lease cookie, own client grants.
+    targetOriginEnv: 'CLAUDE_TARGET_ORIGIN',
+    defaultTargetOrigin: 'https://claude.ai',
+    gatewayUrlEnv: 'CLAUDE_GATEWAY_URL',
+    defaultGatewayUrl: 'https://claude1.genzdigitalstore.com',
+    defaultPathEnv: 'CLAUDE_DEFAULT_PATH',
+    // Logged-in landing surface (new chat).
+    defaultPath: '/new',
+    verifyPathEnv: 'CLAUDE_VERIFY_PATH',
+    // Per-tool session-length override (minutes). Falls back to PROXY_LEASE_MINUTES, then 30.
+    leaseMinutesEnv: 'CLAUDE_LEASE_MINUTES',
+    // ── VERIFY CAVEAT (measured against the live app 2026-07-10) ────────────────────────────
+    // claude.ai is a client-hydrated Next.js SPA behind Cloudflare. A LOGGED-OUT GET /new returns
+    // HTTP 200 with the app shell (it does NOT server-redirect to /login), and /api/* is
+    // Cloudflare-challenged (403) from a datacenter IP. So the DEFAULT HTML verifier cannot
+    // reliably distinguish logged-in from logged-out here: it will read a dead session as
+    // 'working' (no /login redirect to catch), and an authed API probe would read as
+    // 'unsupported'/blocked (CF challenge). `detectLoggedOut` is left OFF deliberately — its
+    // content heuristic needs sign-in/sign-up CTAs in the INITIAL HTML, which this JS shell
+    // does not contain, so enabling it would be a no-op at best and risk false-expiry at worst.
+    // CONSEQUENCE: treat the admin "Verify" result as ADVISORY for Claude. Keep the vault
+    // account logged in and refresh it with "Capture via proxy" (captures the httpOnly
+    // `sessionKey` in-context) rather than a cookie paste. A robust health signal would require
+    // the WriteHuman-style live-browser + cookie-sync agent (a future `liveAgent`/`verifyMode`),
+    // which is intentionally NOT part of this build.
+    // CLOUDFLARE: the gateway pins a fixed UA + client-hints so a captured cf_clearance stays
+    // valid and renders the REAL challenge for the user to solve (never bypassed). If claude.ai
+    // gates normal browsing behind an interactive iframe challenge a datacenter IP can't pass,
+    // flip the gateway CF_CHALLENGE_MODE to `unsupported` (env only — no code change).
+  },
 };
 
 const TOOL_KEYS = Object.keys(TOOLS);
