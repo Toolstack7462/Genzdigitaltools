@@ -289,6 +289,63 @@
       }
     } catch (e) {}
   }
+
+  // Keep claude.ai's NATIVE bottom-left account/profile button PERMANENTLY visible. When there are
+  // many recent chats the list can grow past the viewport and push the account footer below the
+  // scroll. Fix the sidebar into a proper flex column: sidebar = 100dvh flex column; the recent-
+  // chats/history area = flex:1 with its OWN vertical scroll (min-height:0 so it can shrink,
+  // overflow-x hidden so no horizontal scrollbar); the account footer = flex-shrink:0, sticky to
+  // the bottom, above the list. DOM-independent: we locate everything from the (already-found)
+  // account button rather than guessing claude's obfuscated class names. Re-applied each sweep so
+  // SPA re-renders can't undo it. Never covers the chats (the list scrolls; the footer sits below).
+  function pinClaudeAccount() {
+    if (!CLAUDE) return;
+    try {
+      var btn = document.querySelector('[data-genz-acct="1"]');
+      if (!btn) return;
+      // Walk up from the button: `footer` = its top-level block inside the sidebar; `sidebar` = the
+      // tall, narrow, left-anchored container (a real sidebar, not the whole app shell).
+      var node = btn, footer = btn, sidebar = null;
+      for (var i = 0; i < 10 && node && node !== document.body; i++) {
+        var r; try { r = node.getBoundingClientRect(); } catch (e) { break; }
+        if (r.height >= window.innerHeight * 0.6 && r.left < 90 && r.width >= 150 && r.width <= 520) { sidebar = node; break; }
+        footer = node; node = node.parentElement;
+      }
+      if (!sidebar || sidebar === document.body || sidebar === document.documentElement) return;
+      if (sidebar.getAttribute('data-genz-sb') !== '1') {
+        sidebar.setAttribute('data-genz-sb', '1');
+        sidebar.style.setProperty('height', '100dvh', 'important');
+        sidebar.style.setProperty('max-height', '100dvh', 'important');
+        sidebar.style.setProperty('display', 'flex', 'important');
+        sidebar.style.setProperty('flex-direction', 'column', 'important');
+        sidebar.style.setProperty('overflow', 'hidden', 'important');   // inner areas scroll, not the sidebar
+      }
+      // Account footer → never shrinks, sticks to the bottom, sits above the list.
+      footer.setAttribute('data-genz-ftr', '1');
+      footer.style.setProperty('flex', '0 0 auto', 'important');
+      footer.style.setProperty('position', 'sticky', 'important');
+      footer.style.setProperty('bottom', '0', 'important');
+      footer.style.setProperty('z-index', '30', 'important');
+      try { var bg = getComputedStyle(sidebar).backgroundColor; if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') footer.style.setProperty('background', bg, 'important'); } catch (e) {}
+      // The recent-chats / history area (the child that overflows or holds the chat list) → flex:1
+      // with its own scroll; every other top area (logo / new chat) stays natural height.
+      var kids = sidebar.children;
+      for (var j = 0; j < kids.length; j++) {
+        var k = kids[j];
+        if (k === footer || (k.contains && k.contains(footer))) continue;
+        var isList = false;
+        try { isList = (k.scrollHeight > k.clientHeight + 8) || !!(k.querySelector && k.querySelector('a[href*="/chat"],a[href*="/recent"],a[href*="/project"],nav,ul,ol,[data-testid*="history" i],[class*="history" i]')); } catch (e) {}
+        if (isList) {
+          k.style.setProperty('flex', '1 1 auto', 'important');
+          k.style.setProperty('min-height', '0', 'important');
+          k.style.setProperty('overflow-y', 'auto', 'important');
+          k.style.setProperty('overflow-x', 'hidden', 'important');
+        } else {
+          k.style.setProperty('flex', '0 0 auto', 'important');
+        }
+      }
+    } catch (e) {}
+  }
   function enforceBranding() {
     for (var i = brandControls.length - 1; i >= 0; i--) {
       var ctrl = brandControls[i];
@@ -364,7 +421,7 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); pinClaudeAccount(); } catch (e) {} }
 
   // PERF: process only added subtrees on mutations (debounced); reserve the full pass for first
   // paint, SPA route change and a low-frequency safety tick. The maintenance helpers
@@ -377,7 +434,7 @@
     try {
       if (fullPending) { fullPending = false; pending.length = 0; sweep(document); }
       else { var b = pending; pending = []; for (var i = 0; i < b.length; i++) sweep(b[i]); }
-      enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount();
+      enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); pinClaudeAccount();
     } catch (e) {}
   }
   function schedule() { if (!flushTimer) flushTimer = setTimeout(flush, 150); }
