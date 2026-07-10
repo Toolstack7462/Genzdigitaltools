@@ -85,6 +85,15 @@ async function verifyAccountCookies(tool, cookieHeader, expectedIdentifier, opts
     return verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opts);
   }
 
+  // Claude (claude.ai): verify against the authenticated JSON API instead of scraping an HTML
+  // page — Cloudflare passes the API through cleanly and returns a real auth signal, whereas
+  // claude.ai's cached HTML shell gets bot-challenged from a datacenter IP (which the generic
+  // path misread as 'unsupported' → wrongly blocked). Isolated, claude-only; other tools
+  // (no verifyMode / supabase_refresh) fall through unchanged.
+  if (tools.verifyMode && tools.verifyMode(tool) === 'claude_api') {
+    return require('./claudeVerify').verifyClaudeApi(tool, cookieHeader, expectedIdentifier, opts);
+  }
+
   let resp;
   try {
     resp = await fetch(TARGET + VERIFY_PATH, {

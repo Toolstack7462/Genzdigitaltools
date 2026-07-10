@@ -130,7 +130,7 @@ const TOOLS = {
   },
   claude: {
     key: 'claude',
-    name: 'Claude',
+    name: 'Claude AI',
     category: 'AI',
     tagline: 'Anthropic Claude Assistant',
     // claude.ai is Anthropic's standalone, cookie-session web app. It authenticates with an
@@ -147,6 +147,11 @@ const TOOLS = {
     // Logged-in landing surface (new chat).
     defaultPath: '/new',
     verifyPathEnv: 'CLAUDE_VERIFY_PATH',
+    // Verify against claude.ai's authenticated JSON API (see backend/utils/proxy/claudeVerify.js)
+    // rather than scraping the Cloudflare-cached HTML shell — the API returns a clean auth
+    // signal and never bot-challenges from a datacenter IP, so a good account is never wrongly
+    // blocked. Isolated: only tool with this mode; every other check keys on 'supabase_refresh'.
+    verifyMode: 'claude_api',
     // Per-tool session-length override (minutes). Falls back to PROXY_LEASE_MINUTES, then 30.
     leaseMinutesEnv: 'CLAUDE_LEASE_MINUTES',
     // ── VERIFY CAVEAT (measured against the live app 2026-07-10) ────────────────────────────

@@ -18,7 +18,7 @@ const NAV_ITEMS = [
   { to: '/admin/stealthwriter', icon: Sparkles,    label: 'StealthWriter', group: 'Manage' },
   { to: '/admin/proxy-tools', icon: Zap,           label: 'Proxy Tools',   group: 'Manage' },
   { to: '/admin/writehuman', icon: PenTool,        label: 'WriteHuman',    group: 'Manage' },
-  { to: '/admin/claude',    icon: Bot,             label: 'Claude',        group: 'Manage' },
+  { to: '/admin/claude',    icon: Bot,             label: 'Claude AI',     group: 'Manage' },
   { to: '/admin/extension', icon: Chrome,          label: 'Extension',     group: 'Manage' },
   { to: '/admin/activity',  icon: Activity,        label: 'Activity',    group: 'Insights' },
   { to: '/admin/blog',      icon: FileText,        label: 'Blog',        group: 'Content'  },
