@@ -30,8 +30,73 @@ router.use((req, res, next) => {
   next();
 });
 
+// ── Server-side list controls (pagination / filter / search / sort) ──────────
+// STRICT allowlists — no user-supplied value is ever passed to the DB as a field
+// name, operator, or query fragment. status/sortBy/sortOrder are enum-checked;
+// page/limit are integer-coerced and range-clamped; search is length-capped and
+// used ONLY as a case-insensitive substring compare in JS (never a DB $regex), so
+// there is no SQL / NoSQL / regex / operator-injection surface. Status is computed
+// server-side from trusted version data (isOlder) — the SAME logic /notify uses —
+// so a client can never alter its reported status to change filtering or who gets
+// notified.
+const PAGE_SIZES = [10, 25, 50, 100];            // allowlisted page sizes (hard max 100)
+const SORT_FIELDS = ['name', 'installedVersion', 'status', 'lastSync'];
+const STATUS_FILTERS = ['all', 'updated', 'outdated', 'unknown'];
+const STATUS_RANK = { outdated: 0, up_to_date: 1, unknown: 2 };
+const SEARCH_MAX = 100;                            // cap search length (DoS + noise guard)
+
+function parseListParams(q) {
+  q = q || {};
+  let page = parseInt(q.page, 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  let limit = parseInt(q.limit, 10);
+  if (!PAGE_SIZES.includes(limit)) limit = 25;     // default 25; rejects 0 / 999999 / missing / junk
+  const status = STATUS_FILTERS.includes(String(q.status)) ? String(q.status) : 'all';
+  const sortBy = SORT_FIELDS.includes(String(q.sortBy)) ? String(q.sortBy) : 'lastSync';
+  const sortOrder = String(q.sortOrder) === 'asc' ? 'asc' : 'desc';
+  const search = String(q.search == null ? '' : q.search).trim().slice(0, SEARCH_MAX).toLowerCase();
+  return { page, limit, status, sortBy, sortOrder, search };
+}
+
+// Build the full trusted per-client DTO set (only clients that have synced at least
+// once). Status is computed here from the effective published version — the single
+// source of truth shared with /notify. Never emits secrets (select() is field-scoped).
+async function buildClientDtos(latest, effectiveMin) {
+  const users = await User.find({ role: 'CLIENT' })
+    .select('email fullName extensionVersion extensionLastSyncAt extensionUpdateNotice');
+  return (users || [])
+    .filter(u => u.extensionVersion || u.extensionLastSyncAt)
+    .map(u => {
+      const installed = u.extensionVersion || null;
+      const notice = u.extensionUpdateNotice || null;
+      const isOutdated = !!(latest && installed && isOlder(installed, latest));
+      return {
+        clientId: String(u._id),
+        email: u.email || null,
+        name: u.fullName || null,
+        installedVersion: installed,
+        lastSyncAt: u.extensionLastSyncAt || null,
+        isOutdated,
+        updateRequired: !!(effectiveMin && installed && isOlder(installed, effectiveMin)),
+        status: isOutdated ? 'outdated' : (installed ? 'up_to_date' : 'unknown'),
+        notified: !!(notice && notice.notifiedAt),
+        notifiedAt: notice ? (notice.notifiedAt || null) : null,
+      };
+    });
+}
+
+// Case-insensitive name/email substring match. Pure JS — no regex, no DB call.
+function clientMatchesSearch(c, search) {
+  if (!search) return true;
+  return String(c.name || '').toLowerCase().includes(search)
+      || String(c.email || '').toLowerCase().includes(search);
+}
+
 // GET /api/crm/admin/extension/release — latest version (from the on-disk ZIP),
-// admin policy, and per-client installed versions for admin visibility.
+// admin policy, and a PAGE of per-client installed versions for admin visibility.
+// Backward compatible: the top-level release fields are unchanged and `clients` is
+// still an array (now the requested page). New optional query params: page, limit,
+// status, search, sortBy, sortOrder. New response fields: `pagination` + `counts`.
 router.get('/release', async (req, res) => {
   try {
     const rel = await ExtensionRelease.getLatest();
@@ -42,31 +107,51 @@ router.get('/release', async (req, res) => {
     const forceUpdate = rel ? !!rel.updateRequired : false;
     const effectiveMin = minVersion || (forceUpdate ? latest : null);
 
-    // Per-client installed versions (only clients that have synced at least once).
+    const { page, limit, status, sortBy, sortOrder, search } = parseListParams(req.query);
+
+    // Server-side filter → count → sort → paginate. The browser only ever receives one
+    // page + metadata, never the full list.
     let clients = [];
+    let counts = { all: 0, updated: 0, outdated: 0, unknown: 0 };
+    let totalRecords = 0, totalPages = 1, currentPage = page;
     try {
-      const users = await User.find({ role: 'CLIENT' })
-        .select('email fullName extensionVersion extensionLastSyncAt extensionUpdateNotice');
-      clients = (users || [])
-        .filter(u => u.extensionVersion || u.extensionLastSyncAt)
-        .map(u => {
-          const installed = u.extensionVersion || null;
-          const notice = u.extensionUpdateNotice || null;
-          return {
-            clientId: String(u._id),
-            email: u.email || null,
-            name: u.fullName || null,
-            installedVersion: installed,
-            lastSyncAt: u.extensionLastSyncAt || null,
-            isOutdated: !!(latest && installed && isOlder(installed, latest)),
-            updateRequired: !!(effectiveMin && installed && isOlder(installed, effectiveMin)),
-            status: (latest && installed && isOlder(installed, latest)) ? 'outdated' : (installed ? 'up_to_date' : 'unknown'),
-            // Admin-triggered "please update" notice state (safe metadata only).
-            notified: !!(notice && notice.notifiedAt),
-            notifiedAt: notice ? (notice.notifiedAt || null) : null,
-          };
-        })
-        .sort((a, b) => new Date(b.lastSyncAt || 0) - new Date(a.lastSyncAt || 0));
+      const allDtos = await buildClientDtos(latest, effectiveMin);
+      const searched = allDtos.filter(c => clientMatchesSearch(c, search));
+
+      // Counts reflect the active SEARCH (independent of the selected status tab) so the
+      // filter badges stay accurate as the admin types.
+      counts.all = searched.length;
+      for (const c of searched) {
+        if (c.status === 'up_to_date') counts.updated++;
+        else if (c.status === 'outdated') counts.outdated++;
+        else counts.unknown++;
+      }
+
+      let filtered = searched;
+      if (status === 'updated') filtered = searched.filter(c => c.status === 'up_to_date');
+      else if (status === 'outdated') filtered = searched.filter(c => c.status === 'outdated');
+      else if (status === 'unknown') filtered = searched.filter(c => c.status === 'unknown');
+
+      const dir = sortOrder === 'asc' ? 1 : -1;
+      filtered.sort((a, b) => {
+        let cmp;
+        if (sortBy === 'name') {
+          cmp = String(a.name || a.email || '').localeCompare(String(b.name || b.email || ''), undefined, { sensitivity: 'base' });
+        } else if (sortBy === 'installedVersion') {
+          cmp = compareVersions(a.installedVersion, b.installedVersion); // semver-aware (never throws)
+        } else if (sortBy === 'status') {
+          cmp = (STATUS_RANK[a.status] ?? 3) - (STATUS_RANK[b.status] ?? 3);
+        } else { // lastSync (default)
+          cmp = new Date(a.lastSyncAt || 0) - new Date(b.lastSyncAt || 0);
+        }
+        return cmp * dir;
+      });
+
+      totalRecords = filtered.length;
+      totalPages = Math.max(1, Math.ceil(totalRecords / limit));
+      currentPage = Math.min(page, totalPages);            // clamp huge page numbers to the last page
+      const start = (currentPage - 1) * limit;
+      clients = filtered.slice(start, start + limit);
     } catch (_) {}
 
     res.json({
@@ -83,6 +168,8 @@ router.get('/release', async (req, res) => {
       dbVersion,
       downloadPath: `/downloads/${ZIP_FILENAME}`,
       clients,
+      counts,
+      pagination: { currentPage, pageSize: limit, totalRecords, totalPages },
     });
   } catch (err) {
     console.error('Get extension release error:', err.message);
@@ -237,6 +324,10 @@ router.post('/notify', express.json({ limit: '64kb' }), async (req, res) => {
       return res.status(400).json({ error: 'Provide clientIds[] or all:true' });
     }
     if (clientIds.length > 1000) clientIds = clientIds.slice(0, 1000);
+    // Optional name/email search — scopes "Notify all outdated" to the SAME set the admin is
+    // viewing (their active search). Pure JS substring compare (no regex/DB injection). Only
+    // applies to the all:true path; explicit clientIds[] are already an exact, validated set.
+    const search = String(body.search == null ? '' : body.search).trim().slice(0, 100).toLowerCase();
 
     // Resolve latest + effective minimum from the SAME source as /release.
     const rel = await ExtensionRelease.getLatest();
@@ -250,8 +341,13 @@ router.post('/notify', express.json({ limit: '64kb' }), async (req, res) => {
 
     const query = { role: 'CLIENT' };
     if (!all) query._id = { $in: clientIds };
-    const users = await User.find(query)
+    let users = await User.find(query)
       .select('email fullName extensionVersion extensionUpdateNotice');
+    if (all && search) {
+      users = users.filter(u =>
+        String(u.fullName || '').toLowerCase().includes(search) ||
+        String(u.email || '').toLowerCase().includes(search));
+    }
 
     const now = Date.now();
     const adminId = req.userId || (req.user && req.user._id) || null;
