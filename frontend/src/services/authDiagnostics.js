@@ -1,6 +1,15 @@
 import api from './api';
 
 /**
+ * The ONLY string a production member is ever shown for an API / auth / timeout /
+ * DNS / CORS / network failure. It intentionally carries NO API URL or host, NO
+ * internal [CODE], NO stack trace, NO server response body, NO configuration, and NO
+ * technical troubleshooting steps. All of that lives in the dev console + server logs.
+ */
+export const SAFE_GENERIC_MESSAGE =
+  "We're unable to complete your request right now. Please try again shortly.";
+
+/**
  * Shared, SECRET-FREE diagnostics for the login & signup flows.
  *
  * Why this exists: some clients see a generic "Login failed" on ONE device while the
@@ -129,6 +138,86 @@ export function classifyTransport(error) {
   }
 
   return null;
+}
+
+/**
+ * Whether detailed diagnostics may be rendered ON SCREEN to THIS viewer. True ONLY in a
+ * development build. CRA inlines process.env.NODE_ENV at build time, so the deployed
+ * production bundle evaluates this to `false` unconditionally — production members ALWAYS
+ * see SAFE_GENERIC_MESSAGE / the safe branch messages on screen, never internals, even
+ * with ?debug=1 set. Rich diagnostics in production stay in the console (gated separately
+ * by loginDebugEnabled(), an opt-in support tool) and the correlated server-side logs.
+ */
+export function diagnosticsVisible() {
+  try {
+    return typeof process !== 'undefined' && !!process.env && process.env.NODE_ENV === 'development';
+  } catch (_) { return false; }
+}
+
+/**
+ * THE single, centralized sanitizer for EVERY API / auth / timeout / DNS / CORS /
+ * network failure surfaced to a member (login, signup, admin login, and any future
+ * caller). It GUARANTEES the user-facing string never contains an API URL or host, an
+ * internal [CODE], a stack trace, a raw server response body, configuration, or
+ * technical troubleshooting steps. The rich (still secret-free) detail is returned
+ * separately for the dev console + server-correlated logs only.
+ *
+ * @param {*} error  an axios error (or any thrown value)
+ * @param {object} ctx  extra secret-free context to attach to the diagnostic (e.g. { rid })
+ * @returns {{ userMessage: string, devMessage: string, code: string, connection: boolean, detail: object }}
+ *   userMessage — ALWAYS safe; show this to production members.
+ *   devMessage  — userMessage in production; userMessage + internal detail when diagnosticsVisible().
+ *   code        — internal machine code for logs ONLY; never render it in the UI.
+ *   connection  — true when the request got no usable HTTP response (offline/timeout/unreachable).
+ *   detail      — secret-free client facts for the dev console / correlation with server logs.
+ */
+export function sanitizeError(error, ctx = {}) {
+  const transport = classifyTransport(error);          // offline / timeout / unreachable-or-blocked
+  const status = error?.response?.status || null;
+  const serverCode = error?.response?.data?.code || null;
+
+  let code;            // INTERNAL only — never shown to a production user
+  let connection = false;
+  let userMessage;
+
+  if (transport) {
+    // No usable HTTP response: offline / timeout / DNS / CORS / TLS-or-clock / host blocked.
+    // This is the device-specific class behind [API_CONNECTION_FAILED] in the screenshot.
+    code = transport.code;               // API_CONNECTION_FAILED | TIMEOUT
+    connection = true;
+    userMessage = SAFE_GENERIC_MESSAGE;
+  } else if (serverCode === 'DEVICE_PENDING') {
+    // Safe, user-ACTIONABLE outcomes keep a human message (no host, no body, no [CODE]).
+    code = 'NEW_DEVICE_PENDING';
+    userMessage = 'New device detected. Your account is locked to one device — please ask the admin to approve this device, then sign in again.';
+  } else if (serverCode === 'DEVICE_BLOCKED' || serverCode === 'DEVICE_MISMATCH') {
+    code = 'DEVICE_BLOCKED';
+    userMessage = 'This device is not approved for your account. Please ask the admin to approve or reset your device.';
+  } else if (status === 401) {
+    code = 'WRONG_CREDENTIALS';
+    userMessage = 'Incorrect email or password. Please check them and try again.';
+  } else if (status === 409) {
+    code = 'ACCOUNT_EXISTS';
+    userMessage = 'An account with this email already exists. Please log in instead.';
+  } else if (status === 429) {
+    code = 'TOO_MANY_ATTEMPTS';
+    userMessage = 'Too many attempts. Please wait a few minutes, then try again.';
+  } else {
+    // 400 / 403 / 404 / 5xx / anything else → one safe, generic message. We deliberately
+    // do NOT echo the server's response body, its status, or a bracketed code to the user.
+    code = status ? ('HTTP_' + status) : 'UNKNOWN';
+    userMessage = SAFE_GENERIC_MESSAGE;
+  }
+
+  const detail = collectClientDiag(error, { ...ctx, code, connection });
+
+  // Developer-only string (dev build, or explicit ?debug=1 opt-in). Appends the internal
+  // code + precise transport reason so engineers keep full visibility. NEVER shown to a
+  // production member — pages must gate on diagnosticsVisible() before using it.
+  const devTail = transport ? ` · ${transport.message}` : (status ? ` · HTTP ${status}` : '');
+  const devMessage = diagnosticsVisible() ? `${userMessage} [dev:${code}${devTail}]` : userMessage;
+
+  return { userMessage, devMessage, code, connection, detail };
 }
 
 // Short, URL-safe correlation id for ONE login/signup attempt. The same id is sent to

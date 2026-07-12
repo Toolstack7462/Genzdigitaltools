@@ -6,7 +6,7 @@ import {
   Cpu, Globe, Palette, Instagram, Rocket, CheckCircle2, RefreshCw,
 } from 'lucide-react';
 import { authService } from '../../services/authService';
-import { classifyTransport, authDiag, pingHealth, newRequestId, collectClientDiag, loginDebugEnabled } from '../../services/authDiagnostics';
+import { sanitizeError, diagnosticsVisible, SAFE_GENERIC_MESSAGE, authDiag, pingHealth, newRequestId, collectClientDiag, loginDebugEnabled } from '../../services/authDiagnostics';
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 
@@ -71,7 +71,7 @@ const ClientLogin = () => {
       // backend would reject the login with a vague 400 — surface the precise reason.
       if (!deviceId) {
         console.error('[client-login] aborted:', authDiag({}, { reason: 'device_id_missing' }));
-        showError('Your browser could not create a secure device ID for sign-in. Please enable cookies/site data (or leave private mode) and try again. [DEVICE_ID_MISSING]');
+        showError('Your browser could not create a secure device ID for sign-in. Please enable cookies/site data (or leave private mode) and try again.');
         return;
       }
       const { os, browser } = authService.getDeviceInfo();
@@ -83,76 +83,47 @@ const ClientLogin = () => {
       showSuccess('Welcome back to Gen Z Digital Store!');
       navigate('/client/dashboard');
     } catch (error) {
-      const status = error.response?.status;
-      const code = error.response?.data?.code;
-      const serverMsg = error.response?.data?.error;
-
       // Whether this browser can persist site data at all. When it CANNOT,
       // getOrCreateDeviceId() falls back to an in-memory id and may even fail before a
       // request is sent — that path has no status/response, so without this check it
       // would masquerade as a generic failure.
       const storageOk = authService.isStorageAvailable();
 
-      // Transport-level classification (no HTTP response): offline / timeout / API
-      // unreachable-or-blocked. Returns null when the server actually answered, so the
-      // status-based branches below still own those cases. This is the device-specific
-      // path — it is what makes a one-device "Login failed" identifiable.
-      const transport = classifyTransport(error);
+      // Every failure is routed through the ONE central sanitizer. It returns a SAFE
+      // user message (no API host, no internal [CODE], no stack trace, no server body)
+      // plus an internal code + secret-free detail for logs. `connection === true` means
+      // the request got no usable HTTP response (offline / timeout / API unreachable or
+      // blocked) — the device-specific path that makes a one-device "Login failed"
+      // identifiable in logs without leaking anything to the member.
+      const safe = sanitizeError(error, { rid, storageAvailable: storageOk });
       let reachable = null; // set when we actively probe health (the no-response path)
 
       // Console diagnostic (no secrets) so a member reporting "Login failed" can be
-      // told exactly which branch fired. `hadResponse=false` means the request never
-      // got a reply (network / CORS / cert / timeout); `status` present means the
-      // server answered and the message reflects its actual reason. rid ties it to the
-      // backend logs + the on-screen Error ID.
+      // correlated to the backend [login-diag] logs by the same rid / Error ID.
       console.error('[client-login] failed:', authDiag(error, { rid, storageAvailable: storageOk }));
 
-      // Each branch shows a CLEAR reason plus a short [CODE] so the exact problem is
-      // identifiable at a glance (by the member and by support) instead of a vague
-      // "Login failed". The bracketed code mirrors the backend reason.
-      if (transport) {
-        // The request got NO usable HTTP response (offline / timeout / API unreachable or
-        // blocked). Show the user-friendly "Connection Failed" popup instead of a technical
-        // message — it exposes NO internal details (API host, endpoints, codes, stack traces).
-        // The probe still runs purely to enrich the INTERNAL diagnostic (reachable flag fed to
-        // collectClientDiag below); connection/retry/auth logic is unchanged.
+      if (safe.connection) {
+        // No usable HTTP response. Show the user-friendly "Connection issue" popup, which
+        // renders only SAFE_GENERIC_MESSAGE — NO internal details (API host, endpoints,
+        // codes, stack traces). The probe runs purely to enrich the INTERNAL diagnostic
+        // (reachable flag fed to collectClientDiag below); retry/auth logic is unchanged.
         setShowRetry(true);
-        if (transport.code !== 'TIMEOUT') {
+        if (safe.code !== 'TIMEOUT') {
           reachable = await pingHealth();
         }
         setConnError(true);
-      } else if (status === 404) {
-        // A response WAS received, so the API is reachable. A 404 means a moved/updating
-        // route or a stale cached bundle calling an old path — NEVER a connection failure.
-        setShowRetry(true);
-        showError('The sign-in service is updating. Please hard-refresh the page (Ctrl/Cmd+Shift+R) and try again. [ROUTE_NOT_FOUND]');
       } else if (!storageOk) {
         // The browser is blocking cookies/site data, so device binding can't be stored.
-        // Reached only when the server DID answer but persistence is impossible.
-        showError('This browser is blocking cookies & site data, which secure sign-in and device binding require. Please allow cookies/site data for this site (or leave private/incognito mode), then try again. [DEVICE_STORAGE_BLOCKED]');
-      } else if (status === 429) {
-        showError('Too many login attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
-      } else if (code === 'DEVICE_PENDING') {
-        showError('New device detected. Your account is locked to one device — ask the admin to approve THIS device, then sign in again. [NEW_DEVICE_PENDING]');
-      } else if (code === 'DEVICE_BLOCKED' || code === 'DEVICE_MISMATCH') {
-        showError('This device is not approved for your account. Ask the admin to approve or reset your device. [DEVICE_BLOCKED]');
-      } else if (status === 401) {
-        // The server received the request and rejected it → genuinely wrong credentials.
-        showError('Incorrect email or password. Please check them and try again. [WRONG_CREDENTIALS]');
-      } else if (status === 403) {
-        showError((serverMsg || 'Your account cannot sign in right now. Please contact support.') + ' [ACCESS_DENIED]');
-      } else if (status === 400) {
-        // Validation rejected the request (e.g. missing/invalid device payload).
-        showError((serverMsg || 'Your login could not be processed. Please refresh the page and try again.') + ' [DEVICE_PAYLOAD_INVALID]');
-      } else if (status >= 500) {
-        // Server was reached but errored — this is NOT a wrong-password situation.
-        showError('Something went wrong on our end while signing you in. Please try again in a moment. [SERVER_ERROR]');
+        // A browser-capability precondition (not an API leak) → keep the actionable hint.
+        showError('This browser is blocking cookies & site data, which secure sign-in and device binding require. Please allow cookies/site data for this site (or leave private/incognito mode), then try again.');
       } else {
-        showError((serverMsg || 'Login failed. Please try again.') + ' [UNKNOWN]');
+        // Every server-answered case (401 / 403 / 404 / 429 / device / 5xx / …) → the
+        // sanitizer's safe message. Internals stay in safe.code + the console/server logs.
+        showError(diagnosticsVisible() ? safe.devMessage : safe.userMessage);
       }
 
       // Surface a quotable Error ID + a SAFE diagnostics snapshot (no secrets). The rich
-      // bundle is console-logged only when verbose debug is on (?debug=1 / localStorage),
+      // bundle is shown/logged only when verbose debug is on (?debug=1 / localStorage),
       // matching the env-gated backend [login-diag] so both sides correlate by rid.
       setErrorId(rid);
       const diag = collectClientDiag(error, { rid, reachable });
@@ -174,9 +145,10 @@ const ClientLogin = () => {
 
   return (
     <div className="relative min-h-dvh overflow-hidden" style={{ background: 'var(--gradient-hero)' }}>
-      {/* User-friendly connection-failure popup. Replaces the old technical error toast —
-          shows NO internal details (API host, endpoints, codes, stack traces). The full
-          technical error is still logged internally (console.error + collectClientDiag). */}
+      {/* User-friendly connection-issue popup. Shows ONLY the safe, generic message —
+          NO internal details (API host, endpoints, codes, stack traces, troubleshooting
+          steps). The full technical error stays internal (console.error + collectClientDiag
+          + the env-gated backend [login-diag] logs, correlated by the Error ID). */}
       {connError && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="conn-error-title">
           <div className="absolute inset-0 bg-genz-navy/40 backdrop-blur-sm" onClick={() => setConnError(false)} />
@@ -185,17 +157,9 @@ const ClientLogin = () => {
               <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(6,182,212,0.1)' }}>
                 <Shield size={20} style={{ color: '#06B6D4' }} />
               </div>
-              <h2 id="conn-error-title" className="text-[19px] font-bold text-genz-navy">Connection Failed</h2>
+              <h2 id="conn-error-title" className="text-[19px] font-bold text-genz-navy">Connection issue</h2>
             </div>
-            <p className="text-[14px] text-genz-navy/70 mb-3">We couldn&apos;t establish a secure connection. Please try the following:</p>
-            <ol className="text-[13.5px] text-genz-navy/80 space-y-1.5 mb-4 list-decimal pl-5">
-              <li>Make sure your device date &amp; time are correct.</li>
-              <li>Switch to a stable Wi-Fi connection (avoid unstable mobile data if possible).</li>
-              <li>Disable any VPN, proxy, firewall, ad-blocker, or antivirus that may block the connection.</li>
-              <li>Close any Incognito/Private windows and try again.</li>
-              <li>Click <strong>Retry Connection</strong>.</li>
-            </ol>
-            <p className="text-[13px] text-genz-muted mb-5">If the issue continues, please contact <strong>Gen Z Digital Store Support</strong>.</p>
+            <p className="text-[14px] text-genz-navy/70 mb-5">{SAFE_GENERIC_MESSAGE}</p>
             <div className="flex flex-col sm:flex-row gap-2.5">
               <button type="button" onClick={() => { setConnError(false); handleSubmit(); }} disabled={loading}
                 className="btn-grad flex-1 py-3 text-[14px] font-bold rounded-[14px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">

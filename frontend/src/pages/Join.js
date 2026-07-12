@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useToast } from '../components/Toast';
 import api from '../services/api';
-import { classifyTransport, authDiag, pingHealth, newRequestId, collectClientDiag, loginDebugEnabled } from '../services/authDiagnostics';
+import { sanitizeError, diagnosticsVisible, authDiag, newRequestId, loginDebugEnabled } from '../services/authDiagnostics';
 
 const EASE_OUT = [0.16, 1, 0.3, 1];
 const BRAND_CTA = 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)';
@@ -122,48 +122,22 @@ const Join = () => {
         }
       }
     } catch (error) {
-      const status = error.response?.status;
-      const serverMsg = error.response?.data?.error;
+      // Every failure (offline / timeout / API unreachable-or-blocked / 4xx / 5xx) is
+      // routed through the ONE central sanitizer. It returns a SAFE user message that
+      // never leaks the API host, an internal [CODE], a stack trace, or the server body.
+      // Signup is the device-specific path — it sends no deviceId and uses no storage, so
+      // a one-device failure is the request never reaching the API; the safe message is
+      // identical either way, and the precise reason stays in the diagnostic below.
+      const safe = sanitizeError(error, { rid });
 
-      // Transport classification (no HTTP response): offline / timeout / API unreachable
-      // -or-blocked. This is the device-specific path — signup sends no deviceId and uses
-      // no storage, so when it fails on one device but works on another the cause is the
-      // request never reaching the API (connectivity, device clock/cert, VPN/firewall/
-      // extension block). Returns null when the server actually answered.
-      const transport = classifyTransport(error);
-
-      // Secret-free diagnostic (mirrors the login screen) so a member reporting a
-      // signup failure can be told exactly which branch fired. rid ties it to the backend
-      // [signup] logs + the on-screen Error ID.
+      // Secret-free diagnostic (mirrors the login screen) so a member reporting a signup
+      // failure can be correlated to the backend [signup] logs via the on-screen Error ID.
+      // The rich detail is console-logged only when verbose debug is explicitly enabled.
       setErrorId(rid);
       console.error('[client-signup] failed:', authDiag(error, { rid }));
-      if (loginDebugEnabled()) console.log('[signup-debug]', collectClientDiag(error, { rid }));
+      if (loginDebugEnabled()) console.log('[signup-debug]', safe.detail);
 
-      // Specific reason + [CODE] instead of a blanket "Server is busy".
-      if (transport) {
-        // Probe /api/health to distinguish a genuine unreachable API from a transient
-        // blip, so we show a calm "try again" when the server is actually up.
-        if (transport.code === 'TIMEOUT') {
-          showError(transport.message);
-        } else {
-          const reachable = await pingHealth();
-          showError(reachable
-            ? 'Connection issue. Please try again in a moment. [API_CONNECTION_FAILED]'
-            : transport.message);
-        }
-      } else if (status === 404) {
-        showError('The sign-up service is updating. Please hard-refresh the page (Ctrl/Cmd+Shift+R) and try again. [ROUTE_NOT_FOUND]');
-      } else if (status === 409) {
-        showError('An account with this email already exists. Please log in instead. [ACCOUNT_EXISTS]');
-      } else if (status === 429) {
-        showError('Too many attempts from your network. Please wait a few minutes, then try again. [TOO_MANY_ATTEMPTS]');
-      } else if (status === 400) {
-        showError((serverMsg || 'Please check your details and try again.') + ' [INVALID_DETAILS]');
-      } else if (status >= 500) {
-        showError('Something went wrong on our end while creating your account. Please try again in a moment. [SERVER_ERROR]');
-      } else {
-        showError((serverMsg || 'Server is busy right now. Please try again in a moment.') + ' [UNKNOWN]');
-      }
+      showError(diagnosticsVisible() ? safe.devMessage : safe.userMessage);
     } finally {
       setLoading(false);
     }
