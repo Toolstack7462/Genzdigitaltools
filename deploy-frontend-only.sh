@@ -28,9 +28,12 @@ if [[ ! -f "${BUILD_DIR}/index.html" ]]; then
   exit 1
 fi
 
-# Sanity: the fix must actually be in this build before we publish it.
-if ! grep -rqs "STORAGE_BLOCKED" "${BUILD_DIR}/static/js"; then
-  echo "ERROR: STORAGE_BLOCKED not found in build — this build predates the fix. Rebuild first." >&2
+# Sanity: the latest fix must actually be in this build before we publish it.
+# Sentinel = the centralized safe error message (SAFE_GENERIC_MESSAGE), which is only
+# present once the error-sanitizer fix is compiled in. (Superseded the older
+# "STORAGE_BLOCKED" sentinel, whose bracketed code the sanitizer removed.)
+if ! grep -rqs "unable to complete your request" "${BUILD_DIR}/static/js"; then
+  echo "ERROR: safe-error-message sentinel not found in build — this build predates the sanitizer fix. Rebuild first." >&2
   exit 1
 fi
 
