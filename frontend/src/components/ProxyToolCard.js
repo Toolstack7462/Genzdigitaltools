@@ -48,14 +48,14 @@ const ProxyToolCard = ({ tool }) => {
 
   return (
     <div
-      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
-        expired ? 'opacity-80 border border-red-200 bg-red-50' : 'gz-card hover:shadow-[0_18px_38px_-18px_rgba(8,145,178,0.4)]'
+      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 ${
+        expired ? 'tool-card-expired' : 'gz-card hover:-translate-y-1 hover:shadow-[0_18px_38px_-18px_rgba(8,145,178,0.4)]'
       }`}
       style={!expired ? { background: theme.soft } : undefined}
       data-testid={`proxy-tool-card-${tool.tool}`}
     >
       <div className="flex items-start justify-between mb-2.5">
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br ${theme.from} ${theme.to}`}>
+        <div className={`tool-card-logo w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br ${theme.from} ${theme.to}`}>
           <Zap size={18} />
         </div>
         <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${statusColor}`}>{statusLabel}</span>

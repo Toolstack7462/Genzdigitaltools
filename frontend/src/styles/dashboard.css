@@ -227,6 +227,24 @@
   box-shadow: 0 18px 40px -26px rgba(2, 10, 25, 0.6);
 }
 
+/* ── Professional "disabled" surface for EXPIRED tool cards ──
+   Replaces the old heavy grey/opacity overlay. A neutral, desaturated glass
+   panel with a crisp hairline and fully readable dark text (no blanket opacity,
+   so the "Expired" status pill and Renew CTA stay legible). The tool logo is
+   muted with grayscale to read as inactive. Shared by ToolCard, ProxyToolCard
+   and StealthWriterCard so the expired state is identical everywhere. */
+.app-main .tool-card-expired {
+  background: linear-gradient(165deg, #f8fafc 0%, #eef2f6 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  box-shadow: 0 14px 34px -24px rgba(2, 10, 25, 0.5);
+}
+.app-main .tool-card-expired .text-genz-navy { color: var(--brand-navy) !important; }
+.app-main .tool-card-expired .text-genz-muted { color: var(--brand-muted) !important; }
+.app-main .tool-card-expired .text-genz-blue { color: var(--brand-blue) !important; }
+.app-main .tool-card-expired .tool-card-logo { filter: grayscale(0.55); opacity: 0.85; }
+@media (max-width: 767px) { .app-main .tool-card-expired { border-radius: 14px; } }
+
 /* ── 4. Premium dark-glass topbar helper ── */
 .ds-topbar {
   background: var(--gradient-topbar) !important;

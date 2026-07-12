@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased] — Client Dashboard UI Polish
+
+Safe, presentation-only refinements to the live client dashboard. No backend,
+API, route, auth, subscription, extension-flow, or data logic was changed.
+
+### Client Dashboard (`frontend/src/pages/client/ClientDashboardEnhanced.js`)
+
+- **Tool-count consistency:** the "All Your Tools" heading badge now uses a new
+  `totalAssignedTools` count (regular `tools` + `proxyTools` + StealthWriter plan)
+  instead of `tools.length`. It previously omitted the proxy/StealthWriter cards
+  that render in the same grid, so the badge could read e.g. "7" while the "Active
+  Tools" stat read "10". Both numbers now derive from the same data sources and are
+  consistent (the stat stays "active only"; the badge is the "all assigned" total).
+- **Top-section declutter:** removed the redundant "Website" button and "Profile"
+  icon button from the welcome banner — both actions already exist in the sidebar
+  and the topbar. Removed the now-unused `User` lucide import.
+- **Accessibility:** added `aria-label` to the expiry-warning dismiss button and
+  `aria-pressed` to the category filter buttons.
+
+### Expired tool cards — professional disabled state (shared)
+
+- Replaced the heavy `opacity-80 + red-50` overlay with a new shared
+  `.tool-card-expired` surface (neutral desaturated glass, crisp hairline, no
+  blanket opacity so the status pill and Renew CTA stay legible; the tool logo is
+  grayscaled via `.tool-card-logo`). Applied identically in `ClientDashboardEnhanced.js`
+  (`ToolCard`), `components/ProxyToolCard.js`, and `components/StealthWriterCard.js`.
+  Hover-lift is now limited to active cards (disabled cards no longer animate).
+
+### Styles
+
+- **styles/dashboard.css:** added the `.tool-card-expired` / `.tool-card-logo`
+  rules (theme-integrated: dark text + muted logo on the navy canvas).
+
 ## [3.9.0] — Safe Reference-Extension Patterns
 
 ### Chrome Extension

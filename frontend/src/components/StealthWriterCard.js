@@ -36,17 +36,17 @@ const StealthWriterCard = ({ stealth }) => {
 
   return (
     <div
-      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
+      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 ${
         expired
-          ? 'opacity-80 border border-red-200 bg-red-50'
-          : 'gz-card hover:shadow-[0_18px_38px_-18px_rgba(124,58,237,0.45),0_0_0_1px_rgba(217,70,239,0.18)]'
+          ? 'tool-card-expired'
+          : 'gz-card hover:-translate-y-1 hover:shadow-[0_18px_38px_-18px_rgba(124,58,237,0.45),0_0_0_1px_rgba(217,70,239,0.18)]'
       }`}
       style={!expired ? { background: 'linear-gradient(167deg,#ffffff 0%,#f7f5ff 100%)' } : undefined}
       data-testid="stealthwriter-card"
     >
       {/* header */}
       <div className="flex items-start justify-between mb-2.5">
-        <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br from-violet-500 to-fuchsia-500">
+        <div className="tool-card-logo w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br from-violet-500 to-fuchsia-500">
           <Sparkles size={18} />
         </div>
         <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${statusColor}`}>
