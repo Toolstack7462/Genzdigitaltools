@@ -1,6 +1,6 @@
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
-import { Bot, ShieldCheck, Clock, Lock } from 'lucide-react';
+import { Bot } from 'lucide-react';
 
 /**
  * Dedicated admin page for the Claude proxy tool (claude.ai).
@@ -17,18 +17,6 @@ import { Bot, ShieldCheck, Clock, Lock } from 'lucide-react';
  * brand classes (text-genz-navy / text-genz-muted) which dashboard.css remaps to light —
  * raw Tailwind text-slate-* is NOT remapped and would render dark-on-navy (faint).
  */
-const InfoCard = ({ icon: Icon, title, children }) => (
-  <div className="ds-card rounded-2xl p-5 flex items-start gap-3.5">
-    <span className="w-10 h-10 rounded-xl flex items-center justify-center text-white bg-gradient-to-br from-orange-500 to-amber-600 flex-shrink-0 shadow-sm">
-      <Icon size={18} />
-    </span>
-    <div className="min-w-0">
-      <p className="text-[15px] font-bold text-genz-navy leading-snug">{title}</p>
-      <p className="text-[13px] text-genz-muted mt-1 leading-relaxed">{children}</p>
-    </div>
-  </div>
-);
-
 const AdminClaude = () => (
   <AdminLayoutEnhanced>
     <div className="max-w-7xl mx-auto space-y-6">
@@ -48,22 +36,6 @@ const AdminClaude = () => (
             Manage the Claude (claude.ai) account vault, client access and session length. Fully separate from every other tool.
           </p>
         </div>
-      </div>
-
-      {/* What this tool does — real, implemented behaviour (kept & polished, not decorative) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        <InfoCard icon={ShieldCheck} title="Server-side session">
-          The vault account's cookies are attached to Claude upstream only — never exposed to the
-          client's browser. Account, email, plan and billing are hidden by the gateway shield.
-        </InfoCard>
-        <InfoCard icon={Clock} title="Timed access">
-          Every &ldquo;Open&rdquo; mints a countdown lease (30&nbsp;min by default). Adjust it per client in
-          Client Access, or globally with CLAUDE_LEASE_MINUTES.
-        </InfoCard>
-        <InfoCard icon={Lock} title="Fully isolated">
-          Own gateway subdomain, own encrypted vault (tool&nbsp;=&nbsp;claude), own leases and grants —
-          no shared logic with StealthWriter, WriteHuman or any other tool.
-        </InfoCard>
       </div>
 
       {/* Full Claude management — account vault + client assignment. Reuses the Proxy-Tools
