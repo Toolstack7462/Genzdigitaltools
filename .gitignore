@@ -116,3 +116,7 @@ TESTING_RESULTS.md
 homepage-preview.png
 credentials.json
 .credentials
+
+# Chrome extension signing key (pins the Extension ID) — SECRET, never commit
+genz-extension-signing-key.pem
+ext-key-b64.txt

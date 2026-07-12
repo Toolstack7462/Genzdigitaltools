@@ -75,13 +75,20 @@ function Deploy($src,$dst){
   if($s -ne $d){ Copy-Item $src $dst -Force }
 }
 Deploy (Join-Path $repoRoot 'agent\cookie-sync-agent.js') (Join-Path $InstallDir 'agent\cookie-sync-agent.js')
-foreach($f in 'watchdog.ps1','status.ps1','uninstall.ps1'){ Deploy (Join-Path $PSScriptRoot $f) (Join-Path $InstallDir "rdp\$f") }
+foreach($f in 'watchdog.ps1','status.ps1','uninstall.ps1','ensure-chrome-debug.ps1'){ Deploy (Join-Path $PSScriptRoot $f) (Join-Path $InstallDir "rdp\$f") }
 Deploy (Join-Path $repoRoot 'test\soak-monitor.js') (Join-Path $InstallDir 'soak-monitor.js')
 
 # 3) Machine config (non-secret) for status/watchdog ---------------------------
 $healthUrl = ($IngestUrl -replace '^(https?://[^/]+).*$','$1/')  # origin reachability probe (agent ingest is POST-only + key-gated)
-[ordered]@{ installDir=$InstallDir; nodeExe=$nodeExe; ingestUrl=$IngestUrl; cdpUrl=$CdpUrl; chromeProfile=$ChromeProfile; healthUrl=$healthUrl; adminUser=$AdminUser } |
+# Single config source: config.json holds ALL non-secret settings, read by BOTH the agent (via
+# WHV2_CONFIG) and the watchdog. The secret agent key goes in a separate locked-down file.
+$agentKeyFile = Join-Path $InstallDir 'agent.key'
+[ordered]@{ installDir=$InstallDir; nodeExe=$nodeExe; ingestUrl=$IngestUrl; cdpUrl=$CdpUrl; domain=$TargetDomain; ref=$SupabaseRef; pollMs=$PollMs; chromeTask='WriteHumanChromeDebug'; agentKeyFile=$agentKeyFile; chromeProfile=$ChromeProfile; healthUrl=$healthUrl; adminUser=$AdminUser } |
   ConvertTo-Json | Set-Content (Join-Path $InstallDir 'rdp\config.json') -Encoding ASCII
+# Agent key AT REST: written to a file locked to SYSTEM + Administrators only (icacls), so the secret
+# is not sitting in the world-readable launcher/config. The agent reads it via WHV2_AGENT_KEY_FILE.
+Set-Content -Path $agentKeyFile -Value $AgentKey -Encoding ASCII -NoNewline
+try { & icacls $agentKeyFile /inheritance:r /grant:r 'SYSTEM:R' 'Administrators:R' | Out-Null; Info 'Wrote locked-down agent.key (SYSTEM + Administrators read-only).' } catch { Info 'WARNING: could not restrict agent.key ACL.' }
 
 # 4) Launchers (resolved paths + config) ---------------------------------------
 # Auto-detect Chrome (Program Files, x86, per-user LocalAppData, then the App Paths registry) so a
@@ -94,13 +101,19 @@ $chromeExe = @(
 if(-not $chromeExe){ try { $chromeExe = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe' -ErrorAction Stop).'(default)' } catch {} }
 if(-not $chromeExe){ $chromeExe = 'C:\Program Files\Google\Chrome\Application\chrome.exe'; Info 'WARNING: Chrome not auto-detected; using the default path. Install Chrome or edit chrome-debug.cmd.' }
 Info ("Chrome: " + $chromeExe)
-# Anti-throttle flags keep the WriteHuman tab's Supabase auto-refresh timer running even when the
-# RDP desktop is locked / the window is occluded, so the access token is rotated BY THE BROWSER
-# before it expires (the agent then syncs the fresh cookie). Without these, a backgrounded tab is
-# throttled and the token drifts expired.
-$chromeCmd = "@echo off`r`ntaskkill /im chrome.exe /f >nul 2>&1`r`nping -n 3 127.0.0.1 >nul`r`nstart `"`" `"$chromeExe`" --user-data-dir=`"$ChromeProfile`" --remote-debugging-port=9222 --no-first-run --no-default-browser-check --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding https://$TargetDomain`r`n"
+# chrome-debug.cmd is now a THIN WRAPPER around ensure-chrome-debug.ps1, which is self-verifying and
+# idempotent: it no-ops when CDP 9222 is already up, else kills stray Chrome, clears a stale profile
+# lock, launches Chrome WITH --remote-debugging-port + the anti-throttle flags (these keep the
+# WriteHuman tab's Supabase auto-refresh timer alive when the desktop is locked/occluded so the token
+# is rotated before expiry), then POLLS until the debug port actually opens and retries. Every trigger
+# (ONLOGON task, watchdog, and the agent's 'relaunch-chrome') routes through this, so a no-flag Chrome
+# owning the profile — the usual "cdp: fetch failed" cause — now self-heals instead of looping.
+$ensurePs1 = Join-Path $InstallDir 'rdp\ensure-chrome-debug.ps1'
+$chromeCmd = "@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$ensurePs1`"`r`n"
 Set-Content (Join-Path $InstallDir 'chrome-debug.cmd') $chromeCmd -Encoding ASCII -NoNewline
-$runCmd = "@echo off`r`nset `"WHV2_INGEST_URL=$IngestUrl`"`r`nset `"WHV2_AGENT_KEY=$AgentKey`"`r`nset `"WHV2_CDP_URL=$CdpUrl`"`r`nset `"WHV2_TARGET_DOMAIN=$TargetDomain`"`r`nset `"WHV2_SUPABASE_REF=$SupabaseRef`"`r`nset `"WHV2_POLL_MS=$PollMs`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
+# Launcher now just points the agent at the config + the locked key file (no plaintext secret in it).
+$cfgPath = Join-Path $InstallDir 'rdp\config.json'
+$runCmd = "@echo off`r`nset `"WHV2_CONFIG=$cfgPath`"`r`nset `"WHV2_AGENT_KEY_FILE=$agentKeyFile`"`r`n`"$nodeExe`" `"$InstallDir\agent\cookie-sync-agent.js`" >> `"$InstallDir\agent.log`" 2>&1`r`n"
 Set-Content (Join-Path $InstallDir 'run-agent.cmd') $runCmd -Encoding ASCII -NoNewline
 
 # 5) Scheduled tasks (idempotent: end + delete + recreate) ---------------------
@@ -108,6 +121,17 @@ $user = "$env:COMPUTERNAME\$AdminUser"
 function Reset-Task($name){ cmd /c "schtasks /end /tn $name >nul 2>&1"; cmd /c "schtasks /delete /tn $name /f >nul 2>&1" }
 Reset-Task 'WriteHumanV2Agent'
 & schtasks /create /tn WriteHumanV2Agent     /tr ("cmd /c "+$InstallDir+"\run-agent.cmd")   /sc ONSTART /ru SYSTEM /rl HIGHEST /f | Out-Null
+# Harden the agent task to native Windows service semantics (no third-party supervisor):
+#  - MultipleInstances IgnoreNew  → OS-level single-instance (belt to the agent's own port lock)
+#  - RestartCount/RestartInterval → auto-restart on crash (node exits 1) every 1 min, up to 999x
+#  - ExecutionTimeLimit 0         → never force-killed (it's a daemon)
+# schtasks can't set these, so apply them via the ScheduledTasks module after creation.
+try {
+  $agS = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -StartWhenAvailable
+  $agS.DisallowStartIfOnBatteries = $false; $agS.StopIfGoingOnBatteries = $false
+  Set-ScheduledTask -TaskName WriteHumanV2Agent -Settings $agS | Out-Null
+  Info 'Agent task hardened: single-instance + auto-restart-on-crash + no time limit.'
+} catch { Info 'WARNING: could not apply hardened task settings (agent still runs on boot).' }
 Reset-Task 'WriteHumanChromeDebug'
 & schtasks /create /tn WriteHumanChromeDebug /tr ("cmd /c "+$InstallDir+"\chrome-debug.cmd") /sc ONLOGON /ru $user /rl HIGHEST /f | Out-Null
 Reset-Task 'WriteHumanWatchdog'

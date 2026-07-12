@@ -44,6 +44,23 @@ router.get('/', async (req, res) => {
       return res.json({ success: true, hasPlan: false, resetLabel: RESET_LABEL });
     }
     const snap = await access.snapshot(client);
+
+    // Safe name of the StealthWriter account that will serve this client (e.g.
+    // "Account 1"). Runs the SAME selection (incl. per-client pin) the open route
+    // uses, but exposes ONLY the operator's chosen label — never email/cookies/
+    // tokens/session ids. Fail-safe: any error just omits the label.
+    let accountLabel = null;
+    try {
+      const accounts = await StealthAccount.find({});
+      if (accounts.length > 0) {
+        const settings = await config.getSettingsObject();
+        const sel = accountSelect.selectAccountForClient(accounts, settings.accountSelectionMode, {
+          mode: client.accountPinMode, accountId: client.pinnedAccountId,
+        });
+        if (sel.account) accountLabel = sel.account.label || 'Account';
+      }
+    } catch (_) { /* non-fatal — card simply omits the account label */ }
+
     return res.json({
       success: true,
       hasPlan: true,
@@ -57,6 +74,7 @@ router.get('/', async (req, res) => {
         used: snap.used,
         remaining: snap.remaining,
       },
+      accountLabel, // small safe "Using <account>" label on the card
       resetLabel: RESET_LABEL,
       nextResetAt: nextResetAt(),
     });

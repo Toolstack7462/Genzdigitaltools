@@ -18,6 +18,7 @@
   var CFG = window.__GENZ_GATEWAY__ || {};
   var API = (CFG.api || '').replace(/\/$/, '');
   var TOOL_NAME = CFG.toolName || 'AI Tool';
+  var ACCOUNT_LABEL = CFG.accountLabel || '';   // safe operator label (no secrets); '' = hide row
   var SUPPORT_URL = CFG.support || 'https://app.genzdigitalstore.com/client/dashboard';
   // Per-tool exact selectors from the gateway env (HIDE_SELECTORS). Already shipped in
   // the critical hide CSS server-side; re-applied here so SPA re-renders stay hidden.
@@ -63,6 +64,7 @@
         '<button class="genz-sw-min" title="Minimize" aria-label="Minimize">–</button>' +
       '</div>' +
       '<div class="genz-sw-body">' +
+        '<div class="genz-sw-row genz-sw-acct" id="genz-sw-acct-row" style="display:none"><span>Account</span><b id="genz-sw-acct"></b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
@@ -71,6 +73,11 @@
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
     w.querySelector('.genz-sw-sub').textContent = TOOL_NAME; // textContent → no HTML injection
+    if (ACCOUNT_LABEL) {                                     // show which account is in use (safe label)
+      var acctRow = w.querySelector('#genz-sw-acct-row');
+      w.querySelector('#genz-sw-acct').textContent = ACCOUNT_LABEL; // textContent → no HTML injection
+      acctRow.style.display = '';
+    }
     el.min.addEventListener('click', toggleCollapse);
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }

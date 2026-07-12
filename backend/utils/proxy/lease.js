@@ -15,9 +15,20 @@ const tools = require('./tools');
 
 const LEASE_TYPE = 'proxy_lease';
 
+let _warnedFallback = false;
 function leaseSecret() {
   const dedicated = process.env.PROXY_LEASE_SECRET;
   if (dedicated && dedicated.length >= 32) return dedicated;
+  // Fallback: derive an isolated key from JWT_SECRET. This keeps the gateway
+  // working, but it means a JWT_SECRET leak also exposes the lease key. Warn ONCE
+  // at boot so the operator sets a dedicated PROXY_LEASE_SECRET (>=32 chars).
+  // NOTE: we intentionally keep deriving the SAME value rather than failing hard —
+  // changing the secret would invalidate every live lease and drop active tool
+  // sessions. Rotate by setting PROXY_LEASE_SECRET during a maintenance window.
+  if (!_warnedFallback) {
+    _warnedFallback = true;
+    console.warn('[SECURITY] PROXY_LEASE_SECRET is not set (or <32 chars); using a key derived from JWT_SECRET. Set a dedicated PROXY_LEASE_SECRET so a JWT_SECRET leak cannot forge proxy leases.');
+  }
   const base = process.env.JWT_SECRET || '';
   return crypto.createHmac('sha256', base).update('proxytools:lease:v1').digest('hex');
 }

@@ -3,7 +3,7 @@ import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
 import {
   PenTool, Activity, RefreshCw, Loader2, Chrome, CheckCircle2, AlertTriangle,
-  Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff,
+  Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save,
 } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
 import { useToast } from '../../components/Toast';
@@ -49,6 +49,9 @@ const AdminWriteHuman = () => {
   const [firstLoad, setFirstLoad] = useState(true);
   const [conn, setConn] = useState('connecting'); // connecting | live | offline | not_configured
   const [busy, setBusy] = useState('');
+  const [alert, setAlert] = useState(null);       // { emailMasked, emailSet, enabled, source, smtpConfigured }
+  const [alertEmail, setAlertEmail] = useState('');
+  const [savingAlert, setSavingAlert] = useState(false);
   const timer = useRef(null);
   const logTick = useRef(0);
 
@@ -66,6 +69,24 @@ const AdminWriteHuman = () => {
   const loadLogs = useCallback(async () => {
     try { const r = await writeHumanV2Admin.getLogs(120); if (r.data && Array.isArray(r.data.events)) setLogs(r.data.events); } catch (_) {}
   }, []);
+
+  const loadAlert = useCallback(async () => {
+    try { const r = await writeHumanV2Admin.getAlertConfig(); setAlert(r.data); } catch (_) {}
+  }, []);
+  useEffect(() => { loadAlert(); }, [loadAlert]);
+
+  // Save recipient and/or enable-toggle. Empty email clears the dashboard override (env fallback).
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail.trim());
+  const saveAlert = async (payload) => {
+    try {
+      setSavingAlert(true);
+      const r = await writeHumanV2Admin.setAlertConfig(payload);
+      setAlert(r.data);
+      if (payload.email !== undefined) setAlertEmail('');
+      showSuccess('Alert settings saved');
+    } catch (e) { showError(e.response?.data?.error || 'Failed to save alert settings'); }
+    finally { setSavingAlert(false); }
+  };
 
   // Poll: state every 3s (near-real-time), logs every ~9s. Reliable through the double reverse-proxy.
   useEffect(() => {
@@ -187,11 +208,13 @@ const AdminWriteHuman = () => {
             <Panel icon={Cpu} title="Agent diagnostics" tint="text-violet-500">
               {ag ? (<>
                 <Row k="Host">{ag.host || '—'}</Row>
-                <Row k="Agent version">{ag.version || '—'}</Row>
+                <Row k="Agent version">{ag.version || '—'} {state?.agentOutdated ? <Badge tone="warn">update available → {state.expectedAgentVersion}</Badge> : state?.agentOutdated === false ? <Badge tone="ok">latest</Badge> : null}</Row>
                 <Row k="CDP / Chrome">{cdpUp ? <Badge tone="ok">cdp 200</Badge> : <Badge tone="bad">cdp {ag.cdp || '?'}</Badge>} {ag.chrome ? <Badge tone="ok">chrome</Badge> : <Badge tone="warn">no chrome</Badge>}</Row>
                 <Row k="Polls · auth cookies">{(ag.pollCount ?? '—') + ' · ' + (ag.authCookies ?? '—')}</Row>
                 <Row k="Uptime">{dur(ag.uptimeSec)}</Row>
-                <Row k="Last error">{ag.lastError || 'none'}</Row>
+                <Row k="Last error">{ag.lastError
+                  ? <span className="text-amber-700">{ag.lastError}<span className="text-slate-400 font-normal"> · {rel(ag.lastErrorAt)}{ag.errorCount > 1 ? ` · ${ag.errorCount}×` : ''}</span></span>
+                  : <Badge tone="ok">none</Badge>}</Row>
                 <Row k="Last report">{rel(ag.receivedAt)}</Row>
               </>) : <p className="text-sm text-slate-400 py-3">No agent report yet — the Cookie Sync Agent hasn't checked in.</p>}
             </Panel>
@@ -202,6 +225,36 @@ const AdminWriteHuman = () => {
               <Row k="Store">{state?.store || '—'}</Row>
               <Row k="Smart timer">{state?.scheduler?.running ? <Badge tone="ok">running · {state.scheduler.intervalMin}m</Badge> : <Badge tone="warn">off</Badge>}</Row>
               <Row k="Verify exchange">{state?.verifyExchange ? <Badge tone="warn">on</Badge> : <Badge tone="ok">off (read-only)</Badge>}</Row>
+            </Panel>
+
+            <Panel icon={Bell} title="Health alerts" tint="text-rose-500">
+              {alert ? (<>
+                <Row k="Alert email">{alert.emailSet
+                  ? <span className="inline-flex items-center gap-1.5">{alert.emailMasked} {alert.source === 'db' ? <Badge tone="ok">dashboard</Badge> : <Badge tone="mut">server default</Badge>}</span>
+                  : <Badge tone="warn">not set</Badge>}</Row>
+                <Row k="Alerts">{alert.enabled ? <Badge tone="ok">on</Badge> : <Badge tone="mut">off</Badge>}</Row>
+                <Row k="Email delivery">{alert.smtpConfigured ? <Badge tone="ok">SMTP ready</Badge> : <Badge tone="warn">not configured</Badge>}</Row>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input type="email" value={alertEmail} onChange={(e) => setAlertEmail(e.target.value)} autoComplete="off"
+                      placeholder={alert.emailSet ? 'Change alert email…' : 'Enter alert email…'}
+                      className="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-200" />
+                    <button disabled={savingAlert || !emailValid} onClick={() => saveAlert({ email: alertEmail.trim(), enabled: true })}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-rose-500 to-pink-500 disabled:opacity-50"><Save size={15} /> Save</button>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="inline-flex items-center gap-2 text-[13px] text-slate-600 cursor-pointer">
+                      <input type="checkbox" checked={!!alert.enabled} disabled={savingAlert || !alert.emailSet}
+                        onChange={(e) => saveAlert({ enabled: e.target.checked })} className="rounded" /> Enable alert emails
+                    </label>
+                    {alert.emailSet && alert.source === 'db' && (
+                      <button disabled={savingAlert} onClick={() => saveAlert({ email: '' })}
+                        className="text-[12px] text-slate-400 hover:text-slate-600 disabled:opacity-50">Clear override</button>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400">Emails on session down / recovered / agent stale. The full address is stored securely and never shown in full.</p>
+                </div>
+              </>) : <p className="text-sm text-slate-400 py-3">Loading…</p>}
             </Panel>
 
             <Panel icon={Zap} title="Actions" tint="text-cyan-500">

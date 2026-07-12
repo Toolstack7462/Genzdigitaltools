@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import {
   Package, Clock, CheckCircle2, X, ExternalLink,
-  Lock, Chrome, Download, Zap, Shield, User, Star, Search,
+  Lock, Chrome, Download, Zap, Shield, Star, Search,
   AlertTriangle, Sparkles, ArrowRight, RefreshCw, Loader2, AlertCircle, ShieldCheck,
   MessageCircle, PlayCircle
 } from 'lucide-react';
@@ -62,10 +62,10 @@ const ToolCard = memo(({ tool, onOpen, openState }) => {
   };
 
   return (
-    <div className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
+    <div className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 ${
       isExpired
-        ? 'opacity-80 border border-red-200 bg-red-50'
-        : 'gz-card hover:shadow-[0_18px_38px_-18px_rgba(37,99,235,0.45),0_0_0_1px_rgba(6,182,212,0.18)]'
+        ? 'tool-card-expired'
+        : 'gz-card hover:-translate-y-1 hover:shadow-[0_18px_38px_-18px_rgba(37,99,235,0.45),0_0_0_1px_rgba(6,182,212,0.18)]'
     }`}
       style={!isExpired ? { background: 'linear-gradient(167deg,#ffffff 0%,#f6fbfe 100%)' } : undefined}
     >
@@ -81,7 +81,7 @@ const ToolCard = memo(({ tool, onOpen, openState }) => {
 
       {/* Tool header */}
       <div className="flex items-start justify-between mb-2.5">
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-white font-black text-[15px] bg-gradient-to-br ${theme.gradient}`}>
+        <div className={`tool-card-logo w-10 h-10 rounded-lg flex items-center justify-center text-white font-black text-[15px] bg-gradient-to-br ${theme.gradient}`}>
           {tool.name?.charAt(0) || '?'}
         </div>
         <div className="flex flex-wrap gap-1 justify-end">
@@ -488,6 +488,12 @@ const ClientDashboardEnhanced = () => {
   const proxyActiveCount = (proxyTools || []).filter(pt => pt && pt.active).length;
   const stealthActiveCount = (stealth?.hasPlan && (stealth.plan ? (stealth.plan.active !== false && !stealth.plan.expired) : true)) ? 1 : 0;
   const totalActiveTools = activeTools.length + proxyActiveCount + stealthActiveCount;
+  // Total assigned tools across ALL sources the grid renders (regular + proxy +
+  // StealthWriter). Used for the "All Your Tools" count so the badge matches the
+  // cards actually on screen and stays consistent with the active-tools stat
+  // (same data sources). Includes expired items — they still render as cards —
+  // so this is the "all assigned" count, not the "active" count.
+  const totalAssignedTools = tools.length + (proxyTools?.length || 0) + (stealth?.hasPlan ? 1 : 0);
   const featuredTools = useMemo(() => tools.filter(t => t.isFeatured && t.status !== 'expired').slice(0, 4), [tools]);
 
   // Expiring Soon — computed from real assignment data (backend daysUntilExpiry,
@@ -794,7 +800,7 @@ const ClientDashboardEnhanced = () => {
               className="flex-shrink-0 text-[11px] font-semibold text-amber-100 underline-offset-2 hover:underline">
               Renew
             </RenewPlanLink>
-            <button onClick={dismissExpiryWarning} className="text-amber-200/60 hover:text-amber-100 transition-colors">
+            <button onClick={dismissExpiryWarning} aria-label="Dismiss expiry warning" className="text-amber-200/60 hover:text-amber-100 transition-colors">
               <X size={13} />
             </button>
           </div>
@@ -951,24 +957,6 @@ const ClientDashboardEnhanced = () => {
                     : <span className="text-emerald-300">Active</span>}
                 </span>
               </div>
-              <a
-                href="https://genzdigitalstore.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hidden md:inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-white text-[11.5px] font-semibold transition-all hover:-translate-y-0.5 hover:bg-white/[0.12]"
-                style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}
-                title="View Website"
-              >
-                <ExternalLink size={13} /> Website
-              </a>
-              <Link
-                to="/client/profile"
-                className="w-9 h-9 rounded-lg flex items-center justify-center text-white transition-all hover:-translate-y-0.5 hover:bg-white/[0.12]"
-                style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)' }}
-                title="My Profile"
-              >
-                <User size={14} />
-              </Link>
             </div>
           </div>
         </div>
@@ -1206,7 +1194,7 @@ const ClientDashboardEnhanced = () => {
               All Your Tools
               <span className="ml-1 text-[10.5px] font-bold text-genz-cyan px-1.5 py-0.5 rounded"
                     style={{ background: 'rgba(6,182,212,0.12)', border: '1px solid rgba(6,182,212,0.25)' }}>
-                {tools.length}
+                {totalAssignedTools}
               </span>
             </h2>
           </div>
@@ -1233,6 +1221,7 @@ const ClientDashboardEnhanced = () => {
               {categories.slice(0, 8).map(cat => (
                 <button key={cat}
                         onClick={() => setActiveFilter(cat)}
+                        aria-pressed={activeFilter === cat}
                         className={`flex-shrink-0 px-3 py-2 rounded-lg text-[12px] font-semibold transition-all ${
                           activeFilter === cat
                             ? 'text-white shadow-md'

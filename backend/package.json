@@ -7,23 +7,24 @@
     "start": "node server-crm.js",
     "dev": "nodemon server-crm.js",
     "seed:admin": "node scripts/seed-admin.js",
-    "test": "jest",
+    "test": "node --test tests/adapterPopulate.test.js tests/adapterFindPushdown.test.js tests/adapterIndexCount.test.js tests/semver.test.js tests/renewalWindow.test.js",
     "db:seed": "node scripts/seed-admin.js",
     "check": "node --check server-crm.js && node --check db/mysqlAdapter.js && node --check routes/extension/index.js && node --check routes/authEnhanced.js && node --check scripts/seed-admin.js"
   },
+  "comment": "Direct dependency versions are pinned exactly (no ^) so a redeploy cannot silently pull a new Express 5 pre-release or other breaking minor. Bump deliberately, then test. Commit a package-lock.json to pin transitive deps too.",
   "dependencies": {
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.6",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "express-rate-limit": "^7.1.5",
-    "joi": "^17.11.0",
-    "jsonwebtoken": "^9.0.3",
-    "helmet": "^8.0.0",
-    "mysql2": "^3.15.3"
+    "bcryptjs": "3.0.3",
+    "cookie-parser": "1.4.7",
+    "cors": "2.8.6",
+    "dotenv": "17.2.3",
+    "express": "5.2.1",
+    "express-rate-limit": "7.1.5",
+    "joi": "17.11.0",
+    "jsonwebtoken": "9.0.3",
+    "helmet": "8.0.0",
+    "mysql2": "3.15.3"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "3.0.2"
   }
 }

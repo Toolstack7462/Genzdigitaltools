@@ -67,6 +67,21 @@ zip -r ../frontend/public/downloads/genz-digital-store-extension.zip . --exclude
 3. Re-upload `frontend/build/` to hosting.
 4. Clients will need to re-download and re-install the updated extension.
 
+### Stable Extension ID (do not change)
+
+`manifest.json` contains a `"key"` field (a public key). This **pins the Extension ID** to
+`gkjpjbgdhmephkfmkiafimefpgicfhbk` for **every** build, machine, and version — so updates
+**replace** the existing extension (storage, permissions, and synced data are preserved) instead
+of installing as a duplicate with a new ID. Without this `"key"`, an unpacked extension's ID is
+derived from its folder path, so each reinstall/rebuild could become a separate extension.
+
+- **NEVER remove or change the `"key"` field** — doing so changes the Extension ID and orphans
+  every existing install. Keep it identical across all future versions (3.9.6 → 4.0.0 → …).
+- The matching **private key** is `genz-extension-signing-key.pem` at the project root. It is
+  **git-ignored** (never commit it) and is only needed if you later publish a `.crx` / list on
+  the Chrome Web Store. Store a backup in your password manager / secrets vault.
+- Bumping `"version"` each release is enough for Chrome to treat a reinstall as an update.
+
 ### Manifest Version
 
 The current extension uses **Manifest V3**. It requires Chrome 88 or later.

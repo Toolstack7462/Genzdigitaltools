@@ -363,6 +363,40 @@ function htmlLooksLoggedOut(html) {
   if (LO_LOGOUT_RE.test(s)) return false;
   return LO_LOGIN_RE.test(s) && LO_SIGNUP_RE.test(s);
 }
+
+// ── Per-lease browser-storage reset (opt-in; default OFF) ─────────────────────
+// Some tools (WriteHuman, Ryne) are client-side token SPAs that cache the signed-in
+// account's identity — and frequently a bearer token they replay in an Authorization
+// header, which bypasses cookies entirely — in localStorage/sessionStorage on the GATEWAY
+// origin. The gateway controls cookies fully server-side (it drops the browser cookie and
+// injects the vault account's cookies on every upstream request), so the cookie layer
+// already switches accounts correctly. But that browser STORAGE survives an account switch:
+// after an admin updates the vault cookies, the next launch injects the NEW account's
+// cookies, yet the SPA resurrects the OLD account (or replays its old token) from storage →
+// the client opens the old/invalid account. Cookie-session tools (HIX/BypassGPT) read
+// identity from the cookie on each request and cache nothing in storage, so they're immune.
+// When RESET_STORAGE_ON_NEW_LEASE=1 the gateway clears localStorage+sessionStorage exactly
+// ONCE per lease (keyed by the lease jti) on the first HTML navigation. Each cookie update
+// revokes the account's leases, so the next launch mints a FRESH lease (new jti) → storage
+// is wiped → the freshly injected cookies define the account. Within a session (same jti)
+// storage persists so the app works normally. Default OFF → every other tool is byte-for-
+// byte unchanged. Set per tool via this gateway's .env / .htaccess SetEnv.
+const RESET_STORAGE_ON_NEW_LEASE = process.env.RESET_STORAGE_ON_NEW_LEASE === '1' || /^true$/i.test(process.env.RESET_STORAGE_ON_NEW_LEASE || '');
+
+// ── Client-side Supabase session injection (opt-in; default OFF) ──────────────
+// WriteHuman authenticates ENTIRELY client-side with Supabase: the session lives in the
+// `sb-<ref>-auth-token` cookie (sometimes chunked into `.0`/`.1`) that the in-browser
+// Supabase SDK reads from document.cookie to hydrate a logged-in app. Server-rendered
+// cookie-session tools (HIX/BypassGPT) only need the vault cookie attached to the UPSTREAM
+// request — nothing has to reach the browser. But for a client-side-auth SPA that upstream
+// cookie is invisible to the browser, so the SDK finds no session and renders the PUBLIC
+// "Log in / Sign Up" page even when valid cookies sit in the vault. When
+// SUPABASE_BROWSER_SESSION=1 the gateway materialises ONLY the vault's Supabase auth cookies
+// (names starting `sb-`) onto THIS gateway origin so the SDK can hydrate — clearing any
+// previous account's `sb-*` cookies FIRST so a stale session can never win. Default OFF →
+// every other tool is byte-for-byte unchanged. This delivers exactly the same session
+// material the localStorage bootstrap already provides for token SPAs; no identity is exposed.
+const SUPABASE_BROWSER_SESSION = process.env.SUPABASE_BROWSER_SESSION === '1' || /^true$/i.test(process.env.SUPABASE_BROWSER_SESSION || '');
 const IDENTITY_ROUTE_RE = /(^|\/)(session|get-session|user|users|me|account|accounts|profile|customer|subscription|subscriptions|membership)(\/|$|\.)|auth\/(session|get-session)/i;
 const KEY_NAME    = /^(name|fullname|full_name|displayname|display_name|firstname|first_name|lastname|last_name|username|user_name|nickname|handle)$/i;
 const KEY_EMAIL   = /^(email|emailaddress|email_address|e_mail|billingemail|billing_email)$/i;
@@ -656,8 +690,10 @@ function buildCriticalCss() {
 // overlay JS is INLINED (executes during head parse, no extra round-trip) so its
 // MutationObserver is registered before <body> content is inserted. Capture (admin)
 // mode omits the critical CSS so the operator can still reach account pages to log in.
-function injectOverlay(html, capture) {
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS });
+function injectOverlay(html, capture, accountLabel) {
+  // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
+  // backend /session response — never an email/cookie/token. Shown in the widget.
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -675,6 +711,64 @@ function injectSessionBootstrap(html, session) {
   const ls = JSON.stringify(session.localStorage || {});
   const ss = JSON.stringify(session.sessionStorage || {});
   const script = `<script>(function(){try{var L=${ls};for(var k in L)localStorage.setItem(k,L[k]);}catch(e){}try{var S=${ss};for(var k in S)sessionStorage.setItem(k,S[k]);}catch(e){}})();</script>`;
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + script);
+  return script + html;
+}
+// One-time per-lease wipe of localStorage+sessionStorage on the gateway origin (see the
+// RESET_STORAGE_ON_NEW_LEASE note above). Injected LAST so it ends up FIRST in <head> and
+// runs before the session bootstrap (which re-seeds any vault storage) and before the app's
+// own scripts. Marker key holds the current lease jti; storage is cleared only when the
+// marker differs (i.e. a new lease = a fresh launch after a cookie update), so a normal
+// in-session navigation leaves storage intact. No secrets are ever written.
+function injectStorageReset(html, ctx) {
+  if (!RESET_STORAGE_ON_NEW_LEASE) return html;
+  if (!ctx || ctx.capture || ctx.asset) return html;     // never during admin capture / asset proxy
+  const jti = String(ctx.jti || '');
+  if (!jti) return html;
+  const script = '<script>(function(){try{var K="__genz_lease",J=' + JSON.stringify(jti) + ';'
+    + 'if(localStorage.getItem(K)!==J){try{localStorage.clear();}catch(e){}'
+    + 'try{sessionStorage.clear();}catch(e){}try{localStorage.setItem(K,J);}catch(e){}}}catch(e){}})();</script>';
+  const m = html.match(/<head[^>]*>/i);
+  if (m) return html.replace(m[0], m[0] + script);
+  return script + html;
+}
+// Materialise the vault's Supabase auth cookies onto the gateway origin so a client-side-auth
+// SPA (WriteHuman) can hydrate a logged-in session. Opt-in via SUPABASE_BROWSER_SESSION (see
+// the note above) → no-op for every other tool. Runs ONCE per lease, AFTER the per-lease
+// storage reset (so the reset can't wipe its marker): it first EXPIRES any prior account's
+// `sb-*` cookies on this origin, then sets the current vault session cookies, so the latest
+// saved cookies always define the account and a stale session can never resurface. Within a
+// session (same jti) it skips, letting the SDK manage its own refreshed cookies. Only `sb-`
+// auth cookies are emitted — never any other cookie — and no value is ever logged.
+function injectSupabaseBrowserSession(html, session, ctx) {
+  if (!SUPABASE_BROWSER_SESSION) return html;
+  if (!ctx || ctx.capture || ctx.asset) return html;          // never during admin capture / asset proxy
+  if (!session || !session.cookieHeader) return html;
+  const jti = String((ctx && ctx.jti) || '');
+  if (!jti) return html;
+  // Pull ONLY the Supabase auth cookies (sb-…-auth-token and its .0/.1 chunks) out of the
+  // server-side vault cookie header. Value kept verbatim (cookie-safe base64url); never logged.
+  const sb = [];
+  for (const part of String(session.cookieHeader).split(';')) {
+    const s = part.trim(); if (!s) continue;
+    const i = s.indexOf('='); if (i < 0) continue;
+    const name = s.slice(0, i).trim();
+    if (/^sb-/.test(name)) sb.push([name, s.slice(i + 1)]);
+  }
+  if (!sb.length) return html;
+  // Safe diagnostic: the COUNT of Supabase auth cookies materialised for this launch and the
+  // lease id — never a cookie name beyond the count, never a value/token.
+  safeLog('supabase_session_injected', { lease_id: jti, sb_cookie_count: sb.length });
+  const data = JSON.stringify(sb);
+  const script = '<script>(function(){try{var K="__genz_sb",J=' + JSON.stringify(jti) + ';'
+    + 'if(localStorage.getItem(K)===J)return;'                                    // once per lease
+    + 'var C=' + data + ';'
+    + 'try{document.cookie.split(";").forEach(function(c){var n=c.split("=")[0].trim();'
+    + 'if(/^sb-/.test(n)){document.cookie=n+"=; Path=/; Max-Age=0; SameSite=Lax";}});}catch(e){}'  // clear stale
+    + 'for(var i=0;i<C.length;i++){try{document.cookie=C[i][0]+"="+C[i][1]+"; Path=/; SameSite=Lax";}catch(e){}}' // inject new
+    + 'try{localStorage.setItem(K,J);}catch(e){}'
+    + '}catch(e){}})();</script>';
   const m = html.match(/<head[^>]*>/i);
   if (m) return html.replace(m[0], m[0] + script);
   return script + html;
@@ -877,9 +971,19 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             // call ends up FIRST in the document. Order them so the captcha shim and the
             // session bootstrap still run before the app's own scripts, while the overlay
             // (critical hide CSS + widget) is injected before <body> paints (no flash).
-            html = injectOverlay(html, ctx.capture);
+            html = injectOverlay(html, ctx.capture, session && session.accountLabel);
             html = injectSessionBootstrap(html, session);
-            html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
+            // Client-side-auth SPA (WriteHuman): seed the vault's Supabase session cookies into
+            // the browser so the in-browser SDK hydrates a logged-in app. Inserted before the
+            // storage-reset call below so it EXECUTES AFTER the reset (last <head> insert runs
+            // first), letting the reset clear stale localStorage without wiping this injector's
+            // per-lease marker. Opt-in (SUPABASE_BROWSER_SESSION) → no-op for every other tool.
+            html = injectSupabaseBrowserSession(html, session, ctx);
+            html = injectCaptchaShim(html);
+            // Last <head> insert → runs FIRST: wipe stale per-account browser storage for a
+            // fresh lease BEFORE the bootstrap re-seeds vault storage and the app boots, so
+            // an account switch can't be overridden by a previous account's cached token.
+            html = injectStorageReset(html, ctx);
           }
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
@@ -965,6 +1069,9 @@ const server = http.createServer(async (req, res) => {
         hasLeaseSecret: !!LEASE_SECRET,
         hasGatewayKey: !!GATEWAY_KEY,
         assetOrigins: ASSET_ORIGINS.length,
+        // Boolean only (no secret): lets a deploy be verified externally — confirms the
+        // client-side Supabase session injection is live on WriteHuman and OFF on the rest.
+        supabaseBrowserSession: SUPABASE_BROWSER_SESSION,
       },
       missingEnv,
     };

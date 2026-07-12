@@ -56,4 +56,5 @@ for t in "${TOOLS[@]}"; do
   else echo "   ~ ${VHOST} returned HTTP ${CODE} (check .htaccess SetEnv / Passenger)"; fi
 done
 echo "==> Gateway deploy pass complete."
-echo "    Reminder: set DETECT_LOGGED_OUT=1 in the writehuman1 + ryne1 public_html/.htaccess SetEnv block."
+echo "    Reminder: set DETECT_LOGGED_OUT=1 and RESET_STORAGE_ON_NEW_LEASE=1 in the"
+echo "              writehuman1 + ryne1 public_html/.htaccess SetEnv block (SetEnv wins over .env)."

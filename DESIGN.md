@@ -145,6 +145,11 @@ Unified variants (see `.card-premium` utility). Every card shares: `rounded-2xl`
 
 Icon treatment: lucide-react, inside a rounded-xl tile tinted with the category color at ~18% bg / 40% border.
 
+**Tool card states (client dashboard / My Tools):**
+
+- **Active / expiring:** `.gz-card` glass surface with hover-lift (`-translate-y-1`). Expiring adds a small amber/red "Expires in Nd" pill + a pulsing status dot.
+- **Expired (disabled):** use the shared `.tool-card-expired` class — a neutral, desaturated glass panel (no blanket `opacity`, no alarm-red fill), crisp `#e2e8f0` hairline, dark readable text, and a grayscaled logo (`.tool-card-logo`). The "Expired" status stays as a red pill; the CTA becomes an outline **Renew** (regular tools) or a "contact support" note (proxy / StealthWriter). Disabled cards do **not** hover-lift. Prefer this over dimming the whole card. Shared across `ToolCard`, `ProxyToolCard`, and `StealthWriterCard` so the expired look is identical everywhere.
+
 ---
 
 ## 9. Inputs & Forms
@@ -164,6 +169,8 @@ Icon treatment: lucide-react, inside a rounded-xl tile tinted with the category 
 - **Content:** `#000820` base, cards as above. Generous `p-6 lg:p-8`.
 - **Admin** prioritizes density & speed: flatter cards, minimal animation, clear tables, obvious status badges.
 - **Client** can be slightly more expressive (subtle page transitions, stat reveals).
+- **Tool counts:** keep the "Active Tools" stat and the "All Your Tools" badge derived from the same data sources. Active = regular active tools + active proxy tools + active StealthWriter plan (`totalActiveTools`). "All Your Tools" = every assigned card the grid renders, incl. expired (`totalAssignedTools` = `tools` + `proxyTools` + StealthWriter plan). Never count one surface from a subset another surface excludes — that was the source of the "10 vs 7" mismatch.
+- **Top section:** avoid duplicating chrome that already lives in the sidebar/topbar (Website, Support, Profile links). The welcome banner shows greeting + plan status only.
 
 ---
 

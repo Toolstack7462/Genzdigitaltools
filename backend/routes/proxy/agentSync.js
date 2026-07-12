@@ -55,7 +55,8 @@ function sanitizeReport(r) {
     host: s(r.host, 80), version: s(r.version, 40), cdp: s(r.cdp, 12),
     chrome: r.chrome === true || r.chrome === 'true',
     pollCount: i(r.pollCount), authCookies: i(r.authCookies), uptimeSec: i(r.uptimeSec),
-    lastError: s(r.lastError, 200), lastCommand: s(r.lastCommand, 40), lastCommandAt: s(r.lastCommandAt, 40),
+    lastError: s(r.lastError, 200), lastErrorAt: s(r.lastErrorAt, 40), errorCount: i(r.errorCount),
+    lastCommand: s(r.lastCommand, 40), lastCommandAt: s(r.lastCommandAt, 40),
     receivedAt: new Date(),
   };
 }

@@ -1,17 +1,28 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
-import { Chrome, Upload, RefreshCw, Download, CheckCircle2, AlertTriangle, Clock, Bell, BellRing, Loader2 } from 'lucide-react';
+import { Chrome, Upload, RefreshCw, Download, CheckCircle2, AlertTriangle, Clock, Bell, BellRing, Loader2, Search, X, ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 
 // Admin Chrome-extension release management. Shows the latest version (read from
 // the uploaded ZIP's manifest.json — never hardcoded), lets admin upload/replace
 // the ZIP in the EXISTING download folder, set the minimum-required version /
-// update_required policy, and see each client's installed version + last sync.
+// update_required policy, and browse each client's installed version + last sync
+// with SERVER-SIDE pagination, status filtering, name/email search, and sorting.
+const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const STATUS_TABS = [
+  { key: 'all', label: 'All' },
+  { key: 'updated', label: 'Updated' },
+  { key: 'outdated', label: 'Outdated' },
+  { key: 'unknown', label: 'Never synced' },
+];
+
 export default function AdminExtension() {
   const { showSuccess, showError } = useToast();
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true);       // first page-level load
+  const [listLoading, setListLoading] = useState(false); // subsequent list refreshes
+  const [listError, setListError] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [minVersion, setMinVersion] = useState('');
   const [updateRequired, setUpdateRequired] = useState(false);
@@ -19,19 +30,52 @@ export default function AdminExtension() {
   const [notifyAllBusy, setNotifyAllBusy] = useState(false);
   const fileRef = useRef(null);
 
+  // ── List controls (server-side) ────────────────────────────────────────────
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [status, setStatus] = useState('all');
+  const [sortBy, setSortBy] = useState('lastSync');
+  const [sortOrder, setSortOrder] = useState('desc');
+  const [searchInput, setSearchInput] = useState(''); // raw field value
+  const [search, setSearch] = useState('');           // debounced, sent to the API
+
+  const policyInitRef = useRef(false); // seed policy inputs only on first load (don't clobber edits)
+  const reqRef = useRef(0);            // stale-response guard (ignore out-of-order responses)
+
+  // Debounce the search field — never fire an API request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(1); // reset to first page when the search term changes
+    }, 350);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
   const load = useCallback(async () => {
+    const seq = ++reqRef.current;
+    setListLoading(true);
+    setListError(false);
     try {
-      setLoading(true);
-      const { data: d } = await api.get('/admin/extension/release');
+      const { data: d } = await api.get('/admin/extension/release', {
+        params: { page, limit: pageSize, status, search, sortBy, sortOrder },
+      });
+      if (seq !== reqRef.current) return; // a newer request already resolved — drop this one
       setData(d);
-      setMinVersion(d?.minimumRequiredVersion || '');
-      setUpdateRequired(!!d?.updateRequired);
+      // Seed the policy inputs ONCE so pagination/search refreshes never overwrite in-progress edits.
+      if (!policyInitRef.current) {
+        setMinVersion(d?.minimumRequiredVersion || '');
+        setUpdateRequired(!!d?.updateRequired);
+        policyInitRef.current = true;
+      }
     } catch (err) {
-      showError('Failed to load extension release info');
+      if (seq !== reqRef.current) return;
+      setListError(true);
+      if (!data) showError('Failed to load extension release info');
     } finally {
-      setLoading(false);
+      if (seq === reqRef.current) { setListLoading(false); setLoading(false); }
     }
-  }, [showError]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, status, search, sortBy, sortOrder, showError]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -85,6 +129,8 @@ export default function AdminExtension() {
   const notifyClients = async (ids) => {
     const clientIds = (ids || []).filter(Boolean);
     if (clientIds.length === 0) return;
+    // Guard against double-click: skip any id already in flight.
+    if (clientIds.every(id => notifyBusy.has(id))) return;
     setNotifyBusy(prev => { const s = new Set(prev); clientIds.forEach(id => s.add(id)); return s; });
     try {
       const { data: r } = await api.post('/admin/extension/notify', { clientIds });
@@ -98,11 +144,25 @@ export default function AdminExtension() {
     }
   };
 
-  // Notify every outdated client in one shot (server filters + debounces).
+  // Notify EVERY outdated client matching the active search (server filters + debounces) —
+  // not just the clients on the current page. The scope is confirmed with the server-
+  // calculated outdated count before anything is sent.
   const notifyAll = async () => {
+    if (notifyAllBusy) return; // double-submit guard
+    const n = data?.counts?.outdated || 0;
+    if (n === 0) return;
+    const scope = search
+      ? `matching “${search}”`
+      : 'across all pages';
+    const ok = window.confirm(
+      `Notify all ${n} outdated client${n > 1 ? 's' : ''} ${scope}?\n\n` +
+      `This applies to ALL matching outdated clients, not just the ${data?.clients?.length || 0} shown on this page. ` +
+      `Clients already up to date, never synced, or notified in the last 10 minutes are skipped automatically.`
+    );
+    if (!ok) return;
     setNotifyAllBusy(true);
     try {
-      const { data: r } = await api.post('/admin/extension/notify', { all: true });
+      const { data: r } = await api.post('/admin/extension/notify', { all: true, search });
       if (r.notified) showSuccess(summarize(r));
       else showError(summarize(r));
       await load();
@@ -113,9 +173,48 @@ export default function AdminExtension() {
     }
   };
 
+  // ── Sort header helper ──────────────────────────────────────────────────────
+  const DEFAULT_ORDER = { name: 'asc', installedVersion: 'desc', status: 'asc', lastSync: 'desc' };
+  const toggleSort = (field) => {
+    if (sortBy === field) setSortOrder(o => (o === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(field); setSortOrder(DEFAULT_ORDER[field] || 'asc'); }
+    setPage(1);
+  };
+  const SortHead = ({ field, children, className = '' }) => (
+    <th className={`py-2 pr-3 ${className}`}>
+      <button type="button" onClick={() => toggleSort(field)}
+        className="inline-flex items-center gap-1 font-semibold text-genz-muted hover:text-genz-blue">
+        {children}
+        {sortBy === field
+          ? (sortOrder === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)
+          : <ChevronUp size={12} className="opacity-20" />}
+      </button>
+    </th>
+  );
+
   const latest = data?.latestVersion || null;
   const clients = data?.clients || [];
-  const outdatedCount = clients.filter(c => c.isOutdated).length;
+  const counts = data?.counts || { all: 0, updated: 0, outdated: 0, unknown: 0 };
+  const pg = data?.pagination || { currentPage: 1, pageSize, totalRecords: 0, totalPages: 1 };
+  const outdatedCount = counts.outdated || 0;
+
+  const rangeStart = pg.totalRecords === 0 ? 0 : (pg.currentPage - 1) * pg.pageSize + 1;
+  const rangeEnd = Math.min(pg.currentPage * pg.pageSize, pg.totalRecords);
+
+  // Compact windowed page numbers (max 5 around the current page).
+  const pageNumbers = (() => {
+    const total = pg.totalPages || 1;
+    const cur = pg.currentPage || 1;
+    const win = 2;
+    let lo = Math.max(1, cur - win);
+    let hi = Math.min(total, cur + win);
+    while (hi - lo < 4 && (lo > 1 || hi < total)) {
+      if (lo > 1) lo--; else if (hi < total) hi++; else break;
+    }
+    const out = [];
+    for (let p = lo; p <= hi; p++) out.push(p);
+    return out;
+  })();
 
   return (
     <AdminLayoutEnhanced>
@@ -193,29 +292,72 @@ export default function AdminExtension() {
             {/* Per-client installed versions */}
             <div className="ds-card p-4">
               <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-                <h3 className="text-[14px] font-bold text-genz-navy">Client installed versions ({clients.length})</h3>
+                <h3 className="text-[14px] font-bold text-genz-navy inline-flex items-center gap-2">
+                  Client installed versions ({counts.all})
+                  {listLoading && <Loader2 size={13} className="animate-spin text-genz-muted" />}
+                </h3>
                 <button
                   onClick={notifyAll}
                   disabled={notifyAllBusy || outdatedCount === 0}
-                  title={outdatedCount === 0 ? 'No outdated clients' : `Notify ${outdatedCount} outdated client${outdatedCount > 1 ? 's' : ''}`}
+                  title={outdatedCount === 0 ? 'No outdated clients in the current view' : `Notify ${outdatedCount} outdated client${outdatedCount > 1 ? 's' : ''}`}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[12.5px] font-semibold text-white disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ background: 'linear-gradient(135deg,#2563EB,#06B6D4)' }}>
                   {notifyAllBusy ? <Loader2 size={14} className="animate-spin" /> : <BellRing size={14} />}
                   Notify all outdated{outdatedCount > 0 ? ` (${outdatedCount})` : ''}
                 </button>
               </div>
-              {clients.length === 0 ? (
-                <div className="text-[13px] text-genz-muted">No client has synced the extension yet.</div>
+
+              {/* Controls: filters + search */}
+              <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                <div className="flex items-center gap-1 flex-wrap">
+                  {STATUS_TABS.map(t => {
+                    const c = t.key === 'all' ? counts.all : (t.key === 'updated' ? counts.updated : (t.key === 'outdated' ? counts.outdated : counts.unknown));
+                    const active = status === t.key;
+                    return (
+                      <button key={t.key} type="button"
+                        onClick={() => { setStatus(t.key); setPage(1); }}
+                        className={`px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border ${active ? 'bg-genz-blue/10 border-genz-blue/40 text-genz-blue' : 'border-genz-border text-genz-muted hover:border-genz-blue/40'}`}>
+                        {t.label} <span className="opacity-70">({c})</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="relative">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-genz-muted" />
+                  <input
+                    value={searchInput}
+                    onChange={e => setSearchInput(e.target.value)}
+                    placeholder="Search name or email…"
+                    maxLength={100}
+                    className="w-56 max-w-full pl-8 pr-7 py-2 rounded-lg border border-genz-border text-[12.5px]" />
+                  {searchInput && (
+                    <button type="button" onClick={() => setSearchInput('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-genz-muted hover:text-genz-navy" aria-label="Clear search">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Table / states */}
+              {listError ? (
+                <div className="text-[13px] text-red-600 py-6 text-center">
+                  Could not load clients. <button onClick={load} className="underline font-semibold">Retry</button>
+                </div>
+              ) : counts.all === 0 && !search ? (
+                <div className="text-[13px] text-genz-muted py-6 text-center">No client has synced the extension yet.</div>
+              ) : clients.length === 0 ? (
+                <div className="text-[13px] text-genz-muted py-6 text-center">No clients match the current filters.</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-[12.5px]">
                     <thead>
                       <tr className="text-left text-genz-muted border-b border-genz-border">
-                        <th className="py-2 pr-3">Client</th>
-                        <th className="py-2 pr-3">Installed</th>
+                        <SortHead field="name">Client</SortHead>
+                        <SortHead field="installedVersion">Installed</SortHead>
                         <th className="py-2 pr-3">Latest</th>
-                        <th className="py-2 pr-3">Status</th>
-                        <th className="py-2 pr-3">Last sync</th>
+                        <SortHead field="status">Status</SortHead>
+                        <SortHead field="lastSync">Last sync</SortHead>
                         <th className="py-2 pr-3">Update notice</th>
                       </tr>
                     </thead>
@@ -233,8 +375,10 @@ export default function AdminExtension() {
                               <span className="inline-flex items-center gap-1 text-red-600 font-semibold"><AlertTriangle size={12} /> Update required</span>
                             ) : c.isOutdated ? (
                               <span className="inline-flex items-center gap-1 text-amber-600 font-semibold"><AlertTriangle size={12} /> Outdated</span>
-                            ) : (
+                            ) : c.installedVersion ? (
                               <span className="inline-flex items-center gap-1 text-green-600 font-semibold"><CheckCircle2 size={12} /> Up to date</span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-genz-muted font-semibold"><Clock size={12} /> Unknown</span>
                             )}
                           </td>
                           <td className="py-2 pr-3 text-genz-muted">{c.lastSyncAt ? new Date(c.lastSyncAt).toLocaleString() : '—'}</td>
@@ -264,6 +408,44 @@ export default function AdminExtension() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {/* Pagination footer */}
+              {counts.all > 0 && !listError && (
+                <div className="flex items-center justify-between gap-3 mt-3 flex-wrap">
+                  <div className="text-[12px] text-genz-muted">
+                    {pg.totalRecords === 0
+                      ? 'No matching clients'
+                      : `Showing ${rangeStart}–${rangeEnd} of ${pg.totalRecords} client${pg.totalRecords > 1 ? 's' : ''}`}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label className="text-[12px] text-genz-muted inline-flex items-center gap-1.5">
+                      Rows
+                      <select value={pageSize} onChange={e => { setPageSize(Number(e.target.value)); setPage(1); }}
+                        className="px-2 py-1.5 rounded-lg border border-genz-border text-[12px]">
+                        {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </label>
+                    <div className="inline-flex items-center gap-1">
+                      <button type="button" onClick={() => setPage(p => Math.max(1, p - 1))}
+                        disabled={pg.currentPage <= 1 || listLoading}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border border-genz-border text-genz-muted hover:text-genz-blue hover:border-genz-blue/40 disabled:opacity-40 disabled:cursor-not-allowed">
+                        <ChevronLeft size={13} /> Prev
+                      </button>
+                      {pageNumbers.map(p => (
+                        <button key={p} type="button" onClick={() => setPage(p)} disabled={listLoading}
+                          className={`min-w-[30px] px-2 py-1.5 rounded-lg text-[12px] font-semibold border ${p === pg.currentPage ? 'bg-genz-blue/10 border-genz-blue/40 text-genz-blue' : 'border-genz-border text-genz-muted hover:border-genz-blue/40'}`}>
+                          {p}
+                        </button>
+                      ))}
+                      <button type="button" onClick={() => setPage(p => Math.min(pg.totalPages, p + 1))}
+                        disabled={pg.currentPage >= pg.totalPages || listLoading}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border border-genz-border text-genz-muted hover:text-genz-blue hover:border-genz-blue/40 disabled:opacity-40 disabled:cursor-not-allowed">
+                        Next <ChevronRight size={13} />
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

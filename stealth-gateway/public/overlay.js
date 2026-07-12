@@ -33,6 +33,7 @@
   'use strict';
   var CFG = window.__GENZ_GATEWAY__ || {};
   var API = (CFG.api || '').replace(/\/$/, '');
+  var ACCOUNT_LABEL = CFG.accountLabel || '';   // safe operator label (no secrets); '' = hide row
   var SUPPORT_URL = CFG.support || 'https://app.genzdigitalstore.com/client/dashboard';
   if (!API) return;
 
@@ -77,6 +78,7 @@
         '<button class="genz-sw-min" title="Minimize" aria-label="Minimize">–</button>' +
       '</div>' +
       '<div class="genz-sw-body">' +
+        '<div class="genz-sw-row genz-sw-acct" id="genz-sw-acct-row" style="display:none"><span>Account</span><b id="genz-sw-acct"></b></div>' +
         '<div class="genz-sw-row"><span>Humanizer</span><b><i id="genz-h-rem">–</i> / <i id="genz-h-total">–</i></b></div>' +
         '<div class="genz-sw-row"><span>AI Detector</span><b><i id="genz-d-rem">–</i> / <i id="genz-d-total">–</i></b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
@@ -88,6 +90,11 @@
     el.hTotal = w.querySelector('#genz-h-total'); el.hRem = w.querySelector('#genz-h-rem');
     el.dTotal = w.querySelector('#genz-d-total'); el.dRem = w.querySelector('#genz-d-rem');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
+    if (ACCOUNT_LABEL) {                                     // show which account is in use (safe label)
+      var acctRow = w.querySelector('#genz-sw-acct-row');
+      w.querySelector('#genz-sw-acct').textContent = ACCOUNT_LABEL; // textContent → no HTML injection
+      acctRow.style.display = '';
+    }
     el.min.addEventListener('click', toggleCollapse);
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }

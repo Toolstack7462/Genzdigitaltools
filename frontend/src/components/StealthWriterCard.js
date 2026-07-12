@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, ExternalLink, Lock, AlertTriangle, Gauge, ScanSearch } from 'lucide-react';
+import { Sparkles, ExternalLink, Lock, AlertTriangle, Gauge, ScanSearch, User } from 'lucide-react';
 
 /**
  * StealthWriter shown as a normal assigned-tool card on the Dashboard / My Tools.
@@ -36,17 +36,17 @@ const StealthWriterCard = ({ stealth }) => {
 
   return (
     <div
-      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 hover:-translate-y-1 ${
+      className={`relative group rounded-xl p-4 flex flex-col transition-all duration-300 ${
         expired
-          ? 'opacity-80 border border-red-200 bg-red-50'
-          : 'gz-card hover:shadow-[0_18px_38px_-18px_rgba(124,58,237,0.45),0_0_0_1px_rgba(217,70,239,0.18)]'
+          ? 'tool-card-expired'
+          : 'gz-card hover:-translate-y-1 hover:shadow-[0_18px_38px_-18px_rgba(124,58,237,0.45),0_0_0_1px_rgba(217,70,239,0.18)]'
       }`}
       style={!expired ? { background: 'linear-gradient(167deg,#ffffff 0%,#f7f5ff 100%)' } : undefined}
       data-testid="stealthwriter-card"
     >
       {/* header */}
       <div className="flex items-start justify-between mb-2.5">
-        <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br from-violet-500 to-fuchsia-500">
+        <div className="tool-card-logo w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br from-violet-500 to-fuchsia-500">
           <Sparkles size={18} />
         </div>
         <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold ${statusColor}`}>
@@ -60,10 +60,17 @@ const StealthWriterCard = ({ stealth }) => {
       </h3>
       <p className="text-[12px] font-semibold mb-2 text-fuchsia-600">{plan.planName || 'AI Humanizer & Detector'}</p>
 
-      {/* expiry */}
-      <p className="text-[12px] text-genz-muted mb-2.5 flex items-center gap-1.5">
-        <Lock size={12} /> Expiry: <span className="text-genz-navy font-semibold">{fmtDate(plan.expiryDate)}</span>
-      </p>
+      {/* expiry + which backend account is in use (safe label only — no secrets) */}
+      <div className="flex items-center flex-wrap gap-x-1.5 gap-y-1 mb-2.5 text-[12px] text-genz-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <Lock size={12} /> Expiry: <span className="text-genz-navy font-semibold">{fmtDate(plan.expiryDate)}</span>
+        </span>
+        {stealth.accountLabel && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-genz-soft font-semibold text-fuchsia-600">
+            <User size={11} /> Using {stealth.accountLabel}
+          </span>
+        )}
+      </div>
 
       {/* limits */}
       <div className="space-y-1.5 mb-3 p-2.5 bg-genz-bg rounded-lg border border-genz-border">

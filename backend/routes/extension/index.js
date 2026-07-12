@@ -61,7 +61,7 @@ async function computeExtensionUpdate(installedVersion, rel) {
 const { decryptCookies }    = require('../../utils/encryption');
 const SecurityAlert         = require('../../models/SecurityAlert');
 const ExtensionScan         = require('../../models/ExtensionScan');
-const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, checkNewDevice, checkRepeatedAuthFailures } = require('../../middleware/riskEngine');
+const { processExtensionScanReport, checkAccessFrequency, checkExpiredAccess, checkNewDevice, checkRepeatedAuthFailures, resolveExtensionAlertsIfCompliant } = require('../../middleware/riskEngine');
 const bcrypt = require('bcryptjs');
 const { authLimiter } = require('../../middleware/rateLimiter');
 
@@ -1560,8 +1560,12 @@ router.post('/security-scan', verifyExtensionToken, async (req, res) => {
       extensionVersion,
       deviceIdHash:     deviceIdHash || req.headers['x-device-id-hash'] || null,
     };
-    if (sanitizedRisky.length) {
+    if (counts.high > 0) {
+      // High-risk extensions present → raise/refresh the alert (dedup folds repeats).
       await processExtensionScanReport(req.clientId, sanitizedRisky, context);
+    } else {
+      // Compliant (no high-risk extensions) → auto-resolve any open extension warning.
+      await resolveExtensionAlertsIfCompliant(req.clientId);
     }
 
     await ActivityLog.log('CLIENT', req.clientId, 'EXTENSION_SCAN_SUBMITTED', {

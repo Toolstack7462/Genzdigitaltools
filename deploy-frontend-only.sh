@@ -28,9 +28,12 @@ if [[ ! -f "${BUILD_DIR}/index.html" ]]; then
   exit 1
 fi
 
-# Sanity: the fix must actually be in this build before we publish it.
-if ! grep -rqs "STORAGE_BLOCKED" "${BUILD_DIR}/static/js"; then
-  echo "ERROR: STORAGE_BLOCKED not found in build — this build predates the fix. Rebuild first." >&2
+# Sanity: the latest fix must actually be in this build before we publish it.
+# Sentinel = the centralized safe error message (SAFE_GENERIC_MESSAGE), which is only
+# present once the error-sanitizer fix is compiled in. (Superseded the older
+# "STORAGE_BLOCKED" sentinel, whose bracketed code the sanitizer removed.)
+if ! grep -rqs "unable to complete your request" "${BUILD_DIR}/static/js"; then
+  echo "ERROR: safe-error-message sentinel not found in build — this build predates the sanitizer fix. Rebuild first." >&2
   exit 1
 fi
 
@@ -58,5 +61,17 @@ curl --silent --show-error --fail-with-body --ftp-create-dirs \
 rm -f "${FRONT_CFG}"
 
 LOCAL_MAIN="$(grep -o 'main\.[a-z0-9]*\.js' "${BUILD_DIR}/index.html" | head -1)"
-echo "==> DONE. Frontend published to both roots (backend untouched, no restart)."
-echo "    Verify: curl -s https://app.genzdigitalstore.com/ | grep -o 'main\\.[a-z0-9]*\\.js'  (expect ${LOCAL_MAIN})"
+# ENFORCED post-deploy check: a big -K multi-transfer can silently drop files, so confirm BOTH live
+# roots actually serve this build's main bundle before declaring success (fail loudly otherwise).
+echo "==> Verifying both roots serve ${LOCAL_MAIN}"
+verify_fail=0
+for vhost in genzdigitalstore.com app.genzdigitalstore.com; do
+  live="$(curl -s -L -m 20 "https://${vhost}/" | grep -o 'main\.[a-z0-9]*\.js' | head -1)"
+  if [[ "${live}" == "${LOCAL_MAIN}" ]]; then echo "  ✓ ${vhost} -> ${live}"; else echo "  ✗ ${vhost} -> ${live:-<none>} (expected ${LOCAL_MAIN})"; verify_fail=1; fi
+done
+if [[ "${verify_fail}" == 0 ]]; then
+  echo "==> DONE + VERIFIED. Frontend published to both roots (backend untouched, no restart)."
+else
+  echo "FATAL: a live root is not serving ${LOCAL_MAIN} — the upload may be incomplete. Re-run the deploy." >&2
+  exit 1
+fi

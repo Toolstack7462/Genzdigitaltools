@@ -8,7 +8,7 @@ import {
 import { useToast } from '../../components/Toast';
 import BrandLogo from '../../components/BrandLogo';
 import api from '../../services/api';
-import { classifyTransport, authDiag, newRequestId } from '../../services/authDiagnostics';
+import { sanitizeError, diagnosticsVisible, authDiag, newRequestId } from '../../services/authDiagnostics';
 
 const CONSOLE = [
   { icon: Package,  label: 'Tools',    color: '#06B6D4' },
@@ -42,20 +42,12 @@ const AdminLogin = () => {
 
       window.location.href = '/admin/dashboard';
     } catch (error) {
-      // Secret-free diagnostic + transport classification (mirrors the client flow) so a
-      // connection / timeout / blocked-host failure is identifiable instead of generic.
+      // Secret-free diagnostic to the console for the operator; the user-facing text comes
+      // from the ONE central sanitizer, so a connection / timeout / blocked-host / 5xx
+      // failure never leaks the API host, an internal [CODE], or the raw server body.
       console.error('[admin-login] failed:', authDiag(error, { rid }));
-      const transport = classifyTransport(error);
-      if (transport) {
-        showError(transport.message);
-      } else {
-        showError(
-          (error.response?.data?.error ||
-           error.response?.data?.message ||
-           'Login failed. Please check your email and password.') +
-          (error.response?.status >= 500 ? ' [SERVER_ERROR]' : '')
-        );
-      }
+      const safe = sanitizeError(error, { rid });
+      showError(diagnosticsVisible() ? safe.devMessage : safe.userMessage);
     } finally {
       setLoading(false);
     }

@@ -656,8 +656,10 @@ function buildCriticalCss() {
 // overlay JS is INLINED (executes during head parse, no extra round-trip) so its
 // MutationObserver is registered before <body> content is inserted. Capture (admin)
 // mode omits the critical CSS so the operator can still reach account pages to log in.
-function injectOverlay(html, capture) {
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS });
+function injectOverlay(html, capture, accountLabel) {
+  // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
+  // backend /session response — never an email/cookie/token. Shown in the widget.
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -877,7 +879,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             // call ends up FIRST in the document. Order them so the captcha shim and the
             // session bootstrap still run before the app's own scripts, while the overlay
             // (critical hide CSS + widget) is injected before <body> paints (no flash).
-            html = injectOverlay(html, ctx.capture);
+            html = injectOverlay(html, ctx.capture, session && session.accountLabel);
             html = injectSessionBootstrap(html, session);
             html = injectCaptchaShim(html); // last <head> insert → runs FIRST, before app scripts
           }

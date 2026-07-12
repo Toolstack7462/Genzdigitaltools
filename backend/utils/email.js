@@ -220,7 +220,8 @@ function esc(s) {
 /**
  * Renewal reminder — admin-triggered (manual, never automatic) email listing the
  * client's tools that are expiring soon or already expired, with a renew/contact
- * CTA. Reuses the branded shell. `tools` = [{ name, endDate, daysLeft, expired }].
+ * CTA. Reuses the branded shell. `tools` = [{ toolName, endDate, daysLeft, expired }]
+ * (the shape the renewals engine produces; legacy `name` is still accepted).
  * `renewUrl` defaults to the support WhatsApp. Safe content only — no secrets.
  */
 // Optional admin-controlled retention offer line (NEVER auto-applied — the admin
@@ -244,7 +245,7 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, 
       : (t.daysLeft === 0 ? 'Expires today' : `${t.daysLeft} day${t.daysLeft === 1 ? '' : 's'} left`);
     const color = t.expired ? '#dc2626' : (typeof t.daysLeft === 'number' && t.daysLeft <= 3 ? '#d97706' : '#0891b2');
     return `<tr>
-      <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${INK};font-size:14px;font-weight:600">${esc(t.name || 'Tool')}</td>
+      <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${INK};font-size:14px;font-weight:600">${esc(t.toolName || t.name || 'Tool')}</td>
       <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${SLATE};font-size:13px">${when}</td>
       <td style="padding:10px 14px;border-bottom:1px solid #eef2f7;color:${color};font-size:13px;font-weight:700;text-align:right;white-space:nowrap">${label}</td>
     </tr>`;
@@ -264,7 +265,7 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, 
     ${offerLine ? `<p style="margin:0 0 22px;color:${INK};font-size:14px;line-height:22px;background:#f1f6fb;border:1px solid #e3ebf3;border-radius:12px;padding:14px 16px">${offerLine}</p>` : ''}
     <div style="text-align:center;margin:0 0 8px">${button(cta, 'Renew / Contact Us')}</div>
   `;
-  const textLines = (tools || []).map(t => `- ${t.name || 'Tool'}: ${t.expired ? 'Expired' : (t.daysLeft === 0 ? 'expires today' : `${t.daysLeft} days left`)}${t.endDate ? ` (${new Date(t.endDate).toLocaleDateString('en-US')})` : ''}`);
+  const textLines = (tools || []).map(t => `- ${t.toolName || t.name || 'Tool'}: ${t.expired ? 'Expired' : (t.daysLeft === 0 ? 'expires today' : `${t.daysLeft} days left`)}${t.endDate ? ` (${new Date(t.endDate).toLocaleDateString('en-US')})` : ''}`);
   const offerText = offer === 'discount10' ? '\nOffer: a limited 10% renewal discount valid for the next 48 hours.'
     : offer === 'bonus2' ? '\nOffer: renew now and we will add 2 bonus days of access.' : '';
   const text = `Hi ${clientName || 'there'}, a renewal reminder from ${BRAND}:\n${textLines.join('\n')}${offerText}\nRenew / contact us: ${cta}`;

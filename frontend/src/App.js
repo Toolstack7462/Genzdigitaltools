@@ -67,6 +67,7 @@ import { RefreshProvider } from './contexts/RefreshContext';
 import AdminRoute from './components/AdminRoute';
 import ClientRoute from './components/ClientRoute';
 import ErrorBoundary from './components/ErrorBoundary';
+import RouteSeo from './components/RouteSeo';
 import PageLoader from './components/PageLoader';
 
 // Public Pages (existing) — code-split
@@ -117,6 +118,7 @@ const AdminSecurityAlerts = lazy(() => import('./pages/admin/AdminSecurityAlerts
 const AdminStealthWriter = lazy(() => import('./pages/admin/AdminStealthWriter'));
 const AdminProxyTools = lazy(() => import('./pages/admin/AdminProxyTools'));
 const AdminWriteHuman = lazy(() => import('./pages/admin/AdminWriteHuman'));
+const AdminClaude = lazy(() => import('./pages/admin/AdminClaude'));
 const AdminExtension = lazy(() => import('./pages/admin/AdminExtension'));
 
 // Client Pages — code-split
@@ -148,6 +150,7 @@ function App() {
       <div className="App min-h-screen" style={{ background: 'var(--brand-soft)' }}>
         <BrowserRouter>
           <ScrollToTop />
+          <RouteSeo />
           <Suspense fallback={<PageLoader />}>
           <Routes>
 
@@ -208,6 +211,7 @@ function App() {
             <Route path="/admin/stealthwriter" element={<ErrorBoundary><AdminRoute><AdminStealthWriter /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/proxy-tools" element={<ErrorBoundary><AdminRoute><AdminProxyTools /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/writehuman" element={<ErrorBoundary><AdminRoute><AdminWriteHuman /></AdminRoute></ErrorBoundary>} />
+            <Route path="/admin/claude" element={<ErrorBoundary><AdminRoute><AdminClaude /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/extension" element={<ErrorBoundary><AdminRoute><AdminExtension /></AdminRoute></ErrorBoundary>} />
 
             {/* ── Client Routes (untouched) ────────────────────── */}

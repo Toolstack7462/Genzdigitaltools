@@ -59,3 +59,29 @@
 @layer utilities {
   .text-balance { text-wrap: balance; }
 }
+
+@layer base {
+  /* Accessible keyboard focus, app-wide. A visible ring for keyboard / assistive-tech users
+     (:focus-visible), and no outline on mouse click. `:where(...)` keeps specificity at 0 so any
+     component's own focus styles still win — this is only a safe baseline, it overrides nothing. */
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    /* No border-radius here — modern browsers already draw the outline following the element's own
+       radius, and setting it would change the element's shape on focus. */
+  }
+  :where(a, button, input, select, textarea, summary, [tabindex]):focus:not(:focus-visible) {
+    outline: none;
+  }
+}
+
+/* Respect users who request reduced motion — neutralize long CSS animations/transitions globally.
+   (JS/Framer animations already honor useReducedMotion; this covers CSS-driven motion.) */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

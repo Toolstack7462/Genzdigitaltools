@@ -34,9 +34,20 @@ function isOlder(installed, latest) {
   return compareVersions(installed, latest) < 0;
 }
 
+/**
+ * The greater of two version strings, null-safe. On equal versions `a` wins (so callers can pass
+ * their preferred source first). Used to resolve the effective "published" version from the newer
+ * of the on-disk ZIP and the DB release row.
+ */
+function maxVersion(a, b) {
+  if (!a) return b || null;
+  if (!b) return a || null;
+  return compareVersions(a, b) >= 0 ? a : b;
+}
+
 /** A plausible "x.y.z" version string? Used to validate manifest input. */
 function isValidVersion(v) {
   return /^\d+(\.\d+){0,3}([-+][0-9A-Za-z.\-]+)?$/.test(String(v || '').trim().replace(/^v/i, ''));
 }
 
-module.exports = { compareVersions, isOlder, isValidVersion, parse };
+module.exports = { compareVersions, isOlder, isValidVersion, maxVersion, parse };

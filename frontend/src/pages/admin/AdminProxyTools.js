@@ -183,7 +183,13 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
       } else if (d.warning === 'no_session_cookie' || d.verifyResult === 'session_expired') {
         showError('Saved, but these cookies do not log in (no valid session). Re-export the new account including its httpOnly session cookie, or use "Capture session".');
       } else if (d.verifyResult === 'working') {
-        showSuccess(`Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
+        showSuccess(tool === 'claude'
+          ? 'Claude account session updated and verified successfully.'
+          : `Cookies updated — verified as ${d.maskedIdentifier || 'the account'}.`);
+      } else if (tool === 'claude' && d.verifyResult === 'unknown') {
+        // Claude sits behind Cloudflare, so a server-side verify can be inconclusive even when the
+        // cookies are valid. The new bundle IS saved — surface it honestly, don't imply failure.
+        showSuccess('Claude cookies updated. Verification is pending (Cloudflare) — open Claude to confirm the session.');
       } else {
         showSuccess('Cookies updated.');
       }
@@ -235,10 +241,10 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
         )}
 
         {/* Tool tabs (each tool is fully independent) — hidden when locked to one tool.
-            WriteHuman is excluded here: it has its own dedicated sidebar section. */}
+            WriteHuman and Claude are excluded here: each has its own dedicated sidebar section. */}
         {!fixedTool && (
         <div className="flex items-center gap-2">
-          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).filter(t => t.tool !== 'writehuman').map(t => (
+          {(toolDefs.length ? toolDefs : [{ tool: 'hix', name: 'HIX AI' }, { tool: 'bypassgpt', name: 'BypassGPT' }, { tool: 'grok', name: 'Grok' }]).filter(t => t.tool !== 'writehuman' && t.tool !== 'claude').map(t => (
             <button key={t.tool} onClick={() => setTool(t.tool)}
               className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors ${tool === t.tool ? 'btn-grad' : 'bg-genz-bg text-genz-muted border border-genz-border hover:border-genz-teal/50'}`}>
               {t.name}

@@ -434,7 +434,7 @@ process.on('uncaughtException', (err) => {
   setTimeout(() => process.exit(1), 5000);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n${'='.repeat(60)}`);
   console.log('🚀 Gen Z Digital Store CRM API Server');
   console.log(`${'='.repeat(60)}`);
@@ -444,10 +444,32 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`${'='.repeat(60)}\n`);
 });
 
-process.on('SIGINT', async () => {
-  console.log('\n⚠️  Shutting down gracefully...');
-  await mysqlAdapter.close();
-  process.exit(0);
-});
+// Graceful shutdown: stop accepting new connections, let in-flight requests
+// finish, THEN close the DB pool. Handles SIGTERM (what Passenger/most process
+// managers send on redeploy) as well as SIGINT (Ctrl-C). A short safety timer
+// forces exit if a request hangs, so a stuck socket can't block the restart.
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`\n⚠️  ${signal} received — shutting down gracefully...`);
+  const force = setTimeout(() => {
+    console.error('[SHUTDOWN] drain timed out (10s) — forcing exit');
+    process.exit(1);
+  }, 10000);
+  if (force.unref) force.unref();
+  try {
+    await new Promise((resolve) => server.close(resolve)); // drain in-flight HTTP
+    await mysqlAdapter.close();
+    clearTimeout(force);
+    process.exit(0);
+  } catch (err) {
+    console.error('[SHUTDOWN] error during drain:', err && err.message);
+    process.exit(1);
+  }
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 module.exports = app;

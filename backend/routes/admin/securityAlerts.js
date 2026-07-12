@@ -28,9 +28,25 @@ function safePagination(q) {
   return { page, limit, skip: (page - 1) * limit };
 }
 
+// Opportunistic, throttled cleanup of stale/handled low-risk + extension alerts. Runs at most
+// once per hour, fire-and-forget (never blocks the list response), and only when an admin is
+// actually viewing alerts — so there is no background cron and no DB overload. Batched inside
+// SecurityAlert.purgeOld (bounded row count per run).
+const PURGE_THROTTLE_MS = 60 * 60 * 1000;
+let lastPurgeAt = 0;
+function maybePurgeStaleAlerts() {
+  const now = Date.now();
+  if (now - lastPurgeAt < PURGE_THROTTLE_MS) return;
+  lastPurgeAt = now;
+  SecurityAlert.purgeOld({ maxAgeDays: 7, batchLimit: 500 })
+    .then(n => { if (n) console.log(`[securityAlerts] auto-purged ${n} stale resolved low-risk/extension alert(s)`); })
+    .catch(() => { /* never let cleanup affect the request */ });
+}
+
 // ── GET /api/crm/admin/security-alerts — list alerts ─────────────────────────
 router.get('/', async (req, res) => {
   try {
+    maybePurgeStaleAlerts(); // throttled, fire-and-forget cleanup (never blocks this response)
     const { page, limit, skip } = safePagination(req.query);
     const { status, riskLevel, riskType, clientId } = req.query;
 

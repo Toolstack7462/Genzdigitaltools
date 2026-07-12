@@ -56,6 +56,22 @@ const tableNames = {
   ProxyAccount: 'proxy_accounts',
 };
 
+// Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated
+// column (gc_<field>) so find({field:'x'}) becomes an INDEX SEEK instead of a JSON scan. Only add
+// fields that are (a) frequently filtered by exact value and (b) always strings. Adding a field here
+// is safe: creation is idempotent + non-fatal, and the pushdown falls back to JSON_EXTRACT / full
+// scan if the column doesn't exist.
+const INDEXED_FIELDS = {
+  users: ['email', 'role'],
+  tool_assignments: ['clientId', 'toolId'],
+  proxy_clients: ['userId', 'tool'],
+  proxy_accounts: ['tool'],
+  stealth_clients: ['userId'],
+};
+const GC_MAX = 191; // index-safe utf8mb4 prefix; values longer than this bypass the gc (use JSON_EXTRACT)
+// Populated by ensureTables once a gc_<field> column is confirmed to exist: { tableName: Set(fields) }.
+const indexedColumns = {};
+
 const populateModelByPath = {
   author: 'User',
   createdBy: 'User',
@@ -193,6 +209,43 @@ async function ensureTables() {
         INDEX idx_${table}_updatedAt (updatedAt)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    await ensureGeneratedColumns(db, table);
+  }
+}
+
+// Idempotently + NON-FATALLY add indexed VIRTUAL generated columns (gc_<field>) for a table's hot
+// lookup fields, so find({field:'x'}) can index-seek. VIRTUAL = metadata-only add (no table rewrite).
+// Any failure (permissions, old MySQL/MariaDB, JSON unsupported) is swallowed and the field is simply
+// left un-indexed — the pushdown then uses JSON_EXTRACT / full scan, so behaviour is never worse.
+async function ensureGeneratedColumns(db, table) {
+  const fields = INDEXED_FIELDS[table];
+  if (!fields || !fields.length) return;
+  const set = indexedColumns[table] || (indexedColumns[table] = new Set());
+  for (const field of fields) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(field)) continue;
+    const col = `gc_${field}`;
+    const idx = `idx_${table}_${col}`;
+    try {
+      const [cRows] = await db.query(
+        `SELECT COUNT(*) AS c FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [table, col],
+      );
+      if (!(cRows && cRows[0] && Number(cRows[0].c) > 0)) {
+        await db.query(
+          `ALTER TABLE \`${table}\` ADD COLUMN \`${col}\` VARCHAR(${GC_MAX}) GENERATED ALWAYS AS (JSON_UNQUOTE(JSON_EXTRACT(\`data\`, '$.${field}'))) VIRTUAL`,
+        );
+      }
+      set.add(field); // column exists → pushdown/count may use WHERE gc_<field> = ?
+      const [iRows] = await db.query(
+        `SELECT COUNT(*) AS c FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+        [table, idx],
+      );
+      if (!(iRows && iRows[0] && Number(iRows[0].c) > 0)) {
+        await db.query(`ALTER TABLE \`${table}\` ADD INDEX \`${idx}\` (\`${col}\`)`);
+      }
+    } catch (err) {
+      console.warn(`[mysqlAdapter] generated column ${table}.${col} skipped (non-fatal): ${err.message}`);
+    }
   }
 }
 
@@ -338,6 +391,32 @@ function matchesQuery(obj, query = {}) {
     }
   }
   return true;
+}
+
+// A single top-level field with a plain STRING equality is safe to push into SQL as a JSON filter.
+// _findRaw ALWAYS re-filters with matchesQuery afterward, so this only NARROWS candidate rows — it
+// must never exclude a true match. String equality via JSON_UNQUOTE is faithful to valuesEqual()
+// (numbers/booleans/nulls/operators are NOT pushed — they fall back to the full scan). Returns the
+// field name, or null when nothing is safely pushable.
+function pushableStringKey(criteria) {
+  if (!criteria || typeof criteria !== 'object') return null;
+  for (const [k, v] of Object.entries(criteria)) {
+    if (k === '_id' || k.startsWith('$')) continue;
+    if (typeof v !== 'string') continue;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue; // top-level, injection-safe JSON path key
+    return k;
+  }
+  return null;
+}
+
+// WHERE fragment for a top-level string equality. Uses the indexed generated column when it exists
+// AND the value fits the index prefix (fast INDEX SEEK); otherwise the JSON_EXTRACT expression
+// (correct for any length, unindexed scan). Returns { sql, params }.
+function whereForStringKey(table, key, value) {
+  if (indexedColumns[table] && indexedColumns[table].has(key) && value.length <= GC_MAX) {
+    return { sql: `\`gc_${key}\` = ?`, params: [value] };
+  }
+  return { sql: `JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?`, params: [`$.${key}`, value] };
 }
 
 function applyUpdate(data, update = {}) {
@@ -518,11 +597,33 @@ class Query {
       const refName = populateModelByPath[pop.path];
       const RefModel = registry[refName];
       if (!RefModel) continue;
+
+      // Collect the referenced id at this path for every doc, then fetch them all in ONE batched
+      // query (was findById per doc — the N+1). Semantics are preserved exactly: same id resolution,
+      // same .select() projection, only-assign-when-found, and the same save() bookkeeping.
+      const idByDoc = new Map(); // doc -> original id value (for __populatedPaths)
+      const ids = [];
       for (const doc of docs) {
         const rawId = getByPath(doc, pop.path);
         const id = rawId?._id || rawId;
         if (!id) continue;
-        const ref = await RefModel.findById(id).select(pop.select || '').exec();
+        idByDoc.set(doc, id);
+        ids.push(String(id));
+      }
+      if (!idByDoc.size) continue;
+
+      const sel = pop.select || '';
+      const refMap = new Map(); // idString -> hydrated (+projected) ref doc
+      for (const raw of await RefModel._getRawByIds(ids)) {
+        let ref = RefModel._hydrate(raw);
+        if (sel) ref = RefModel._hydrate(projectObject(ref.toObject(), sel)); // mirror .select().exec()
+        refMap.set(String(ref._id), ref);
+      }
+
+      for (const doc of docs) {
+        const id = idByDoc.get(doc);
+        if (id == null) continue;
+        const ref = refMap.get(String(id));
         if (ref) {
           doc.__populatedPaths[pop.path] = id;
           setByPath(doc, pop.path, ref);
@@ -574,8 +675,53 @@ function createModel(name, options = {}) {
       return rows[0] ? deserializeData(rows[0].data) : null;
     }
 
+    // Batch-fetch many rows by id in ONE query per chunk (uses the PRIMARY KEY index). Used to
+    // eliminate populate()'s N+1 (was one findById round-trip per row). Order not guaranteed —
+    // callers key results by _id.
+    static async _getRawByIds(ids) {
+      const uniq = [...new Set((ids || []).map(String))].filter(Boolean);
+      if (!uniq.length) return [];
+      const CHUNK = 1000; // keep the IN(...) list well under max_allowed_packet
+      const out = [];
+      for (let i = 0; i < uniq.length; i += CHUNK) {
+        const slice = uniq.slice(i, i + CHUNK);
+        const placeholders = slice.map(() => '?').join(',');
+        const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id IN (${placeholders})`, slice);
+        for (const r of rows) out.push(deserializeData(r.data));
+      }
+      return out;
+    }
+
+    // Narrow the candidate rows with a SQL WHERE when it's provably safe (PK for _id equality/$in,
+    // JSON_EXTRACT for a top-level string equality), instead of always scanning the whole table into
+    // Node. Falls back to a full read on anything it can't push OR on any SQL error, so behaviour is
+    // never worse than before. _findRaw ALWAYS re-filters with matchesQuery, so correctness does NOT
+    // depend on this narrowing.
+    static async _candidateRows(criteria) {
+      const c = criteria || {};
+      const idv = c._id;
+      if (typeof idv === 'string') {
+        try {
+          const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id = ?`, [idv]);
+          return rows.map(r => deserializeData(r.data));
+        } catch (_) { /* fall through to full scan */ }
+      }
+      if (idv && typeof idv === 'object' && Array.isArray(idv.$in)) {
+        try { return await this._getRawByIds(idv.$in); } catch (_) { /* fall through */ }
+      }
+      const key = pushableStringKey(c);
+      if (key) {
+        try {
+          const { sql, params } = whereForStringKey(table, key, c[key]);
+          const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE ${sql}`, params);
+          return rows.map(r => deserializeData(r.data));
+        } catch (_) { /* generated column / JSON functions unsupported → full scan */ }
+      }
+      return this._allRows();
+    }
+
     static async _findRaw(criteria = {}) {
-      const rows = await this._allRows();
+      const rows = await this._candidateRows(criteria);
       return rows.filter(row => matchesQuery(row, criteria));
     }
 
@@ -605,6 +751,25 @@ function createModel(name, options = {}) {
     }
 
     static async countDocuments(criteria = {}) {
+      const c = criteria || {};
+      const keys = Object.keys(c);
+      // Exact SQL COUNT(*) ONLY for the provably case/type-safe shapes: empty criteria (counts all),
+      // or a single _id equality (id is unique lowercase hex — no collation ambiguity). String-field
+      // counts are deliberately NOT pushed to SQL COUNT: the columns are case-INSENSITIVE
+      // (utf8mb4_unicode_ci) and JSON_EXTRACT type-juggles, so a bare COUNT could disagree with the
+      // case-sensitive matchesQuery (and there's no JS re-filter to correct a count). Those fall back
+      // to the exact load-and-count below, which still benefits from the find pushdown (only matching
+      // rows are loaded, not the whole table).
+      try {
+        if (keys.length === 0) {
+          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\``);
+          return Number(r[0].c) || 0;
+        }
+        if (keys.length === 1 && typeof c._id === 'string') {
+          const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE id = ?`, [c._id]);
+          return Number(r[0].c) || 0;
+        }
+      } catch (_) { /* fall back to the exact JS count */ }
       return (await this._findRaw(criteria)).length;
     }
 
@@ -779,4 +944,11 @@ module.exports = {
   setByPath,
   matchesQuery,
   sanitizeUrl,
+  // Test-only seam: inject a fake pool so the query layer can be unit-tested without a real DB.
+  // Never used in production paths.
+  __test: {
+    setPool: (p) => { pool = p; },
+    markIndexed: (t, f) => { (indexedColumns[t] || (indexedColumns[t] = new Set())).add(f); },
+    clearIndexed: (t) => { if (t) delete indexedColumns[t]; else for (const k of Object.keys(indexedColumns)) delete indexedColumns[k]; },
+  },
 };

@@ -434,8 +434,10 @@ function buildCriticalCss() {
 // before <body> content is inserted, eliminating the flash for text-matched nodes
 // too. Building the floating widget still waits for DOMContentLoaded (see overlay.js).
 const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
-function injectOverlay(html, capture) {
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture });
+function injectOverlay(html, capture, accountLabel) {
+  // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
+  // backend /session response — never an email/cookie/token. Shown in the widget.
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, accountLabel: accountLabel || null });
   // Capture (admin) mode must NOT hide account UI — the operator needs to log in and
   // reach account pages to capture a session — so the critical hide CSS is omitted.
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
@@ -561,7 +563,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           let html = Buffer.concat(buf).toString('utf8');
           if (!ctx.capture) html = redactHtmlIdentity(html); // strip account emails from SSR/state
           html = injectSessionBootstrap(html, session);
-          html = injectOverlay(html, ctx.capture);
+          html = injectOverlay(html, ctx.capture, session && session.accountLabel);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
           res.writeHead(uRes.statusCode || 200, outHeaders);
