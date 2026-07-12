@@ -186,6 +186,20 @@
 /* form fields stay readable (navy text on the white frosted field) */
 .app-main input, .app-main select, .app-main textarea { color: var(--brand-navy) !important; }
 
+/* Native <select> dropdowns: keep the OPTION list readable everywhere in the admin
+   console. Filter selects carry `.text-genz-navy`, which the canvas lightening rule
+   above turns near-white — invisible on the white option popup. Force dark-navy text
+   on a white option background for every admin dropdown (shared, global — no per-page
+   markup change). Also re-assert it on the select control itself with high enough
+   specificity to beat `.app-main .text-genz-navy`. */
+.app-main select.text-genz-navy,
+.app-main select.text-genz-muted { color: var(--brand-navy) !important; }
+.app-main select option,
+.app-main select optgroup {
+  color: var(--brand-navy) !important;
+  background-color: #ffffff !important;
+}
+
 /* ── 3. Cards become BRIGHT compact glass that floats on the navy ── */
 .app-main .ds-card,
 .app-main .ds-card-elevated,

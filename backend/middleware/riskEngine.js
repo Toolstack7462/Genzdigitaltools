@@ -136,6 +136,14 @@ async function processExtensionScanReport(clientId, riskyExtensions, context) {
   );
 }
 
+// ── 7b. Client became compliant → clear the extension warning ─────────────────
+// Called when a later scan reports NO high-risk extensions. Auto-resolves any open
+// RISKY_EXTENSION_DETECTED alert for the client so a fixed browser clears itself.
+async function resolveExtensionAlertsIfCompliant(clientId) {
+  if (!clientId) return;
+  await SecurityAlert.autoResolveOpen(clientId, 'RISKY_EXTENSION_DETECTED');
+}
+
 /**
  * Express middleware: runs passive risk checks on authenticated extension requests.
  * Attaches to routes that use verifyExtensionToken.
@@ -170,4 +178,5 @@ module.exports = {
   checkExpiredAccess,
   checkRepeatedAuthFailures,
   processExtensionScanReport,
+  resolveExtensionAlertsIfCompliant,
 };
