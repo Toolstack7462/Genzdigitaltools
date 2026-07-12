@@ -496,6 +496,32 @@ export const SHIELD_OVERRIDES = {
     '[aria-haspopup]:has(img[alt="User"])',              // the Radix dropdown trigger button → menu can't open
     'div:has(> img[alt="User"])',                        // avatar+name cluster (fallback if trigger lacks aria-haspopup)
     'img[alt="User"]'                                    // the avatar image itself
+  ] },
+  // EXTENSION-BASED Claude ONLY — the real claude.ai opened through the extension. This does NOT
+  // affect the PROXY Claude (served from claude1.genzdigitalstore.com via the gateway overlay, a
+  // completely separate deploy that this host key never matches) and no other tool. Purely
+  // cosmetic: hide the sidebar account control so the logged-in identity is gone and the account
+  // menu can never be opened, plus hide any already-open account dropdown. shield.js never touches
+  // the composer / chat / artifacts / Code tab / navigation, so Claude stays fully usable. No
+  // sessions/cookies/auth changed.
+  //
+  // Claude's account control lives at the BOTTOM of the left sidebar (user name + initials avatar).
+  // It is BOTH the visible identity AND the Radix dropdown TRIGGER, so hiding it removes the
+  // identity and makes the whole menu — account email, Settings, Language, Get help, View all
+  // plans, Get apps and extensions, Learn more, Log out — impossible to open (covers every current
+  // and future item). Menu items are role="menuitem" onClick handlers (not <a href>), so the
+  // generic href rules don't catch them; we therefore hide the TRIGGER (menu can't open) and, as a
+  // belt, any already-open account MENU that carries a logout control. Hooks are stable
+  // data-testid substrings (mirrors the chatgpt.com override), never generated class names, and the
+  // menu rules are scoped so Claude's OTHER menus (chat "…", model picker, project options) are
+  // left fully intact. The runtime sweep (attr 'user-menu'/'account'/'profile'/'avatar', the
+  // 'settings|log out|...' text rule, and the email rule) remains the backup for anything that
+  // renders after paint.
+  'claude.ai': { hideSelectors: [
+    '[data-testid*="user-menu" i]',                          // account/profile trigger (identity + menu opener)
+    '[data-testid*="account" i]',                            // account trigger variants (versioned testids)
+    '[role="menu"]:has([data-testid*="logout" i])',          // already-open account dropdown (whole menu)
+    '[role="menu"]:has([data-testid*="log-out" i])'          // ditto, hyphenated testid variant
   ] }
 };
 
@@ -509,7 +535,9 @@ export const SHIELD_OVERRIDES = {
 // STANDARDIZED across all extension-based tools: HIX AI (hix.ai), GPT Bypass (bypassgpt.ai),
 // Ryne (ryne.ai), WriteHuman (writehuman.ai), plus ChatGPT/Grok. Add any future supported
 // tool's host here and it inherits the identical header-hide + restricted-URL behavior.
-export const SHIELD_HOSTS = ['chatgpt.com', 'grok.com', 'hix.ai', 'bypassgpt.ai', 'ryne.ai', 'writehuman.ai'];
+// 'claude.ai' is the EXTENSION-opened real Claude only. The proxy Claude host
+// (claude1.genzdigitalstore.com) never matches this list, so the gateway is untouched.
+export const SHIELD_HOSTS = ['chatgpt.com', 'grok.com', 'hix.ai', 'bypassgpt.ai', 'ryne.ai', 'writehuman.ai', 'claude.ai'];
 export function isShieldHost(hostname) {
   const h = String(hostname || '').replace(/^www\./, '').toLowerCase();
   return SHIELD_HOSTS.some(k => h === k || h.endsWith('.' + k));
