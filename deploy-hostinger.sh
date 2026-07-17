@@ -120,6 +120,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/utils/proxy/chatgptVerify.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/chatgptVerify.js" \
   -T backend/utils/proxy/claudeQuota.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/claudeQuota.js" \
   -T backend/utils/proxy/claudeUsage.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/claudeUsage.js" \
+  -T backend/utils/proxy/claudeSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/claudeSettings.js" \
   -T backend/utils/proxy/applySession.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/utils/proxy/verifyAndApply.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
   -T backend/utils/proxy/healthAlerts.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/healthAlerts.js" \
@@ -127,6 +128,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/proxy/ProxyLease.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyLease.js" \
   -T backend/models/proxy/ProxyAccount.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyAccount.js" \
   -T backend/models/proxy/ClaudeUsage.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ClaudeUsage.js" \
+  -T backend/models/proxy/ClaudeSettings.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ClaudeSettings.js" \
   -T backend/routes/admin/proxyTools.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
   -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \

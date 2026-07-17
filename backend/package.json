@@ -7,7 +7,7 @@
     "start": "node server-crm.js",
     "dev": "nodemon server-crm.js",
     "seed:admin": "node scripts/seed-admin.js",
-    "test": "node --test tests/adapterPopulate.test.js tests/adapterFindPushdown.test.js tests/adapterIndexCount.test.js tests/semver.test.js tests/renewalWindow.test.js tests/claudeQuota.test.js tests/claudeUsage.test.js tests/claudePlanDetect.test.js tests/claudeUsagePipeline.test.js tests/claudeWeekly.test.js tests/claudeLimitOverride.test.js",
+    "test": "node --test tests/adapterPopulate.test.js tests/adapterFindPushdown.test.js tests/adapterIndexCount.test.js tests/semver.test.js tests/renewalWindow.test.js tests/claudeQuota.test.js tests/claudeUsage.test.js tests/claudePlanDetect.test.js tests/claudeUsagePipeline.test.js tests/claudeWeekly.test.js tests/claudeLimitOverride.test.js tests/claudeUsageMgmt.test.js",
     "db:seed": "node scripts/seed-admin.js",
     "check": "node --check server-crm.js && node --check db/mysqlAdapter.js && node --check routes/extension/index.js && node --check routes/authEnhanced.js && node --check scripts/seed-admin.js"
   },

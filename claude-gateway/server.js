@@ -998,8 +998,13 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     // report settled usage. Wrapped so ANY failure fails OPEN and never breaks the proxy.
     const isClaudeCompletion = TOOL_KEY === 'claude' && QUOTA_MODE !== 'off'
       && !ctx.capture && !ctx.asset && quotaTap.isCompletionRequest(req.method, reqPathOnly);
-    let quotaParts = null;
-    if (isClaudeCompletion) { try { quotaParts = quotaTap.extractRequestChars(bodyBuf); } catch (_) { quotaParts = null; } }
+    let quotaParts = null, quotaRequestId = null;
+    if (isClaudeCompletion) {
+      try { quotaParts = quotaTap.extractRequestChars(bodyBuf); } catch (_) { quotaParts = null; }
+      // Per-request idempotency key so a completed request is charged AT MOST once, even on an
+      // accidental re-send (duplicate-charge guard is enforced server-side on this id).
+      try { quotaRequestId = crypto.randomBytes(16).toString('hex'); } catch (_) { quotaRequestId = null; }
+    }
 
     const runDispatch = () => {
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
@@ -1170,7 +1175,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             uRes.on('end', () => {
               try {
                 const outputChars = counter.end();
-                if (ctx.token) gatewayApiPost('/usage-report', ctx.token, Object.assign({}, quotaParts || {}, { outputChars })).catch(() => {});
+                if (ctx.token) gatewayApiPost('/usage-report', ctx.token, Object.assign({}, quotaParts || {}, { outputChars, requestId: quotaRequestId })).catch(() => {});
               } catch (_) {}
             });
           } catch (_) { /* tap failure must never affect the response */ }

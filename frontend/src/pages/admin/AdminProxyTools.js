@@ -9,6 +9,7 @@ import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 import ListFilterBar from '../../components/admin/ListFilterBar';
+import ClaudeUsageDashboard from '../../components/admin/ClaudeUsageDashboard';
 
 // ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
 const ACCOUNT_FILTERS = [
@@ -134,6 +135,8 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
 
   useEffect(() => { loadDefs(); }, [loadDefs]);
   useEffect(() => { load(); }, [load]);
+  // The Usage section is Claude-only — leaving Claude drops back to the Account Vault.
+  useEffect(() => { if (section === 'usage' && tool !== 'claude') setSection('accounts'); }, [tool, section]);
   useEffect(() => {
     // CRM client list for the "grant access" dropdown — stable list, cached + coalesced
     // so navigating between proxy-tool/StealthWriter admin pages doesn't refetch it.
@@ -271,7 +274,7 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
 
         {/* Section switch */}
         <div className="flex items-center gap-2 border-b border-genz-border">
-          {[['accounts', 'Account Vault'], ['clients', 'Client Access']].map(([k, label]) => (
+          {[['accounts', 'Account Vault'], ['clients', 'Client Access'], ...(tool === 'claude' ? [['usage', 'Usage']] : [])].map(([k, label]) => (
             <button key={k} onClick={() => setSection(k)}
               className={`px-4 py-2 text-sm font-semibold border-b-2 -mb-px transition-colors ${section === k ? 'border-genz-teal text-genz-navy' : 'border-transparent text-genz-muted hover:text-genz-navy'}`}>
               {label}
@@ -285,14 +288,18 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
               <RefreshCw size={15} /> Refresh sessions
             </button>
           )}
-          <button
-            onClick={() => { if (section === 'accounts') { setEditAccount(null); setShowAccountModal(true); } else { setEditClient(null); setShowClientModal(true); } }}
-            className={`${section === 'accounts' ? '' : 'ml-auto'} mb-1.5 btn-grad inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold`}>
-            <Plus size={15} /> {section === 'accounts' ? `Add ${currentName} account` : 'Grant access'}
-          </button>
+          {section !== 'usage' && (
+            <button
+              onClick={() => { if (section === 'accounts') { setEditAccount(null); setShowAccountModal(true); } else { setEditClient(null); setShowClientModal(true); } }}
+              className={`${section === 'accounts' ? '' : 'ml-auto'} mb-1.5 btn-grad inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-sm font-bold`}>
+              <Plus size={15} /> {section === 'accounts' ? `Add ${currentName} account` : 'Grant access'}
+            </button>
+          )}
         </div>
 
-        {loading ? (
+        {section === 'usage' && tool === 'claude' ? (
+          <ClaudeUsageDashboard />
+        ) : loading ? (
           <div className="flex items-center justify-center py-16 text-genz-muted"><Loader2 className="animate-spin mr-2" size={20} /> Loading…</div>
         ) : section === 'accounts' ? (
           <div className="space-y-3">

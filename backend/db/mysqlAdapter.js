@@ -56,6 +56,8 @@ const tableNames = {
   ProxyAccount: 'proxy_accounts',
   // ── Claude token-quota ledger (append-only, claude-only) — isolated ─────────
   ClaudeUsage: 'claude_usage',
+  // ── Claude global quota settings (single-row, claude-only) — isolated ───────
+  ClaudeSettings: 'claude_settings',
 };
 
 // Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated

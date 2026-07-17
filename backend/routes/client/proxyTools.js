@@ -21,6 +21,7 @@ const leaseUtil = require('../../utils/proxy/lease');
 const tools = require('../../utils/proxy/tools');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
+const claudeSettings = require('../../utils/proxy/claudeSettings');
 const { recordPresence } = require('../../utils/presence');
 
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
@@ -167,6 +168,7 @@ router.post('/:tool/open', async (req, res) => {
     // enforcement (mode 'enforce') happens at the gateway. Fail-open on any error.
     if (tool === 'claude' && claudeQuota.quotaMode() !== 'off') {
       try {
+        await claudeSettings.ensureLoaded(); // apply admin global defaults before resolving limits
         const u = await claudeUsage.readUsage(account, client);
         // estIncoming=1 → denies only when there is literally no room left (5-hour OR weekly).
         const decision = claudeUsage.resolveDecision({

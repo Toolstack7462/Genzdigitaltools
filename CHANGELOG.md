@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased] — Claude Usage-Management Dashboard
+
+Claude-only, additive. StealthWriter was used as a read-only architectural reference; no
+StealthWriter (or any other tool), auth, payment, Personal/Team, session, account-widget, gateway
+behaviour, or unrelated file was changed. All figures labelled **"Estimated local token usage"**
+(not Anthropic's official counts).
+
+- **Admin usage dashboard** (Admin → Claude → **Usage**): every Claude client's name/status,
+  assigned account, five-hour + weekly limit/used/remaining, five-hour + weekly reset times,
+  Custom/Default indicator, limit-reached + account-at-capacity status, and expandable recent
+  usage history (input / context / output / total estimated tokens + timestamps).
+- **Editable global limits**: five-hour + weekly per-client defaults, per-account base capacities
+  and the safety reserve are admin-editable (new single-row `ClaudeSettings`; env is the fallback)
+  and apply process-wide immediately. Priority unchanged: client → account → **global** → fallback.
+- **Accurate accounting**: each settled request is recorded once with its input/context/output
+  breakdown on the append-only ledger; a per-request **idempotency key** prevents duplicate
+  charging. All counters + enforcement remain server-side and race-safe.
+- New: `models/proxy/ClaudeSettings.js`, `utils/proxy/claudeSettings.js`; admin routes
+  `usage-dashboard`, `clients/:id/usage-history`, `global-config` (GET/PUT); component
+  `ClaudeUsageDashboard.js`. Tests: `claudeUsageMgmt.test.js` (breakdown, idempotency, global
+  override priority, history).
+
 ## [Unreleased] — Claude Weekly Limit + Per-Client Override Fix
 
 Claude-only, additive. No other proxy tool, auth, payment, database, Personal/Team logic,

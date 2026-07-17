@@ -24,10 +24,15 @@ const ClaudeUsage = createModel('ClaudeUsage', {
     data.cycleKey = data.cycleKey ? String(data.cycleKey) : '';
     data.weekKey = data.weekKey ? String(data.weekKey) : '';
     const n = (v) => Math.max(0, Math.trunc(Number(v) || 0));
-    data.inputTokens = n(data.inputTokens);
-    data.outputTokens = n(data.outputTokens);
-    // Always keep total coherent with its parts.
-    data.totalTokens = data.totalTokens != null ? n(data.totalTokens) : (data.inputTokens + data.outputTokens);
+    data.inputTokens = n(data.inputTokens);       // the user's prompt
+    data.contextTokens = n(data.contextTokens);   // system + context + attachments
+    data.outputTokens = n(data.outputTokens);     // the model's answer
+    // Total is ALWAYS the sum of the parts (input + context + output) — coherent for both
+    // display and enforcement. (Enforcement sums totalTokens, unchanged from before the split.)
+    data.totalTokens = data.inputTokens + data.contextTokens + data.outputTokens;
+    // Idempotency key: one settled charge per Claude request. A duplicate report with the same
+    // requestId is rejected upstream, preventing double-charging on any accidental re-send.
+    data.requestId = data.requestId ? String(data.requestId).slice(0, 80) : null;
     if (!data.at) data.at = new Date();
     // `kind` lets a pre-check reservation ('precheck') be told apart from a settled
     // 'usage' row if ever needed; defaults to 'usage'. Never affects other tools.

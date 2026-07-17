@@ -37,28 +37,49 @@ function intEnv(name, def, min, max) {
   return v;
 }
 
+// ── Admin-editable GLOBAL overrides (runtime) ────────────────────────────────
+// A single in-process object the settings loader populates from the ClaudeSettings row on boot
+// and on every admin save. When a key is set here it takes precedence over the env default, so
+// every enforcement path (open gate, gateway precheck, dashboard) uses the admin's global value
+// without threading it through call sites. Priority is unchanged: client → account → GLOBAL →
+// fallback. An unset/null key transparently falls back to env → hardcoded default.
+const OVERRIDE_KEYS = ['defaultClientLimit', 'defaultWeeklyClientLimit', 'accountBaseTokens', 'accountWeeklyBaseTokens', 'safetyReservePct'];
+let _globalOverrides = {};
+function setGlobalConfig(cfg) {
+  const clean = {};
+  for (const k of OVERRIDE_KEYS) {
+    const v = cfg && cfg[k];
+    if (v != null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0) clean[k] = Math.trunc(Number(v));
+  }
+  _globalOverrides = clean;
+  return clean;
+}
+function getGlobalOverrides() { return Object.assign({}, _globalOverrides); }
+function ov(key, envValue) { return _globalOverrides[key] != null ? _globalOverrides[key] : envValue; }
+
 // Characters per estimated token (chars/N heuristic). ~4 chars/token is the common English
 // rule of thumb for Claude/GPT BPE tokenizers. Override with CLAUDE_CHARS_PER_TOKEN.
 function charsPerToken() { return intEnv('CLAUDE_CHARS_PER_TOKEN', 4, 1, 100); }
 
-// Default PER-CLIENT allowance per five-hour cycle (the requested 20,000).
-function defaultClientLimit() { return intEnv('CLAUDE_DEFAULT_CLIENT_TOKENS', 20000, 0, 1e12); }
+// Default PER-CLIENT allowance per five-hour cycle (the requested 20,000). Admin global
+// override → env → hardcoded.
+function defaultClientLimit() { return ov('defaultClientLimit', intEnv('CLAUDE_DEFAULT_CLIENT_TOKENS', 20000, 0, 1e12)); }
 
 // Base (Pro 1x) usable estimate of a single account's five-hour capacity, BEFORE the safety
 // reserve and BEFORE plan scaling. Scaled by the plan multiplier below.
-function accountBaseTokens() { return intEnv('CLAUDE_ACCOUNT_BASE_TOKENS', 44000, 0, 1e12); }
+function accountBaseTokens() { return ov('accountBaseTokens', intEnv('CLAUDE_ACCOUNT_BASE_TOKENS', 44000, 0, 1e12)); }
 
 // Safety reserve percentage (kept UNused as headroom). Default 20%.
-function safetyReservePct() { return intEnv('CLAUDE_SAFETY_RESERVE_PCT', 20, 0, 95); }
+function safetyReservePct() { return Math.min(95, Math.max(0, ov('safetyReservePct', intEnv('CLAUDE_SAFETY_RESERVE_PCT', 20, 0, 95)))); }
 
 // Default GLOBAL per-client WEEKLY allowance (the requested 150,000). Override with
 // CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS. A hard 200,000 fallback (below) applies only if this
 // somehow resolves to an invalid value.
-function defaultWeeklyClientLimit() { return intEnv('CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS', 150000, 0, 1e12); }
+function defaultWeeklyClientLimit() { return ov('defaultWeeklyClientLimit', intEnv('CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS', 150000, 0, 1e12)); }
 const WEEKLY_HARD_FALLBACK = 200000; // last-resort weekly allowance per spec
 
 // Base (Pro 1x) usable estimate of a single account's WEEKLY capacity, before scaling/reserve.
-function accountWeeklyBaseTokens() { return intEnv('CLAUDE_ACCOUNT_WEEKLY_BASE_TOKENS', 300000, 0, 1e12); }
+function accountWeeklyBaseTokens() { return ov('accountWeeklyBaseTokens', intEnv('CLAUDE_ACCOUNT_WEEKLY_BASE_TOKENS', 300000, 0, 1e12)); }
 
 // ── Plans ────────────────────────────────────────────────────────────────────
 // Canonical plan keys and their capacity multipliers relative to Pro.
@@ -271,7 +292,7 @@ function presentDecision(d) {
 module.exports = {
   USAGE_LABEL,
   CYCLE_MS, WEEK_MS,
-  quotaMode, presentDecision,
+  quotaMode, presentDecision, setGlobalConfig, getGlobalOverrides, OVERRIDE_KEYS,
   PLANS, PLAN_MULTIPLIER, PLAN_LABEL,
   isValidPlan, normalizePlan, planMultiplier, planLabel,
   charsPerToken, defaultClientLimit, accountBaseTokens, safetyReservePct,

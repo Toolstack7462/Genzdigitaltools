@@ -32,6 +32,18 @@ no Claude credential, cookie, session or account internal is ever exposed.
   characters are all counted. The widget shows both cycles (used, remaining, a thin bar, and the
   exact reset time), or **"Not synced"** when usage or the official reset time is unavailable —
   values are never fabricated.
+- **Admin usage dashboard** (Admin → Claude → **Usage**). For every Claude client: name + status,
+  assigned account, five-hour and weekly limit/used/remaining, five-hour and weekly reset times,
+  Custom/Default indicator, limit-reached and account-at-capacity status, and expandable **recent
+  usage history** (per request: input / context / output / total estimated tokens + timestamp).
+  Editable **global** defaults (five-hour + weekly per-client, account base capacities, reserve)
+  are on the same screen and apply immediately. All figures labelled *Estimated local token usage*.
+- **Editable globals + accurate accounting.** Global defaults are admin-editable (stored in a
+  single `ClaudeSettings` row; env is the fallback) — so the priority is client override →
+  account default → **global default (editable)** → system fallback. Each settled request is
+  recorded once with its input/context/output breakdown on the append-only ledger, guarded by a
+  per-request idempotency key so a re-send can never double-charge; counters and enforcement are
+  entirely server-side and race-safe.
 
 ## Enforcement modes — `CLAUDE_QUOTA_MODE`
 

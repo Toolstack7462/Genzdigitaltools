@@ -33,6 +33,11 @@ export const proxyToolsAdmin = {
   // Claude token-quota (claude-only): global config + one client's live estimated usage.
   quotaConfig: (tool) => api.get(`/admin/proxy-tools/${tool}/quota-config`),
   clientQuota: (tool, id) => api.get(`/admin/proxy-tools/${tool}/clients/${id}/quota`),
+  // Claude usage management (claude-only): dashboard, per-client history, editable globals.
+  usageDashboard: (tool) => api.get(`/admin/proxy-tools/${tool}/usage-dashboard`),
+  usageHistory: (tool, id, limit = 25) => api.get(`/admin/proxy-tools/${tool}/clients/${id}/usage-history?limit=${limit}`),
+  getGlobalConfig: (tool) => api.get(`/admin/proxy-tools/${tool}/global-config`),
+  setGlobalConfig: (tool, body) => api.put(`/admin/proxy-tools/${tool}/global-config`, body),
 };
 
 // ── Client ────────────────────────────────────────────────────────────────

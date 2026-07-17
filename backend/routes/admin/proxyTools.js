@@ -32,6 +32,9 @@ const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
+const claudeSettings = require('../../utils/proxy/claudeSettings');
+// Apply admin-editable global Claude defaults at boot (fail-safe; env defaults until loaded).
+claudeSettings.ensureLoaded().catch(() => {});
 const { isEmailEnabled } = require('../../utils/email');
 
 // Validate a Claude pinned-account id: '' / null clears the pin; a value must reference an
@@ -43,6 +46,13 @@ async function resolvePinnedAccountId(tool, raw) {
   const acct = await ProxyAccount.findById(String(raw));
   if (!acct || acct.tool !== tool) return { ok: false, error: 'Pinned account not found for this tool' };
   return { ok: true, value: String(acct._id) };
+}
+
+// Resolve the account a Claude client is served by (pinned or automatic). Shared by the usage
+// dashboard + history so they show exactly the account enforcement uses.
+function accountSelectResolve(accounts, pinnedAccountId) {
+  const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
+  return require('../../utils/proxy/accountSelect').resolveAccount(accounts || [], SELECTION_MODE, pinnedAccountId).account;
 }
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
@@ -120,6 +130,14 @@ const schemas = {
   }).min(1),
   accountSession: Joi.object({ sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).required() }),
   accountStatus: Joi.object({ status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').required() }),
+  // Claude global quota defaults (admin-editable; null clears an override → env/hardcoded default).
+  globalConfig: Joi.object({
+    defaultClientLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    defaultWeeklyClientLimit: Joi.number().integer().min(0).max(1000000000).allow(null),
+    accountBaseTokens: Joi.number().integer().min(0).max(1000000000).allow(null),
+    accountWeeklyBaseTokens: Joi.number().integer().min(0).max(10000000000).allow(null),
+    safetyReservePct: Joi.number().integer().min(0).max(95).allow(null),
+  }).min(1),
 };
 
 function safePagination(query) {
@@ -139,6 +157,7 @@ router.get('/tools', async (req, res) => {
 // capacities. All values are estimates; no secret is ever involved.
 router.get('/:tool/quota-config', async (req, res) => {
   if (req.proxyTool !== 'claude') return res.json({ success: true, quota: null });
+  await claudeSettings.ensureLoaded();
   const plans = claudeQuota.PLANS.filter(p => p !== 'unknown').concat('unknown');
   return res.json({
     success: true,
@@ -156,6 +175,8 @@ router.get('/:tool/quota-config', async (req, res) => {
       plans: plans.map(p => ({ key: p, label: claudeQuota.planLabel(p), multiplier: claudeQuota.planMultiplier(p), capacity: claudeQuota.accountCapacity(p), weeklyCapacity: claudeQuota.accountWeeklyCapacity(p) })),
       // These global defaults are set via server env (documented) — surfaced read-only here so
       // the operator can SEE the active policy without exposing anything sensitive.
+      // Which global values are ADMIN overrides (vs env/hardcoded), for the UI.
+      overrides: claudeQuota.getGlobalOverrides(),
       envKeys: {
         mode: 'CLAUDE_QUOTA_MODE', defaultClientLimit: 'CLAUDE_DEFAULT_CLIENT_TOKENS',
         accountBaseTokens: 'CLAUDE_ACCOUNT_BASE_TOKENS', safetyReservePct: 'CLAUDE_SAFETY_RESERVE_PCT',
@@ -163,6 +184,144 @@ router.get('/:tool/quota-config', async (req, res) => {
       },
     },
   });
+});
+
+// ─── Global quota defaults — admin-editable (claude-only) ─────────────────────
+// GET returns the effective globals + which keys are admin overrides. PUT sets/clears overrides
+// (null clears → falls back to env → hardcoded). Applied process-wide immediately. Admin-only.
+router.get('/:tool/global-config', async (req, res) => {
+  if (req.proxyTool !== 'claude') return res.json({ success: true, global: null });
+  await claudeSettings.ensureLoaded();
+  return res.json({
+    success: true,
+    global: {
+      effective: {
+        defaultClientLimit: claudeQuota.defaultClientLimit(),
+        defaultWeeklyClientLimit: claudeQuota.defaultWeeklyClientLimit(),
+        accountBaseTokens: claudeQuota.accountBaseTokens(),
+        accountWeeklyBaseTokens: claudeQuota.accountWeeklyBaseTokens(),
+        safetyReservePct: claudeQuota.safetyReservePct(),
+      },
+      overrides: claudeQuota.getGlobalOverrides(), // only the keys explicitly set by an admin
+      label: claudeQuota.USAGE_LABEL,
+    },
+  });
+});
+
+router.put('/:tool/global-config', validate(schemas.globalConfig), async (req, res) => {
+  if (req.proxyTool !== 'claude') return res.status(400).json({ error: 'Global config is Claude-only' });
+  try {
+    await claudeSettings.update(req.body);
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLAUDE_GLOBAL_CONFIG_SET', { tool: 'claude', changes: req.body, ip: getClientIp(req) });
+    return res.json({
+      success: true,
+      global: {
+        effective: {
+          defaultClientLimit: claudeQuota.defaultClientLimit(),
+          defaultWeeklyClientLimit: claudeQuota.defaultWeeklyClientLimit(),
+          accountBaseTokens: claudeQuota.accountBaseTokens(),
+          accountWeeklyBaseTokens: claudeQuota.accountWeeklyBaseTokens(),
+          safetyReservePct: claudeQuota.safetyReservePct(),
+        },
+        overrides: claudeQuota.getGlobalOverrides(),
+      },
+    });
+  } catch (err) {
+    console.error('Proxy global-config set error:', err.message);
+    return res.status(500).json({ error: 'Failed to save global config' });
+  }
+});
+
+// ─── Usage dashboard — every Claude client's live estimated usage (claude-only) ─
+// One efficient pass: fetch each account's ledger rows once, then compute every client's
+// five-hour + weekly used/remaining/limit-reached from the cached rows. Never exposes cookies,
+// sessions or identity — only labels, integer token estimates and reset times.
+router.get('/:tool/usage-dashboard', async (req, res) => {
+  try {
+    if (req.proxyTool !== 'claude') return res.json({ success: true, rows: [], generatedAt: new Date() });
+    await claudeSettings.ensureLoaded();
+    const [clients, accounts] = await Promise.all([
+      ProxyClient.find({ tool: 'claude' }),
+      ProxyAccount.find({ tool: 'claude' }),
+    ]);
+    // Cache each account's ledger rows once (few accounts).
+    const Usage = require('../../models/proxy/ClaudeUsage');
+    const rowsByAccount = {};
+    for (const a of accounts) {
+      try { rowsByAccount[String(a._id)] = await Usage.find({ accountId: String(a._id) }); }
+      catch (_) { rowsByAccount[String(a._id)] = null; } // null → not synced
+    }
+    const rows = [];
+    for (const pc of clients) {
+      const account = accountSelectResolve(accounts, pc.pinnedAccountId);
+      const user = await User.findById(pc.userId).select('fullName email status');
+      const acctRows = account ? rowsByAccount[String(account._id)] : [];
+      const synced = acctRows != null;
+      const keys = claudeUsage.cycleKeysFor(account, undefined);
+      const clientRows = (acctRows || []).filter(r => r && String(r.proxyClientId) === String(pc._id));
+      const clientUsed = claudeUsage.usageForCycle(clientRows, keys.cycleKey);
+      const accountUsed = claudeUsage.usageForCycle(acctRows || [], keys.cycleKey);
+      const weeklyClientUsed = claudeUsage.usageForWeek(clientRows, keys.weekKey);
+      const weeklyAccountUsed = claudeUsage.usageForWeek(acctRows || [], keys.weekKey);
+      const decision = claudeUsage.resolveDecision({
+        account, client: pc, clientUsed, accountUsed, weeklyClientUsed, weeklyAccountUsed, estIncoming: 0,
+      });
+      const weeklySynced = synced && !!(account && account.weeklyResetAt);
+      rows.push({
+        id: pc._id,
+        client: user ? { fullName: user.fullName, email: user.email, status: user.status } : null,
+        clientStatus: pc.status,
+        active: pc.isActive(),
+        expired: pc.isExpired(),
+        accountLabel: account ? account.label : null,
+        accountAvailable: account ? unavailableReason(account) === null : false,
+        plan: decision.plan, planLabel: decision.planLabel,
+        synced,
+        // five-hour
+        fiveHour: {
+          limit: decision.clientLimit, used: decision.clientUsed, remaining: decision.clientRemaining,
+          isCustom: pc.tokenLimit != null,
+          accountCapacity: decision.accountCapacity, accountUsed: decision.accountUsed, accountRemaining: decision.accountRemaining,
+          resetInSeconds: claudeQuota.secondsUntilReset(keys.fiveWindow),
+          reached: decision.clientRemaining === 0,
+          accountAtCapacity: decision.accountRemaining === 0,
+        },
+        // weekly
+        weekly: {
+          limit: decision.weeklyClientLimit, used: decision.weeklyClientUsed, remaining: decision.weeklyClientRemaining,
+          isCustom: pc.weeklyTokenLimit != null,
+          accountCapacity: decision.weeklyAccountCapacity, accountUsed: decision.weeklyAccountUsed, accountRemaining: decision.weeklyAccountRemaining,
+          resetAt: (account && account.weeklyResetAt) || null,
+          resetInSeconds: claudeQuota.secondsUntilReset(keys.weekWindow),
+          reached: decision.weeklyClientRemaining === 0,
+          accountAtCapacity: decision.weeklyAccountRemaining === 0,
+          synced: weeklySynced,
+        },
+        label: claudeQuota.USAGE_LABEL,
+      });
+    }
+    return res.json({ success: true, rows, generatedAt: new Date(), label: claudeQuota.USAGE_LABEL });
+  } catch (err) {
+    console.error('Proxy usage-dashboard error:', err.message);
+    return res.status(500).json({ error: 'Failed to load usage dashboard' });
+  }
+});
+
+// ─── Recent usage history for one client (claude-only) ────────────────────────
+router.get('/:tool/clients/:id/usage-history', async (req, res) => {
+  try {
+    if (req.proxyTool !== 'claude') return res.json({ success: true, history: [] });
+    const pc = await ProxyClient.findById(req.params.id);
+    if (!pc || pc.tool !== 'claude') return res.status(404).json({ error: 'Client grant not found' });
+    const accounts = await ProxyAccount.find({ tool: 'claude' });
+    const account = accountSelectResolve(accounts, pc.pinnedAccountId);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const history = account ? await claudeUsage.recentHistory(account._id, pc._id, limit) : [];
+    return res.json({ success: true, history, label: claudeQuota.USAGE_LABEL });
+  } catch (err) {
+    console.error('Proxy usage-history error:', err.message);
+    return res.status(500).json({ error: 'Failed to load usage history' });
+  }
 });
 
 // ════════════════════════════════════════════════════════════════════════════

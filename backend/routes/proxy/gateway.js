@@ -26,6 +26,7 @@ const { normalizeCookieBundle, buildCookieHeader } = require('../../utils/proxy/
 const { verifyAccountCookies, applySupabaseRefresh } = require('../../utils/proxy/verify');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
+const claudeSettings = require('../../utils/proxy/claudeSettings');
 const ActivityLog = require('../../models/ActivityLog');
 const { apiLimiter } = require('../../middleware/rateLimiter');
 
@@ -300,6 +301,7 @@ router.post('/quota-precheck', requireGatewayKey, async (req, res) => {
     const ctx = await resolveMeterContext(req);
     if (!ctx.ok) return res.status(ctx.status).json({ ok: false, code: ctx.code, allowed: true }); // fail-open
     if (mode === 'off') return res.json({ ok: true, allowed: true, mode });
+    await claudeSettings.ensureLoaded(); // apply admin global defaults before resolving limits
 
     const parts = charParts(req.body);
     const estIncoming = claudeQuota.estimateRequestTokens(parts);
@@ -344,17 +346,21 @@ router.post('/usage-report', requireGatewayKey, async (req, res) => {
     if (!ctx.ok) return res.json({ ok: true, recorded: false, code: ctx.code });
 
     const parts = charParts(req.body);
-    const inputTokens = claudeQuota.estimateRequestTokens(parts);
+    // Break the estimate into components for the admin history: input (prompt) vs context
+    // (system + context + attachments) vs output. The TOTAL is identical to before (their sum).
+    const inputTokens = claudeQuota.tokensFromChars(parts.inputChars);
+    const contextTokens = claudeQuota.tokensFromChars(parts.systemChars + parts.contextChars + parts.attachmentChars);
     const outputTokens = claudeQuota.tokensFromChars(clampChars(req.body && req.body.outputChars));
-    if (inputTokens === 0 && outputTokens === 0) return res.json({ ok: true, recorded: false });
+    if (inputTokens === 0 && contextTokens === 0 && outputTokens === 0) return res.json({ ok: true, recorded: false });
 
-    const recorded = await claudeUsage.recordUsage({
+    const requestId = req.body && req.body.requestId ? String(req.body.requestId).slice(0, 80) : null;
+    const r = await claudeUsage.recordUsage({
       account: ctx.account, client: ctx.client, userId: ctx.client.userId,
-      inputTokens, outputTokens,
+      inputTokens, contextTokens, outputTokens, requestId,
     });
     claudeUsage.pruneOld().catch(() => {}); // opportunistic, best-effort
-    dbg({ evt: 'usage_report', tool: 'claude', in: inputTokens, out: outputTokens, recorded });
-    return res.json({ ok: true, recorded, inputTokens, outputTokens });
+    dbg({ evt: 'usage_report', tool: 'claude', in: inputTokens, ctx: contextTokens, out: outputTokens, recorded: r.recorded, duplicate: r.duplicate });
+    return res.json({ ok: true, recorded: r.recorded, duplicate: r.duplicate, inputTokens, contextTokens, outputTokens });
   } catch (err) {
     console.error('Proxy usage-report error:', err.message);
     return res.status(200).json({ ok: false, recorded: false, code: 'server_error' });

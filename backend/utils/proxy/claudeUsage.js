@@ -89,24 +89,60 @@ async function readUsage(account, client, now) {
   return { clientUsed, accountUsed, weeklyClientUsed, weeklyAccountUsed, keys, synced };
 }
 
-// Append a settled usage row for a completed request. Fail-safe: never throws to the caller.
-async function recordUsage({ account, client, userId, inputTokens, outputTokens, now }) {
+// Append a settled usage row for a completed request. Records the input / context / output
+// breakdown. IDEMPOTENT: if `requestId` was already recorded for this account, it is NOT charged
+// again (duplicate-charge guard). Fail-safe: never throws to the caller.
+// Returns { recorded, duplicate }.
+async function recordUsage({ account, client, userId, inputTokens, contextTokens, outputTokens, requestId, now }) {
   try {
     const Usage = model();
     const keys = cycleKeysFor(account, now);
+    const acctId = account && account._id ? String(account._id) : null;
+    // Duplicate-charge guard: append-only ledger + a per-request idempotency key. Since a
+    // completed request is reported exactly once, a matching requestId means an accidental
+    // re-send → skip. (A single request is never reported concurrently, so no RMW race here.)
+    if (requestId && acctId) {
+      try {
+        const existing = await Usage.find({ accountId: acctId });
+        if ((existing || []).some(r => r && String(r.requestId) === String(requestId))) {
+          return { recorded: false, duplicate: true };
+        }
+      } catch (_) { /* if the check fails, fall through and record (fail-open on the guard) */ }
+    }
     await Usage.create({
-      accountId: account && account._id ? String(account._id) : null,
+      accountId: acctId,
       proxyClientId: client && client._id ? String(client._id) : null,
       userId: userId != null ? String(userId) : null,
       cycleKey: keys.cycleKey,
       weekKey: keys.weekKey,
       inputTokens: Math.max(0, Math.trunc(Number(inputTokens) || 0)),
+      contextTokens: Math.max(0, Math.trunc(Number(contextTokens) || 0)),
       outputTokens: Math.max(0, Math.trunc(Number(outputTokens) || 0)),
-      at: new Date(),
+      requestId: requestId || null,
+      at: now ? new Date(now) : new Date(), // event time (defaults to real now in production)
       kind: 'usage',
     });
-    return true;
-  } catch (_) { return false; }
+    return { recorded: true, duplicate: false };
+  } catch (_) { return { recorded: false, duplicate: false }; }
+}
+
+// Recent settled usage rows for a (account, client), newest first — for the admin history view.
+// Safe fields only (token estimates + timestamps); never any prompt text or secret. Fail-safe.
+async function recentHistory(accountId, clientId, limit = 25) {
+  try {
+    if (!accountId) return [];
+    const Usage = model();
+    let rows = await Usage.find({ accountId: String(accountId) });
+    rows = (rows || []).filter(r => r && (!clientId || String(r.proxyClientId) === String(clientId)) && (!r.kind || r.kind === 'usage'));
+    rows.sort((a, b) => new Date(b.at || 0).getTime() - new Date(a.at || 0).getTime());
+    return rows.slice(0, Math.min(200, Math.max(1, limit))).map(r => ({
+      at: r.at || null,
+      inputTokens: Math.max(0, Math.trunc(Number(r.inputTokens) || 0)),
+      contextTokens: Math.max(0, Math.trunc(Number(r.contextTokens) || 0)),
+      outputTokens: Math.max(0, Math.trunc(Number(r.outputTokens) || 0)),
+      totalTokens: Math.max(0, Math.trunc(Number(r.totalTokens) || 0)),
+    }));
+  } catch (_) { return []; }
 }
 
 // Opportunistic cleanup: delete ledger rows older than two weekly windows so the table never
@@ -119,4 +155,4 @@ async function pruneOld(now) {
   } catch (_) { /* best-effort */ }
 }
 
-module.exports = { cycleKeysFor, usageForCycle, usageForWeek, sumRowsByKey, resolveDecision, readUsage, recordUsage, pruneOld };
+module.exports = { cycleKeysFor, usageForCycle, usageForWeek, sumRowsByKey, resolveDecision, readUsage, recordUsage, recentHistory, pruneOld };
