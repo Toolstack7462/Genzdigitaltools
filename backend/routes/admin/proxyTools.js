@@ -72,6 +72,7 @@ const schemas = {
     // Claude token-quota (claude-only; ignored for other tools): custom per-cycle allowance
     // (null → global default) and a pinned account id (null → automatic selection).
     tokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    weeklyTokenLimit: Joi.number().integer().min(0).max(1000000000).allow(null),
     pinnedAccountId: Joi.string().max(64).allow('', null),
   }),
   alertConfig: Joi.object({
@@ -86,6 +87,7 @@ const schemas = {
     notes: Joi.string().max(500).allow('', null),
     leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
     tokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    weeklyTokenLimit: Joi.number().integer().min(0).max(1000000000).allow(null),
     pinnedAccountId: Joi.string().max(64).allow('', null),
   }).min(1),
   createAccount: Joi.object({
@@ -100,6 +102,8 @@ const schemas = {
     plan: Joi.string().valid('pro', 'max5', 'max20', 'unknown'),
     cycleResetAt: Joi.date().iso().allow(null),
     weeklyResetAt: Joi.date().iso().allow(null),
+    clientTokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    weeklyClientTokenLimit: Joi.number().integer().min(0).max(1000000000).allow(null),
   }),
   updateAccount: Joi.object({
     label: Joi.string().min(1).max(120),
@@ -111,6 +115,8 @@ const schemas = {
     plan: Joi.string().valid('pro', 'max5', 'max20', 'unknown'),
     cycleResetAt: Joi.date().iso().allow(null),
     weeklyResetAt: Joi.date().iso().allow(null),
+    clientTokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    weeklyClientTokenLimit: Joi.number().integer().min(0).max(1000000000).allow(null),
   }).min(1),
   accountSession: Joi.object({ sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).required() }),
   accountStatus: Joi.object({ status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').required() }),
@@ -139,12 +145,15 @@ router.get('/:tool/quota-config', async (req, res) => {
     quota: {
       mode: claudeQuota.quotaMode(),
       defaultClientLimit: claudeQuota.defaultClientLimit(),
+      defaultWeeklyClientLimit: claudeQuota.defaultWeeklyClientLimit(),
       accountBaseTokens: claudeQuota.accountBaseTokens(),
+      accountWeeklyBaseTokens: claudeQuota.accountWeeklyBaseTokens(),
       safetyReservePct: claudeQuota.safetyReservePct(),
       charsPerToken: claudeQuota.charsPerToken(),
       cycleHours: claudeQuota.CYCLE_MS / 3600000,
+      weeklyHardFallback: claudeQuota.WEEKLY_HARD_FALLBACK,
       label: claudeQuota.USAGE_LABEL,
-      plans: plans.map(p => ({ key: p, label: claudeQuota.planLabel(p), multiplier: claudeQuota.planMultiplier(p), capacity: claudeQuota.accountCapacity(p) })),
+      plans: plans.map(p => ({ key: p, label: claudeQuota.planLabel(p), multiplier: claudeQuota.planMultiplier(p), capacity: claudeQuota.accountCapacity(p), weeklyCapacity: claudeQuota.accountWeeklyCapacity(p) })),
       // These global defaults are set via server env (documented) — surfaced read-only here so
       // the operator can SEE the active policy without exposing anything sensitive.
       envKeys: {
@@ -180,6 +189,7 @@ async function presentClient(pc) {
     // Claude token-quota (claude-only; null on other tools so their card is unchanged).
     tokenLimit: pc.tool === 'claude' ? (pc.tokenLimit ?? null) : null,
     effectiveTokenLimit: pc.tool === 'claude' ? claudeQuota.clientAllowance(pc.tokenLimit) : null,
+    weeklyTokenLimit: pc.tool === 'claude' ? (pc.weeklyTokenLimit ?? null) : null,
     pinnedAccountId: pc.tool === 'claude' ? (pc.pinnedAccountId || null) : null,
     createdAt: pc.createdAt,
     updatedAt: pc.updatedAt,
@@ -233,7 +243,7 @@ router.get('/:tool/clients', async (req, res) => {
 
 router.post('/:tool/clients', validate(schemas.createClient), async (req, res) => {
   try {
-    const { userId, planName, expiryDate, status, notes, leaseMinutes, tokenLimit } = req.body;
+    const { userId, planName, expiryDate, status, notes, leaseMinutes, tokenLimit, weeklyTokenLimit } = req.body;
     const user = await User.findById(userId).select('role');
     if (!user || user.role !== 'CLIENT') return res.status(400).json({ error: 'Target user must be an existing CRM client' });
     const existing = await ProxyClient.findOne({ userId, tool: req.proxyTool });
@@ -251,7 +261,7 @@ router.post('/:tool/clients', validate(schemas.createClient), async (req, res) =
       status: status || 'active',
       notes: notes || '',
       leaseMinutes: leaseMinutes ?? null,
-      ...(isClaude ? { tokenLimit: tokenLimit ?? null, pinnedAccountId: pin.value ?? null } : {}),
+      ...(isClaude ? { tokenLimit: tokenLimit ?? null, weeklyTokenLimit: weeklyTokenLimit ?? null, pinnedAccountId: pin.value ?? null } : {}),
       createdBy: req.userId,
     });
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLIENT_CREATED', { tool: req.proxyTool, proxyClientId: pc._id, userId, ip: getClientIp(req) });
@@ -272,6 +282,7 @@ router.put('/:tool/clients/:id', validate(schemas.updateClient), async (req, res
     // Claude-only quota fields.
     if (req.proxyTool === 'claude') {
       if (req.body.tokenLimit !== undefined) pc.tokenLimit = req.body.tokenLimit ?? null;
+      if (req.body.weeklyTokenLimit !== undefined) pc.weeklyTokenLimit = req.body.weeklyTokenLimit ?? null;
       if (req.body.pinnedAccountId !== undefined) {
         const pin = await resolvePinnedAccountId(req.proxyTool, req.body.pinnedAccountId);
         if (!pin.ok) return res.status(400).json({ error: pin.error });
@@ -314,14 +325,23 @@ router.get('/:tool/clients/:id/quota', async (req, res) => {
     const accounts = await ProxyAccount.find({ tool: req.proxyTool });
     const account = require('../../utils/proxy/accountSelect').resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
     const u = await claudeUsage.readUsage(account, pc);
-    const decision = claudeUsage.resolveDecision({ account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 0 });
+    const decision = claudeUsage.resolveDecision({
+      account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed,
+      weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming: 0,
+    });
+    // Weekly reset time is only "synced" when the official weeklyResetAt is set on the account —
+    // otherwise we never fabricate a reset time (per requirement). Usage sync = the DB read.
+    const weeklySynced = !!u.synced && !!(account && account.weeklyResetAt);
     return res.json({
       success: true,
       quota: Object.assign(claudeQuota.presentDecision(decision), {
         accountLabel: account ? account.label : null,       // operator label only — never identity
         pinned: !!pc.pinnedAccountId,
+        synced: !!u.synced,
         resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        weeklyResetAt: (account && account.weeklyResetAt) || null,
         weeklyResetInSeconds: claudeQuota.secondsUntilReset(u.keys.weekWindow),
+        weeklySynced,
       }),
     });
   } catch (err) {
@@ -389,7 +409,10 @@ function presentAccount(account, activeLeaseCount = 0) {
     planDetected: account.tool === 'claude' ? (account.planDetected || null) : null,
     cycleResetAt: account.tool === 'claude' ? (account.cycleResetAt || null) : null,
     weeklyResetAt: account.tool === 'claude' ? (account.weeklyResetAt || null) : null,
+    clientTokenLimit: account.tool === 'claude' ? (account.clientTokenLimit ?? null) : null,
+    weeklyClientTokenLimit: account.tool === 'claude' ? (account.weeklyClientTokenLimit ?? null) : null,
     estimatedCapacity: account.tool === 'claude' ? claudeQuota.accountCapacity(account.plan) : null,
+    estimatedWeeklyCapacity: account.tool === 'claude' ? claudeQuota.accountWeeklyCapacity(account.plan) : null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
   };
@@ -508,6 +531,8 @@ router.post('/:tool/accounts', validate(schemas.createAccount), async (req, res)
         plan: req.body.plan || 'unknown',
         cycleResetAt: req.body.cycleResetAt || null,
         weeklyResetAt: req.body.weeklyResetAt || null,
+        clientTokenLimit: req.body.clientTokenLimit ?? null,
+        weeklyClientTokenLimit: req.body.weeklyClientTokenLimit ?? null,
       } : {}),
       createdBy: req.userId,
     });
@@ -531,6 +556,8 @@ router.put('/:tool/accounts/:id', validate(schemas.updateAccount), async (req, r
       if (req.body.plan !== undefined) account.plan = req.body.plan;
       if (req.body.cycleResetAt !== undefined) account.cycleResetAt = req.body.cycleResetAt || null;
       if (req.body.weeklyResetAt !== undefined) account.weeklyResetAt = req.body.weeklyResetAt || null;
+      if (req.body.clientTokenLimit !== undefined) account.clientTokenLimit = req.body.clientTokenLimit ?? null;
+      if (req.body.weeklyClientTokenLimit !== undefined) account.weeklyClientTokenLimit = req.body.weeklyClientTokenLimit ?? null;
     }
     await account.save();
     if (account.isPrimary) await clearOtherPrimaries(req.proxyTool, account._id);

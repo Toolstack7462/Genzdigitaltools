@@ -16,6 +16,36 @@ const fmtDate = (d) => {
   return isNaN(dt.getTime()) ? 'No expiry' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 };
 
+// Exact reset timestamp (never fabricated — caller only passes a real weeklyResetAt).
+const fmtResetAt = (iso) => {
+  if (!iso) return 'Not synced';
+  const dt = new Date(iso);
+  return isNaN(dt.getTime()) ? 'Not synced'
+    : dt.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+};
+
+// Compact estimated-usage meter: used / limit + a thin progress bar + a reset line.
+const UsageMeter = ({ label, used, limit, grad, reset, synced = true }) => {
+  const u = Number(used || 0), l = Number(limit || 0);
+  const pct = l > 0 ? Math.min(100, (u / l) * 100) : 0;
+  const remaining = Math.max(0, l - u);
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[11px] text-genz-muted mb-1">
+        <span>{label}</span>
+        <span className="font-semibold text-genz-navy">{u.toLocaleString()} / {l.toLocaleString()}</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-genz-soft overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: grad }} />
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-genz-muted mt-0.5">
+        <span>{synced ? `${remaining.toLocaleString()} left` : ''}</span>
+        <span className={synced ? '' : 'italic'}>{reset}</span>
+      </div>
+    </div>
+  );
+};
+
 const THEME = {
   hix:       { from: 'from-sky-500',     to: 'to-cyan-500',    text: 'text-cyan-600',    grad: 'linear-gradient(135deg,#0ea5e9,#06b6d4)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fbff 100%)' },
   bypassgpt: { from: 'from-emerald-500', to: 'to-green-500',   text: 'text-emerald-600', grad: 'linear-gradient(135deg,#10b981,#22c55e)', soft: 'linear-gradient(167deg,#ffffff 0%,#f3fef8 100%)' },
@@ -82,20 +112,26 @@ const ProxyToolCard = ({ tool }) => {
       </div>
 
       {tool.usage && (
-        <div className="mb-3 -mt-1" title="Estimated local token usage — a proxy-side estimate, not Anthropic's official metering">
-          <div className="flex items-center justify-between text-[11px] text-genz-muted mb-1">
-            <span>Est. tokens this 5-hr cycle</span>
-            <span className="font-semibold text-genz-navy">
-              {Number(tool.usage.clientUsed || 0).toLocaleString()} / {Number(tool.usage.clientLimit || 0).toLocaleString()}
-            </span>
-          </div>
-          <div className="h-1.5 rounded-full bg-genz-soft overflow-hidden">
-            <div className="h-full rounded-full" style={{
-              width: `${Math.min(100, tool.usage.clientLimit ? (tool.usage.clientUsed / tool.usage.clientLimit) * 100 : 0)}%`,
-              background: theme.grad,
-            }} />
-          </div>
-          <p className="text-[10px] text-genz-muted mt-1">Estimated local token usage · resets in {Math.max(1, Math.round((tool.usage.resetInSeconds || 0) / 60))} min</p>
+        <div className="mb-3 -mt-1" title="Estimated usage — a proxy-side estimate, not Anthropic's official metering">
+          {!tool.usage.synced ? (
+            <p className="text-[11px] text-genz-muted italic">Estimated usage · Not synced</p>
+          ) : (
+            <>
+              <UsageMeter
+                label="5-hr cycle" used={tool.usage.clientUsed} limit={tool.usage.clientLimit}
+                grad={theme.grad} reset={`resets in ${Math.max(1, Math.round((tool.usage.resetInSeconds || 0) / 60))} min`}
+              />
+              <div className="mt-1.5">
+                <UsageMeter
+                  label="This week" used={tool.usage.weeklyUsed} limit={tool.usage.weeklyLimit}
+                  grad={theme.grad}
+                  reset={tool.usage.weeklySynced ? `resets ${fmtResetAt(tool.usage.weeklyResetAt)}` : 'Not synced'}
+                  synced={tool.usage.weeklySynced}
+                />
+              </div>
+              <p className="text-[10px] text-genz-muted mt-1">Estimated usage</p>
+            </>
+          )}
         </div>
       )}
 

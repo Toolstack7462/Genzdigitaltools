@@ -51,6 +51,15 @@ function accountBaseTokens() { return intEnv('CLAUDE_ACCOUNT_BASE_TOKENS', 44000
 // Safety reserve percentage (kept UNused as headroom). Default 20%.
 function safetyReservePct() { return intEnv('CLAUDE_SAFETY_RESERVE_PCT', 20, 0, 95); }
 
+// Default GLOBAL per-client WEEKLY allowance (the requested 150,000). Override with
+// CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS. A hard 200,000 fallback (below) applies only if this
+// somehow resolves to an invalid value.
+function defaultWeeklyClientLimit() { return intEnv('CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS', 150000, 0, 1e12); }
+const WEEKLY_HARD_FALLBACK = 200000; // last-resort weekly allowance per spec
+
+// Base (Pro 1x) usable estimate of a single account's WEEKLY capacity, before scaling/reserve.
+function accountWeeklyBaseTokens() { return intEnv('CLAUDE_ACCOUNT_WEEKLY_BASE_TOKENS', 300000, 0, 1e12); }
+
 // ── Plans ────────────────────────────────────────────────────────────────────
 // Canonical plan keys and their capacity multipliers relative to Pro.
 const PLANS = ['pro', 'max5', 'max20', 'unknown'];
@@ -135,11 +144,40 @@ function accountCapacity(plan, opts) {
   return Math.floor(scaled * (1 - reserve / 100));
 }
 
-// Resolve a client's effective per-cycle allowance: explicit custom limit, else the default.
-function clientAllowance(customLimit) {
-  const n = customLimit == null || customLimit === '' ? NaN : parseInt(customLimit, 10);
-  if (Number.isFinite(n) && n >= 0) return n;
-  return defaultClientLimit();
+// Resolve a client's effective FIVE-HOUR allowance by the required priority:
+//   client override → account default → global default → fallback.
+// `accountDefault` is optional (older single-arg callers get client override → global default).
+// A valid value is any finite number >= 0 (0 is a legitimate hard-stop).
+function clientAllowance(clientOverride, accountDefault) {
+  const asInt = (v) => (v == null || v === '' ? NaN : parseInt(v, 10));
+  const c = asInt(clientOverride);
+  if (Number.isFinite(c) && c >= 0) return c;            // client override
+  const a = asInt(accountDefault);
+  if (Number.isFinite(a) && a >= 0) return a;            // account default
+  return defaultClientLimit();                            // global default (env or 20,000)
+}
+
+// The shared per-account WEEKLY capacity, scaled by plan and net of the safety reserve.
+function accountWeeklyCapacity(plan, opts) {
+  const o = opts || {};
+  const base = o.baseTokens != null ? Math.max(0, Math.trunc(o.baseTokens)) : accountWeeklyBaseTokens();
+  const reserve = o.reservePct != null ? Math.min(95, Math.max(0, o.reservePct)) : safetyReservePct();
+  const scaled = base * planMultiplier(plan);
+  return Math.floor(scaled * (1 - reserve / 100));
+}
+
+// Resolve a client's effective WEEKLY allowance by the required priority:
+//   client override → account default → global default → 200,000 hard fallback.
+// A valid number is any finite value >= 0 (0 is a legitimate hard-stop).
+function weeklyClientAllowance(clientOverride, accountDefault) {
+  const asInt = (v) => (v == null || v === '' ? NaN : parseInt(v, 10));
+  const c = asInt(clientOverride);
+  if (Number.isFinite(c) && c >= 0) return c;         // client override
+  const a = asInt(accountDefault);
+  if (Number.isFinite(a) && a >= 0) return a;         // account default
+  const g = defaultWeeklyClientLimit();               // global default (env or 150,000)
+  if (Number.isFinite(g) && g >= 0) return g;
+  return WEEKLY_HARD_FALLBACK;                          // last-resort fallback
 }
 
 /**
@@ -156,26 +194,50 @@ function clientAllowance(customLimit) {
  */
 function checkAllowance(input) {
   const i = input || {};
+  const N = (v) => Math.max(0, Math.trunc(Number(v) || 0));
   const clientLimit = Math.max(0, Math.trunc(Number(i.clientLimit != null ? i.clientLimit : defaultClientLimit())));
-  const clientUsed = Math.max(0, Math.trunc(Number(i.clientUsed) || 0));
-  const capacity = Math.max(0, Math.trunc(Number(i.accountCapacity) || 0));
-  const accountUsed = Math.max(0, Math.trunc(Number(i.accountUsed) || 0));
-  const estIncoming = Math.max(0, Math.trunc(Number(i.estIncoming) || 0));
+  const clientUsed = N(i.clientUsed);
+  const capacity = N(i.accountCapacity);
+  const accountUsed = N(i.accountUsed);
+  const estIncoming = N(i.estIncoming);
 
   const clientRemaining = Math.max(0, clientLimit - clientUsed);
   const accountRemaining = Math.max(0, capacity - accountUsed);
 
+  // Weekly params are OPTIONAL — when omitted, the weekly gates are skipped entirely, so the
+  // five-hour-only callers (and their tests) are unaffected.
+  const hasWeekly = i.weeklyClientLimit != null || i.weeklyAccountCapacity != null;
+  const weeklyClientLimit = i.weeklyClientLimit != null ? Math.max(0, Math.trunc(Number(i.weeklyClientLimit))) : null;
+  const weeklyClientUsed = N(i.weeklyClientUsed);
+  const weeklyAccountCapacity = i.weeklyAccountCapacity != null ? Math.max(0, Math.trunc(Number(i.weeklyAccountCapacity))) : null;
+  const weeklyAccountUsed = N(i.weeklyAccountUsed);
+  const weeklyClientRemaining = weeklyClientLimit != null ? Math.max(0, weeklyClientLimit - weeklyClientUsed) : null;
+  const weeklyAccountRemaining = weeklyAccountCapacity != null ? Math.max(0, weeklyAccountCapacity - weeklyAccountUsed) : null;
+
+  // Deny on the FIRST gate crossed. Order: five-hour client → five-hour account →
+  // weekly client → weekly account. `reason` names exactly which one.
   let allowed = true;
   let reason = null;
   if (clientUsed + estIncoming > clientLimit) { allowed = false; reason = 'client_limit'; }
   else if (accountUsed + estIncoming > capacity) { allowed = false; reason = 'account_capacity'; }
+  else if (weeklyClientLimit != null && weeklyClientUsed + estIncoming > weeklyClientLimit) { allowed = false; reason = 'weekly_client_limit'; }
+  else if (weeklyAccountCapacity != null && weeklyAccountUsed + estIncoming > weeklyAccountCapacity) { allowed = false; reason = 'weekly_account_capacity'; }
 
-  return {
+  const out = {
     allowed, reason,
     clientLimit, clientUsed, clientRemaining,
     accountCapacity: capacity, accountUsed, accountRemaining,
     estIncoming, label: USAGE_LABEL,
   };
+  if (hasWeekly) {
+    out.weeklyClientLimit = weeklyClientLimit;
+    out.weeklyClientUsed = weeklyClientUsed;
+    out.weeklyClientRemaining = weeklyClientRemaining;
+    out.weeklyAccountCapacity = weeklyAccountCapacity;
+    out.weeklyAccountUsed = weeklyAccountUsed;
+    out.weeklyAccountRemaining = weeklyAccountRemaining;
+  }
+  return out;
 }
 
 // ── Enforcement mode ─────────────────────────────────────────────────────────
@@ -198,6 +260,9 @@ function presentDecision(d) {
     allowed: !!d.allowed, reason: d.reason || null,
     clientLimit: d.clientLimit ?? null, clientUsed: d.clientUsed ?? null, clientRemaining: d.clientRemaining ?? null,
     accountUsed: d.accountUsed ?? null, accountCapacity: d.accountCapacity ?? null, accountRemaining: d.accountRemaining ?? null,
+    // Weekly figures (null when the caller didn't compute weekly).
+    weeklyClientLimit: d.weeklyClientLimit ?? null, weeklyClientUsed: d.weeklyClientUsed ?? null, weeklyClientRemaining: d.weeklyClientRemaining ?? null,
+    weeklyAccountUsed: d.weeklyAccountUsed ?? null, weeklyAccountCapacity: d.weeklyAccountCapacity ?? null, weeklyAccountRemaining: d.weeklyAccountRemaining ?? null,
     plan: d.plan || null, planLabel: d.planLabel || null,
     label: USAGE_LABEL,
   };
@@ -210,7 +275,8 @@ module.exports = {
   PLANS, PLAN_MULTIPLIER, PLAN_LABEL,
   isValidPlan, normalizePlan, planMultiplier, planLabel,
   charsPerToken, defaultClientLimit, accountBaseTokens, safetyReservePct,
+  defaultWeeklyClientLimit, accountWeeklyBaseTokens, WEEKLY_HARD_FALLBACK,
   tokensFromChars, tokensFromText, estimateRequestTokens,
   cycleWindow, fiveHourWindow, weeklyWindow, secondsUntilReset,
-  accountCapacity, clientAllowance, checkAllowance,
+  accountCapacity, clientAllowance, accountWeeklyCapacity, weeklyClientAllowance, checkAllowance,
 };

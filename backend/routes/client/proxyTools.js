@@ -61,12 +61,26 @@ async function presentAssigned(pc) {
   if (pc.tool === 'claude' && claudeQuota.quotaMode() !== 'off') {
     try {
       const u = await claudeUsage.readUsage(account, pc);
-      const decision = claudeUsage.resolveDecision({ account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 0 });
+      const decision = claudeUsage.resolveDecision({
+        account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed,
+        weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming: 0,
+      });
+      // Weekly reset time is shown ONLY when the account's official weeklyResetAt is set —
+      // otherwise weeklySynced=false → the widget shows "Not synced" (never a fabricated time).
+      const weeklySynced = !!u.synced && !!(account && account.weeklyResetAt);
       usage = {
+        synced: !!u.synced,
         clientLimit: decision.clientLimit,
         clientUsed: decision.clientUsed,
         clientRemaining: decision.clientRemaining,
         resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        // Weekly figures (labeled "Estimated usage" in the widget).
+        weeklyLimit: decision.weeklyClientLimit,
+        weeklyUsed: decision.weeklyClientUsed,
+        weeklyRemaining: decision.weeklyClientRemaining,
+        weeklyResetAt: (account && account.weeklyResetAt) || null,
+        weeklyResetInSeconds: claudeQuota.secondsUntilReset(u.keys.weekWindow),
+        weeklySynced,
         label: claudeQuota.USAGE_LABEL,
       };
     } catch (_) { usage = null; }
@@ -154,23 +168,31 @@ router.post('/:tool/open', async (req, res) => {
     if (tool === 'claude' && claudeQuota.quotaMode() !== 'off') {
       try {
         const u = await claudeUsage.readUsage(account, client);
-        // estIncoming=1 → denies only when there is literally no room left.
-        const decision = claudeUsage.resolveDecision({ account, client, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 1 });
+        // estIncoming=1 → denies only when there is literally no room left (5-hour OR weekly).
+        const decision = claudeUsage.resolveDecision({
+          account, client, clientUsed: u.clientUsed, accountUsed: u.accountUsed,
+          weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming: 1,
+        });
         if (!decision.allowed) {
           await ActivityLog.log('CLIENT', req.userId, 'PROXY_CLAUDE_QUOTA_BLOCK_OPEN', {
             tool, proxyClientId: client._id, reason: decision.reason,
             clientUsed: decision.clientUsed, clientLimit: decision.clientLimit,
             accountUsed: decision.accountUsed, accountCapacity: decision.accountCapacity,
+            weeklyClientUsed: decision.weeklyClientUsed, weeklyClientLimit: decision.weeklyClientLimit,
             ip: getClientIp(req),
           });
-          const resetIn = claudeQuota.secondsUntilReset(u.keys.fiveWindow);
-          const mins = Math.max(1, Math.round(resetIn / 60));
+          const weekly = decision.reason === 'weekly_client_limit' || decision.reason === 'weekly_account_capacity';
+          const resetIn = claudeQuota.secondsUntilReset(weekly ? u.keys.weekWindow : u.keys.fiveWindow);
+          const window = weekly ? 'weekly' : '5-hour';
+          const shared = decision.reason === 'account_capacity' || decision.reason === 'weekly_account_capacity';
+          // For a weekly window, show hours; for the 5-hour window, minutes.
+          const eta = weekly ? `${Math.max(1, Math.round(resetIn / 3600))} hour(s)` : `${Math.max(1, Math.round(resetIn / 60))} minute(s)`;
           return res.status(429).json({
-            error: decision.reason === 'account_capacity'
-              ? `This Claude account has reached its estimated capacity for the current 5-hour cycle. It resets in about ${mins} minute(s).`
-              : `You have reached your estimated Claude token allowance for the current 5-hour cycle. It resets in about ${mins} minute(s).`,
+            error: shared
+              ? `This Claude account has reached its estimated ${window} capacity. It resets in about ${eta}.`
+              : `You have reached your estimated Claude token allowance for the current ${window} cycle. It resets in about ${eta}.`,
             code: 'quota_exceeded',
-            usage: Object.assign(claudeQuota.presentDecision(decision), { resetInSeconds: resetIn }),
+            usage: Object.assign(claudeQuota.presentDecision(decision), { resetInSeconds: resetIn, window }),
           });
         }
       } catch (_) { /* fail-open: never block a launch on a metering error */ }

@@ -39,6 +39,13 @@ const ProxyClient = createModel('ProxyClient', {
         const t = parseInt(data.tokenLimit, 10);
         data.tokenLimit = Number.isFinite(t) && t >= 0 ? Math.min(100000000, t) : null;
       }
+      // `weeklyTokenLimit` = this client's custom WEEKLY allowance; null → account/global default.
+      if (data.weeklyTokenLimit === undefined || data.weeklyTokenLimit === null || data.weeklyTokenLimit === '') {
+        data.weeklyTokenLimit = null;
+      } else {
+        const w = parseInt(data.weeklyTokenLimit, 10);
+        data.weeklyTokenLimit = Number.isFinite(w) && w >= 0 ? Math.min(1000000000, w) : null;
+      }
     }
     return data;
   },

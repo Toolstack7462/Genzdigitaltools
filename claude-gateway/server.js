@@ -653,11 +653,16 @@ a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:
 // break the app's fetch handler). Carries only an estimated-usage message; no secret.
 function sendQuotaBlock(res, info) {
   const usage = (info && info.usage) || {};
-  const mins = info && info.resetInSeconds ? Math.max(1, Math.round(info.resetInSeconds / 60)) : null;
-  const tail = mins ? ` It resets in about ${mins} minute(s).` : '';
-  const msg = (usage.reason === 'account_capacity')
-    ? `This Claude account has reached its estimated local token capacity for the current 5-hour cycle.${tail}`
-    : `You have reached your estimated local Claude token allowance for the current 5-hour cycle.${tail}`;
+  const weekly = usage.reason === 'weekly_client_limit' || usage.reason === 'weekly_account_capacity';
+  const window = (info && info.window) || (weekly ? 'weekly' : '5-hour');
+  const secs = info && info.resetInSeconds ? info.resetInSeconds : 0;
+  const tail = secs
+    ? ` It resets in about ${weekly ? Math.max(1, Math.round(secs / 3600)) + ' hour(s)' : Math.max(1, Math.round(secs / 60)) + ' minute(s)'}.`
+    : '';
+  const shared = usage.reason === 'account_capacity' || usage.reason === 'weekly_account_capacity';
+  const msg = shared
+    ? `This Claude account has reached its estimated local token capacity for the current ${window} cycle.${tail}`
+    : `You have reached your estimated local Claude token allowance for the current ${window} cycle.${tail}`;
   const payload = JSON.stringify({ error: { type: 'genz_quota_exceeded', message: msg }, genz_estimated_local_usage: true });
   try {
     if (!res.headersSent) res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });

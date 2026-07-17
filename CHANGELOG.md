@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] — Claude Weekly Limit + Per-Client Override Fix
+
+Claude-only, additive. No other proxy tool, auth, payment, database, Personal/Team logic,
+session behaviour, or unrelated file changed.
+
+**Weekly token limit** (parallel to the existing five-hour limit):
+- Default **150,000 estimated tokens/week** per client (system fallback 200,000), configurable.
+- Priority **client override → Claude-account default → global default → fallback**, for BOTH
+  the five-hour and weekly limits (the five-hour limit gained an account-default tier so both
+  match). Five-hour and weekly overrides are stored separately.
+- Shared per-account **weekly capacity** is enforced (plan-scaled, with the 20% reserve).
+- The client widget shows both cycles (used, remaining, thin bar, **exact** weekly reset time)
+  and **"Not synced"** when usage/reset data is unavailable — never a fabricated value. All token
+  figures labelled **"Estimated usage."**
+- Weekly usage buckets on the shared append-only ledger → rolls over atomically at the official
+  weekly reset and cannot be bypassed by concurrent requests.
+
+**Bug fix — per-client token-limit override not applied on edit.** Root cause: the admin
+Proxy-Tools page `saveClient()` sent only `planName/expiryDate/status/leaseMinutes` when EDITING
+a client, silently dropping `tokenLimit`, `weeklyTokenLimit` and `pinnedAccountId` that the form
+collected — so changing a client's limit never reached the backend and the client kept the
+default. Fixed by forwarding those fields on update (undefined for non-Claude tools → omitted).
+Added an end-to-end test (`claudeLimitOverride.test.js`) driving the real model + adapter:
+increase/decrease, `0` hard-stop, override removal, numeric-string coercion, separate storage,
+persistence/restart, and the priority tiers.
+
 ## [Unreleased] — Claude Token Quota (Estimated Local Usage)
 
 Isolated, additive, **Claude-only** token-quota metering. No other proxy tool and no

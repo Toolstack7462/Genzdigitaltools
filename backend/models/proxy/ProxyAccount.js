@@ -38,6 +38,22 @@ const ProxyAccount = createModel('ProxyAccount', {
       if (data.planDetected === undefined) data.planDetected = null;
       if (data.cycleResetAt === undefined) data.cycleResetAt = null;
       if (data.weeklyResetAt === undefined) data.weeklyResetAt = null;
+      // Account-level DEFAULT FIVE-HOUR allowance for its clients (used when a client has no
+      // explicit five-hour override; itself falls back to the global default). null → unset.
+      if (data.clientTokenLimit === undefined || data.clientTokenLimit === null || data.clientTokenLimit === '') {
+        data.clientTokenLimit = null;
+      } else {
+        const c = parseInt(data.clientTokenLimit, 10);
+        data.clientTokenLimit = Number.isFinite(c) && c >= 0 ? Math.min(100000000, c) : null;
+      }
+      // Account-level DEFAULT weekly allowance for its clients (used when a client has no
+      // explicit weekly override; itself falls back to the global default). null → unset.
+      if (data.weeklyClientTokenLimit === undefined || data.weeklyClientTokenLimit === null || data.weeklyClientTokenLimit === '') {
+        data.weeklyClientTokenLimit = null;
+      } else {
+        const w = parseInt(data.weeklyClientTokenLimit, 10);
+        data.weeklyClientTokenLimit = Number.isFinite(w) && w >= 0 ? Math.min(1000000000, w) : null;
+      }
     }
     return data;
   },

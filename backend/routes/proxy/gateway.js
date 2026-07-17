@@ -306,7 +306,8 @@ router.post('/quota-precheck', requireGatewayKey, async (req, res) => {
     const u = await claudeUsage.readUsage(ctx.account, ctx.client);
     const decision = claudeUsage.resolveDecision({
       account: ctx.account, client: ctx.client,
-      clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming,
+      clientUsed: u.clientUsed, accountUsed: u.accountUsed,
+      weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming,
     });
     const enforced = mode === 'enforce';
     const allowed = enforced ? decision.allowed : true;
@@ -318,9 +319,13 @@ router.post('/quota-precheck', requireGatewayKey, async (req, res) => {
         accountUsed: decision.accountUsed, accountCapacity: decision.accountCapacity,
       }).catch(() => {});
     }
+    // Return the reset countdown for the window that actually blocked (weekly vs five-hour), so
+    // the gateway's block notice shows the correct "resets in …".
+    const weekly = decision.reason === 'weekly_client_limit' || decision.reason === 'weekly_account_capacity';
     return res.json({
       ok: true, allowed, mode, estIncoming,
-      resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+      window: weekly ? 'weekly' : '5-hour',
+      resetInSeconds: claudeQuota.secondsUntilReset(weekly ? u.keys.weekWindow : u.keys.fiveWindow),
       usage: claudeQuota.presentDecision(decision),
     });
   } catch (err) {

@@ -208,8 +208,16 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   // ── Client actions ──────────────────────────────────────────────────────────
   const saveClient = async (form) => {
     try {
-      if (editClient) await proxyToolsAdmin.updateClient(tool, editClient.id, { planName: form.planName, expiryDate: form.expiryDate || null, status: form.status, leaseMinutes: form.leaseMinutes });
-      else await proxyToolsAdmin.createClient(tool, form);
+      if (editClient) {
+        // Forward the Claude quota override fields too — previously only planName/expiry/status/
+        // leaseMinutes were sent on EDIT, so token-limit / pinned-account changes were silently
+        // dropped. These keys are `undefined` for non-Claude tools (JSON omits them → unchanged).
+        await proxyToolsAdmin.updateClient(tool, editClient.id, {
+          planName: form.planName, expiryDate: form.expiryDate || null, status: form.status,
+          leaseMinutes: form.leaseMinutes,
+          tokenLimit: form.tokenLimit, weeklyTokenLimit: form.weeklyTokenLimit, pinnedAccountId: form.pinnedAccountId,
+        });
+      } else await proxyToolsAdmin.createClient(tool, form);
       showSuccess('Access saved'); setShowClientModal(false); setEditClient(null); load();
     } catch (e) { showError(e.response?.data?.error || 'Failed to save access'); }
   };
@@ -386,8 +394,12 @@ const ClientAccess = ({ clients, onEdit, onRevoke, onRemove }) => {
                 <p className="font-semibold text-genz-navy text-sm">{c.user?.fullName || '—'}</p>
                 <p className="text-xs text-genz-muted">{c.user?.email}</p>
                 {c.effectiveTokenLimit != null && (
-                  <p className="text-[11px] text-genz-muted" title="Estimated local token allowance per 5-hour cycle">
-                    Limit: {Number(c.effectiveTokenLimit).toLocaleString()} tok/5h{c.tokenLimit == null ? ' (default)' : ''}{c.pinnedAccountId ? ' · pinned account' : ''}
+                  <p className="text-[11px] text-genz-muted" title="Estimated token allowance per 5-hour cycle / per week — Custom = per-client override; Default = inherited">
+                    5h: {Number(c.effectiveTokenLimit).toLocaleString()} <span className={c.tokenLimit != null ? 'text-genz-teal font-semibold' : ''}>({c.tokenLimit != null ? 'Custom' : 'Default'})</span>
+                    {' · wk: '}{c.weeklyTokenLimit != null
+                      ? <>{Number(c.weeklyTokenLimit).toLocaleString()} <span className="text-genz-teal font-semibold">(Custom)</span></>
+                      : <span>(Default)</span>}
+                    {c.pinnedAccountId ? ' · pinned' : ''}
                   </p>
                 )}
               </td>
@@ -458,6 +470,8 @@ const AccountModal = ({ account, tool, toolName, onClose, onSave }) => {
     sessionBundle: '', status: account?.status || 'active', priority: account?.priority ?? 100, isPrimary: account?.isPrimary || false,
     plan: account?.plan || 'unknown',
     cycleResetAt: toDateTimeInput(account?.cycleResetAt), weeklyResetAt: toDateTimeInput(account?.weeklyResetAt),
+    clientTokenLimit: account?.clientTokenLimit != null ? String(account.clientTokenLimit) : '',
+    weeklyClientTokenLimit: account?.weeklyClientTokenLimit != null ? String(account.weeklyClientTokenLimit) : '',
   });
   const submit = () => {
     if (!f.label.trim()) return;
@@ -468,6 +482,8 @@ const AccountModal = ({ account, tool, toolName, onClose, onSave }) => {
       body.plan = f.plan;
       body.cycleResetAt = fromDateTimeInput(f.cycleResetAt);
       body.weeklyResetAt = fromDateTimeInput(f.weeklyResetAt);
+      body.clientTokenLimit = f.clientTokenLimit === '' ? null : Math.max(0, parseInt(f.clientTokenLimit, 10) || 0);
+      body.weeklyClientTokenLimit = f.weeklyClientTokenLimit === '' ? null : Math.max(0, parseInt(f.weeklyClientTokenLimit, 10) || 0);
     }
     onSave(body);
   };
@@ -503,6 +519,21 @@ const AccountModal = ({ account, tool, toolName, onClose, onSave }) => {
                 <input type="datetime-local" className={field} value={f.weeklyResetAt} onChange={e => setF({ ...f, weeklyResetAt: e.target.value })} />
               </div>
               <p className="text-[11px] text-genz-muted -mt-1">All clients on this account share these reset times. Enter or correct them from Claude's official cycle. Blank = anchor on account creation time.</p>
+              <div>
+                <label className={labelCls}>Account default 5-hr allowance / client (optional)</label>
+                <input type="number" min={0} className={field} value={f.clientTokenLimit}
+                  onChange={e => setF({ ...f, clientTokenLimit: e.target.value })} placeholder="uses global default (20,000)" />
+                <p className="text-[11px] text-genz-muted mt-1">Per-client 5-hour allowance for clients on THIS account (unless a client has its own override). Blank = global default.</p>
+              </div>
+              <div>
+                <label className={labelCls}>Account default weekly allowance / client (optional)</label>
+                <input type="number" min={0} className={field} value={f.weeklyClientTokenLimit}
+                  onChange={e => setF({ ...f, weeklyClientTokenLimit: e.target.value })} placeholder="uses global default (150,000)" />
+                <p className="text-[11px] text-genz-muted mt-1">Per-client weekly allowance for clients on THIS account (unless a client has its own override). Blank = global default.</p>
+              </div>
+              {account?.estimatedWeeklyCapacity != null && (
+                <p className="text-[11px] text-genz-muted">Est. shared weekly capacity: <span className="font-semibold text-genz-navy">{Number(account.estimatedWeeklyCapacity).toLocaleString()}</span> tokens/week (after reserve)</p>
+              )}
             </div>
           </div>
         )}
@@ -550,6 +581,7 @@ const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearch
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
     leaseMinutes: client?.leaseMinutes != null ? String(client.leaseMinutes) : '',
     tokenLimit: client?.tokenLimit != null ? String(client.tokenLimit) : '',
+    weeklyTokenLimit: client?.weeklyTokenLimit != null ? String(client.weeklyTokenLimit) : '',
     pinnedAccountId: client?.pinnedAccountId || '',
   });
   const taken = new Set((existing || []).map(c => String(c.userId)));
@@ -560,8 +592,9 @@ const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearch
     const lm = f.leaseMinutes === '' ? null : Math.min(1440, Math.max(1, parseInt(f.leaseMinutes, 10) || 0)) || null;
     const body = { userId: f.userId, planName: f.planName, expiryDate: f.expiryDate || null, status: f.status, leaseMinutes: lm };
     if (isClaude) {
-      // Blank token limit → null = fall back to the global default (20,000).
+      // Blank token limit → null = fall back to the global default (20,000 / 150,000).
       body.tokenLimit = f.tokenLimit === '' ? null : Math.max(0, parseInt(f.tokenLimit, 10) || 0);
+      body.weeklyTokenLimit = f.weeklyTokenLimit === '' ? null : Math.max(0, parseInt(f.weeklyTokenLimit, 10) || 0);
       body.pinnedAccountId = f.pinnedAccountId || null;
     }
     onSave(body);
@@ -604,7 +637,13 @@ const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearch
               <label className={labelCls}>Custom token allowance / 5-hr cycle (optional)</label>
               <input type="number" min={0} className={field} value={f.tokenLimit}
                 onChange={e => setF({ ...f, tokenLimit: e.target.value })} placeholder="default 20,000" />
-              <p className="text-[11px] text-genz-muted mt-1">Estimated local tokens this client may use per official 5-hour cycle. Blank = global default (20,000). 0 = block.</p>
+              <p className="text-[11px] text-genz-muted mt-1">Estimated tokens this client may use per official 5-hour cycle. Blank = global default (20,000). 0 = block.</p>
+            </div>
+            <div>
+              <label className={labelCls}>Custom token allowance / week (optional)</label>
+              <input type="number" min={0} className={field} value={f.weeklyTokenLimit}
+                onChange={e => setF({ ...f, weeklyTokenLimit: e.target.value })} placeholder="default 150,000" />
+              <p className="text-[11px] text-genz-muted mt-1">Estimated tokens per week. Priority: this override → account default → global default (150,000). 0 = block.</p>
             </div>
             <div>
               <label className={labelCls}>Assigned Claude account</label>

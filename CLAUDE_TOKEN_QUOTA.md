@@ -12,8 +12,12 @@ no Claude credential, cookie, session or account internal is ever exposed.
   auto-detected from claude.ai's authenticated API **when reliable information is available**;
   the result is advisory. An admin can always set/override the plan manually (Pro / Max 5× /
   Max 20× / Unknown). Manual selection wins.
-- **Per-client allowance.** Default **20,000 estimated tokens per official five-hour cycle**,
-  configurable globally and per client (a custom limit; `0` hard-stops a client).
+- **Per-client allowance (five-hour AND weekly).** Defaults: **20,000 estimated tokens per
+  official five-hour cycle** and **150,000 per week**, both configurable. Each limit resolves by
+  the priority **client override → Claude-account default → global default → system fallback**
+  (5-hour fallback 20,000; weekly fallback 200,000). `0` is a valid hard-stop at any level. The
+  five-hour and weekly overrides are stored **separately** — changing one never overwrites the
+  other, and removing an override returns the client to the inherited default.
 - **Account assignment.** Each client can be **pinned** to a specific Claude account or left on
   **automatic** selection. All clients on one account **share that account's** five-hour and
   weekly reset times.
@@ -22,9 +26,12 @@ no Claude credential, cookie, session or account internal is ever exposed.
 - **Capacity scaling + safety reserve.** Shared per-account capacity = `base × plan multiplier ×
   (1 − reserve)`. Multipliers: Pro 1×, Max 5×, Max 20×. A configurable **20% safety reserve** is
   always withheld.
-- **Two-sided check.** Before a request is allowed, **both** the client allowance **and** the
-  shared account capacity are checked. Input, output, system-prompt, context and attachment
-  characters are all counted.
+- **Four-sided check.** Before a request is allowed, **all** of these are checked: the client's
+  five-hour allowance, the shared account's five-hour capacity, the client's weekly allowance,
+  and the shared account's weekly capacity. Input, output, system-prompt, context and attachment
+  characters are all counted. The widget shows both cycles (used, remaining, a thin bar, and the
+  exact reset time), or **"Not synced"** when usage or the official reset time is unavailable —
+  values are never fabricated.
 
 ## Enforcement modes — `CLAUDE_QUOTA_MODE`
 
@@ -45,8 +52,10 @@ metering problem never blocks Claude.
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `CLAUDE_QUOTA_MODE` | `count` | `off` / `count` / `enforce` (see above). |
-| `CLAUDE_DEFAULT_CLIENT_TOKENS` | `20000` | Default per-client allowance per five-hour cycle. |
-| `CLAUDE_ACCOUNT_BASE_TOKENS` | `44000` | Pro (1×) base capacity per cycle, before scaling/reserve. |
+| `CLAUDE_DEFAULT_CLIENT_TOKENS` | `20000` | Global default per-client allowance per five-hour cycle. |
+| `CLAUDE_DEFAULT_WEEKLY_CLIENT_TOKENS` | `150000` | Global default per-client allowance per week (system fallback 200,000). |
+| `CLAUDE_ACCOUNT_BASE_TOKENS` | `44000` | Pro (1×) base five-hour capacity, before scaling/reserve. |
+| `CLAUDE_ACCOUNT_WEEKLY_BASE_TOKENS` | `300000` | Pro (1×) base weekly capacity, before scaling/reserve. |
 | `CLAUDE_SAFETY_RESERVE_PCT` | `20` | Percent of capacity withheld as headroom. |
 | `CLAUDE_CHARS_PER_TOKEN` | `4` | Chars-per-token estimation ratio. |
 | `CLAUDE_COMPLETION_PATH_RE` | *(built-in)* | Override the completion-endpoint detection regex. |
