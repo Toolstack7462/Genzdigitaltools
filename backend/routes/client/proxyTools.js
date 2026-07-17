@@ -19,6 +19,8 @@ const { requireAuth, requireRole, getClientIp } = require('../../middleware/auth
 const accountSelect = require('../../utils/proxy/accountSelect');
 const leaseUtil = require('../../utils/proxy/lease');
 const tools = require('../../utils/proxy/tools');
+const claudeQuota = require('../../utils/proxy/claudeQuota');
+const claudeUsage = require('../../utils/proxy/claudeUsage');
 const { recordPresence } = require('../../utils/presence');
 
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
@@ -41,11 +43,34 @@ async function presentAssigned(pc) {
   // chosen label — never the email, cookies, tokens or session ids. Fail-safe:
   // any error just omits the label. Display-only; does not affect selection.
   let accountLabel = null;
+  let account = null;
   try {
     const accounts = await ProxyAccount.find({ tool: pc.tool });
-    const account = accounts.length ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    // Claude honours a pinned account; every other tool uses automatic selection unchanged.
+    if (pc.tool === 'claude') {
+      account = accountSelect.resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
+    } else {
+      account = accounts.length ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    }
     if (account) accountLabel = account.label || 'Account';
   } catch (_) { /* non-fatal — card simply omits the account label */ }
+
+  // Claude-only: attach an ESTIMATED local token-usage summary (never any secret) so the
+  // client's tool card can show remaining allowance. Fail-safe: omitted on any error.
+  let usage = null;
+  if (pc.tool === 'claude' && claudeQuota.quotaMode() !== 'off') {
+    try {
+      const u = await claudeUsage.readUsage(account, pc);
+      const decision = claudeUsage.resolveDecision({ account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 0 });
+      usage = {
+        clientLimit: decision.clientLimit,
+        clientUsed: decision.clientUsed,
+        clientRemaining: decision.clientRemaining,
+        resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        label: claudeQuota.USAGE_LABEL,
+      };
+    } catch (_) { usage = null; }
+  }
 
   return {
     tool: pc.tool,
@@ -59,6 +84,7 @@ async function presentAssigned(pc) {
     expiryDate: pc.expiryDate || null,
     leaseMinutes: resolveLeaseMinutes(pc), // drives the "Secure N-minute session" card label
     accountLabel,                          // small safe "Using <account>" label on the card
+    usage,                                 // claude-only estimated-usage summary (null otherwise)
   };
 }
 
@@ -89,7 +115,17 @@ router.post('/:tool/open', async (req, res) => {
 
     // ── Account Vault selection (per tool) ─────────────────────────────────
     const accounts = await ProxyAccount.find({ tool });
-    const account = accounts.length > 0 ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    // Claude: honour a pinned account (strict — never silently switch a pinned client to a
+    // different account, which would break its shared reset grouping). Every other tool keeps
+    // the exact automatic selection it had before.
+    let account, pinnedStrictUnavailable = false;
+    if (tool === 'claude') {
+      const r = accountSelect.resolveAccount(accounts, SELECTION_MODE, client.pinnedAccountId);
+      account = r.account;
+      pinnedStrictUnavailable = r.pinned && !account; // pinned account exists but is unusable
+    } else {
+      account = accounts.length > 0 ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
+    }
     if (!account) {
       // No usable vault session (none saved, or all expired/blocked/limit-reached). NEVER
       // open a cookie-less proxy session — for these logged-in tools that would just show
@@ -101,11 +137,43 @@ router.post('/:tool/open', async (req, res) => {
       await ActivityLog.log('CLIENT', req.userId, 'PROXY_NO_ACCOUNT_AVAILABLE', { tool, accountsTotal: accounts.length, reasons, ip: getClientIp(req) });
       const toolName = (tools.publicInfo(tool) || {}).name || tool;
       return res.status(503).json({
-        error: anyExpired
-          ? `${toolName} needs to sign in again and is being refreshed. Please try again shortly or contact support.`
-          : `${toolName} is being set up and isn't available yet. Please try again shortly or contact support.`,
-        code: anyExpired ? 'session_expired' : 'no_account_available',
+        error: pinnedStrictUnavailable
+          ? `Your assigned ${toolName} account needs to sign in again and is being refreshed. Please try again shortly or contact support.`
+          : anyExpired
+            ? `${toolName} needs to sign in again and is being refreshed. Please try again shortly or contact support.`
+            : `${toolName} is being set up and isn't available yet. Please try again shortly or contact support.`,
+        code: anyExpired || pinnedStrictUnavailable ? 'session_expired' : 'no_account_available',
       });
+    }
+
+    // ── Claude token quota — coarse OPEN gate ──────────────────────────────
+    // In 'count'/'enforce' modes, refuse to START a new session when the client (or the shared
+    // account) has ZERO estimated allowance left in the current five-hour cycle. This uses only
+    // DB-summed integer estimates — no Claude body parsing — so it is safe. Per-message
+    // enforcement (mode 'enforce') happens at the gateway. Fail-open on any error.
+    if (tool === 'claude' && claudeQuota.quotaMode() !== 'off') {
+      try {
+        const u = await claudeUsage.readUsage(account, client);
+        // estIncoming=1 → denies only when there is literally no room left.
+        const decision = claudeUsage.resolveDecision({ account, client, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 1 });
+        if (!decision.allowed) {
+          await ActivityLog.log('CLIENT', req.userId, 'PROXY_CLAUDE_QUOTA_BLOCK_OPEN', {
+            tool, proxyClientId: client._id, reason: decision.reason,
+            clientUsed: decision.clientUsed, clientLimit: decision.clientLimit,
+            accountUsed: decision.accountUsed, accountCapacity: decision.accountCapacity,
+            ip: getClientIp(req),
+          });
+          const resetIn = claudeQuota.secondsUntilReset(u.keys.fiveWindow);
+          const mins = Math.max(1, Math.round(resetIn / 60));
+          return res.status(429).json({
+            error: decision.reason === 'account_capacity'
+              ? `This Claude account has reached its estimated capacity for the current 5-hour cycle. It resets in about ${mins} minute(s).`
+              : `You have reached your estimated Claude token allowance for the current 5-hour cycle. It resets in about ${mins} minute(s).`,
+            code: 'quota_exceeded',
+            usage: Object.assign(claudeQuota.presentDecision(decision), { resetInSeconds: resetIn }),
+          });
+        }
+      } catch (_) { /* fail-open: never block a launch on a metering error */ }
     }
 
     const leaseMinutes = resolveLeaseMinutes(client);

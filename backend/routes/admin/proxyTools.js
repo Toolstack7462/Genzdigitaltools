@@ -30,7 +30,20 @@ const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/app
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
+const claudeQuota = require('../../utils/proxy/claudeQuota');
+const claudeUsage = require('../../utils/proxy/claudeUsage');
 const { isEmailEnabled } = require('../../utils/email');
+
+// Validate a Claude pinned-account id: '' / null clears the pin; a value must reference an
+// existing account of THIS tool (prevents cross-tool / arbitrary-id assignment — IDOR-safe).
+// Returns { ok, value } or { ok:false, error }.
+async function resolvePinnedAccountId(tool, raw) {
+  if (raw === undefined) return { ok: true, value: undefined };   // not being changed
+  if (raw === '' || raw === null) return { ok: true, value: null }; // explicit clear
+  const acct = await ProxyAccount.findById(String(raw));
+  if (!acct || acct.tool !== tool) return { ok: false, error: 'Pinned account not found for this tool' };
+  return { ok: true, value: String(acct._id) };
+}
 
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
 // reflects exactly which account clients will get (default auto_failover).
@@ -56,6 +69,10 @@ const schemas = {
     notes: Joi.string().max(500).allow('', null),
     // Per-client session length / countdown (minutes). null → use tool/global default.
     leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
+    // Claude token-quota (claude-only; ignored for other tools): custom per-cycle allowance
+    // (null → global default) and a pinned account id (null → automatic selection).
+    tokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    pinnedAccountId: Joi.string().max(64).allow('', null),
   }),
   alertConfig: Joi.object({
     // Empty string clears the dashboard override (falls back to the env default recipient).
@@ -68,6 +85,8 @@ const schemas = {
     status: Joi.string().valid('active', 'disabled'),
     notes: Joi.string().max(500).allow('', null),
     leaseMinutes: Joi.number().integer().min(1).max(1440).allow(null),
+    tokenLimit: Joi.number().integer().min(0).max(100000000).allow(null),
+    pinnedAccountId: Joi.string().max(64).allow('', null),
   }).min(1),
   createAccount: Joi.object({
     label: Joi.string().min(1).max(120).required(),
@@ -77,6 +96,10 @@ const schemas = {
     priority: Joi.number().integer().min(0).max(100000).default(100),
     isPrimary: Joi.boolean().default(false),
     notes: Joi.string().max(500).allow('', null),
+    // Claude token-quota (claude-only): manual plan + official reset timestamps.
+    plan: Joi.string().valid('pro', 'max5', 'max20', 'unknown'),
+    cycleResetAt: Joi.date().iso().allow(null),
+    weeklyResetAt: Joi.date().iso().allow(null),
   }),
   updateAccount: Joi.object({
     label: Joi.string().min(1).max(120),
@@ -85,6 +108,9 @@ const schemas = {
     priority: Joi.number().integer().min(0).max(100000),
     isPrimary: Joi.boolean(),
     notes: Joi.string().max(500).allow('', null),
+    plan: Joi.string().valid('pro', 'max5', 'max20', 'unknown'),
+    cycleResetAt: Joi.date().iso().allow(null),
+    weeklyResetAt: Joi.date().iso().allow(null),
   }).min(1),
   accountSession: Joi.object({ sessionBundle: Joi.alternatives(Joi.object(), Joi.string()).required() }),
   accountStatus: Joi.object({ status: Joi.string().valid('active', 'standby', 'limit_reached', 'session_expired', 'blocked').required() }),
@@ -99,6 +125,35 @@ function safePagination(query) {
 // ─── Tool list (for the admin tab switcher) ──────────────────────────────────
 router.get('/tools', async (req, res) => {
   return res.json({ success: true, tools: tools.TOOL_KEYS.map(k => tools.publicInfo(k)) });
+});
+
+// ─── Claude token-quota configuration (claude-only, read) ─────────────────────
+// Surfaces the GLOBAL defaults the admin UI needs: the default per-client allowance, the plan
+// multipliers/labels, the safety reserve, the enforcement mode and the derived per-plan
+// capacities. All values are estimates; no secret is ever involved.
+router.get('/:tool/quota-config', async (req, res) => {
+  if (req.proxyTool !== 'claude') return res.json({ success: true, quota: null });
+  const plans = claudeQuota.PLANS.filter(p => p !== 'unknown').concat('unknown');
+  return res.json({
+    success: true,
+    quota: {
+      mode: claudeQuota.quotaMode(),
+      defaultClientLimit: claudeQuota.defaultClientLimit(),
+      accountBaseTokens: claudeQuota.accountBaseTokens(),
+      safetyReservePct: claudeQuota.safetyReservePct(),
+      charsPerToken: claudeQuota.charsPerToken(),
+      cycleHours: claudeQuota.CYCLE_MS / 3600000,
+      label: claudeQuota.USAGE_LABEL,
+      plans: plans.map(p => ({ key: p, label: claudeQuota.planLabel(p), multiplier: claudeQuota.planMultiplier(p), capacity: claudeQuota.accountCapacity(p) })),
+      // These global defaults are set via server env (documented) — surfaced read-only here so
+      // the operator can SEE the active policy without exposing anything sensitive.
+      envKeys: {
+        mode: 'CLAUDE_QUOTA_MODE', defaultClientLimit: 'CLAUDE_DEFAULT_CLIENT_TOKENS',
+        accountBaseTokens: 'CLAUDE_ACCOUNT_BASE_TOKENS', safetyReservePct: 'CLAUDE_SAFETY_RESERVE_PCT',
+        charsPerToken: 'CLAUDE_CHARS_PER_TOKEN',
+      },
+    },
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -122,6 +177,10 @@ async function presentClient(pc) {
     leaseMinutes: pc.leaseMinutes ?? null,
     effectiveLeaseMinutes: pc.leaseMinutes || tools.defaultLeaseMinutes(pc.tool),
     activeLeaseCount: activeLeases.length,
+    // Claude token-quota (claude-only; null on other tools so their card is unchanged).
+    tokenLimit: pc.tool === 'claude' ? (pc.tokenLimit ?? null) : null,
+    effectiveTokenLimit: pc.tool === 'claude' ? claudeQuota.clientAllowance(pc.tokenLimit) : null,
+    pinnedAccountId: pc.tool === 'claude' ? (pc.pinnedAccountId || null) : null,
     createdAt: pc.createdAt,
     updatedAt: pc.updatedAt,
   };
@@ -174,11 +233,16 @@ router.get('/:tool/clients', async (req, res) => {
 
 router.post('/:tool/clients', validate(schemas.createClient), async (req, res) => {
   try {
-    const { userId, planName, expiryDate, status, notes, leaseMinutes } = req.body;
+    const { userId, planName, expiryDate, status, notes, leaseMinutes, tokenLimit } = req.body;
     const user = await User.findById(userId).select('role');
     if (!user || user.role !== 'CLIENT') return res.status(400).json({ error: 'Target user must be an existing CRM client' });
     const existing = await ProxyClient.findOne({ userId, tool: req.proxyTool });
     if (existing) return res.status(400).json({ error: 'This client already has access to this tool' });
+
+    // Claude-only quota fields (validated pinned account; no-op for other tools).
+    const isClaude = req.proxyTool === 'claude';
+    const pin = await resolvePinnedAccountId(req.proxyTool, isClaude ? req.body.pinnedAccountId : undefined);
+    if (!pin.ok) return res.status(400).json({ error: pin.error });
 
     const pc = await ProxyClient.create({
       tool: req.proxyTool, userId,
@@ -187,6 +251,7 @@ router.post('/:tool/clients', validate(schemas.createClient), async (req, res) =
       status: status || 'active',
       notes: notes || '',
       leaseMinutes: leaseMinutes ?? null,
+      ...(isClaude ? { tokenLimit: tokenLimit ?? null, pinnedAccountId: pin.value ?? null } : {}),
       createdBy: req.userId,
     });
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLIENT_CREATED', { tool: req.proxyTool, proxyClientId: pc._id, userId, ip: getClientIp(req) });
@@ -204,6 +269,15 @@ router.put('/:tool/clients/:id', validate(schemas.updateClient), async (req, res
     for (const f of ['planName', 'status', 'notes']) if (req.body[f] !== undefined) pc[f] = req.body[f];
     if (req.body.expiryDate !== undefined) pc.expiryDate = req.body.expiryDate || null;
     if (req.body.leaseMinutes !== undefined) pc.leaseMinutes = req.body.leaseMinutes ?? null;
+    // Claude-only quota fields.
+    if (req.proxyTool === 'claude') {
+      if (req.body.tokenLimit !== undefined) pc.tokenLimit = req.body.tokenLimit ?? null;
+      if (req.body.pinnedAccountId !== undefined) {
+        const pin = await resolvePinnedAccountId(req.proxyTool, req.body.pinnedAccountId);
+        if (!pin.ok) return res.status(400).json({ error: pin.error });
+        pc.pinnedAccountId = pin.value ?? null;
+      }
+    }
     await pc.save();
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_CLIENT_UPDATED', { tool: req.proxyTool, proxyClientId: pc._id, changes: req.body, ip: getClientIp(req) });
     return res.json({ success: true, client: await presentClient(pc) });
@@ -226,6 +300,33 @@ router.post('/:tool/clients/:id/revoke-leases', async (req, res) => {
   } catch (err) {
     console.error('Proxy revoke client leases error:', err.message);
     return res.status(500).json({ error: 'Failed to revoke leases' });
+  }
+});
+
+// Live estimated token usage for ONE Claude client in the current five-hour cycle. Reads the
+// account the client would actually be served (pinned or automatic), sums the shared ledger,
+// and returns the full allowance picture. Claude-only; never exposes cookies/identity.
+router.get('/:tool/clients/:id/quota', async (req, res) => {
+  try {
+    if (req.proxyTool !== 'claude') return res.json({ success: true, quota: null });
+    const pc = await ProxyClient.findById(req.params.id);
+    if (!pc || pc.tool !== req.proxyTool) return res.status(404).json({ error: 'Client grant not found' });
+    const accounts = await ProxyAccount.find({ tool: req.proxyTool });
+    const account = require('../../utils/proxy/accountSelect').resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
+    const u = await claudeUsage.readUsage(account, pc);
+    const decision = claudeUsage.resolveDecision({ account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming: 0 });
+    return res.json({
+      success: true,
+      quota: Object.assign(claudeQuota.presentDecision(decision), {
+        accountLabel: account ? account.label : null,       // operator label only — never identity
+        pinned: !!pc.pinnedAccountId,
+        resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        weeklyResetInSeconds: claudeQuota.secondsUntilReset(u.keys.weekWindow),
+      }),
+    });
+  } catch (err) {
+    console.error('Proxy client quota error:', err.message);
+    return res.status(500).json({ error: 'Failed to load usage' });
   }
 });
 
@@ -281,6 +382,14 @@ function presentAccount(account, activeLeaseCount = 0) {
     available: unavailableReason(account) === null,
     unavailableReason: unavailableReason(account),
     activeLeaseCount,
+    // Claude token-quota (claude-only): manual plan, advisory detected plan, official reset
+    // timestamps and the computed shared per-cycle capacity (estimated). Null on other tools.
+    plan: account.tool === 'claude' ? claudeQuota.normalizePlan(account.plan) : null,
+    planLabel: account.tool === 'claude' ? claudeQuota.planLabel(account.plan) : null,
+    planDetected: account.tool === 'claude' ? (account.planDetected || null) : null,
+    cycleResetAt: account.tool === 'claude' ? (account.cycleResetAt || null) : null,
+    weeklyResetAt: account.tool === 'claude' ? (account.weeklyResetAt || null) : null,
+    estimatedCapacity: account.tool === 'claude' ? claudeQuota.accountCapacity(account.plan) : null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
   };
@@ -394,6 +503,12 @@ router.post('/:tool/accounts', validate(schemas.createAccount), async (req, res)
       expectedIdentifier: expectedIdentifier || '', notes: notes || '', usageCount: 0,
       sessionEncrypted: sessionEncrypted || null,
       sessionMeta: sessionMeta || { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null },
+      // Claude-only quota fields (no-op for other tools; model preSave ignores them).
+      ...(req.proxyTool === 'claude' ? {
+        plan: req.body.plan || 'unknown',
+        cycleResetAt: req.body.cycleResetAt || null,
+        weeklyResetAt: req.body.weeklyResetAt || null,
+      } : {}),
       createdBy: req.userId,
     });
     if (account.isPrimary) await clearOtherPrimaries(req.proxyTool, account._id);
@@ -411,6 +526,12 @@ router.put('/:tool/accounts/:id', validate(schemas.updateAccount), async (req, r
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
     for (const f of ['label', 'status', 'priority', 'notes', 'expectedIdentifier']) if (req.body[f] !== undefined) account[f] = req.body[f];
     if (req.body.isPrimary !== undefined) account.isPrimary = !!req.body.isPrimary;
+    // Claude-only quota fields: manual plan + official reset timestamps (operator-corrected).
+    if (req.proxyTool === 'claude') {
+      if (req.body.plan !== undefined) account.plan = req.body.plan;
+      if (req.body.cycleResetAt !== undefined) account.cycleResetAt = req.body.cycleResetAt || null;
+      if (req.body.weeklyResetAt !== undefined) account.weeklyResetAt = req.body.weeklyResetAt || null;
+    }
     await account.save();
     if (account.isPrimary) await clearOtherPrimaries(req.proxyTool, account._id);
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_UPDATED', { tool: req.proxyTool, accountId: account._id, changes: { ...req.body, sessionBundle: undefined }, ip: getClientIp(req) });
@@ -451,6 +572,14 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     // verify->apply path (also used by the on-sync write + the periodic auto-verify scheduler).
     const opts = tools.hasLiveAgent(req.proxyTool) ? { readOnly: true } : { forceLive: true };
     const r = await verifyAndApply(account, req.proxyTool, opts);
+    // Claude only: record the best-effort DETECTED plan (advisory) and auto-adopt it as the
+    // active plan when the operator hasn't manually chosen one yet ('unknown'). A manual plan
+    // selection always wins — this only fills the gap when automatic detection is available.
+    if (req.proxyTool === 'claude' && r.v && r.v.plan && claudeQuota.isValidPlan(r.v.plan)) {
+      account.planDetected = { plan: r.v.plan, source: 'claude_api', at: new Date() };
+      if (claudeQuota.normalizePlan(account.plan) === 'unknown') account.plan = r.v.plan;
+      try { await account.save(); } catch (_) {}
+    }
     console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count: r.cookieCount, upstream_status: r.v ? r.v.httpStatus : 0, result: r.result, mode: opts.readOnly ? 'readonly' : 'forcelive' }));
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: r.result, ip: getClientIp(req) });
     return res.json({ success: true, account: presentAccount(account), result: r.result, cookieNames: r.cookieNames });

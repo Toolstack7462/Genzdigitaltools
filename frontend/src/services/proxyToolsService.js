@@ -30,6 +30,9 @@ export const proxyToolsAdmin = {
   refreshSessions: (tool) => api.post(`/admin/proxy-tools/${tool}/refresh-sessions`),
   // Ground-truth: which account clients get now + a safe live probe of its session.
   activeAccount: (tool) => api.get(`/admin/proxy-tools/${tool}/active-account`),
+  // Claude token-quota (claude-only): global config + one client's live estimated usage.
+  quotaConfig: (tool) => api.get(`/admin/proxy-tools/${tool}/quota-config`),
+  clientQuota: (tool, id) => api.get(`/admin/proxy-tools/${tool}/clients/${id}/quota`),
 };
 
 // ── Client ────────────────────────────────────────────────────────────────

@@ -68,4 +68,28 @@ function selectAccount(accounts, mode) {
   }
 }
 
-module.exports = { MODES, selectAccount, isEligible, unavailableReason };
+// Resolve the account for a client that MAY be pinned to a specific account (Claude's
+// pinned-vs-automatic assignment). Additive + tool-agnostic; existing selection is untouched.
+//   - pinnedAccountId set + that account exists + eligible → serve it (pinned=true).
+//   - pinnedAccountId set + that account exists but NOT eligible → { account: null, pinned: true,
+//     unavailableReason } — we DO NOT silently switch a pinned client onto a different account,
+//     because that would break the shared five-hour/weekly reset grouping and could place the
+//     client on a different identity. The caller surfaces a clear "being refreshed" status.
+//   - pinnedAccountId set but the account was deleted → gracefully fall back to automatic.
+//   - no pinnedAccountId → automatic selection exactly as before.
+function resolveAccount(accounts, mode, pinnedAccountId) {
+  const list = accounts || [];
+  if (pinnedAccountId) {
+    const pinned = list.find(a => String(a._id) === String(pinnedAccountId));
+    if (pinned) {
+      const reason = unavailableReason(pinned);
+      return reason === null
+        ? { account: pinned, pinned: true, unavailableReason: null }
+        : { account: null, pinned: true, unavailableReason: reason };
+    }
+    // Pinned account no longer exists → fall through to automatic (graceful).
+  }
+  return { account: selectAccount(list, mode), pinned: false, unavailableReason: null };
+}
+
+module.exports = { MODES, selectAccount, isEligible, unavailableReason, resolveAccount };

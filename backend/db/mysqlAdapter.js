@@ -54,6 +54,8 @@ const tableNames = {
   ProxyClient: 'proxy_clients',
   ProxyLease: 'proxy_leases',
   ProxyAccount: 'proxy_accounts',
+  // ── Claude token-quota ledger (append-only, claude-only) — isolated ─────────
+  ClaudeUsage: 'claude_usage',
 };
 
 // Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated
@@ -66,6 +68,7 @@ const INDEXED_FIELDS = {
   tool_assignments: ['clientId', 'toolId'],
   proxy_clients: ['userId', 'tool'],
   proxy_accounts: ['tool'],
+  claude_usage: ['accountId', 'proxyClientId', 'cycleKey'],
   stealth_clients: ['userId'],
 };
 const GC_MAX = 191; // index-safe utf8mb4 prefix; values longer than this bypass the gc (use JSON_EXTRACT)

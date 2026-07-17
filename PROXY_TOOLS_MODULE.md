@@ -12,6 +12,13 @@ Key differences from StealthWriter (by request):
 - **No humanization limit, no AI-detector limit, no usage metering** (no `/consume`).
 - 30-minute access lease, exactly like StealthWriter.
 
+> **Claude exception (added later):** the **Claude AI** proxy tool alone carries an isolated,
+> additive **estimated token-quota** layer (per-client + shared-account allowances, plan
+> scaling, 5-hour/weekly resets, safety reserve). It is claude-gated and does not change HIX,
+> BypassGPT, ChatGPT, Ryne, WriteHuman or Grok, which remain metering-free as described above.
+> All Claude figures are **"Estimated local token usage"** (a proxy-side estimate, not
+> Anthropic's official metering). See `CLAUDE_TOKEN_QUOTA.md`.
+
 ## Flow
 ```
 Client dashboard → "Open HIX AI"/"Open BypassGPT" (assigned-tool card)

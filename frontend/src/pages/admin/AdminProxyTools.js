@@ -323,9 +323,9 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
         )}
       </div>
 
-      {showAccountModal && <AccountModal account={editAccount} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
+      {showAccountModal && <AccountModal account={editAccount} tool={tool} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
       {showSessionModal && <SessionModal account={showSessionModal} onClose={() => setShowSessionModal(null)} onSave={saveSession} />}
-      {showClientModal && <ClientModal client={editClient} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={searchCrmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
+      {showClientModal && <ClientModal client={editClient} tool={tool} accounts={accounts} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={searchCrmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
     </>
   );
   return embedded ? inner : <AdminLayoutEnhanced>{inner}</AdminLayoutEnhanced>;
@@ -350,6 +350,8 @@ const AccountVault = ({ accounts, toolName, onEdit, onSession, onVerify, onPrima
             <span className="text-[11px] text-genz-muted">cookies: {a.sessionMeta?.attachableCount ?? a.sessionMeta?.cookieCount ?? 0}</span>
             {a.maskedIdentifier && <span className="text-[11px] text-genz-muted">· {a.maskedIdentifier}</span>}
             <span className="text-[11px] text-genz-muted">· active sessions: {a.activeLeaseCount}</span>
+            {a.plan && <span className="text-[11px] px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 font-semibold">{a.planLabel || a.plan}</span>}
+            {a.estimatedCapacity != null && <span className="text-[11px] text-genz-muted" title="Estimated local token capacity per 5-hour cycle (after safety reserve)">· cap ~{Number(a.estimatedCapacity).toLocaleString()}/5h</span>}
           </div>
           <div className="flex flex-wrap items-center gap-1.5 mt-3">
             <Btn onClick={() => onSession(a)} icon={KeyRound} label="Update cookies" />
@@ -383,6 +385,11 @@ const ClientAccess = ({ clients, onEdit, onRevoke, onRemove }) => {
               <td>
                 <p className="font-semibold text-genz-navy text-sm">{c.user?.fullName || '—'}</p>
                 <p className="text-xs text-genz-muted">{c.user?.email}</p>
+                {c.effectiveTokenLimit != null && (
+                  <p className="text-[11px] text-genz-muted" title="Estimated local token allowance per 5-hour cycle">
+                    Limit: {Number(c.effectiveTokenLimit).toLocaleString()} tok/5h{c.tokenLimit == null ? ' (default)' : ''}{c.pinnedAccountId ? ' · pinned account' : ''}
+                  </p>
+                )}
               </td>
               <td>
                 <span className={`ds-badge ${c.expired ? 'ds-badge-danger' : (c.status === 'active' ? 'ds-badge-success' : 'ds-badge-neutral')}`}>
@@ -433,16 +440,35 @@ const Shell = ({ title, onClose, children }) => (
 const field = "w-full px-3 py-2 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy focus:outline-none focus:border-genz-teal";
 const labelCls = "block text-xs font-medium text-genz-navy mb-1";
 
-const AccountModal = ({ account, toolName, onClose, onSave }) => {
+// Convert an ISO timestamp ↔ the value a <input type="datetime-local"> expects (local time).
+const toDateTimeInput = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const fromDateTimeInput = (v) => { if (!v) return null; const d = new Date(v); return isNaN(d.getTime()) ? null : d.toISOString(); };
+const CLAUDE_PLANS = [['pro', 'Pro (1×)'], ['max5', 'Max 5×'], ['max20', 'Max 20×'], ['unknown', 'Unknown / unset']];
+
+const AccountModal = ({ account, tool, toolName, onClose, onSave }) => {
+  const isClaude = tool === 'claude';
   const [f, setF] = useState({
     label: account?.label || '', expectedIdentifier: account?.hasExpectedIdentifier ? '' : '',
     sessionBundle: '', status: account?.status || 'active', priority: account?.priority ?? 100, isPrimary: account?.isPrimary || false,
+    plan: account?.plan || 'unknown',
+    cycleResetAt: toDateTimeInput(account?.cycleResetAt), weeklyResetAt: toDateTimeInput(account?.weeklyResetAt),
   });
   const submit = () => {
     if (!f.label.trim()) return;
     const body = { label: f.label.trim(), status: f.status, priority: Number(f.priority) || 100, isPrimary: !!f.isPrimary };
     if (f.expectedIdentifier.trim()) body.expectedIdentifier = f.expectedIdentifier.trim();
     if (!account && f.sessionBundle.trim()) body.sessionBundle = f.sessionBundle.trim();
+    if (isClaude) {
+      body.plan = f.plan;
+      body.cycleResetAt = fromDateTimeInput(f.cycleResetAt);
+      body.weeklyResetAt = fromDateTimeInput(f.weeklyResetAt);
+    }
     onSave(body);
   };
   return (
@@ -450,6 +476,36 @@ const AccountModal = ({ account, toolName, onClose, onSave }) => {
       <div className="space-y-3">
         <div><label className={labelCls}>Label</label><input className={field} value={f.label} onChange={e => setF({ ...f, label: e.target.value })} placeholder="e.g. HIX Account 1" /></div>
         <div><label className={labelCls}>Expected login (optional, e.g. email)</label><input className={field} value={f.expectedIdentifier} onChange={e => setF({ ...f, expectedIdentifier: e.target.value })} placeholder="used only to flag wrong-account on verify" /></div>
+        {isClaude && (
+          <div className="rounded-lg border border-genz-border bg-genz-bg/50 p-3 space-y-3">
+            <p className="text-[11px] font-bold text-genz-navy uppercase tracking-wide">Claude plan &amp; reset cycle</p>
+            <div>
+              <label className={labelCls}>Plan (capacity scaling)</label>
+              <select className={field} value={f.plan} onChange={e => setF({ ...f, plan: e.target.value })}>
+                {CLAUDE_PLANS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+              {account?.planDetected?.plan && (
+                <p className="text-[11px] text-genz-muted mt-1">
+                  Auto-detected: <span className="font-semibold text-genz-navy">{(CLAUDE_PLANS.find(p => p[0] === account.planDetected.plan) || [null, account.planDetected.plan])[1]}</span> (advisory — your selection wins)
+                </p>
+              )}
+              {account?.estimatedCapacity != null && (
+                <p className="text-[11px] text-genz-muted mt-0.5">Est. shared capacity: <span className="font-semibold text-genz-navy">{Number(account.estimatedCapacity).toLocaleString()}</span> tokens / 5-hr cycle (after 20% reserve)</p>
+              )}
+            </div>
+            <div className="grid grid-cols-1 gap-3">
+              <div>
+                <label className={labelCls}>Official 5-hour reset time (optional)</label>
+                <input type="datetime-local" className={field} value={f.cycleResetAt} onChange={e => setF({ ...f, cycleResetAt: e.target.value })} />
+              </div>
+              <div>
+                <label className={labelCls}>Official weekly reset time (optional)</label>
+                <input type="datetime-local" className={field} value={f.weeklyResetAt} onChange={e => setF({ ...f, weeklyResetAt: e.target.value })} />
+              </div>
+              <p className="text-[11px] text-genz-muted -mt-1">All clients on this account share these reset times. Enter or correct them from Claude's official cycle. Blank = anchor on account creation time.</p>
+            </div>
+          </div>
+        )}
         {!account && (
           <div>
             <label className={labelCls}>Cookie bundle (JSON or "name=value; …")</label>
@@ -488,10 +544,13 @@ const SessionModal = ({ account, onClose, onSave }) => {
   );
 };
 
-const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchClients, existing, onClose, onSave }) => {
+const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearching, onSearchClients, existing, onClose, onSave }) => {
+  const isClaude = tool === 'claude';
   const [f, setF] = useState({
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
     leaseMinutes: client?.leaseMinutes != null ? String(client.leaseMinutes) : '',
+    tokenLimit: client?.tokenLimit != null ? String(client.tokenLimit) : '',
+    pinnedAccountId: client?.pinnedAccountId || '',
   });
   const taken = new Set((existing || []).map(c => String(c.userId)));
   const options = (crmClients || []).filter(c => client || !taken.has(String(c._id)));
@@ -499,7 +558,13 @@ const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchCli
     if (!client && !f.userId) return;
     // Blank session length → null = fall back to the tool/global default.
     const lm = f.leaseMinutes === '' ? null : Math.min(1440, Math.max(1, parseInt(f.leaseMinutes, 10) || 0)) || null;
-    onSave({ userId: f.userId, planName: f.planName, expiryDate: f.expiryDate || null, status: f.status, leaseMinutes: lm });
+    const body = { userId: f.userId, planName: f.planName, expiryDate: f.expiryDate || null, status: f.status, leaseMinutes: lm };
+    if (isClaude) {
+      // Blank token limit → null = fall back to the global default (20,000).
+      body.tokenLimit = f.tokenLimit === '' ? null : Math.max(0, parseInt(f.tokenLimit, 10) || 0);
+      body.pinnedAccountId = f.pinnedAccountId || null;
+    }
+    onSave(body);
   };
   return (
     <Shell title={client ? 'Edit access' : 'Grant access'} onClose={onClose}>
@@ -532,6 +597,25 @@ const ClientModal = ({ client, crmClients, crmLoading, crmSearching, onSearchCli
             onChange={e => setF({ ...f, leaseMinutes: e.target.value })} placeholder="default (e.g. 30)" />
           <p className="text-[11px] text-genz-muted mt-1">How long each opened session lasts for this client. Blank = use the tool/global default.</p>
         </div>
+        {isClaude && (
+          <div className="rounded-lg border border-genz-border bg-genz-bg/50 p-3 space-y-3">
+            <p className="text-[11px] font-bold text-genz-navy uppercase tracking-wide">Claude token quota</p>
+            <div>
+              <label className={labelCls}>Custom token allowance / 5-hr cycle (optional)</label>
+              <input type="number" min={0} className={field} value={f.tokenLimit}
+                onChange={e => setF({ ...f, tokenLimit: e.target.value })} placeholder="default 20,000" />
+              <p className="text-[11px] text-genz-muted mt-1">Estimated local tokens this client may use per official 5-hour cycle. Blank = global default (20,000). 0 = block.</p>
+            </div>
+            <div>
+              <label className={labelCls}>Assigned Claude account</label>
+              <select className={field} value={f.pinnedAccountId} onChange={e => setF({ ...f, pinnedAccountId: e.target.value })}>
+                <option value="">Automatic (best available)</option>
+                {(accounts || []).map(a => <option key={a.id} value={a.id}>{a.label}{a.planLabel ? ` — ${a.planLabel}` : ''}</option>)}
+              </select>
+              <p className="text-[11px] text-genz-muted mt-1">Pin to a specific account, or leave automatic. Pinned clients share that account's 5-hour &amp; weekly reset times.</p>
+            </div>
+          </div>
+        )}
       </div>
       <div className="flex justify-end gap-2 mt-5">
         <button onClick={onClose} className="px-4 py-2 text-sm text-genz-muted hover:text-genz-navy">Cancel</button>
