@@ -27,6 +27,18 @@ const ProxyAccount = createModel('ProxyAccount', {
     if (!data.sessionMeta || typeof data.sessionMeta !== 'object') {
       data.sessionMeta = { cookieCount: 0, hasLocalStorage: false, origin: '', updatedAt: null };
     }
+    // ── Claude token-quota fields (claude-only; other tools keep their exact shape) ──
+    // `plan` = the operator's manual Pro/Max5/Max20 selection (authoritative for scaling).
+    // `planDetected` = best-effort auto-detection from the Claude API (advisory only).
+    // `cycleResetAt` / `weeklyResetAt` = operator-supplied OFFICIAL reset timestamps that
+    // anchor the shared five-hour / weekly usage cycles for EVERY client on this account.
+    if (data.tool === 'claude') {
+      const PLANS = ['pro', 'max5', 'max20', 'unknown'];
+      if (!PLANS.includes(data.plan)) data.plan = data.plan == null ? 'unknown' : (PLANS.includes(String(data.plan)) ? String(data.plan) : 'unknown');
+      if (data.planDetected === undefined) data.planDetected = null;
+      if (data.cycleResetAt === undefined) data.cycleResetAt = null;
+      if (data.weeklyResetAt === undefined) data.weeklyResetAt = null;
+    }
     return data;
   },
   methods: {

@@ -23,6 +23,23 @@ const ProxyClient = createModel('ProxyClient', {
       const n = parseInt(data.leaseMinutes, 10);
       data.leaseMinutes = Number.isFinite(n) ? Math.min(1440, Math.max(1, n)) : null;
     }
+    // ── Claude token-quota fields (claude-only; other tools keep their exact shape) ──
+    // `pinnedAccountId` = a specific Claude account this client is bound to (pinned
+    // assignment). null → automatic account selection. `tokenLimit` = this client's custom
+    // per-five-hour-cycle allowance in estimated tokens; null → the global default (20,000).
+    if (data.tool === 'claude') {
+      if (data.pinnedAccountId === undefined || data.pinnedAccountId === '' || data.pinnedAccountId === null) {
+        data.pinnedAccountId = null;
+      } else {
+        data.pinnedAccountId = String(data.pinnedAccountId);
+      }
+      if (data.tokenLimit === undefined || data.tokenLimit === null || data.tokenLimit === '') {
+        data.tokenLimit = null;
+      } else {
+        const t = parseInt(data.tokenLimit, 10);
+        data.tokenLimit = Number.isFinite(t) && t >= 0 ? Math.min(100000000, t) : null;
+      }
+    }
     return data;
   },
   methods: {

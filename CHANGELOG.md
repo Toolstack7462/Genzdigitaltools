@@ -1,5 +1,32 @@
 # Changelog
 
+## [Unreleased] — Claude Token Quota (Estimated Local Usage)
+
+Isolated, additive, **Claude-only** token-quota metering. No other proxy tool and no
+authentication, payment, database, or unrelated UI was changed. All figures are labeled
+**"Estimated local token usage"** — a proxy-side estimate from character counts, not
+Anthropic's official metering — and no Claude credential/cookie/session is ever exposed.
+See `CLAUDE_TOKEN_QUOTA.md` for the full design, env knobs, and operator checklist.
+
+- **Plan detection & selection:** Pro / Max 5× / Max 20× auto-detected on *Verify* from
+  claude.ai's authenticated API when reliable; manual admin override always wins.
+- **Allowances:** default **20,000 estimated tokens per official 5-hour cycle**, configurable
+  globally (`CLAUDE_DEFAULT_CLIENT_TOKENS`) and per client (custom limit; `0` = hard-stop).
+- **Account assignment:** each client can be **pinned** to a specific Claude account or left on
+  **automatic** selection; all clients on one account share that account's 5-hour and weekly
+  reset times (admin-editable official reset timestamps; UTC/epoch math, timezone-safe).
+- **Capacity scaling + reserve:** shared per-account capacity = `base × plan-multiplier ×
+  (1 − reserve)`; Pro 1× / Max 5× / Max 20×; configurable **20% safety reserve**.
+- **Two-sided check:** both the client allowance and the shared account capacity are checked
+  before a request; input + output + system + context + attachment tokens are all counted.
+- **Enforcement mode `CLAUDE_QUOTA_MODE`:** `off` / `count` *(default, safe — never inspects
+  message bodies, cannot break a chat)* / `enforce` (per-message gate at the gateway, fail-open).
+- **New:** `backend/utils/proxy/claudeQuota.js`, `claudeUsage.js`,
+  `models/proxy/ClaudeUsage.js` (append-only, race-safe ledger; `claude_usage` table),
+  `claude-gateway/lib/quotaTap.js`, and admin/client/gateway route + UI additions
+  (all claude-gated). Tests: `claudeQuota`, `claudeUsage`, `claudePlanDetect`,
+  `claudeUsagePipeline` (backend) + `quotaTap` (gateway).
+
 ## [Unreleased] — Client Dashboard UI Polish
 
 Safe, presentation-only refinements to the live client dashboard. No backend,

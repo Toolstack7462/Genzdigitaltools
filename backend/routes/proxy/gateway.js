@@ -24,6 +24,9 @@ const vaultCrypto = require('../../utils/proxy/vaultCrypto');
 const tools = require('../../utils/proxy/tools');
 const { normalizeCookieBundle, buildCookieHeader } = require('../../utils/proxy/cookies');
 const { verifyAccountCookies, applySupabaseRefresh } = require('../../utils/proxy/verify');
+const claudeQuota = require('../../utils/proxy/claudeQuota');
+const claudeUsage = require('../../utils/proxy/claudeUsage');
+const ActivityLog = require('../../models/ActivityLog');
 const { apiLimiter } = require('../../middleware/rateLimiter');
 
 router.use(apiLimiter);
@@ -254,6 +257,102 @@ router.post('/capture-session', requireGatewayKey, async (req, res) => {
   } catch (err) {
     console.error('Proxy capture-session error:', err.message);
     return res.status(500).json({ ok: false, code: 'server_error' });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// CLAUDE TOKEN QUOTA (gateway-only) — estimated local token usage, no secrets
+// ════════════════════════════════════════════════════════════════════════════
+// The claude-gateway calls these server-to-server (X-Gateway-Key) around each Claude
+// completion request. They ONLY ever receive integer CHARACTER COUNTS — never prompt text,
+// cookies, sessions or account internals — and the numeric policy lives in claudeQuota.
+
+const CHAR_CAP = 50 * 1000 * 1000; // clamp any single count (defensive; keys are gateway-only)
+function clampChars(v) { return Math.min(CHAR_CAP, Math.max(0, Math.trunc(Number(v) || 0))); }
+
+function charParts(body) {
+  const b = body || {};
+  return {
+    inputChars: clampChars(b.inputChars),
+    systemChars: clampChars(b.systemChars),
+    contextChars: clampChars(b.contextChars),
+    attachmentChars: clampChars(b.attachmentChars),
+  };
+}
+
+// Resolve the client + bound account for a metering call. Claude client leases only.
+async function resolveMeterContext(req) {
+  const r = await resolveLease(req);
+  if (!r.ok) return { ok: false, status: r.status, code: r.code };
+  if (r.tool !== 'claude') return { ok: false, status: 400, code: 'not_claude' };
+  if (r.capture || !r.client) return { ok: false, status: 400, code: 'capture_lease' };
+  const account = r.lease.accountId ? await ProxyAccount.findById(r.lease.accountId) : null;
+  return { ok: true, client: r.client, account, lease: r.lease };
+}
+
+// ─── Quota pre-check (gateway-only) — is one more request within allowance? ───
+// Returns { ok, allowed, mode, estIncoming, usage }. In 'count' mode `allowed` is always true
+// (never blocks a message); in 'enforce' mode `allowed` reflects the real gate. Fail-OPEN on
+// any server error so a metering hiccup never blocks a Claude message.
+router.post('/quota-precheck', requireGatewayKey, async (req, res) => {
+  try {
+    const mode = claudeQuota.quotaMode();
+    const ctx = await resolveMeterContext(req);
+    if (!ctx.ok) return res.status(ctx.status).json({ ok: false, code: ctx.code, allowed: true }); // fail-open
+    if (mode === 'off') return res.json({ ok: true, allowed: true, mode });
+
+    const parts = charParts(req.body);
+    const estIncoming = claudeQuota.estimateRequestTokens(parts);
+    const u = await claudeUsage.readUsage(ctx.account, ctx.client);
+    const decision = claudeUsage.resolveDecision({
+      account: ctx.account, client: ctx.client,
+      clientUsed: u.clientUsed, accountUsed: u.accountUsed, estIncoming,
+    });
+    const enforced = mode === 'enforce';
+    const allowed = enforced ? decision.allowed : true;
+    if (enforced && !decision.allowed) {
+      dbg({ evt: 'quota_block', tool: 'claude', reason: decision.reason, est: estIncoming, client_used: decision.clientUsed, acct_used: decision.accountUsed });
+      ActivityLog.log('CLIENT', ctx.client.userId, 'PROXY_CLAUDE_QUOTA_BLOCK_REQUEST', {
+        tool: 'claude', proxyClientId: ctx.client._id, reason: decision.reason, estIncoming,
+        clientUsed: decision.clientUsed, clientLimit: decision.clientLimit,
+        accountUsed: decision.accountUsed, accountCapacity: decision.accountCapacity,
+      }).catch(() => {});
+    }
+    return res.json({
+      ok: true, allowed, mode, estIncoming,
+      resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+      usage: claudeQuota.presentDecision(decision),
+    });
+  } catch (err) {
+    console.error('Proxy quota-precheck error:', err.message);
+    return res.status(200).json({ ok: false, allowed: true, code: 'server_error' }); // fail-open
+  }
+});
+
+// ─── Usage report (gateway-only) — settle a completed request into the ledger ─
+// Appends ONE ledger row (append-only → race-safe). Fail-safe: always 200 so the gateway never
+// retries in a hot loop and never surfaces an error to the client.
+router.post('/usage-report', requireGatewayKey, async (req, res) => {
+  try {
+    if (claudeQuota.quotaMode() === 'off') return res.json({ ok: true, recorded: false });
+    const ctx = await resolveMeterContext(req);
+    if (!ctx.ok) return res.json({ ok: true, recorded: false, code: ctx.code });
+
+    const parts = charParts(req.body);
+    const inputTokens = claudeQuota.estimateRequestTokens(parts);
+    const outputTokens = claudeQuota.tokensFromChars(clampChars(req.body && req.body.outputChars));
+    if (inputTokens === 0 && outputTokens === 0) return res.json({ ok: true, recorded: false });
+
+    const recorded = await claudeUsage.recordUsage({
+      account: ctx.account, client: ctx.client, userId: ctx.client.userId,
+      inputTokens, outputTokens,
+    });
+    claudeUsage.pruneOld().catch(() => {}); // opportunistic, best-effort
+    dbg({ evt: 'usage_report', tool: 'claude', in: inputTokens, out: outputTokens, recorded });
+    return res.json({ ok: true, recorded, inputTokens, outputTokens });
+  } catch (err) {
+    console.error('Proxy usage-report error:', err.message);
+    return res.status(200).json({ ok: false, recorded: false, code: 'server_error' });
   }
 });
 

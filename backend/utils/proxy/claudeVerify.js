@@ -50,6 +50,27 @@ function apiPath() {
   return p.startsWith('/') ? p : '/' + p;
 }
 
+// ── Best-effort PLAN detection (advisory) ────────────────────────────────────
+// "Detect Claude Pro / Max 5x / Max 20x when reliable information is available." claude.ai's
+// authenticated payloads sometimes carry a rate-limit tier / billing hint (e.g. a string like
+// "default_claude_max_20x", "claude_max_5x", "claude_pro"). We scan the JSON + raw body for a
+// CONFIDENT signal and return one of 'pro' | 'max5' | 'max20', or null when nothing reliable is
+// present (→ the operator sets the plan manually). Never returns anything but a plan key; reads
+// no secret. Pure + unit-testable. Order matters: 20x before 5x before pro (most specific first).
+function detectPlan(data, rawBody) {
+  const hay = [];
+  try { hay.push(JSON.stringify(data || null)); } catch (_) {}
+  if (typeof rawBody === 'string') hay.push(rawBody.slice(0, 100000));
+  const s = hay.join(' ').toLowerCase();
+  if (!s) return null;
+  if (/max[\s_-]*20\s*x?|20\s*x\s*max|claude[\s_-]*max[\s_-]*20/.test(s)) return 'max20';
+  if (/max[\s_-]*5\s*x?|5\s*x\s*max|claude[\s_-]*max[\s_-]*5/.test(s)) return 'max5';
+  // A bare "claude_max" (no multiplier) is ambiguous — treat as the entry Max tier (5x).
+  if (/claude[\s_-]*max\b|"max"|_max_|\bmax_tier\b/.test(s)) return 'max5';
+  if (/claude[\s_-]*pro\b|"pro"|_pro_|\bpro_tier\b|raven_pro/.test(s)) return 'pro';
+  return null;
+}
+
 // Recognise claude.ai's application-level "not authenticated" error JSON.
 function isAuthError(err) {
   if (!err || typeof err !== 'object') return false;
@@ -134,13 +155,13 @@ async function verifyClaudeApi(tool, cookieHeader, expectedIdentifier, opts = {}
     if (Array.isArray(data)) {
       if (data.length > 0 && data.some(o => o && (o.uuid || o.id))) {
         const orgName = (data.find(o => o && o.name) || {}).name || null;
-        return R('working', { httpStatus: status, maskedId, title: orgName });
+        return R('working', { httpStatus: status, maskedId, title: orgName, plan: detectPlan(data, body) });
       }
       return R('session_expired', { httpStatus: status, loggedOut: true }); // authed shell w/ no orgs → treat as logged out
     }
     // bootstrap-style { account: {...} } populated → working; { account: null } / auth error → logged out.
     if (data && data.account && (data.account.uuid || data.account.email_address)) {
-      return R('working', { httpStatus: status, maskedId: maskEmail(data.account.email_address) || maskedId });
+      return R('working', { httpStatus: status, maskedId: maskEmail(data.account.email_address) || maskedId, plan: detectPlan(data, body) });
     }
     if (data && (data.account === null || isAuthError(data.error))) {
       return R('session_expired', { httpStatus: status, loggedOut: true });
@@ -159,4 +180,4 @@ async function verifyClaudeApi(tool, cookieHeader, expectedIdentifier, opts = {}
   return R('unknown', { httpStatus: status, maskedId });
 }
 
-module.exports = { verifyClaudeApi };
+module.exports = { verifyClaudeApi, detectPlan };

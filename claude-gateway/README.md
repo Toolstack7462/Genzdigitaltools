@@ -126,3 +126,19 @@ path collides with the billing-stub word-list (chat/completion endpoints don't �
 - No new backend file — all edits are to files the deploy script already ships.
 
 See `../STEALTHWRITER_MODULE.md` / `../PROXY_TOOLS_MODULE.md` for the shared design.
+
+## Token quota (estimated local usage) — claude-only
+
+This gateway carries an isolated, claude-only token-quota tap (`lib/quotaTap.js`, gated on
+`TOOL_KEY==='claude'`) that estimates local token usage from the CHARACTER LENGTH of each Claude
+completion request/response and enforces per-client + shared-account allowances. It forwards
+only integer character COUNTS to the backend — never prompt text, cookies or sessions.
+
+Set `CLAUDE_QUOTA_MODE` in this gateway's env (and the backend's):
+- `off` — disabled.
+- `count` *(default, safe)* — measures + reports usage; never blocks a message.
+- `enforce` — additionally blocks an over-quota message before forwarding (fail-open on any
+  error). Enable only after confirming the estimates against a real logged-in account.
+
+Full details, all env knobs, capacity/plan scaling and the operator checklist are in
+`../CLAUDE_TOKEN_QUOTA.md`.

@@ -81,6 +81,24 @@ const ProxyToolCard = ({ tool }) => {
         )}
       </div>
 
+      {tool.usage && (
+        <div className="mb-3 -mt-1" title="Estimated local token usage — a proxy-side estimate, not Anthropic's official metering">
+          <div className="flex items-center justify-between text-[11px] text-genz-muted mb-1">
+            <span>Est. tokens this 5-hr cycle</span>
+            <span className="font-semibold text-genz-navy">
+              {Number(tool.usage.clientUsed || 0).toLocaleString()} / {Number(tool.usage.clientLimit || 0).toLocaleString()}
+            </span>
+          </div>
+          <div className="h-1.5 rounded-full bg-genz-soft overflow-hidden">
+            <div className="h-full rounded-full" style={{
+              width: `${Math.min(100, tool.usage.clientLimit ? (tool.usage.clientUsed / tool.usage.clientLimit) * 100 : 0)}%`,
+              background: theme.grad,
+            }} />
+          </div>
+          <p className="text-[10px] text-genz-muted mt-1">Estimated local token usage · resets in {Math.max(1, Math.round((tool.usage.resetInSeconds || 0) / 60))} min</p>
+        </div>
+      )}
+
       <div className="mt-auto pt-1">
         {expired || !active ? (
           <div className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-[12px]">

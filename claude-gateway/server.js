@@ -51,6 +51,12 @@ const LEASE_SECRET = process.env.LEASE_SECRET || ''; // must match backend PROXY
 const GATEWAY_KEY = process.env.GATEWAY_KEY || '';   // must match backend PROXY_GATEWAY_KEY
 const TOOL_KEY = process.env.TOOL_KEY || '';         // 'hix' | 'bypassgpt' (lease.tool must match)
 const TOOL_NAME = process.env.TOOL_NAME || 'AI Tool';
+// ── Claude token-quota tap (claude-only) ─────────────────────────────────────
+// Pure char-extraction helpers; only ever handle character COUNTS, never prompt text/secrets.
+// Mode: 'off' (disabled) | 'count' (measure + report only, never blocks) | 'enforce' (block an
+// over-quota message before forwarding). Default 'count' — safe: it cannot break a Claude chat.
+const quotaTap = require('./lib/quotaTap');
+const QUOTA_MODE = (() => { const m = String(process.env.CLAUDE_QUOTA_MODE || 'count').toLowerCase(); return ['off', 'count', 'enforce'].includes(m) ? m : 'count'; })();
 const LEASE_COOKIE = 'pg_lease';
 // Max time to wait for the upstream tool to respond before failing over to a friendly
 // retry page (prevents indefinite hanging / blank loading). Override via UPSTREAM_TIMEOUT_MS.
@@ -642,6 +648,23 @@ a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:
   res.end(html);
 }
 
+// Claude quota block (claude-only, enforce mode). A completion request is an XHR/SSE fetch, so
+// we answer with a claude-shaped JSON error the SPA can render — NOT an HTML page (which would
+// break the app's fetch handler). Carries only an estimated-usage message; no secret.
+function sendQuotaBlock(res, info) {
+  const usage = (info && info.usage) || {};
+  const mins = info && info.resetInSeconds ? Math.max(1, Math.round(info.resetInSeconds / 60)) : null;
+  const tail = mins ? ` It resets in about ${mins} minute(s).` : '';
+  const msg = (usage.reason === 'account_capacity')
+    ? `This Claude account has reached its estimated local token capacity for the current 5-hour cycle.${tail}`
+    : `You have reached your estimated local Claude token allowance for the current 5-hour cycle.${tail}`;
+  const payload = JSON.stringify({ error: { type: 'genz_quota_exceeded', message: msg }, genz_estimated_local_usage: true });
+  try {
+    if (!res.headersSent) res.writeHead(429, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(payload);
+  } catch (_) { try { res.end(); } catch (__) {} }
+}
+
 // ── Friendly NON-blocking notice (loading trouble / upstream down / reload loop) ──
 // Unlike the 403 block page, this offers a manual retry and never auto-redirects, so
 // it replaces blank/hanging pages and breaks reload loops. No secrets, ever.
@@ -962,6 +985,18 @@ function proxy(req, res, isHtmlNav, session, ctx) {
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
     let bodyBuf = Buffer.concat(chunks);
+
+    // ── Claude token-quota tap (claude-only, mode-gated) ─────────────────────
+    // Detect the Claude message-send request and extract ESTIMATED input char counts from the
+    // body (never the text itself). In 'enforce' mode we gate the request on the backend quota
+    // check BEFORE forwarding; in every mode we tap the streamed answer for output chars and
+    // report settled usage. Wrapped so ANY failure fails OPEN and never breaks the proxy.
+    const isClaudeCompletion = TOOL_KEY === 'claude' && QUOTA_MODE !== 'off'
+      && !ctx.capture && !ctx.asset && quotaTap.isCompletionRequest(req.method, reqPathOnly);
+    let quotaParts = null;
+    if (isClaudeCompletion) { try { quotaParts = quotaTap.extractRequestChars(bodyBuf); } catch (_) { quotaParts = null; } }
+
+    const runDispatch = () => {
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
 
     // Captcha: present the TOOL's origin so a domain-bound widget renders for its key
@@ -1119,6 +1154,22 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       } else {
         logIt(false);
         res.writeHead(uRes.statusCode || 200, outHeaders);
+        // Claude quota tap: count the streamed answer's output chars WITHOUT buffering or
+        // altering it (a passive 'data' listener coexists with pipe), then report settled usage
+        // on stream end. Only for the completion response; fully fail-safe (never affects the
+        // stream the client receives).
+        if (isClaudeCompletion) {
+          try {
+            const counter = new quotaTap.SseCounter();
+            uRes.on('data', (c) => { try { counter.write(c); } catch (_) {} });
+            uRes.on('end', () => {
+              try {
+                const outputChars = counter.end();
+                if (ctx.token) gatewayApiPost('/usage-report', ctx.token, Object.assign({}, quotaParts || {}, { outputChars })).catch(() => {});
+              } catch (_) {}
+            });
+          } catch (_) { /* tap failure must never affect the response */ }
+        }
         uRes.pipe(res);
       }
     });
@@ -1140,6 +1191,24 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => { try { upstream.destroy(new Error('upstream_timeout')); } catch (_) {} });
     upstream.on('error', onUpstreamFail);
     upstream.end(bodyBuf);
+    }; // end runDispatch
+
+    // Enforce mode ONLY: ask the backend whether this message fits the client + shared-account
+    // allowance before forwarding. Fail-OPEN — any error/timeout/non-ok just dispatches, so a
+    // metering hiccup never blocks a real Claude message. In 'count'/'off' modes we dispatch
+    // immediately (measurement happens on the response side).
+    if (isClaudeCompletion && QUOTA_MODE === 'enforce' && ctx.token) {
+      gatewayApiPost('/quota-precheck', ctx.token, quotaParts || {}).then((r) => {
+        const b = (r && r.body) || {};
+        if (b.ok === true && b.allowed === false) {
+          safeLog('quota_block', { request_path: reqPathOnly, reason: (b.usage && b.usage.reason) || null });
+          return sendQuotaBlock(res, b);
+        }
+        runDispatch();
+      }).catch(() => runDispatch());
+    } else {
+      runDispatch();
+    }
   });
 }
 
