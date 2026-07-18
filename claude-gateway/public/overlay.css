@@ -79,6 +79,57 @@
 
 /* Claude: relabel the local avatar to "GEN Z" + hide name/email/menu items via JS.
    Plus a Personal/Team workspace switch inside the always-visible widget. */
+/* Claude "Estimated usage" — compact Claude-style progress lines (thin bar, small type). */
+#genz-sw-widget .genz-usage{ margin:8px 0 2px; }
+#genz-sw-widget .genz-usage-lbl{ font-size:9px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:#8aa2b8; margin-bottom:6px; }
+#genz-sw-widget .genz-usage-block{ margin-bottom:8px; }
+#genz-sw-widget .genz-usage-block:last-child{ margin-bottom:0; }
+#genz-sw-widget .genz-usage-top{ display:flex; align-items:baseline; justify-content:space-between; gap:6px; margin-bottom:4px; }
+#genz-sw-widget .genz-usage-name{ font-size:11px; font-weight:700; color:#cbd8e6; white-space:nowrap; }
+#genz-sw-widget .genz-usage-tag{ font-size:8.5px; font-weight:800; letter-spacing:.06em; text-transform:uppercase; color:#7f95ab; margin-left:5px; }
+#genz-sw-widget .genz-usage-tag.custom{ color:#7dd3fc; }
+#genz-sw-widget .genz-usage-tag:empty{ display:none; }
+#genz-sw-widget .genz-usage-pct{ font-size:10.5px; font-weight:700; color:#9fb3c8; white-space:nowrap; }
+/* Thin progress line, like Claude's original usage indicator. */
+#genz-sw-widget .genz-usage-bar{ height:3px; border-radius:3px; background:rgba(255,255,255,.10); overflow:hidden; }
+#genz-sw-widget .genz-usage-bar > i{ display:block; height:100%; width:0%; border-radius:3px;
+  background:linear-gradient(90deg,#60a5fa,#22d3ee); transition:width .35s ease; }
+#genz-sw-widget .genz-usage-meta{ margin-top:4px; font-size:9.5px; line-height:1.35; color:#8296ab; }
+/* ≥80% used → amber; at/over the limit → red (future requests blocked until reset). */
+#genz-sw-widget .genz-usage-warn .genz-usage-bar > i{ background:linear-gradient(90deg,#fbbf24,#f59e0b); }
+#genz-sw-widget .genz-usage-warn .genz-usage-pct{ color:#fcd34d; }
+#genz-sw-widget .genz-usage-full .genz-usage-bar > i{ background:linear-gradient(90deg,#f87171,#ef4444); }
+#genz-sw-widget .genz-usage-full .genz-usage-pct{ color:#fca5a5; }
+
+/* ── Quota reached: disable the composer / send / search / file-upload controls (UI mirror of the
+   server-side 429 block) + a banner with the reset time. The gateway is the real guard. ── */
+#genz-quota-banner{
+  position:fixed; top:0; left:0; right:0; z-index:2147483645;
+  display:flex; align-items:center; justify-content:center; gap:9px;
+  padding:9px 14px; font:600 13px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color:#fff; background:linear-gradient(135deg,#ef4444,#b91c1c);
+  box-shadow:0 6px 18px -6px rgba(0,0,0,.5); text-align:center;
+}
+#genz-quota-banner .genz-qb-dot{ width:8px; height:8px; border-radius:50%; background:#fff; opacity:.9; flex:0 0 auto; }
+html.genz-quota-blocked [contenteditable="true"],
+html.genz-quota-blocked textarea,
+html.genz-quota-blocked button[aria-label*="Send" i],
+html.genz-quota-blocked button[data-testid*="send" i],
+html.genz-quota-blocked button[type="submit"],
+html.genz-quota-blocked input[type="file"],
+html.genz-quota-blocked button[aria-label*="attach" i],
+html.genz-quota-blocked button[aria-label*="upload" i],
+html.genz-quota-blocked button[aria-label*="Search" i],
+html.genz-quota-blocked button[aria-label*="research" i]{
+  pointer-events:none !important; opacity:.45 !important; cursor:not-allowed !important;
+  filter:grayscale(0.6);
+}
+/* Keep the Gen Z widget + banner fully interactive even while blocked. */
+html.genz-quota-blocked #genz-sw-widget,
+html.genz-quota-blocked #genz-sw-widget *,
+html.genz-quota-blocked #genz-quota-banner,
+html.genz-quota-blocked #genz-quota-banner *{ pointer-events:auto !important; opacity:1 !important; filter:none !important; }
+
 #genz-sw-widget #genz-ws-row{ margin:8px 0 2px; }
 #genz-sw-widget .genz-ws-lbl{ font-size:9px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; color:#8aa2b8; margin-bottom:5px; }
 #genz-sw-widget .genz-ws-btns{ display:flex; gap:6px; }

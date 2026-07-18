@@ -26,7 +26,8 @@ function cycleKeysFor(account, now) {
 }
 
 // PURE: sum totalTokens over ledger rows whose `field` equals `key`. Ignores non-'usage'
-// kinds unless includeAll is set. Safe on empty / malformed rows.
+// kinds unless includeAll is set. Safe on empty / malformed rows. (Retained for callers/tests
+// that bucket by the stored key; the AUTHORITATIVE aggregation is sumRowsInWindow below.)
 function sumRowsByKey(rows, key, field, includeAll) {
   let sum = 0;
   for (const r of rows || []) {
@@ -37,11 +38,39 @@ function sumRowsByKey(rows, key, field, includeAll) {
   }
   return sum;
 }
-// Current five-hour cycle sum.
-function usageForCycle(rows, cycleKey, includeAll) { return sumRowsByKey(rows, cycleKey, 'cycleKey', includeAll); }
-// Current weekly-window sum (shares the append-only ledger; the weekly bucket rolls over
-// atomically when weekKey changes — no counter mutation, so concurrent requests can't bypass it).
-function usageForWeek(rows, weekKey, includeAll) { return sumRowsByKey(rows, weekKey, 'weekKey', includeAll); }
+
+// PURE + AUTHORITATIVE: sum totalTokens over rows whose real EVENT TIME (`at`) falls inside the
+// half-open window [startMs, endMs). This is the source-of-truth aggregation used by every summary.
+//
+// WHY by timestamp and NOT by the stored cycleKey/weekKey string: the bucket key embeds the
+// account's reset ANCHOR. The moment an operator sets or corrects the account's official
+// five-hour / weekly reset timestamp, the anchor — and therefore every freshly computed bucket
+// key — shifts, so it no longer equals the key stored on already-recorded rows. Summing by key
+// would then silently drop that usage (the reported "history shows 132 but summary shows 0" bug).
+// Summing by the immutable event time reconciles against the ledger directly, so a reset-anchor
+// change re-windows cleanly (a new cycle starts) WITHOUT ever hiding or deleting recorded usage.
+function sumRowsInWindow(rows, windowObj, includeAll) {
+  if (!windowObj) return 0;
+  const start = Number(windowObj.startMs);
+  const end = Number(windowObj.endMs);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  let sum = 0;
+  for (const r of rows || []) {
+    if (!r) continue;
+    if (!includeAll && r.kind && r.kind !== 'usage') continue;
+    const t = r.at != null ? new Date(r.at).getTime() : NaN;
+    if (!Number.isFinite(t) || t < start || t >= end) continue;
+    sum += Math.max(0, Math.trunc(Number(r.totalTokens) || 0));
+  }
+  return sum;
+}
+
+// Current five-hour cycle sum — by event time inside the active five-hour window.
+function usageForCycle(rows, fiveWindow, includeAll) { return sumRowsInWindow(rows, fiveWindow, includeAll); }
+// Current weekly-window sum — by event time inside the active weekly window (shares the append-only
+// ledger; the window rolls over cleanly on the official weekly boundary, no counter mutation, so
+// concurrent requests can't bypass it and a reset never deletes history).
+function usageForWeek(rows, weekWindow, includeAll) { return sumRowsInWindow(rows, weekWindow, includeAll); }
 
 // PURE: assemble the full quota picture (capacity, allowance, used, remaining, allow/deny) for
 // ONE more request of `estIncoming` estimated tokens. Takes already-summed usage numbers, so it
@@ -64,6 +93,60 @@ function resolveDecision({ account, client, clientUsed, accountUsed, weeklyClien
   return Object.assign({ plan, planLabel: quota.planLabel(plan) }, decision);
 }
 
+// PURE: build the CLIENT-FACING usage STATUS for both the five-hour and weekly windows.
+// This is DISPLAY ONLY — it never records anything and never exposes an account id/label/plan
+// secret. It is what the read-only `/quota-status` endpoint (and the overlay widget) renders.
+//
+// `usage` is the object returned by readUsage (already-summed used tokens for the current
+// windows + the resolved cycle windows + a `synced` flag). Effective limits are resolved by the
+// SAME priority the enforcement path uses (client override → account default → global default →
+// fallback), so what the widget shows can never disagree with what the gateway enforces.
+//
+// Each window carries: used, limit (effective), remaining, percent (capped 0-100), percentRaw
+// (uncapped, so callers can tell "exactly full" from "over a reduced limit"), atLimit (no room
+// left → future requests blocked until reset), over (usage strictly exceeds the limit), source
+// ('custom' | 'account' | 'default'), resetAt (epoch ms of the window end) and resetInSeconds.
+function usageStatus({ account, client, usage, now }) {
+  const q = quota;
+  const nowMs = now == null ? undefined : new Date(now).getTime();
+  const u = usage || {};
+  const keys = u.keys || cycleKeysFor(account, now);
+  const synced = u.synced !== false;
+
+  const fiveLimit = q.clientAllowance(client && client.tokenLimit, account && account.clientTokenLimit);
+  const weekLimit = q.weeklyClientAllowance(client && client.weeklyTokenLimit, account && account.weeklyClientTokenLimit);
+  const fiveSource = q.limitSource(client && client.tokenLimit, account && account.clientTokenLimit);
+  const weekSource = q.limitSource(client && client.weeklyTokenLimit, account && account.weeklyClientTokenLimit);
+
+  // `resetOfficial` is true only when the account carries an explicit reset timestamp for that
+  // window. When false the window is still computed (from the account-age fallback anchor) so
+  // usage keeps counting, but a UI must show the reset time as "Not synced" — never fabricate it.
+  const mk = (used, limit, source, win, resetOfficial) => {
+    const usedN = Math.max(0, Math.trunc(Number(used) || 0));
+    const limitN = Math.max(0, Math.trunc(Number(limit) || 0));
+    return {
+      used: usedN,
+      limit: limitN,
+      remaining: Math.max(0, limitN - usedN),
+      percent: q.usagePercent(usedN, limitN),                          // capped [0,100] for the bar
+      percentRaw: limitN > 0 ? Math.round((usedN / limitN) * 100) : (usedN > 0 ? 100 : 0),
+      atLimit: usedN >= limitN,                                        // no room → blocked until reset
+      over: usedN > limitN,                                            // exceeds a (possibly reduced) limit
+      source,
+      resetOfficial: !!resetOfficial,
+      resetAt: resetOfficial && win ? win.endMs : null,                // only expose an OFFICIAL reset
+      resetInSeconds: resetOfficial && win ? q.secondsUntilReset(win, nowMs) : null,
+    };
+  };
+
+  return {
+    label: q.USAGE_LABEL,           // 'Estimated local token usage' — restated for any UI
+    synced,
+    fiveHour: mk(u.clientUsed, fiveLimit, fiveSource, keys.fiveWindow, !!(account && account.cycleResetAt)),
+    weekly: mk(u.weeklyClientUsed, weekLimit, weekSource, keys.weekWindow, !!(account && account.weeklyResetAt)),
+  };
+}
+
 // ── DB wrappers (thin, fail-safe) ────────────────────────────────────────────
 function model() { return require('../../models/proxy/ClaudeUsage'); }
 
@@ -78,12 +161,12 @@ async function readUsage(account, client, now) {
   try {
     const Usage = model();
     const accountRows = account && account._id ? await Usage.find({ accountId: String(account._id) }) : [];
-    accountUsed = usageForCycle(accountRows, keys.cycleKey);
-    weeklyAccountUsed = usageForWeek(accountRows, keys.weekKey);
+    accountUsed = sumRowsInWindow(accountRows, keys.fiveWindow);
+    weeklyAccountUsed = sumRowsInWindow(accountRows, keys.weekWindow);
     if (client && client._id) {
       const clientRows = accountRows.filter(r => r && String(r.proxyClientId) === String(client._id));
-      clientUsed = usageForCycle(clientRows, keys.cycleKey);
-      weeklyClientUsed = usageForWeek(clientRows, keys.weekKey);
+      clientUsed = sumRowsInWindow(clientRows, keys.fiveWindow);
+      weeklyClientUsed = sumRowsInWindow(clientRows, keys.weekWindow);
     }
   } catch (_) { synced = false; /* fail-open for enforcement; flagged not-synced for display */ }
   return { clientUsed, accountUsed, weeklyClientUsed, weeklyAccountUsed, keys, synced };
@@ -104,7 +187,9 @@ async function recordUsage({ account, client, userId, inputTokens, contextTokens
     if (requestId && acctId) {
       try {
         const existing = await Usage.find({ accountId: acctId });
-        if ((existing || []).some(r => r && String(r.requestId) === String(requestId))) {
+        // Dedup only against SETTLED usage rows (a reservation shares the same requestId and must
+        // NOT be mistaken for an already-charged request).
+        if ((existing || []).some(r => r && (r.kind === 'usage' || !r.kind) && String(r.requestId) === String(requestId))) {
           return { recorded: false, duplicate: true };
         }
       } catch (_) { /* if the check fails, fall through and record (fail-open on the guard) */ }
@@ -124,6 +209,143 @@ async function recordUsage({ account, client, userId, inputTokens, contextTokens
     });
     return { recorded: true, duplicate: false };
   } catch (_) { return { recorded: false, duplicate: false }; }
+}
+
+// ── Reservations — STRICT atomic enforcement before a Claude action ──────────
+// Enforcement can't rely on settled usage alone: two concurrent requests both read the same "used"
+// and both pass (a bypass). So before forwarding a Claude message we ATOMICALLY append a
+// RESERVATION row (a single append-only INSERT → no lost write) for the estimated request tokens,
+// then re-read and decide with the strict rule
+//   used + reserved(earlier reservations + this one) + est  ≤  effective limit
+// for BOTH the five-hour and weekly windows AND the shared account capacity. The reservation is
+// SETTLED to real usage after a successful response (dedup by requestId) or RELEASED on failure,
+// and EXPIRES after a TTL so a crashed request can never hold quota forever.
+const RESERVATION_TTL_MS = (() => { const n = parseInt(process.env.CLAUDE_RESERVATION_TTL_MS, 10); return Number.isFinite(n) && n > 0 ? n : 5 * 60 * 1000; })();
+
+// Deterministic total order over reservations (event time, then requestId). Concurrent reserves
+// each count only reservations sorting strictly before themselves + their own est, so the set of
+// admitted reservations can never sum past the limit (the winner order is stable across readers).
+function reservationSortsBefore(r, marker) {
+  const ra = r && r.at != null ? new Date(r.at).getTime() : 0;
+  if (ra !== marker.atMs) return ra < marker.atMs;
+  return String((r && r.requestId) || '') < String(marker.requestId || '');
+}
+
+// Sum ACTIVE (unexpired) reservation tokens whose event time is in the window. With
+// `strictlyBefore`, only reservations sorting strictly before that marker are counted.
+function sumReservationsInWindow(rows, windowObj, nowMs, strictlyBefore) {
+  if (!windowObj) return 0;
+  const start = Number(windowObj.startMs), end = Number(windowObj.endMs);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 0;
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  let sum = 0;
+  for (const r of rows || []) {
+    if (!r || r.kind !== 'reservation') continue;
+    const exp = r.expiresAt != null ? new Date(r.expiresAt).getTime() : Infinity;
+    if (Number.isFinite(exp) && exp <= now) continue;             // expired reservation → freed
+    const t = r.at != null ? new Date(r.at).getTime() : NaN;
+    if (!Number.isFinite(t) || t < start || t >= end) continue;
+    if (strictlyBefore && !reservationSortsBefore(r, strictlyBefore)) continue;
+    sum += Math.max(0, Math.trunc(Number(r.totalTokens) || 0));
+  }
+  return sum;
+}
+
+// Delete the reservation row(s) for a request (settle or failure). Never touches settled usage
+// (kind filter). Fail-safe.
+async function releaseReservation({ accountId, requestId }) {
+  try {
+    if (!requestId) return { released: false };
+    const Usage = model();
+    if (!Usage.deleteMany) return { released: false };
+    const r = await Usage.deleteMany({ requestId: String(requestId), kind: 'reservation' });
+    return { released: true, count: (r && r.deletedCount) || 0 };
+  } catch (_) { return { released: false }; }
+}
+
+// Per-account in-process serialization for the reserve critical section. INSERT-then-READ has a
+// tiny race (two reserves that each read before the other's insert could both admit). Serializing
+// reserves per account inside the enforcement process closes that window: each reserve's read
+// always sees every prior reserve, so admitted reservations can never sum past the limit. (Across
+// multiple Passenger workers a sub-millisecond window remains; the reservation + short settle keep
+// it negligible vs. the previous behaviour of no reservation at all.)
+const _accountLocks = new Map(); // accountId -> tail promise of the serialized chain
+function withAccountLock(accountId, fn) {
+  const key = String(accountId || '');
+  const prev = _accountLocks.get(key) || Promise.resolve();
+  const result = prev.then(fn, fn);            // run fn after the previous holder settles
+  const tail = result.then(() => {}, () => {}); // never let a rejection break the chain
+  _accountLocks.set(key, tail);
+  tail.then(() => { if (_accountLocks.get(key) === tail) _accountLocks.delete(key); });
+  return result;
+}
+
+// Reserve `estTokens` for this request, then decide strictly. Returns
+//   { allowed, reserved, reason, decision, keys, synced, requestId, window, resetInSeconds }.
+// On DENY the reservation is rolled back (released) so a blocked request holds nothing. On any DB
+// error it fails OPEN (allowed:true, reserved:false, synced:false) — a metering hiccup must never
+// break a real Claude chat.
+async function reserveAndCheck({ account, client, userId, estTokens, requestId, now, ttlMs }) {
+  const keys = cycleKeysFor(account, now);
+  const nowMs = now == null ? Date.now() : new Date(now).getTime();
+  const est = Math.max(0, Math.trunc(Number(estTokens) || 0));
+  const acctId = account && account._id ? String(account._id) : null;
+  const cliId = client && client._id ? String(client._id) : null;
+  const rid = requestId || null;
+  const ttl = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : RESERVATION_TTL_MS;
+
+  const failOpen = (why) => {
+    const decision = resolveDecision({ account, client, clientUsed: 0, accountUsed: 0, weeklyClientUsed: 0, weeklyAccountUsed: 0, estIncoming: est });
+    return { allowed: true, reserved: false, reason: null, decision, keys, synced: false, requestId: rid, window: '5-hour', resetInSeconds: quota.secondsUntilReset(keys.fiveWindow, nowMs), _why: why };
+  };
+  if (!acctId) return failOpen('no_account');
+
+  const Usage = model();
+  // Serialize the whole insert→read→decide→rollback per account so each reserve sees every prior one.
+  return withAccountLock(acctId, async () => {
+    // 1) Reserve atomically (single append-only INSERT).
+    try {
+      await Usage.create({
+        accountId: acctId, proxyClientId: cliId, userId: userId != null ? String(userId) : null,
+        cycleKey: keys.cycleKey, weekKey: keys.weekKey,
+        inputTokens: est, contextTokens: 0, outputTokens: 0,
+        requestId: rid, at: new Date(nowMs), expiresAt: new Date(nowMs + ttl), kind: 'reservation',
+      });
+    } catch (_) { return failOpen('reserve_failed'); }
+
+    // 2) Re-read and decide with the strict rule (usage + reservations-before-mine + my est).
+    try {
+      const rows = await Usage.find({ accountId: acctId });
+      const marker = { atMs: nowMs, requestId: rid };
+      const clientRows = cliId ? rows.filter(r => r && String(r.proxyClientId) === cliId) : [];
+      const decision = resolveDecision({
+        account, client,
+        clientUsed: sumRowsInWindow(clientRows, keys.fiveWindow) + sumReservationsInWindow(clientRows, keys.fiveWindow, nowMs, marker),
+        accountUsed: sumRowsInWindow(rows, keys.fiveWindow) + sumReservationsInWindow(rows, keys.fiveWindow, nowMs, marker),
+        weeklyClientUsed: sumRowsInWindow(clientRows, keys.weekWindow) + sumReservationsInWindow(clientRows, keys.weekWindow, nowMs, marker),
+        weeklyAccountUsed: sumRowsInWindow(rows, keys.weekWindow) + sumReservationsInWindow(rows, keys.weekWindow, nowMs, marker),
+        estIncoming: est,
+      });
+      const weekly = decision.reason === 'weekly_client_limit' || decision.reason === 'weekly_account_capacity';
+      const resetInSeconds = quota.secondsUntilReset(weekly ? keys.weekWindow : keys.fiveWindow, nowMs);
+      if (!decision.allowed) {
+        await releaseReservation({ accountId: acctId, requestId: rid });  // roll back — hold nothing
+        return { allowed: false, reserved: false, reason: decision.reason, decision, keys, synced: true, requestId: rid, window: weekly ? 'weekly' : '5-hour', resetInSeconds };
+      }
+      return { allowed: true, reserved: true, reason: null, decision, keys, synced: true, requestId: rid, window: '5-hour', resetInSeconds: quota.secondsUntilReset(keys.fiveWindow, nowMs) };
+    } catch (_) {
+      await releaseReservation({ accountId: acctId, requestId: rid }).catch(() => {});
+      return failOpen('read_failed');
+    }
+  });
+}
+
+// Settle a completed request: release its reservation, then record the ACTUAL usage (deduped
+// against settled rows only). One call per request → charged at most once. Fail-safe.
+async function settleUsage({ account, client, userId, inputTokens, contextTokens, outputTokens, requestId, now }) {
+  const acctId = account && account._id ? String(account._id) : null;
+  if (acctId && requestId) await releaseReservation({ accountId: acctId, requestId }).catch(() => {});
+  return recordUsage({ account, client, userId, inputTokens, contextTokens, outputTokens, requestId, now });
 }
 
 // Recent settled usage rows for a (account, client), newest first — for the admin history view.
@@ -150,9 +372,19 @@ async function recentHistory(accountId, clientId, limit = 25) {
 async function pruneOld(now) {
   try {
     const Usage = model();
-    const cutoff = new Date((now == null ? Date.now() : new Date(now).getTime()) - 2 * quota.WEEK_MS);
-    if (Usage.deleteMany) await Usage.deleteMany({ at: { $lt: cutoff } });
+    const nowMs = now == null ? Date.now() : new Date(now).getTime();
+    const cutoff = new Date(nowMs - 2 * quota.WEEK_MS);
+    if (Usage.deleteMany) {
+      await Usage.deleteMany({ at: { $lt: cutoff } });
+      // Also sweep EXPIRED reservations (a crashed request that never settled/released) so they
+      // stop counting against the limit past their TTL.
+      await Usage.deleteMany({ kind: 'reservation', expiresAt: { $lt: new Date(nowMs) } });
+    }
   } catch (_) { /* best-effort */ }
 }
 
-module.exports = { cycleKeysFor, usageForCycle, usageForWeek, sumRowsByKey, resolveDecision, readUsage, recordUsage, recentHistory, pruneOld };
+module.exports = {
+  cycleKeysFor, usageForCycle, usageForWeek, sumRowsByKey, sumRowsInWindow, sumReservationsInWindow,
+  resolveDecision, usageStatus, readUsage, recordUsage, recentHistory, pruneOld,
+  reserveAndCheck, settleUsage, releaseReservation, RESERVATION_TTL_MS,
+};

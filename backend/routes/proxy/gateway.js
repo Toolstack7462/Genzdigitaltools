@@ -305,29 +305,49 @@ router.post('/quota-precheck', requireGatewayKey, async (req, res) => {
 
     const parts = charParts(req.body);
     const estIncoming = claudeQuota.estimateRequestTokens(parts);
-    const u = await claudeUsage.readUsage(ctx.account, ctx.client);
-    const decision = claudeUsage.resolveDecision({
-      account: ctx.account, client: ctx.client,
-      clientUsed: u.clientUsed, accountUsed: u.accountUsed,
-      weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming,
-    });
+    const requestId = req.body && req.body.requestId ? String(req.body.requestId).slice(0, 80) : null;
     const enforced = mode === 'enforce';
-    const allowed = enforced ? decision.allowed : true;
-    if (enforced && !decision.allowed) {
-      dbg({ evt: 'quota_block', tool: 'claude', reason: decision.reason, est: estIncoming, client_used: decision.clientUsed, acct_used: decision.accountUsed });
+
+    if (!enforced) {
+      // 'count' mode: measure only — never blocks a message and takes NO reservation. Report the
+      // current picture for display/telemetry.
+      const u = await claudeUsage.readUsage(ctx.account, ctx.client);
+      const decision = claudeUsage.resolveDecision({
+        account: ctx.account, client: ctx.client,
+        clientUsed: u.clientUsed, accountUsed: u.accountUsed,
+        weeklyClientUsed: u.weeklyClientUsed, weeklyAccountUsed: u.weeklyAccountUsed, estIncoming,
+      });
+      const weekly = decision.reason === 'weekly_client_limit' || decision.reason === 'weekly_account_capacity';
+      return res.json({
+        ok: true, allowed: true, mode, estIncoming, requestId,
+        window: weekly ? 'weekly' : '5-hour',
+        resetInSeconds: claudeQuota.secondsUntilReset(weekly ? u.keys.weekWindow : u.keys.fiveWindow),
+        usage: claudeQuota.presentDecision(decision),
+      });
+    }
+
+    // 'enforce' mode: STRICTLY reserve the estimate atomically, then decide with
+    //   used + reserved(this + earlier) + est ≤ effective limit  for BOTH windows + shared account.
+    // A denied request holds NO reservation (rolled back). The reservation is settled or released
+    // by /usage-report or /quota-release. Fail-OPEN inside reserveAndCheck on any DB error.
+    const rc = await claudeUsage.reserveAndCheck({
+      account: ctx.account, client: ctx.client, userId: ctx.client.userId,
+      estTokens: estIncoming, requestId,
+    });
+    const decision = rc.decision || {};
+    if (!rc.allowed) {
+      dbg({ evt: 'quota_block', tool: 'claude', reason: rc.reason, est: estIncoming, client_used: decision.clientUsed, acct_used: decision.accountUsed });
       ActivityLog.log('CLIENT', ctx.client.userId, 'PROXY_CLAUDE_QUOTA_BLOCK_REQUEST', {
-        tool: 'claude', proxyClientId: ctx.client._id, reason: decision.reason, estIncoming,
+        tool: 'claude', proxyClientId: ctx.client._id, reason: rc.reason, estIncoming,
         clientUsed: decision.clientUsed, clientLimit: decision.clientLimit,
+        weeklyClientUsed: decision.weeklyClientUsed, weeklyClientLimit: decision.weeklyClientLimit,
         accountUsed: decision.accountUsed, accountCapacity: decision.accountCapacity,
       }).catch(() => {});
     }
-    // Return the reset countdown for the window that actually blocked (weekly vs five-hour), so
-    // the gateway's block notice shows the correct "resets in …".
-    const weekly = decision.reason === 'weekly_client_limit' || decision.reason === 'weekly_account_capacity';
     return res.json({
-      ok: true, allowed, mode, estIncoming,
-      window: weekly ? 'weekly' : '5-hour',
-      resetInSeconds: claudeQuota.secondsUntilReset(weekly ? u.keys.weekWindow : u.keys.fiveWindow),
+      ok: true, allowed: rc.allowed, mode, estIncoming, requestId: rc.requestId || requestId,
+      reserved: !!rc.reserved, window: rc.window,
+      resetInSeconds: rc.resetInSeconds,
       usage: claudeQuota.presentDecision(decision),
     });
   } catch (err) {
@@ -351,10 +371,18 @@ router.post('/usage-report', requireGatewayKey, async (req, res) => {
     const inputTokens = claudeQuota.tokensFromChars(parts.inputChars);
     const contextTokens = claudeQuota.tokensFromChars(parts.systemChars + parts.contextChars + parts.attachmentChars);
     const outputTokens = claudeQuota.tokensFromChars(clampChars(req.body && req.body.outputChars));
-    if (inputTokens === 0 && contextTokens === 0 && outputTokens === 0) return res.json({ ok: true, recorded: false });
-
     const requestId = req.body && req.body.requestId ? String(req.body.requestId).slice(0, 80) : null;
-    const r = await claudeUsage.recordUsage({
+    // Even a zero-token completion must free its reservation (the request finished) — otherwise the
+    // held estimate would linger until the TTL.
+    if (inputTokens === 0 && contextTokens === 0 && outputTokens === 0) {
+      const accountId = ctx.account && ctx.account._id ? String(ctx.account._id) : null;
+      await claudeUsage.releaseReservation({ accountId, requestId }).catch(() => {});
+      return res.json({ ok: true, recorded: false });
+    }
+
+    // Settle: release this request's reservation (if any) and record the ACTUAL usage, deduped by
+    // requestId so a re-send can never double-charge.
+    const r = await claudeUsage.settleUsage({
       account: ctx.account, client: ctx.client, userId: ctx.client.userId,
       inputTokens, contextTokens, outputTokens, requestId,
     });
@@ -364,6 +392,46 @@ router.post('/usage-report', requireGatewayKey, async (req, res) => {
   } catch (err) {
     console.error('Proxy usage-report error:', err.message);
     return res.status(200).json({ ok: false, recorded: false, code: 'server_error' });
+  }
+});
+
+// ─── Quota release (gateway-only) — free a reservation for a request that never completed ─────
+// Called by the gateway when a reserved Claude request fails/aborts upstream, so a blocked or
+// dead request never holds quota until its TTL. Idempotent + fail-safe (always 200).
+router.post('/quota-release', requireGatewayKey, async (req, res) => {
+  try {
+    if (claudeQuota.quotaMode() !== 'enforce') return res.json({ ok: true, released: false });
+    const ctx = await resolveMeterContext(req);
+    if (!ctx.ok) return res.json({ ok: true, released: false, code: ctx.code });
+    const requestId = req.body && req.body.requestId ? String(req.body.requestId).slice(0, 80) : null;
+    const accountId = ctx.account && ctx.account._id ? String(ctx.account._id) : null;
+    const r = await claudeUsage.releaseReservation({ accountId, requestId });
+    return res.json({ ok: true, released: !!(r && r.released), count: (r && r.count) || 0 });
+  } catch (err) {
+    console.error('Proxy quota-release error:', err.message);
+    return res.status(200).json({ ok: false, released: false, code: 'server_error' });
+  }
+});
+
+// ─── Quota status (gateway-only) — READ-ONLY usage snapshot for the widget ────
+// Returns the client's current five-hour AND weekly ESTIMATED usage for display in the overlay
+// widget. It records NOTHING (no ledger write, no side effects) and exposes ONLY client-safe
+// figures — never an account id/label/plan-secret. Fail-safe: on any error it returns
+// `synced:false` so the widget shows "Not synced" rather than a fabricated 0.
+router.post('/quota-status', requireGatewayKey, async (req, res) => {
+  try {
+    const mode = claudeQuota.quotaMode();
+    if (mode === 'off') return res.json({ ok: true, enabled: false, mode });
+    const ctx = await resolveMeterContext(req);
+    if (!ctx.ok) return res.json({ ok: true, enabled: true, mode, synced: false, code: ctx.code });
+    await claudeSettings.ensureLoaded(); // apply admin global defaults before resolving limits
+
+    const u = await claudeUsage.readUsage(ctx.account, ctx.client);
+    const status = claudeUsage.usageStatus({ account: ctx.account, client: ctx.client, usage: u });
+    return res.json({ ok: true, enabled: true, mode, synced: u.synced, status });
+  } catch (err) {
+    console.error('Proxy quota-status error:', err.message);
+    return res.json({ ok: true, enabled: true, synced: false, code: 'server_error' });
   }
 });
 

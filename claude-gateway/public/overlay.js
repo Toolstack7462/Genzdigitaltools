@@ -66,12 +66,26 @@
       '<div class="genz-sw-body">' +
         '<div class="genz-sw-row genz-sw-acct" id="genz-sw-acct-row" style="display:none"><span>Account</span><b id="genz-sw-acct"></b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
+        // Claude-only compact "Estimated usage" block — thin progress lines for the five-hour and
+        // weekly windows. Hidden until the first /__genz/usage fetch fills it (or when off).
+        (CLAUDE ? (
+          '<div class="genz-usage" id="genz-usage" style="display:none">' +
+            '<div class="genz-usage-lbl">Estimated usage</div>' +
+            usageBlockHTML('five', '5-hour usage') +
+            usageBlockHTML('week', 'Weekly usage') +
+          '</div>'
+        ) : '') +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
       '</div>';
     document.documentElement.appendChild(w);
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
+    if (CLAUDE) {
+      el.usage = w.querySelector('#genz-usage');
+      el.usageFive = w.querySelector('.genz-usage-block[data-w="five"]');
+      el.usageWeek = w.querySelector('.genz-usage-block[data-w="week"]');
+    }
     w.querySelector('.genz-sw-sub').textContent = TOOL_NAME; // textContent → no HTML injection
     if (ACCOUNT_LABEL) {                                     // show which account is in use (safe label)
       var acctRow = w.querySelector('#genz-sw-acct-row');
@@ -486,6 +500,254 @@
     if (pending.length || fullPending) schedule();
   }
 
+  // ── Claude "Estimated usage" widget lines (five-hour + weekly) ───────────────
+  // Compact, Claude-style: "62% used", a thin progress line, "12.4k / 20k · Resets …", and a
+  // discreet Custom/Default tag. All values come from the gateway (server-side estimate); the
+  // widget NEVER invents a number — a missing figure renders as "Not synced".
+  function usageBlockHTML(key, name) {
+    return '<div class="genz-usage-block" data-w="' + key + '">' +
+        '<div class="genz-usage-top">' +
+          '<span class="genz-usage-name">' + name + '<span class="genz-usage-tag"></span></span>' +
+          '<span class="genz-usage-pct"></span>' +
+        '</div>' +
+        '<div class="genz-usage-bar"><i></i></div>' +
+        '<div class="genz-usage-meta"></div>' +
+      '</div>';
+  }
+  // Compact token formatting: 900 → "900", 12400 → "12.4k", 20000 → "20k", 1_500_000 → "1.5M".
+  function fmtTokens(n) {
+    n = Math.max(0, Math.round(Number(n) || 0));
+    if (n < 1000) return String(n);
+    if (n < 1000000) { var k = n / 1000; return (k >= 100 ? Math.round(k) : Math.round(k * 10) / 10) + 'k'; }
+    var m = n / 1000000; return (m >= 100 ? Math.round(m) : Math.round(m * 10) / 10) + 'M';
+  }
+  // Exact reset text. Five-hour → "Resets today at 11:00 PM" (today/tomorrow/weekday). Weekly →
+  // "Resets Tuesday, 21 July at 5:00 PM PKT" (weekday, date, time, timezone). Uses the viewer's
+  // own locale + timezone so every client sees their local reset moment of the shared cycle.
+  function fmtReset(ms, weekly) {
+    if (ms == null || !isFinite(ms)) return '';
+    var d = new Date(ms), now = new Date();
+    var timeStr;
+    try { timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (e) { timeStr = d.toTimeString().slice(0, 5); }
+    if (weekly) {
+      var wd = '', dm = '', tz = '';
+      try { wd = d.toLocaleDateString([], { weekday: 'long' }); } catch (e) {}
+      try { dm = d.toLocaleDateString([], { day: 'numeric', month: 'long' }); } catch (e) {}
+      try { var parts = new Intl.DateTimeFormat([], { timeZoneName: 'short' }).formatToParts(d); for (var i = 0; i < parts.length; i++) { if (parts[i].type === 'timeZoneName') { tz = parts[i].value; break; } } } catch (e) {}
+      return 'Resets ' + (wd ? wd + ', ' : '') + dm + ' at ' + timeStr + (tz ? ' ' + tz : '');
+    }
+    var sameDay = d.toDateString() === now.toDateString();
+    var tmr = new Date(now.getTime()); tmr.setDate(now.getDate() + 1);
+    var isTmr = d.toDateString() === tmr.toDateString();
+    var day = sameDay ? 'today' : (isTmr ? 'tomorrow' : (function () { try { return d.toLocaleDateString([], { weekday: 'long' }); } catch (e) { return 'soon'; } })());
+    return 'Resets ' + day + ' at ' + timeStr;
+  }
+  function renderUsageBlock(block, w, weekly) {
+    if (!block) return;
+    var pctEl = block.querySelector('.genz-usage-pct');
+    var barEl = block.querySelector('.genz-usage-bar > i');
+    var metaEl = block.querySelector('.genz-usage-meta');
+    var tagEl = block.querySelector('.genz-usage-tag');
+    // No data for this window → "Not synced" (never a fabricated 0).
+    if (!w || w.limit == null) {
+      if (pctEl) pctEl.textContent = '';
+      if (barEl) barEl.style.width = '0%';
+      if (metaEl) metaEl.textContent = 'Not synced';
+      if (tagEl) tagEl.textContent = '';
+      block.classList.remove('genz-usage-full', 'genz-usage-warn');
+      return;
+    }
+    var pct = Math.max(0, Math.min(100, Math.round(Number(w.percent) || 0))); // capped at 100%
+    // Bar is ALWAYS capped at 100%; the label reads "Limit exceeded" when usage is over the limit.
+    if (pctEl) pctEl.textContent = w.over ? 'Limit exceeded' : (pct + '% used');
+    if (barEl) barEl.style.width = pct + '%';
+    block.classList.toggle('genz-usage-full', !!w.atLimit);           // at/over limit → blocked
+    block.classList.toggle('genz-usage-warn', pct >= 80 && !w.atLimit);
+    // Usage (used / limit) ALWAYS shows. The reset text shows the exact moment only when the
+    // account carries an OFFICIAL reset timestamp for this window; otherwise "Reset not synced"
+    // (never a fabricated time). This keeps the widget identical to the admin table.
+    var meta = fmtTokens(w.used) + ' / ' + fmtTokens(w.limit);
+    var reset = w.resetOfficial ? fmtReset(w.resetAt, weekly) : '';
+    if (metaEl) metaEl.textContent = meta + ' · ' + (reset || 'Reset not synced');
+    if (tagEl) { tagEl.textContent = w.source === 'custom' ? 'Custom' : 'Default'; tagEl.classList.toggle('custom', w.source === 'custom'); }
+  }
+  function fetchUsage() {
+    if (!CLAUDE || !el.usage) return;
+    fetch('/__genz/usage', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' } })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (j) {
+        if (!j || j.enabled === false) { el.usage.style.display = 'none'; applyQuotaBlock(false); return; } // feature off → hide + unblock
+        el.usage.style.display = '';
+        var st = j.status || {};
+        var synced = j.synced !== false && st.synced !== false;
+        if (!synced) { renderUsageBlock(el.usageFive, null, false); renderUsageBlock(el.usageWeek, null, true); applyQuotaBlock(false); return; }
+        renderUsageBlock(el.usageFive, st.fiveHour, false);
+        renderUsageBlock(el.usageWeek, st.weekly, true);
+        // Strict enforcement is server-side (the gateway returns 429 and never calls Claude). This
+        // only mirrors that state in the UI: when either window has no room left, disable the local
+        // composer/search/upload controls and show when access returns. Never the source of truth.
+        var five = st.fiveHour || {}, week = st.weekly || {};
+        var blocked = !!(five.atLimit || week.atLimit);
+        var info = five.atLimit ? five : (week.atLimit ? week : null);
+        applyQuotaBlock(blocked, info, week.atLimit && !five.atLimit);
+      })
+      .catch(function () { /* transient — keep last-known values on screen */ });
+  }
+
+  // Mirror the server-side block in the page: toggle a root class that disables the composer,
+  // send, search and file-upload controls (via overlay.css), and show a banner with the exact
+  // reset time. A capture-phase key/click guard stops an in-flight submit; the backend 429 is the
+  // real guarantee, so even if a control slips through, Claude is never called.
+  function applyQuotaBlock(blocked, info, weekly) {
+    try {
+      var root = document.documentElement;
+      root.classList.toggle('genz-quota-blocked', !!blocked);
+      var banner = document.getElementById('genz-quota-banner');
+      if (!blocked) { if (banner) banner.style.display = 'none'; return; }
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'genz-quota-banner';
+        banner.innerHTML = '<span class="genz-qb-dot"></span><span class="genz-qb-text"></span>';
+        document.documentElement.appendChild(banner);
+      }
+      var when = (info && info.resetOfficial && info.resetAt) ? fmtReset(info.resetAt, !!weekly) : '';
+      var scope = weekly ? 'Weekly' : '5-hour';
+      banner.querySelector('.genz-qb-text').textContent =
+        'Usage limit reached (' + scope + '). New messages are paused' + (when ? ' — ' + when.replace(/^Resets/, 'resets') : ' until the limit resets') + '.';
+      banner.style.display = '';
+    } catch (e) { /* UI mirror only */ }
+  }
+  // Capture-phase guard: while blocked, swallow Enter-to-send and clicks on send/upload controls in
+  // the composer so nothing is dispatched. Backend enforcement still applies regardless.
+  function isBlocked() { return document.documentElement.classList.contains('genz-quota-blocked'); }
+  document.addEventListener('keydown', function (e) {
+    if (!CLAUDE || !isBlocked()) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      var t = e.target;
+      if (t && (t.isContentEditable || (t.tagName && t.tagName.toLowerCase() === 'textarea'))) { e.preventDefault(); e.stopPropagation(); toast('Usage limit reached — new messages are paused until reset.'); }
+    }
+  }, true);
+  document.addEventListener('click', function (e) {
+    if (!CLAUDE || !isBlocked()) return;
+    var b = e.target && e.target.closest && e.target.closest('button,[role="button"],input[type="file"]');
+    if (!b || (b.closest && b.closest('#genz-sw-widget,#genz-quota-banner'))) return;
+    var al = ((b.getAttribute && (b.getAttribute('aria-label') || '')) + ' ' + (b.getAttribute && (b.getAttribute('data-testid') || ''))).toLowerCase();
+    if (/send|attach|upload|file|search|research|tool/.test(al) || b.type === 'file' || (b.getAttribute && b.getAttribute('type') === 'submit')) {
+      e.preventDefault(); e.stopPropagation();
+    }
+  }, true);
+
+  // ── Claude default-effort auto-select (claude-only) ──────────────────────────
+  // Mirrors lib/effortPrefs.js (the unit-tested reference). Best-effort DOM automation: on a fresh
+  // session / new conversation, once the composer is ready, detect the current effort and — only
+  // if it differs from the configured default — open the menu, pick the default, close. Applied
+  // ONCE per conversation; never overrides a later manual change; warns (console) and continues if
+  // the control is unavailable or Claude changed its UI. Never touches the model or the workspace.
+  var EFF_LEVELS = ['low', 'medium', 'high', 'extra', 'max'];
+  var EFF_ALIAS = { low: 'low', lo: 'low', light: 'low', medium: 'medium', med: 'medium', mid: 'medium', standard: 'medium', normal: 'medium', balanced: 'medium', 'default': 'medium', high: 'high', hi: 'high', extra: 'extra', 'extra high': 'extra', extrahigh: 'extra', 'very high': 'extra', higher: 'extra', max: 'max', maximum: 'max', highest: 'max', ultra: 'max' };
+  function effLevel(v) { if (v == null) return null; var s = String(v).trim().toLowerCase(); if (EFF_LEVELS.indexOf(s) >= 0) return s; return EFF_ALIAS[s] || null; }
+  function effNorm(v, fb) { return effLevel(v) || (EFF_LEVELS.indexOf(fb) >= 0 ? fb : 'medium'); }
+  function effSame(a, b) { var x = effLevel(a), y = effLevel(b); return !!x && !!y && x === y; }
+  function effParse(text) { if (text == null) return null; var s = String(text).toLowerCase(); var o = ['extra high', 'very high', 'extrahigh', 'maximum', 'highest', 'ultra', 'extra', 'max', 'higher', 'high', 'medium', 'standard', 'normal', 'balanced', 'low']; for (var i = 0; i < o.length; i++) { var re = new RegExp('(^|[^a-z])' + o[i].replace(/ /g, '\\s+') + '([^a-z]|$)', 'i'); if (re.test(s)) { var l = effLevel(o[i]); if (l) return l; } } return null; }
+  function effConvKey(p) { p = String(p || '').replace(/[#?].*$/, '').replace(/\/+$/, '') || '/'; var m; if ((m = p.match(/\/chat\/([\w-]+)/i))) return 'chat:' + m[1]; if ((m = p.match(/\/project\/([\w-]+)/i))) return 'project:' + m[1]; if (/\/new$/i.test(p) || p === '/' || p === '') return 'new'; return 'path:' + p; }
+  function effNextConv(prev, p) { var key = effConvKey(p); if (prev == null) return { key: key, fresh: true, inherit: false }; if (key === prev) return { key: key, fresh: false, inherit: false }; if (prev === 'new' && key.indexOf('chat:') === 0) return { key: key, fresh: false, inherit: true }; if (key === 'new') return { key: key, fresh: true, inherit: false }; return { key: key, fresh: false, inherit: false }; }
+
+  var EFFORT_TARGET = effNorm(CFG.defaultEffort, 'medium');
+  var THINKING_DEFAULT = CFG.thinkingDefault === true;
+  var EFFORT_SEL = CFG.effortTriggerSel || '';
+  var effSt = { convKey: null, handledFor: null, thinkHandledFor: null, attempts: 0, warned: false };
+  var EFF_MAX_ATTEMPTS = 30; // ~30 × 1s ≈ 24s for the composer to render before we give up
+
+  function effWarn(msg) { if (effSt.warned) return; effSt.warned = true; try { console.warn('[Gen Z] Claude effort auto-select: ' + msg + ' — continuing normally.'); } catch (e) {} }
+  function composerReady() { try { return !!document.querySelector('main [contenteditable="true"], main textarea, [data-testid="chat-input"], form [contenteditable="true"], form textarea, div[contenteditable="true"][role="textbox"]'); } catch (e) { return false; } }
+
+  function findEffortTrigger() {
+    try {
+      var cands = [];
+      if (EFFORT_SEL) { try { cands = Array.prototype.slice.call(document.querySelectorAll(EFFORT_SEL)); } catch (e) {} }
+      if (!cands.length) cands = Array.prototype.slice.call(document.querySelectorAll('button,[role="button"]'));
+      for (var i = 0; i < cands.length; i++) {
+        var b = cands[i]; if (!b || (b.closest && b.closest('#genz-sw-widget,#genz-quota-banner,#genz-ws-row'))) continue;
+        var al = ((b.getAttribute && (b.getAttribute('aria-label') || '')) + ' ' + (b.textContent || '')).toLowerCase();
+        var lvl = effParse(al);
+        // Only accept a pinned selector match, or a control that clearly names effort/thinking-effort
+        // (so we never mis-click an unrelated "medium"/"high" button in the page).
+        if (EFFORT_SEL) return { el: b, current: lvl };
+        if (/effort/.test(al) && lvl != null) return { el: b, current: lvl };
+      }
+    } catch (e) {}
+    return null;
+  }
+  function applyEffort(trigger, target) {
+    try {
+      trigger.click(); // open the menu (async render)
+      setTimeout(function () {
+        try {
+          // Scope selection to the menu the trigger opened — NEVER a page-wide search (which could
+          // click a stray element elsewhere in the page that happens to contain an effort word).
+          var menu = document.querySelector('[role="menu"],[role="listbox"],[data-radix-menu-content]');
+          if (!menu) { effWarn('effort menu did not open (UI changed) — leaving effort unchanged'); return; }
+          var items = menu.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="option"],button,li');
+          var picked = null;
+          for (var i = 0; i < items.length; i++) { var t = ((items[i].getAttribute && (items[i].getAttribute('aria-label') || '')) + ' ' + (items[i].textContent || '')); if (effSame(effParse(t), target)) { picked = items[i]; break; } }
+          if (picked) picked.click();
+          else { effWarn('effort option "' + target + '" not found in menu'); try { menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch (e) {} }
+        } catch (e) { effWarn('could not select the effort option'); }
+      }, 200);
+      return true;
+    } catch (e) { effWarn('could not open the effort menu'); return false; }
+  }
+
+  function findThinkingToggle() {
+    try {
+      var cands = Array.prototype.slice.call(document.querySelectorAll('button,[role="switch"],[role="checkbox"],[role="menuitemcheckbox"]'));
+      for (var i = 0; i < cands.length; i++) {
+        var b = cands[i]; if (!b || (b.closest && b.closest('#genz-sw-widget,#genz-quota-banner'))) continue;
+        var al = ((b.getAttribute && (b.getAttribute('aria-label') || '')) + ' ' + (b.textContent || '')).toLowerCase();
+        if (/extended thinking|think longer|thinking mode|^\s*thinking\s*$/.test(al)) {
+          var pr = b.getAttribute && (b.getAttribute('aria-pressed') || b.getAttribute('aria-checked'));
+          return { el: b, on: pr === 'true' ? true : (pr === 'false' ? false : null) };
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function effortTick() {
+    if (!CLAUDE) return;
+    // Track the conversation; reset (or carry) the handled flags on a change.
+    var st = effNextConv(effSt.convKey, location.pathname);
+    if (st.key !== effSt.convKey) {
+      effSt.convKey = st.key;
+      if (st.fresh) { effSt.handledFor = null; effSt.thinkHandledFor = null; effSt.attempts = 0; effSt.warned = false; }
+      else if (st.inherit) { effSt.handledFor = effSt.convKey; effSt.thinkHandledFor = effSt.convKey; } // /new→/chat: carry, no re-apply
+    }
+    // Count an attempt once per tick while EITHER effort or thinking is still pending, so both
+    // share the same bounded retry budget (a fresh conversation resets it above).
+    var effortPending = effSt.handledFor !== effSt.convKey;
+    var thinkPending = THINKING_DEFAULT && effSt.thinkHandledFor !== effSt.convKey;
+    if (effortPending || thinkPending) effSt.attempts++;
+    var exhausted = effSt.attempts >= EFF_MAX_ATTEMPTS;
+    // ── Effort ──
+    if (effortPending) {
+      var ready = composerReady();
+      var trig = ready ? findEffortTrigger() : null;
+      if (!ready) { /* wait */ }
+      else if (!trig || trig.current == null) { if (exhausted) { effSt.handledFor = effSt.convKey; effWarn('effort control unavailable / UI changed'); } /* else wait */ }
+      else if (effSame(trig.current, EFFORT_TARGET)) { effSt.handledFor = effSt.convKey; } // already selected → don't click
+      else { effSt.handledFor = effSt.convKey; applyEffort(trig.el, EFFORT_TARGET); } // apply once
+    }
+    // ── Thinking default (separate; only when admin-enabled) ──
+    if (thinkPending) {
+      var ready2 = composerReady();
+      var tog = ready2 ? findThinkingToggle() : null;
+      if (!ready2) { /* wait */ }
+      else if (!tog || tog.on == null) { if (exhausted) { effSt.thinkHandledFor = effSt.convKey; effWarn('thinking control unavailable / UI changed'); } }
+      else if (tog.on === true) { effSt.thinkHandledFor = effSt.convKey; } // already on
+      else { effSt.thinkHandledFor = effSt.convKey; try { tog.el.click(); } catch (e) {} } // enable once
+    }
+  }
+
   function start() {
     // Claude uses the opaque HttpOnly __Host-claude_session cookie (unreadable by JS), so there is
     // no pg_lease to read here — proceed and let /__genz/validate confirm the session server-side.
@@ -495,7 +757,13 @@
     buildChatgptAccountCard();
     injectHideStyle();
     runHiding();
-    if (CLAUDE) { buildClaudeWorkspaces(); setTimeout(buildClaudeWorkspaces, 3000); }
+    if (CLAUDE) {
+      buildClaudeWorkspaces(); setTimeout(buildClaudeWorkspaces, 3000);
+      fetchUsage(); setInterval(fetchUsage, 30000);
+      // Auto-select the default effort on this fresh session, then keep watching for new
+      // conversations (each tick is a cheap no-op once the current conversation is handled).
+      try { effortTick(); setInterval(effortTick, 1000); } catch (e) {}
+    }
     var mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { childList: true, subtree: true });
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); scheduleFull(); return r; };

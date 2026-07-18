@@ -49,7 +49,12 @@ async function presentAssigned(pc) {
     const accounts = await ProxyAccount.find({ tool: pc.tool });
     // Claude honours a pinned account; every other tool uses automatic selection unchanged.
     if (pc.tool === 'claude') {
-      account = accountSelect.resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
+      // Show usage for the account the client is ACTUALLY being served/metered against (their
+      // active lease) so the card matches the live overlay widget + enforcement; fall back to a
+      // fresh selection when there is no active lease. Fail-safe; never changes selection.
+      let leaseAcct = null;
+      try { const leases = await ProxyLease.find({ proxyClientId: pc._id, revoked: false }); leaseAcct = accountSelect.activeLeaseAccount(leases, accounts); } catch (_) {}
+      account = leaseAcct || accountSelect.resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
     } else {
       account = accounts.length ? accountSelect.selectAccount(accounts, SELECTION_MODE) : null;
     }
@@ -75,6 +80,10 @@ async function presentAssigned(pc) {
         clientUsed: decision.clientUsed,
         clientRemaining: decision.clientRemaining,
         resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        // The five-hour reset time is "official" only when the account carries an explicit
+        // cycleResetAt; otherwise the countdown is a fallback and the UI must not present it as
+        // synced (mirrors the weekly rule + the admin table + the compact widget).
+        fiveHourResetOfficial: !!(account && account.cycleResetAt),
         // Weekly figures (labeled "Estimated usage" in the widget).
         weeklyLimit: decision.weeklyClientLimit,
         weeklyUsed: decision.weeklyClientUsed,

@@ -34,12 +34,13 @@ ssh-keygen -R "[${SFTP_HOST}]:${SFTP_PORT}" >/dev/null 2>&1 || true
 ssh-keyscan -t rsa -p "${SFTP_PORT}" "${SFTP_HOST}" >> ~/.ssh/known_hosts 2>/dev/null || true
 
 # Runtime files only — NOT .env, node_modules, docs, or the .example template.
-# lib/quotaTap.js is required by server.js (claude token-quota tap) — it MUST ship or the
-# gateway boots into "Cannot find module './lib/quotaTap'". The .test.js is NOT shipped.
+# EVERY lib/*.js that server.js require()s MUST ship or the gateway boots into
+# "Cannot find module './lib/<name>'": lib/quotaTap.js (token-quota tap) and
+# lib/effortPrefs.js (default-effort preference). The .test.js files are NOT shipped.
 FILES=(
   server.js package.json
   public/overlay.js public/overlay.css
-  lib/quotaTap.js
+  lib/quotaTap.js lib/effortPrefs.js
 )
 
 echo "==> Deploying Claude gateway  ->  ${SFTP_USER}@${SFTP_HOST}:${SERVER_DIR}  (vhost ${VHOST})"

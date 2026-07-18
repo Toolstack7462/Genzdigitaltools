@@ -92,4 +92,20 @@ function resolveAccount(accounts, mode, pinnedAccountId) {
   return { account: selectAccount(list, mode), pinned: false, unavailableReason: null };
 }
 
-module.exports = { MODES, selectAccount, isEligible, unavailableReason, resolveAccount };
+// DISPLAY-ONLY (pure): given a client's leases + the tool's accounts, return the account bound to
+// the client's most-recent ACTIVE (non-revoked, unexpired) lease, or null. This is what the client
+// is ACTUALLY being served and metered against (the gateway enforces quota against the lease's
+// account), so the admin table + client card use it to show the SAME account the live widget shows.
+// It does NOT change selection/assignment — callers fall back to resolveAccount() when it's null
+// (no active lease). For a pinned client this equals the pinned account, so nothing changes there.
+function activeLeaseAccount(leases, accounts, now) {
+  const t = now == null ? Date.now() : new Date(now).getTime();
+  const active = (leases || [])
+    .filter(l => l && l.accountId && !l.revoked && new Date(l.expiresAt).getTime() > t)
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  if (!active.length) return null;
+  const id = String(active[0].accountId);
+  return (accounts || []).find(a => String(a._id) === id) || null;
+}
+
+module.exports = { MODES, selectAccount, isEligible, unavailableReason, resolveAccount, activeLeaseAccount };

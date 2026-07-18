@@ -11,16 +11,18 @@ import { useToast } from '../Toast';
  * All figures are "Estimated local token usage", not Anthropic's official counts.
  */
 const n = (v) => Number(v || 0).toLocaleString();
-const fmtReset = (secs) => {
-  const s = Number(secs || 0);
+// Human countdown to a reset, e.g. "4h 55m" / "12m" / "now" — never the ambiguous "5h: 5h".
+const fmtCountdown = (secs) => {
+  const s = Math.max(0, Number(secs || 0));
   if (s <= 0) return 'now';
-  if (s >= 3600) return `${Math.round(s / 3600)}h`;
-  return `${Math.max(1, Math.round(s / 60))}m`;
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  if (h >= 1) return `${h}h ${m}m`;
+  return `${Math.max(1, m)}m`;
 };
 const fmtAt = (iso) => {
   if (!iso) return '—';
   const d = new Date(iso);
-  return isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 };
 
 const GLOBAL_FIELDS = [
@@ -32,15 +34,17 @@ const GLOBAL_FIELDS = [
 ];
 
 const Meter = ({ used, limit, reached }) => {
-  const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  const u = Number(used), l = Number(limit);
+  const over = l > 0 ? u > l : u > 0;                             // limit 0 is a hard-stop → any usage is "over"
+  const pct = l > 0 ? Math.min(100, (u / l) * 100) : (u > 0 ? 100 : 0); // bar capped 100%; full when hard-stopped
   return (
     <div className="min-w-[120px]">
       <div className="flex justify-between text-[11px] mb-0.5">
-        <span className={reached ? 'text-red-600 font-semibold' : 'text-genz-navy'}>{n(used)} / {n(limit)}</span>
-        <span className="text-genz-muted">{n(Math.max(0, limit - used))} left</span>
+        <span className={reached || over ? 'text-red-600 font-semibold' : 'text-genz-navy'}>{n(used)} / {n(limit)}</span>
+        <span className={over ? 'text-red-600 font-semibold' : 'text-genz-muted'}>{over ? 'Limit exceeded' : `${n(Math.max(0, limit - used))} left`}</span>
       </div>
       <div className="h-1.5 rounded-full bg-genz-soft overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: reached ? '#ef4444' : 'linear-gradient(135deg,#da7756,#c15f3c)' }} />
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: (reached || over) ? '#ef4444' : 'linear-gradient(135deg,#da7756,#c15f3c)' }} />
       </div>
     </div>
   );
@@ -173,10 +177,17 @@ const FragmentRow = ({ r, expanded, onToggle, history }) => {
           {r.planLabel && <div className="text-[10px] text-genz-muted">{r.planLabel}</div>}
         </td>
         <td>{r.synced ? <><Meter used={f.used} limit={f.limit} reached={f.reached} /><div className="mt-0.5 text-[10px]"><span className={`px-1.5 py-0.5 rounded-full font-semibold ${f.isCustom ? 'bg-genz-teal/10 text-genz-teal' : 'bg-slate-100 text-slate-500'}`}>{f.isCustom ? 'Custom' : 'Default'}</span></div></> : <span className="text-genz-muted italic text-xs">Not synced</span>}</td>
-        <td>{r.synced && w.synced ? <><Meter used={w.used} limit={w.limit} reached={w.reached} /><div className="mt-0.5 text-[10px]"><span className={`px-1.5 py-0.5 rounded-full font-semibold ${w.isCustom ? 'bg-genz-teal/10 text-genz-teal' : 'bg-slate-100 text-slate-500'}`}>{w.isCustom ? 'Custom' : 'Default'}</span></div></> : <span className="text-genz-muted italic text-xs">Not synced</span>}</td>
+        {/* Weekly USAGE shows whenever the ledger read succeeded (r.synced) — exactly like the
+            five-hour cell and the compact widget. A missing weeklyResetAt only makes the RESET
+            column "Not synced" (below); it must NOT hide the counted weekly usage. */}
+        <td>{r.synced ? <><Meter used={w.used} limit={w.limit} reached={w.reached} /><div className="mt-0.5 text-[10px]"><span className={`px-1.5 py-0.5 rounded-full font-semibold ${w.isCustom ? 'bg-genz-teal/10 text-genz-teal' : 'bg-slate-100 text-slate-500'}`}>{w.isCustom ? 'Custom' : 'Default'}</span></div></> : <span className="text-genz-muted italic text-xs">Not synced</span>}</td>
         <td className="text-[11px] text-genz-muted">
-          <div>5h: {fmtReset(f.resetInSeconds)}</div>
-          <div>wk: {w.synced ? fmtAt(w.resetAt) : 'Not synced'}</div>
+          <div>5-hr: {f.resetOfficial
+            ? <span title={fmtAt(f.resetAt)}>in {fmtCountdown(f.resetInSeconds)}</span>
+            : <span className="italic">Not synced</span>}</div>
+          <div>Weekly: {w.synced
+            ? <span title={`in ${fmtCountdown(w.resetInSeconds)}`}>{fmtAt(w.resetAt)}</span>
+            : <span className="italic">Not synced</span>}</div>
         </td>
         <td className="space-y-0.5">
           {f.reached && <Tag>5h limit reached</Tag>}

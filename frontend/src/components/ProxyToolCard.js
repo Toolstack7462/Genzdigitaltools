@@ -27,20 +27,21 @@ const fmtResetAt = (iso) => {
 // Compact estimated-usage meter: used / limit + a thin progress bar + a reset line.
 const UsageMeter = ({ label, used, limit, grad, reset, synced = true }) => {
   const u = Number(used || 0), l = Number(limit || 0);
-  const pct = l > 0 ? Math.min(100, (u / l) * 100) : 0;
+  const over = l > 0 ? u > l : u > 0;                // limit 0 is a hard-stop → any usage is "over"
+  const pct = l > 0 ? Math.min(100, (u / l) * 100) : (u > 0 ? 100 : 0); // bar capped at 100%; full when hard-stopped
   const remaining = Math.max(0, l - u);
   return (
     <div>
       <div className="flex items-center justify-between text-[11px] text-genz-muted mb-1">
         <span>{label}</span>
-        <span className="font-semibold text-genz-navy">{u.toLocaleString()} / {l.toLocaleString()}</span>
+        <span className={`font-semibold ${over ? 'text-red-600' : 'text-genz-navy'}`}>{u.toLocaleString()} / {l.toLocaleString()}</span>
       </div>
       <div className="h-1.5 rounded-full bg-genz-soft overflow-hidden">
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: grad }} />
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: over ? '#ef4444' : grad }} />
       </div>
-      <div className="flex items-center justify-between text-[10px] text-genz-muted mt-0.5">
-        <span>{synced ? `${remaining.toLocaleString()} left` : ''}</span>
-        <span className={synced ? '' : 'italic'}>{reset}</span>
+      <div className="flex items-center justify-between text-[10px] mt-0.5">
+        <span className={over ? 'text-red-600 font-semibold' : 'text-genz-muted'}>{synced ? (over ? 'Limit exceeded' : `${remaining.toLocaleString()} left`) : ''}</span>
+        <span className={`text-genz-muted ${synced ? '' : 'italic'}`}>{reset}</span>
       </div>
     </div>
   );
@@ -119,15 +120,16 @@ const ProxyToolCard = ({ tool }) => {
             <>
               <UsageMeter
                 label="5-hr cycle" used={tool.usage.clientUsed} limit={tool.usage.clientLimit}
-                grad={theme.grad} reset={`resets in ${Math.max(1, Math.round((tool.usage.resetInSeconds || 0) / 60))} min`}
+                grad={theme.grad}
+                reset={tool.usage.fiveHourResetOfficial ? `resets in ${Math.max(1, Math.round((tool.usage.resetInSeconds || 0) / 60))} min` : 'Reset not synced'}
               />
               <div className="mt-1.5">
                 <UsageMeter
                   label="This week" used={tool.usage.weeklyUsed} limit={tool.usage.weeklyLimit}
                   grad={theme.grad}
-                  reset={tool.usage.weeklySynced ? `resets ${fmtResetAt(tool.usage.weeklyResetAt)}` : 'Not synced'}
-                  synced={tool.usage.weeklySynced}
-                />
+                  reset={tool.usage.weeklySynced ? `resets ${fmtResetAt(tool.usage.weeklyResetAt)}` : 'Reset not synced'}
+                />{/* usage IS synced here; only the RESET time may be missing (handled in `reset`), so the
+                     "N left / Limit exceeded" label must still show — matches the admin table + widget. */}
               </div>
               <p className="text-[10px] text-genz-muted mt-1">Estimated usage</p>
             </>

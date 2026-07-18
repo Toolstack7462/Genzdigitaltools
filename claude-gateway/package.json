@@ -5,7 +5,8 @@
   "description": "Isolated Gen Z reverse-proxy gateway for Claude (claude.ai) — same generic engine as proxy-gateway, deployed standalone on claude1.genzdigitalstore.com with its own .env and cookie vault.",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test lib/quotaTap.test.js lib/effortPrefs.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -142,3 +142,36 @@ Set `CLAUDE_QUOTA_MODE` in this gateway's env (and the backend's):
 
 Full details, all env knobs, capacity/plan scaling and the operator checklist are in
 `../CLAUDE_TOKEN_QUOTA.md`.
+
+## Default effort preference (claude-only)
+
+On a **fresh Claude session / new conversation** the overlay auto-selects a default **effort**
+level. It is purely a UI convenience — it never touches the selected **model**, the Personal/Team
+**workspace**, authentication, account assignment or token limits.
+
+Behaviour (see `lib/effortPrefs.js` for the unit-tested policy):
+
+- Runs **only after the composer is ready**, detects the **current** effort first, and clicks
+  **only if it differs** from the target — never when it already matches.
+- Applies **once per conversation**; a later **manual** change by the user is **never** overridden.
+- The `/new → /chat/<id>` first-message navigation is treated as the **same** conversation (no
+  re-apply); starting a **New chat**, refreshing, or switching Personal/Team (a reload) counts as a
+  fresh conversation and re-applies the default.
+- If the effort control can't be found or Claude changed its UI, it **logs one safe console warning
+  and continues** — it never loops, never re-opens menus, and never breaks Claude.
+
+Admin-configurable via this gateway's env (SetEnv), like the other overlay prefs:
+
+```
+SetEnv CLAUDE_DEFAULT_EFFORT medium      # low | medium | high | extra | max  (default & fallback: medium)
+SetEnv CLAUDE_THINKING_DEFAULT 0         # extended-thinking default: OFF by default (lower usage); 1/on auto-enables it
+# Optional: pin the exact effort control if the heuristic can't find it on the live DOM
+# SetEnv CLAUDE_EFFORT_TRIGGER_SEL <CSS selector for the effort button>
+```
+
+The `Thinking default` is a **separate** setting kept **off by default** for lower usage; when off
+the overlay never touches the thinking control, so users can still enable it manually. Set it to
+`1`/`on` to auto-enable extended thinking once per fresh conversation. If your live DOM doesn't
+expose an `aria-label` containing "effort", set `CLAUDE_EFFORT_TRIGGER_SEL` to the control's
+selector so detection is reliable (the heuristic requires an effort-labelled control to avoid
+mis-clicking).

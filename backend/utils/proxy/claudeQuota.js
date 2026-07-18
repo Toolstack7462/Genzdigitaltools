@@ -201,6 +201,37 @@ function weeklyClientAllowance(clientOverride, accountDefault) {
   return WEEKLY_HARD_FALLBACK;                          // last-resort fallback
 }
 
+// ── Display helpers (pure) — used by the read-only usage widget/status endpoint ─
+// A limit is a valid explicit value when it parses to a finite integer >= 0 (0 is a legit
+// hard-stop, NOT "unset").
+function isValidLimit(v) {
+  const n = (v == null || v === '') ? NaN : parseInt(v, 10);
+  return Number.isFinite(n) && n >= 0;
+}
+
+// Which tier supplied the EFFECTIVE limit, for the discrete "Custom" / "Default" badge.
+//   'custom'  → the client has a per-client override (client-specific value).
+//   'account' → no client override, but the assigned account sets a default.
+//   'default' → falls through to the global/env default.
+// The widget shows 'custom' as "Custom" and everything else as "Default".
+function limitSource(clientOverride, accountDefault) {
+  if (isValidLimit(clientOverride)) return 'custom';
+  if (isValidLimit(accountDefault)) return 'account';
+  return 'default';
+}
+
+// Usage percentage from used / effective-limit, ALWAYS an integer capped to [0,100] for the
+// visual progress line — even if usage exceeds a newly reduced limit (spec: cap the bar at 100%).
+// A limit of 0 (hard-stop) reads as 100% once anything is used, else 0%.
+function usagePercent(used, limit) {
+  const u = Math.max(0, Math.trunc(Number(used) || 0));
+  const l = Math.max(0, Math.trunc(Number(limit) || 0));
+  if (l <= 0) return u > 0 ? 100 : 0;
+  const p = Math.round((u / l) * 100);
+  // Never render "0% used" when there IS usage — a real but sub-0.5% amount shows as at least 1%.
+  return Math.min(100, u > 0 && p === 0 ? 1 : p);
+}
+
 /**
  * The core gate. Returns whether ONE more request of `estIncoming` estimated tokens fits
  * within BOTH the per-client allowance AND the shared per-account capacity.
@@ -300,4 +331,5 @@ module.exports = {
   tokensFromChars, tokensFromText, estimateRequestTokens,
   cycleWindow, fiveHourWindow, weeklyWindow, secondsUntilReset,
   accountCapacity, clientAllowance, accountWeeklyCapacity, weeklyClientAllowance, checkAllowance,
+  isValidLimit, limitSource, usagePercent,
 };

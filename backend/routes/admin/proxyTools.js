@@ -55,6 +55,17 @@ function accountSelectResolve(accounts, pinnedAccountId) {
   return require('../../utils/proxy/accountSelect').resolveAccount(accounts || [], SELECTION_MODE, pinnedAccountId).account;
 }
 
+// The account to DISPLAY usage for: the client's active-lease account (what they're actually being
+// served + metered against, matching the live overlay widget), else a fresh selection. Fail-safe.
+async function displayAccountFor(pc, accounts) {
+  try {
+    const leases = await ProxyLease.find({ proxyClientId: pc._id, revoked: false });
+    const a = require('../../utils/proxy/accountSelect').activeLeaseAccount(leases, accounts);
+    if (a) return a;
+  } catch (_) { /* fall through to fresh selection */ }
+  return accountSelectResolve(accounts, pc.pinnedAccountId);
+}
+
 // Same selection mode the CLIENT open route uses, so the admin "active account" preview
 // reflects exactly which account clients will get (default auto_failover).
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
@@ -253,16 +264,18 @@ router.get('/:tool/usage-dashboard', async (req, res) => {
     }
     const rows = [];
     for (const pc of clients) {
-      const account = accountSelectResolve(accounts, pc.pinnedAccountId);
+      const account = await displayAccountFor(pc, accounts);
       const user = await User.findById(pc.userId).select('fullName email status');
       const acctRows = account ? rowsByAccount[String(account._id)] : [];
       const synced = acctRows != null;
       const keys = claudeUsage.cycleKeysFor(account, undefined);
+      // Aggregate by real event time inside the active window (source-of-truth; immune to a
+      // reset-anchor change) — the SAME path the client widget uses, so the two always agree.
       const clientRows = (acctRows || []).filter(r => r && String(r.proxyClientId) === String(pc._id));
-      const clientUsed = claudeUsage.usageForCycle(clientRows, keys.cycleKey);
-      const accountUsed = claudeUsage.usageForCycle(acctRows || [], keys.cycleKey);
-      const weeklyClientUsed = claudeUsage.usageForWeek(clientRows, keys.weekKey);
-      const weeklyAccountUsed = claudeUsage.usageForWeek(acctRows || [], keys.weekKey);
+      const clientUsed = claudeUsage.sumRowsInWindow(clientRows, keys.fiveWindow);
+      const accountUsed = claudeUsage.sumRowsInWindow(acctRows || [], keys.fiveWindow);
+      const weeklyClientUsed = claudeUsage.sumRowsInWindow(clientRows, keys.weekWindow);
+      const weeklyAccountUsed = claudeUsage.sumRowsInWindow(acctRows || [], keys.weekWindow);
       const decision = claudeUsage.resolveDecision({
         account, client: pc, clientUsed, accountUsed, weeklyClientUsed, weeklyAccountUsed, estIncoming: 0,
       });
@@ -282,7 +295,11 @@ router.get('/:tool/usage-dashboard', async (req, res) => {
           limit: decision.clientLimit, used: decision.clientUsed, remaining: decision.clientRemaining,
           isCustom: pc.tokenLimit != null,
           accountCapacity: decision.accountCapacity, accountUsed: decision.accountUsed, accountRemaining: decision.accountRemaining,
+          resetAt: keys.fiveWindow ? new Date(keys.fiveWindow.endMs) : null,
           resetInSeconds: claudeQuota.secondsUntilReset(keys.fiveWindow),
+          // The rolling five-hour cycle always has a computable reset; it is "official" only when
+          // the account carries an explicit cycleResetAt (else it is anchored on the account age).
+          resetOfficial: !!(account && account.cycleResetAt),
           reached: decision.clientRemaining === 0,
           accountAtCapacity: decision.accountRemaining === 0,
         },
@@ -314,7 +331,7 @@ router.get('/:tool/clients/:id/usage-history', async (req, res) => {
     const pc = await ProxyClient.findById(req.params.id);
     if (!pc || pc.tool !== 'claude') return res.status(404).json({ error: 'Client grant not found' });
     const accounts = await ProxyAccount.find({ tool: 'claude' });
-    const account = accountSelectResolve(accounts, pc.pinnedAccountId);
+    const account = await displayAccountFor(pc, accounts);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
     const history = account ? await claudeUsage.recentHistory(account._id, pc._id, limit) : [];
     return res.json({ success: true, history, label: claudeQuota.USAGE_LABEL });
@@ -482,7 +499,7 @@ router.get('/:tool/clients/:id/quota', async (req, res) => {
     const pc = await ProxyClient.findById(req.params.id);
     if (!pc || pc.tool !== req.proxyTool) return res.status(404).json({ error: 'Client grant not found' });
     const accounts = await ProxyAccount.find({ tool: req.proxyTool });
-    const account = require('../../utils/proxy/accountSelect').resolveAccount(accounts, SELECTION_MODE, pc.pinnedAccountId).account;
+    const account = await displayAccountFor(pc, accounts);
     const u = await claudeUsage.readUsage(account, pc);
     const decision = claudeUsage.resolveDecision({
       account, client: pc, clientUsed: u.clientUsed, accountUsed: u.accountUsed,
@@ -498,6 +515,7 @@ router.get('/:tool/clients/:id/quota', async (req, res) => {
         pinned: !!pc.pinnedAccountId,
         synced: !!u.synced,
         resetInSeconds: claudeQuota.secondsUntilReset(u.keys.fiveWindow),
+        fiveHourResetOfficial: !!(account && account.cycleResetAt),
         weeklyResetAt: (account && account.weeklyResetAt) || null,
         weeklyResetInSeconds: claudeQuota.secondsUntilReset(u.keys.weekWindow),
         weeklySynced,

@@ -57,6 +57,17 @@ const TOOL_NAME = process.env.TOOL_NAME || 'AI Tool';
 // over-quota message before forwarding). Default 'count' — safe: it cannot break a Claude chat.
 const quotaTap = require('./lib/quotaTap');
 const QUOTA_MODE = (() => { const m = String(process.env.CLAUDE_QUOTA_MODE || 'count').toLowerCase(); return ['off', 'count', 'enforce'].includes(m) ? m : 'count'; })();
+
+// ── Claude default-effort preference (claude-only) ───────────────────────────
+// The overlay auto-selects this effort on a fresh Claude session / new conversation. Admin-
+// configurable via env (like the other gateway prefs): CLAUDE_DEFAULT_EFFORT ∈
+// low|medium|high|extra|max (default medium), CLAUDE_THINKING_DEFAULT (off by default; 1/on to
+// auto-enable extended thinking), and an OPTIONAL exact CSS selector CLAUDE_EFFORT_TRIGGER_SEL to
+// pin the effort control if the heuristic can't find it on the live DOM. Never touches the model.
+const effortPrefs = require('./lib/effortPrefs');
+const CLAUDE_DEFAULT_EFFORT = effortPrefs.normalizeEffort(process.env.CLAUDE_DEFAULT_EFFORT, 'medium');
+const CLAUDE_THINKING_DEFAULT = effortPrefs.parseThinkingDefault(process.env.CLAUDE_THINKING_DEFAULT);
+const CLAUDE_EFFORT_TRIGGER_SEL = String(process.env.CLAUDE_EFFORT_TRIGGER_SEL || '').trim();
 const LEASE_COOKIE = 'pg_lease';
 // Max time to wait for the upstream tool to respond before failing over to a friendly
 // retry page (prevents indefinite hanging / blank loading). Override via UPSTREAM_TIMEOUT_MS.
@@ -824,7 +835,8 @@ function buildCriticalCss() {
 function injectOverlay(html, capture, accountLabel) {
   // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
   // backend /session response — never an email/cookie/token. Shown in the widget.
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null });
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null,
+    defaultEffort: CLAUDE_DEFAULT_EFFORT, thinkingDefault: CLAUDE_THINKING_DEFAULT, effortTriggerSel: CLAUDE_EFFORT_TRIGGER_SEL || null });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -998,11 +1010,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     // report settled usage. Wrapped so ANY failure fails OPEN and never breaks the proxy.
     const isClaudeCompletion = TOOL_KEY === 'claude' && QUOTA_MODE !== 'off'
       && !ctx.capture && !ctx.asset && quotaTap.isCompletionRequest(req.method, reqPathOnly);
-    let quotaParts = null, quotaRequestId = null;
+    let quotaParts = null, quotaRequestId = null, quotaReserved = false;
     if (isClaudeCompletion) {
       try { quotaParts = quotaTap.extractRequestChars(bodyBuf); } catch (_) { quotaParts = null; }
       // Per-request idempotency key so a completed request is charged AT MOST once, even on an
-      // accidental re-send (duplicate-charge guard is enforced server-side on this id).
+      // accidental re-send (duplicate-charge guard is enforced server-side on this id). In enforce
+      // mode the SAME id ties the pre-request reservation to its later settle/release.
       try { quotaRequestId = crypto.randomBytes(16).toString('hex'); } catch (_) { quotaRequestId = null; }
     }
 
@@ -1187,6 +1200,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     // upstream. A main page navigation gets a friendly retry page (not a blank screen
     // or bare error); asset/API requests get a plain 502 the browser can handle.
     const onUpstreamFail = () => {
+      // A reserved request that never reached Claude must free its held quota immediately (don't
+      // wait for the TTL). Idempotent + fail-safe on the backend.
+      if (quotaReserved && ctx.token && quotaRequestId) {
+        try { gatewayApiPost('/quota-release', ctx.token, { requestId: quotaRequestId }).catch(() => {}); } catch (_) {}
+        quotaReserved = false;
+      }
       if (res.headersSent) { try { res.end(); } catch (_) {} return; }
       if (isHtmlNav && !ctx.asset && !isCaptchaReq && !ctx.capture) {
         return sendNoticePage(res, {
@@ -1208,11 +1227,25 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     // metering hiccup never blocks a real Claude message. In 'count'/'off' modes we dispatch
     // immediately (measurement happens on the response side).
     if (isClaudeCompletion && QUOTA_MODE === 'enforce' && ctx.token) {
-      gatewayApiPost('/quota-precheck', ctx.token, quotaParts || {}).then((r) => {
+      // Reserve + strict check on the backend BEFORE forwarding. A blocked request returns 429 and
+      // is NEVER sent to Claude. An allowed request holds a reservation (settled by /usage-report
+      // on stream end, or released by onUpstreamFail below if the upstream dies).
+      gatewayApiPost('/quota-precheck', ctx.token, Object.assign({}, quotaParts || {}, { requestId: quotaRequestId })).then((r) => {
         const b = (r && r.body) || {};
         if (b.ok === true && b.allowed === false) {
           safeLog('quota_block', { request_path: reqPathOnly, reason: (b.usage && b.usage.reason) || null });
           return sendQuotaBlock(res, b);
+        }
+        quotaReserved = (b.ok === true && b.reserved === true);
+        if (quotaReserved) {
+          // Catch-all so a reservation is NEVER held past the request: the streaming branch settles
+          // via /usage-report on stream end (which records real usage), but a NON-streaming
+          // completion response (e.g. a JSON error from Claude) or a mid-stream client abort never
+          // reaches that settle. `close` fires in every case when the client response finishes/aborts
+          // → release the (by then usually already-settled → no-op) reservation. Never double-charges.
+          res.once('close', function () {
+            if (quotaReserved && ctx.token && quotaRequestId) { quotaReserved = false; try { gatewayApiPost('/quota-release', ctx.token, { requestId: quotaRequestId }).catch(function () {}); } catch (e) {} }
+          });
         }
         runDispatch();
       }).catch(() => runDispatch());
@@ -1358,6 +1391,20 @@ const server = http.createServer(async (req, res) => {
       headers['set-cookie'] = claudeExpireCookie();
       out = { valid: false, code: (r.body && r.body.code) || 'lease_invalid' };
     }
+    res.writeHead(200, headers);
+    return res.end(JSON.stringify(out));
+  }
+
+  // Claude: READ-ONLY estimated usage snapshot for the overlay widget. The browser holds only
+  // the opaque HttpOnly session cookie, so the overlay calls THIS same-origin endpoint (cookie
+  // sent automatically) and we relay to the backend with the server-side lease + gateway key.
+  // Returns ONLY the client-safe usage figures (never a token/account id). Never records.
+  if (pathName === '/__genz/usage') {
+    if (TOOL_KEY !== 'claude') { res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end('{"ok":false}'); }
+    const r = await gatewayApiPost('/quota-status', token, {});
+    const headers = { 'content-type': 'application/json', 'cache-control': 'no-store' };
+    // On any transport failure (status 0) the widget must show "Not synced", never a made-up 0.
+    const out = (r.status === 200 && r.body && r.body.ok) ? r.body : { ok: true, enabled: true, synced: false };
     res.writeHead(200, headers);
     return res.end(JSON.stringify(out));
   }

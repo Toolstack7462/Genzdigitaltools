@@ -24,18 +24,31 @@ test('cycleKeysFor falls back to createdAt when no reset anchor is set', () => {
   assert.ok(typeof k.cycleKey === 'string' && k.cycleKey.length > 0);
 });
 
-test('usageForCycle sums only the matching cycle and only settled usage rows', () => {
+test('sumRowsInWindow sums only rows whose event time is in the active window (source of truth)', () => {
+  const win = { startMs: 1000, endMs: 2000 }; // half-open [1000, 2000)
+  const rows = [
+    { at: new Date(1000), totalTokens: 100, kind: 'usage' }, // inclusive start
+    { at: new Date(1500), totalTokens: 50, kind: 'usage' },
+    { at: new Date(2000), totalTokens: 999, kind: 'usage' }, // exclusive end → ignored
+    { at: new Date(500), totalTokens: 999, kind: 'usage' },  // before window → ignored
+    { at: new Date(1500), totalTokens: 7, kind: 'precheck' },// non-usage kind → ignored
+    null,                                                     // malformed → ignored
+    { at: new Date(1500), totalTokens: -20, kind: 'usage' }, // negative → clamped to 0
+  ];
+  assert.equal(usage.sumRowsInWindow(rows, win), 150);
+  assert.equal(usage.usageForCycle(rows, win), 150);   // usageForCycle now windows by event time
+  assert.equal(usage.sumRowsInWindow([], win), 0);
+  assert.equal(usage.sumRowsInWindow(rows, null), 0);  // no window → 0 (never throws)
+});
+
+test('sumRowsByKey still buckets by a stored key (retained helper, not the authoritative path)', () => {
   const rows = [
     { cycleKey: 'C1', totalTokens: 100, kind: 'usage' },
-    { cycleKey: 'C1', totalTokens: 50, kind: 'usage' },
-    { cycleKey: 'C2', totalTokens: 999, kind: 'usage' },   // different cycle → ignored
-    { cycleKey: 'C1', totalTokens: 7, kind: 'precheck' },  // non-usage kind → ignored
-    null,                                                   // malformed → ignored
-    { cycleKey: 'C1', totalTokens: -20, kind: 'usage' },   // negative → clamped to 0
+    { cycleKey: 'C2', totalTokens: 999, kind: 'usage' },
+    { cycleKey: 'C1', totalTokens: 7, kind: 'precheck' }, // non-usage → ignored
   ];
-  assert.equal(usage.usageForCycle(rows, 'C1'), 150);
-  assert.equal(usage.usageForCycle(rows, 'C2'), 999);
-  assert.equal(usage.usageForCycle([], 'C1'), 0);
+  assert.equal(usage.sumRowsByKey(rows, 'C1', 'cycleKey'), 100);
+  assert.equal(usage.sumRowsByKey(rows, 'C2', 'cycleKey'), 999);
 });
 
 test('resolveDecision: Pro account, default client limit, within both → allowed', () => {
