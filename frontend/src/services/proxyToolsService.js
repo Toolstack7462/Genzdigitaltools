@@ -6,6 +6,11 @@ export const proxyToolsAdmin = {
   listTools: () => api.get('/admin/proxy-tools/tools'),
   getStats: (tool) => api.get(`/admin/proxy-tools/${tool}/stats`),
 
+  // Lightweight, server-side-searched source for the "Grant access" picker
+  // (minimal fields, ranked + paginated, eligible-only). Additive — the existing
+  // listClients (granted list) is unchanged.
+  assignableClients: (tool, params = {}) => api.get(`/admin/proxy-tools/${tool}/assignable-clients?${new URLSearchParams(params)}`),
+
   // Client access grants
   listClients: (tool, params = {}) => api.get(`/admin/proxy-tools/${tool}/clients?${new URLSearchParams(params)}`),
   createClient: (tool, body) => api.post(`/admin/proxy-tools/${tool}/clients`, body),

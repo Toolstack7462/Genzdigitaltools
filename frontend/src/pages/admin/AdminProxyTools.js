@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Zap, Plus, RefreshCw, Trash2, Loader2, X, Save, Users, KeyRound,
   Star, ShieldCheck, ShieldOff, Globe, List, CheckCircle2, Search
 } from 'lucide-react';
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
-import { cachedGet } from '../../services/apiCache';
+import { makeLatestGuard } from '../../utils/latestOnly';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 import ListFilterBar from '../../components/admin/ListFilterBar';
@@ -92,6 +92,8 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   const [crmClients, setCrmClients] = useState([]);
   const [crmLoading, setCrmLoading] = useState(true);
   const [crmSearching, setCrmSearching] = useState(false);
+  const [crmError, setCrmError] = useState(false);
+  const [crmHasMore, setCrmHasMore] = useState(false);
 
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [editAccount, setEditAccount] = useState(null);
@@ -137,27 +139,44 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   useEffect(() => { load(); }, [load]);
   // The Usage section is Claude-only — leaving Claude drops back to the Account Vault.
   useEffect(() => { if (section === 'usage' && tool !== 'claude') setSection('accounts'); }, [tool, section]);
-  useEffect(() => {
-    // CRM client list for the "grant access" dropdown — stable list, cached + coalesced
-    // so navigating between proxy-tool/StealthWriter admin pages doesn't refetch it.
-    cachedGet('/admin/clients?limit=100')
-      .then(d => setCrmClients(d?.clients || []))
-      .catch(() => {})
-      .finally(() => setCrmLoading(false));
-  }, []);
+  // ── "Grant access" client picker data ───────────────────────────────────────
+  // Tool-scoped, server-side search (partial name/email, case-insensitive), ranked
+  // exact→starts-with→contains, paginated and eligible-only. A monotonic guard drops
+  // stale (out-of-order) responses so an older search can never overwrite a newer one.
+  const crmGuard = useRef(makeLatestGuard());
+  const crmTermRef = useRef('');
+  const crmPageRef = useRef(1);
+  const PICKER_PAGE_SIZE = 10; // small initial set; "load more" pages the rest
 
-  // Server-side client search for the "grant access" picker so it can reach every
-  // client (name OR email), not just the first 100. Cached per term.
-  const searchCrmClients = useCallback(async (term) => {
+  const loadAssignable = useCallback(async (term = '', { append = false } = {}) => {
+    const ticket = crmGuard.current.begin();
+    crmTermRef.current = term;
+    crmPageRef.current = append ? crmPageRef.current + 1 : 1;
+    const page = crmPageRef.current;
+    setCrmSearching(true);
+    setCrmError(false);
     try {
-      setCrmSearching(true);
-      const params = new URLSearchParams({ limit: '100' });
-      if (term && term.trim()) params.append('search', term.trim());
-      const d = await cachedGet(`/admin/clients?${params}`);
-      setCrmClients(d?.clients || []);
-    } catch (_) { /* keep current list */ }
-    finally { setCrmSearching(false); }
-  }, []);
+      const params = { page: String(page), limit: String(PICKER_PAGE_SIZE) };
+      if (term && term.trim()) params.search = term.trim();
+      const r = await proxyToolsAdmin.assignableClients(tool, params);
+      if (!crmGuard.current.isCurrent(ticket)) return; // superseded by a newer request → drop
+      const list = r.data?.clients || [];
+      setCrmClients(prev => (append ? [...prev, ...list] : list));
+      setCrmHasMore(!!r.data?.pagination?.hasMore);
+    } catch (_) {
+      if (!crmGuard.current.isCurrent(ticket)) return;
+      setCrmError(true);
+      if (!append) { setCrmClients([]); setCrmHasMore(false); }
+    } finally {
+      if (crmGuard.current.isCurrent(ticket)) { setCrmSearching(false); setCrmLoading(false); }
+    }
+  }, [tool]);
+  const loadMoreAssignable = useCallback(() => loadAssignable(crmTermRef.current, { append: true }), [loadAssignable]);
+
+  // Preload a small recent/eligible set when the Grant modal opens (create only).
+  useEffect(() => {
+    if (showClientModal && !editClient) { setCrmLoading(true); loadAssignable(''); }
+  }, [showClientModal, editClient, loadAssignable]);
 
   const currentName = (toolDefs.find(t => t.tool === tool) || {}).name || tool;
 
@@ -340,7 +359,7 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
 
       {showAccountModal && <AccountModal account={editAccount} tool={tool} toolName={currentName} onClose={() => { setShowAccountModal(false); setEditAccount(null); }} onSave={saveAccount} />}
       {showSessionModal && <SessionModal account={showSessionModal} onClose={() => setShowSessionModal(null)} onSave={saveSession} />}
-      {showClientModal && <ClientModal client={editClient} tool={tool} accounts={accounts} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} onSearchClients={searchCrmClients} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
+      {showClientModal && <ClientModal client={editClient} tool={tool} accounts={accounts} crmClients={crmClients} crmLoading={crmLoading} crmSearching={crmSearching} crmError={crmError} crmHasMore={crmHasMore} onSearchClients={loadAssignable} onLoadMore={loadMoreAssignable} existing={clients} onClose={() => { setShowClientModal(false); setEditClient(null); }} onSave={saveClient} />}
     </>
   );
   return embedded ? inner : <AdminLayoutEnhanced>{inner}</AdminLayoutEnhanced>;
@@ -582,7 +601,7 @@ const SessionModal = ({ account, onClose, onSave }) => {
   );
 };
 
-const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearching, onSearchClients, existing, onClose, onSave }) => {
+const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearching, crmError, crmHasMore, onSearchClients, onLoadMore, existing, onClose, onSave }) => {
   const isClaude = tool === 'claude';
   const [f, setF] = useState({
     userId: client?.userId || '', planName: client?.planName || '', expiryDate: toDateInput(client?.expiryDate), status: client?.status || 'active',
@@ -621,7 +640,10 @@ const ClientModal = ({ client, tool, accounts, crmClients, crmLoading, crmSearch
               loading={crmLoading}
               onSearch={onSearchClients}
               searching={crmSearching}
-              placeholder="Search client by name or email…"
+              error={crmError}
+              hasMore={crmHasMore}
+              onLoadMore={onLoadMore}
+              placeholder="Select a client…"
               className="bg-genz-bg border-genz-border text-genz-navy focus:border-genz-teal"
             />
           </div>

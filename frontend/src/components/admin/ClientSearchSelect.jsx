@@ -39,6 +39,12 @@ export default function ClientSearchSelect({
   // filtering locally — so the picker can reach EVERY client, not just a page.
   onSearch,
   searching = false,
+  // Optional pagination + error affordances (default-off; inert unless passed, so
+  // the other callers of this shared component are unaffected).
+  error = false,
+  hasMore = false,
+  onLoadMore,
+  onRetry,
 }) {
   const isServer = typeof onSearch === 'function';
   const [open, setOpen] = useState(false);
@@ -147,6 +153,13 @@ export default function ClientSearchSelect({
     }
   };
 
+  // Infinite scroll: when the list is near the bottom, page in more (server mode only).
+  const onListScroll = (e) => {
+    if (!hasMore || loading || searching || typeof onLoadMore !== 'function') return;
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 24) onLoadMore();
+  };
+
   const triggerLayout =
     'w-full flex items-center gap-2 text-left rounded-lg px-3 py-2 text-sm border transition-colors ' +
     'focus:outline-none disabled:opacity-60 disabled:cursor-not-allowed';
@@ -210,37 +223,61 @@ export default function ClientSearchSelect({
             />
           </div>
 
-          <ul ref={listRef} role="listbox" id={listboxId} className="max-h-56 overflow-y-auto py-1">
+          <ul ref={listRef} role="listbox" id={listboxId} onScroll={onListScroll} className="max-h-56 overflow-y-auto py-1">
             {(loading || (isServer && searching)) ? (
               <li className="flex items-center gap-2 px-3 py-3 text-sm text-slate-400">
                 <Loader2 size={15} className="animate-spin" /> Loading clients…
+              </li>
+            ) : error ? (
+              <li className="flex items-center justify-between gap-2 px-3 py-3 text-sm text-red-500">
+                <span>Couldn't load clients.</span>
+                <button
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); (typeof onRetry === 'function' ? onRetry() : onSearchRef.current?.(query)); }}
+                  className="shrink-0 font-semibold text-genz-teal hover:underline"
+                >
+                  Retry
+                </button>
               </li>
             ) : filtered.length === 0 ? (
               <li className="px-3 py-3 text-sm text-slate-400">
                 {query.trim() ? 'No clients match your search' : (clients.length === 0 ? 'No clients available' : 'No clients match your search')}
               </li>
             ) : (
-              filtered.map((c, idx) => {
-                const isSel = String(c._id) === String(value);
-                const isActive = idx === active;
-                return (
-                  <li
-                    key={c._id}
-                    data-idx={idx}
-                    role="option"
-                    aria-selected={isSel}
-                    onMouseEnter={() => setActive(idx)}
-                    onMouseDown={(e) => { e.preventDefault(); choose(c); }}
-                    className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-sm ${isActive ? 'bg-genz-teal/10' : ''}`}
-                  >
-                    <span className="flex-1 min-w-0 truncate">
-                      <span className="font-medium text-slate-800">{c.fullName || 'Unnamed'}</span>
-                      {c.email ? <span className="text-slate-400"> — {c.email}</span> : null}
-                    </span>
-                    {isSel && <Check size={15} className="shrink-0 text-genz-teal" />}
+              <>
+                {filtered.map((c, idx) => {
+                  const isSel = String(c._id) === String(value);
+                  const isActive = idx === active;
+                  return (
+                    <li
+                      key={c._id}
+                      data-idx={idx}
+                      role="option"
+                      aria-selected={isSel}
+                      onMouseEnter={() => setActive(idx)}
+                      onMouseDown={(e) => { e.preventDefault(); choose(c); }}
+                      className={`flex items-center gap-2 px-3 py-2 cursor-pointer text-sm ${isActive ? 'bg-genz-teal/10' : ''}`}
+                    >
+                      <span className="flex-1 min-w-0 truncate">
+                        <span className="font-medium text-slate-800">{c.fullName || 'Unnamed'}</span>
+                        {c.email ? <span className="text-slate-400"> — {c.email}</span> : null}
+                      </span>
+                      {isSel && <Check size={15} className="shrink-0 text-genz-teal" />}
+                    </li>
+                  );
+                })}
+                {hasMore && typeof onLoadMore === 'function' && (
+                  <li className="px-3 py-1.5">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => { e.preventDefault(); onLoadMore(); }}
+                      className="w-full text-center text-xs font-semibold text-genz-teal hover:underline py-1"
+                    >
+                      Load more
+                    </button>
                   </li>
-                );
-              })
+                )}
+              </>
             )}
           </ul>
         </div>

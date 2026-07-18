@@ -114,6 +114,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/utils/proxy/vaultCrypto.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/vaultCrypto.js" \
   -T backend/utils/proxy/lease.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/lease.js" \
   -T backend/utils/proxy/accountSelect.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/accountSelect.js" \
+  -T backend/utils/proxy/assignableClients.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/assignableClients.js" \
   -T backend/utils/proxy/cookies.js              "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/cookies.js" \
   -T backend/utils/proxy/verify.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verify.js" \
   -T backend/utils/proxy/claudeVerify.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/claudeVerify.js" \

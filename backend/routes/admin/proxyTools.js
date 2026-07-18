@@ -26,6 +26,7 @@ const tools = require('../../utils/proxy/tools');
 const { verifyAccountCookies, maskEmail, applySupabaseRefresh, jwtExp, extractSupabaseSession } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
 const { unavailableReason, selectAccount } = require('../../utils/proxy/accountSelect');
+const { rankAssignableClients, escapeRegex } = require('../../utils/proxy/assignableClients');
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
@@ -417,11 +418,63 @@ router.get('/:tool/clients', async (req, res) => {
   }
 });
 
+// Lightweight, admin-only SOURCE for the "Grant access" picker. Server-side partial
+// name/email search (case-insensitive), ranked exact → starts-with → contains, paginated,
+// returning ONLY id/name/email/status/eligible. Excludes non-active and already-granted
+// clients so the picker can't grant a suspended client or a duplicate grant. Purely additive:
+// does NOT touch the shared /admin/clients endpoint, StealthWriter, auth, or usage limits.
+router.get('/:tool/assignable-clients', async (req, res) => {
+  try {
+    const rawTerm = String(req.query.search || '').trim().slice(0, 100);
+    const { limit, skip } = safePagination(req.query); // default 20, hard-capped at 100
+    const CANDIDATE_CAP = 200;                          // rank within the top matches; type to narrow
+
+    // Exclude clients that already have access to THIS tool (no duplicate grants).
+    const granted = await ProxyClient.find({ tool: req.proxyTool });
+    const grantedIds = granted.map(g => String(g.userId));
+
+    // Eligible = an active CRM client not already granted this tool.
+    const query = { role: 'CLIENT', status: 'active' };
+    if (grantedIds.length) query._id = { $nin: grantedIds };
+    if (rawTerm) {
+      const escaped = escapeRegex(rawTerm);
+      query.$or = [
+        { fullName: { $regex: escaped, $options: 'i' } },
+        { email: { $regex: escaped, $options: 'i' } },
+      ];
+    }
+
+    const candidates = await User.find(query)
+      .select('fullName email status')
+      .sort({ createdAt: -1 })   // recent-first for the no-search default
+      .limit(CANDIDATE_CAP);
+
+    const ranked = rankAssignableClients(candidates, rawTerm);
+    const pageItems = ranked.slice(skip, skip + limit);
+
+    return res.json({
+      success: true,
+      clients: pageItems,
+      pagination: {
+        limit, skip,
+        returned: pageItems.length,
+        hasMore: ranked.length > skip + limit,
+        capped: candidates.length >= CANDIDATE_CAP, // more than CAP matches — narrow the search
+      },
+    });
+  } catch (err) {
+    console.error('Proxy assignable-clients error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch clients' });
+  }
+});
+
 router.post('/:tool/clients', validate(schemas.createClient), async (req, res) => {
   try {
     const { userId, planName, expiryDate, status, notes, leaseMinutes, tokenLimit, weeklyTokenLimit } = req.body;
-    const user = await User.findById(userId).select('role');
+    // Re-validate the picked client on the server before granting (the picker is UI only).
+    const user = await User.findById(userId).select('role status');
     if (!user || user.role !== 'CLIENT') return res.status(400).json({ error: 'Target user must be an existing CRM client' });
+    if (user.status && user.status !== 'active') return res.status(400).json({ error: 'This client account is not active' });
     const existing = await ProxyClient.findOne({ userId, tool: req.proxyTool });
     if (existing) return res.status(400).json({ error: 'This client already has access to this tool' });
 
