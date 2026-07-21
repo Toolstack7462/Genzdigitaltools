@@ -24,6 +24,7 @@ const { URL } = require('url');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 // Minimal .env loader (dependency-free). Real environment wins (hPanel/Passenger).
 (function loadEnv() {
@@ -81,6 +82,46 @@ const UPSTREAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 // mismatched/absent sec-ch-ua is a Cloudflare bot tell).
 const UPSTREAM_CH_UA = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"';
 const UPSTREAM_CH_PLATFORM = '"Windows"';
+
+// ── Device-consistent identity for Cloudflare's managed challenge ─────────────
+// A Cloudflare challenge runs JS IN THE CLIENT'S BROWSER and reports the real navigator
+// (UA / platform / mobile). Cloudflare then cross-checks that in-browser fingerprint
+// against the HTTP request headers. If we pin a DESKTOP UA + sec-ch-ua-mobile:?0 for a
+// phone, the two disagree and the challenge can NEVER clear on mobile → endless challenge
+// / "Unable to connect". Desktop clients already match the pinned identity, so they are
+// left EXACTLY as before. For a mobile client we forward its OWN honest UA + client-hints
+// so the HTTP request matches what its browser's JS reports — the user then solves the
+// REAL challenge and Cloudflare mints a cf_clearance bound to THAT device. We never spoof,
+// auto-solve or weaken the check, and each device gets its own clearance (never shared).
+// High-entropy hints (sec-ch-ua-platform, model, etc.) are only forwarded if the client
+// actually sent them — a mobile UA paired with an invented desktop sec-ch-ua is itself a
+// bot tell, and Safari legitimately sends no sec-ch-ua at all.
+const CLIENT_CH_HEADERS = [
+  'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'sec-ch-ua-platform-version',
+  'sec-ch-ua-full-version-list', 'sec-ch-ua-full-version', 'sec-ch-ua-model',
+  'sec-ch-ua-arch', 'sec-ch-ua-bitness', 'sec-ch-ua-wow64',
+];
+function isMobileClient(req) {
+  const chm = String((req.headers && req.headers['sec-ch-ua-mobile']) || '');
+  if (chm === '?1') return true;   // Chromium client hint — authoritative when present
+  if (chm === '?0') return false;
+  return /\b(Mobi|Android|iPhone|iPad|iPod)\b/i.test(String((req.headers && req.headers['user-agent']) || ''));
+}
+// Returns { ua, ch } to send upstream. Desktop → the pinned identity (unchanged working
+// flow). Mobile → the client's own UA + whatever client-hints it actually sent.
+function upstreamIdentity(req) {
+  if (!isMobileClient(req)) {
+    return { ua: UPSTREAM_UA, ch: { 'sec-ch-ua': UPSTREAM_CH_UA, 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': UPSTREAM_CH_PLATFORM } };
+  }
+  const ch = {};
+  let sentAny = false;
+  for (const h of CLIENT_CH_HEADERS) { const v = req.headers && req.headers[h]; if (v != null) { ch[h] = v; sentAny = true; } }
+  // Only synthesise the mobile flag for a Chromium client that sends hints but happened to
+  // omit it. A hint-less client (e.g. iOS Safari sends NO Sec-CH-UA at all) must stay
+  // hint-less — inventing a client-hint Safari never sends is itself a bot tell.
+  if (sentAny && ch['sec-ch-ua-mobile'] == null) ch['sec-ch-ua-mobile'] = '?1';
+  return { ua: String((req.headers && req.headers['user-agent']) || '') || UPSTREAM_UA, ch };
+}
 // Extra upstream origins (CDN / asset / API subdomains) the tool's pages reference
 // ABSOLUTELY — e.g. BypassGPT serves CSS/JS from https://cdn.bypassgpt.ai. Each is
 // proxied under ASSET_PREFIX/<index>/ and rewritten in HTML/CSS/JS so the browser loads
@@ -149,6 +190,15 @@ const CF_CHALLENGE_PASSTHROUGH = process.env.CF_CHALLENGE_PASSTHROUGH === '1' ||
 // other gateway byte-for-byte unchanged.
 const CF_CHALLENGE_MODE = (process.env.CF_CHALLENGE_MODE || (CF_CHALLENGE_PASSTHROUGH ? 'passthrough' : 'block')).toLowerCase();
 const CF_COOKIE_RE = /^(cf_clearance|__cf_bm|__cflb|cf_chl|__cf_chl|__cf_waf)/i;
+// Per-device Cloudflare clearance (default ON). cf_clearance is bound to the minting
+// UA + egress IP, so the vault's desktop-minted clearance is invalid on a mobile UA.
+const PER_DEVICE_CLEARANCE = process.env.CLAUDE_PER_DEVICE_CLEARANCE !== '0';
+// Remove Cloudflare-managed cookies from a cookie header, leaving auth/session cookies.
+function stripCfCookies(rawCookieHeader) {
+  return String(rawCookieHeader || '').split(';').map(s => s.trim()).filter(Boolean)
+    .filter(p => { const i = p.indexOf('='); const name = (i < 0 ? p : p.slice(0, i)).trim(); return !CF_COOKIE_RE.test(name); })
+    .join('; ');
+}
 
 function isCloudflareChallenge(statusCode, headers) {
   if (!(statusCode === 403 || statusCode === 503 || statusCode === 429)) return false;
@@ -245,35 +295,141 @@ function resolveLeaseToken(req) {
 // revocable + short-lived + rotated. In-memory (Passenger single-worker); a restart just makes
 // clients re-open from the dashboard (leases are short). Never logged.
 const CLAUDE_SESSION_COOKIE = '__Host-claude_session';
+// ── Opaque session store — DURABLE across Passenger workers + process recycles ──
+// ROOT CAUSE this replaces: the session used to live ONLY in this process's in-memory Map,
+// so when Passenger recycled the idle worker (no PassengerMinInstances pinning) or routed a
+// request to a different worker, the browser's __Host-claude_session cookie resolved to
+// nothing → sendBlockPage('lease_missing') → the app reloaded into the verification page.
+// Fix: back the Map with an AES-256-GCM-ENCRYPTED file under the app's own tmp/ (shared by
+// every worker on the same filesystem). The Map stays the hot path; on a miss we rehydrate
+// from the encrypted file. The browser still holds only the random opaque sid — never the
+// JWT. Server-side authorisation/revocation is UNCHANGED (revoke deletes the file too, and
+// the backend /validate remains authoritative on every nav + 30s overlay poll).
 const claudeSessions = new Map(); // sid -> { jwt, jti, exp(ms), cap, createdAt, lastSeen, rotatedAt }
+const SESSION_DIR = path.join(__dirname, 'tmp', 'sessions');
+try { fs.mkdirSync(SESSION_DIR, { recursive: true }); } catch (_) {}
+// Short per-worker id so timing logs reveal WHICH Passenger process served a request — this
+// is how a multi-worker/recycle session miss shows up (same sid, different instance).
+const INSTANCE_ID = crypto.randomBytes(3).toString('hex');
+// Key derived from the same secret every worker already has via env — so any worker can
+// decrypt, but the on-disk blob is useless without it. Never logged.
+const SESSION_ENC_KEY = crypto.createHash('sha256')
+  .update('claude-opaque-session:v1|' + (process.env.LEASE_SECRET || process.env.PROXY_LEASE_SECRET || process.env.JWT_SECRET || ''))
+  .digest();
+function sessFile(sid) { return path.join(SESSION_DIR, crypto.createHash('sha256').update(String(sid)).digest('hex') + '.bin'); }
+function sessEncrypt(obj) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', SESSION_ENC_KEY, iv);
+  const ct = Buffer.concat([c.update(Buffer.from(JSON.stringify(obj), 'utf8')), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]);
+}
+function sessDecrypt(buf) {
+  try {
+    const d = crypto.createDecipheriv('aes-256-gcm', SESSION_ENC_KEY, buf.subarray(0, 12));
+    d.setAuthTag(buf.subarray(12, 28));
+    return JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8'));
+  } catch (_) { return null; }   // tampered / wrong-key / corrupt → treated as no session
+}
+function sessPersist(sid, rec) {
+  try {
+    const tmp = sessFile(sid) + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, sessEncrypt({ jwt: rec.jwt, jti: rec.jti, exp: rec.exp, cap: rec.cap, createdAt: rec.createdAt, rotatedAt: rec.rotatedAt }));
+    fs.renameSync(tmp, sessFile(sid));   // atomic publish
+  } catch (_) {}
+}
+function sessLoad(sid) {
+  try {
+    const o = sessDecrypt(fs.readFileSync(sessFile(sid)));
+    if (!o) return null;
+    if (Date.now() > o.exp) { try { fs.unlinkSync(sessFile(sid)); } catch (_) {} return null; }
+    return o;
+  } catch (_) { return null; }   // no file → no session
+}
+function sessRemove(sid) { try { fs.unlinkSync(sessFile(sid)); } catch (_) {} }
+
 function newSid() { return crypto.randomBytes(32).toString('base64url'); }
 function claudeCreateSession(jwt, payload) {
   const sid = newSid();
   const exp = payload && payload.exp ? payload.exp * 1000 : Date.now() + 30 * 60 * 1000;
-  claudeSessions.set(sid, { jwt, jti: (payload && payload.jti) || null, exp, cap: !!(payload && payload.cap), createdAt: Date.now(), lastSeen: Date.now(), rotatedAt: Date.now() });
+  const rec = { jwt, jti: (payload && payload.jti) || null, exp, cap: !!(payload && payload.cap), createdAt: Date.now(), lastSeen: Date.now(), rotatedAt: Date.now() };
+  claudeSessions.set(sid, rec);
+  sessPersist(sid, rec);
   return sid;
 }
 function claudeGetSession(req) {
   const sid = parseCookies(req.headers.cookie)[CLAUDE_SESSION_COOKIE];
   if (!sid) return null;
-  const s = claudeSessions.get(sid);
-  if (!s) return null;
-  if (Date.now() > s.exp) { claudeSessions.delete(sid); return null; }
+  let s = claudeSessions.get(sid);
+  let source = 'memory';
+  if (!s) {
+    // Hot-path miss (this worker never held it, or was recycled): rehydrate from the shared
+    // encrypted file. This is what keeps the session alive across workers/restarts.
+    const o = sessLoad(sid);
+    if (!o) return null;
+    s = { jwt: o.jwt, jti: o.jti, exp: o.exp, cap: o.cap, createdAt: o.createdAt || Date.now(), lastSeen: Date.now(), rotatedAt: o.rotatedAt || Date.now() };
+    claudeSessions.set(sid, s);
+    source = 'rehydrated';   // recovered from the durable store — the case that used to fail
+  }
+  if (Date.now() > s.exp) { claudeSessions.delete(sid); sessRemove(sid); return null; }
   s.lastSeen = Date.now();
-  return Object.assign({ sid }, s);
+  return Object.assign({ sid, source }, s);
 }
-function claudeRevoke(sid) { if (sid) claudeSessions.delete(sid); }
-// Rotate the opaque id (session-fixation defence + limits token lifetime); keeps the same record.
+function claudeRevoke(sid) { if (sid) { claudeSessions.delete(sid); sessRemove(sid); } }
+// Rotate the opaque id (session-fixation defence + limits token lifetime); keeps the same
+// record. The new sid's file is written and the old one removed GLOBALLY (via the shared
+// store), so after rotation the new sid resolves on every worker — not just this one.
 function claudeRotate(sid) {
-  const s = claudeSessions.get(sid); if (!s) return null;
-  claudeSessions.delete(sid); const nsid = newSid(); s.rotatedAt = Date.now(); claudeSessions.set(nsid, s); return nsid;
+  const s = claudeSessions.get(sid) || (function () { const o = sessLoad(sid); return o ? { jwt: o.jwt, jti: o.jti, exp: o.exp, cap: o.cap, createdAt: o.createdAt, rotatedAt: o.rotatedAt } : null; })();
+  if (!s) return null;
+  claudeSessions.delete(sid); sessRemove(sid);
+  const nsid = newSid(); s.rotatedAt = Date.now(); s.lastSeen = Date.now();
+  claudeSessions.set(nsid, s); sessPersist(nsid, s);
+  return nsid;
 }
 // __Host- prefix REQUIRES Secure + Path=/ + NO Domain (host-only). HttpOnly + SameSite=Lax.
 function claudeSessionCookie(sid, maxAgeSec) {
   return `${CLAUDE_SESSION_COOKIE}=${sid}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${Math.max(30, maxAgeSec)}`;
 }
 function claudeExpireCookie() { return `${CLAUDE_SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`; }
-setInterval(() => { const now = Date.now(); for (const [sid, s] of claudeSessions) if (now > s.exp) claudeSessions.delete(sid); }, 60000).unref();
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, s] of claudeSessions) if (now > s.exp) claudeSessions.delete(sid);
+  // Sweep expired encrypted session files so tmp/sessions doesn't grow unbounded.
+  try {
+    for (const f of fs.readdirSync(SESSION_DIR)) {
+      if (!f.endsWith('.bin')) continue;
+      const fp = path.join(SESSION_DIR, f);
+      try { const o = sessDecrypt(fs.readFileSync(fp)); if (!o || now > o.exp) fs.unlinkSync(fp); } catch (_) {}
+    }
+  } catch (_) {}
+}, 60000).unref();
+
+// ── Short-lived backend-validate cache + in-flight dedup (nav speed) ──────────
+// The nav path re-hits the backend /validate on EVERY navigation (8s timeout). A cold
+// backend made that ~8s, and two navs in the same second issued two identical calls. Cache
+// only a CONFIRMED-VALID result for a few seconds and coalesce concurrent calls, so warm
+// loads and duplicate navs are instant. Failures are NEVER cached — a revoked/expired lease
+// is still caught on the very next call, so revocation stays prompt. Keyed by jti (per lease).
+const VALIDATE_CACHE_TTL_MS = Math.max(0, parseInt(process.env.CLAUDE_VALIDATE_CACHE_MS, 10) || 8000);
+const validateCache = new Map();   // jti -> { until, result }
+const validateInflight = new Map(); // jti -> Promise
+function backendValidateCached(token, jti) {
+  const key = jti || ('t:' + String(token).slice(-24));
+  const hit = validateCache.get(key);
+  if (hit && hit.until > Date.now()) return Promise.resolve(hit.result);
+  const flying = validateInflight.get(key);
+  if (flying) return flying;        // coalesce simultaneous validations into one round-trip
+  const p = backendValidate(token).then((v) => {
+    // Cache ONLY an authoritative success; leave every failure uncached so it re-checks.
+    if (VALIDATE_CACHE_TTL_MS > 0 && v && v.status === 200 && v.body && v.body.valid === true) {
+      validateCache.set(key, { until: Date.now() + VALIDATE_CACHE_TTL_MS, result: v });
+    }
+    return v;
+  }).finally(() => { validateInflight.delete(key); });
+  validateInflight.set(key, p);
+  return p;
+}
+setInterval(() => { const now = Date.now(); for (const [k, v] of validateCache) if (v.until <= now) validateCache.delete(k); }, 30000).unref();
 
 // Strip ONLY the lease cookie, preserving every other cookie byte-for-byte.
 function stripLeaseCookie(rawCookieHeader) {
@@ -283,6 +439,15 @@ function stripLeaseCookie(rawCookieHeader) {
 }
 
 // ── Backend calls (server-to-server) ────────────────────────────────────────
+// Confirmed authorization denials — the ONLY codes that revoke the opaque Claude session.
+// Mirrors TERMINAL_CODES in backend/utils/proxy/validationResponse.js. Anything absent from
+// this set (429, 5xx, network failure, malformed body) is treated as temporary.
+const CLAUDE_TERMINAL_CODES = new Set([
+  'lease_expired', 'lease_revoked', 'lease_invalid', 'lease_missing',
+  'client_disabled', 'client_not_found', 'plan_expired',
+  'account_blocked', 'account_no_session',
+]);
+
 function backendPost(subpath, token, extraHeaders, jsonBody) {
   return new Promise((resolve) => {
     try {
@@ -629,10 +794,23 @@ function injectCaptchaShim(html) {
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
+
+// Content hashes → immutable cache URLs that bust themselves on deploy.
+const OVERLAY_JS_HASH = crypto.createHash("sha256").update(OVERLAY_JS).digest("hex").slice(0, 12);
+const OVERLAY_CSS_HASH = crypto.createHash("sha256").update(OVERLAY_CSS).digest("hex").slice(0, 12);
+const OVERLAY_JS_ETAG = '"' + OVERLAY_JS_HASH + '"';
+const OVERLAY_CSS_ETAG = '"' + OVERLAY_CSS_HASH + '"';
 // Inlined into <head> (not <script src defer>) so its MutationObserver/hiding starts
 // before <body> paints — same no-flash technique as the StealthWriter gateway.
 const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
 
+// Confirmed authorization denials — the ONLY codes that block a navigation outright.
+// Mirrors TERMINAL_CODES in backend/utils/proxy/validationResponse.js.
+const NAV_TERMINAL_CODES = new Set([
+  'lease_expired', 'lease_revoked', 'lease_invalid', 'lease_missing',
+  'client_disabled', 'client_not_found', 'plan_expired',
+  'account_blocked', 'account_no_session',
+]);
 function sendBlockPage(res, code) {
   const messages = {
     lease_missing: `No active session. Please reopen ${TOOL_NAME} from your Gen Z dashboard.`,
@@ -647,15 +825,35 @@ function sendBlockPage(res, code) {
     unavailable: 'Access could not be verified. Please refresh or contact support.',
   };
   const msg = messages[code] || 'Access could not be verified. Please refresh or contact support.';
+  // This page is the one a phone is most likely to cache and replay. When the session is
+  // genuinely over (a lease code — NOT a transient 'unavailable'/'session_expired'/account
+  // hiccup, where wiping the app's storage would be destructive and pointless), make it
+  // dismantle the replay machinery on its way out: drop any service worker registered on
+  // this origin, empty Cache Storage, and clear local/sessionStorage. So the NEXT dashboard
+  // launch reaches the server for real instead of being served from the device.
+  // Self-healing only — it removes stale client-side state and grants nothing.
+  const wipe = /^lease_/.test(String(code || ''));
+  const heal = wipe
+    ? '<script>(function(){try{if(navigator.serviceWorker&&navigator.serviceWorker.getRegistrations)'
+      + 'navigator.serviceWorker.getRegistrations().then(function(r){for(var i=0;i<r.length;i++){try{r[i].unregister();}catch(e){}}}).catch(function(){});}catch(e){}'
+      + 'try{if(window.caches&&caches.keys)caches.keys().then(function(k){for(var i=0;i<k.length;i++){try{caches.delete(k[i]);}catch(e){}}}).catch(function(){});}catch(e){}'
+      + 'try{localStorage.clear();}catch(e){}try{sessionStorage.clear();}catch(e){}})();</script>'
+    : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Session ended</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1">${heal}
 <style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
 .card{max-width:420px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
 h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 20px}
 a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:600}</style></head>
 <body><div class="card"><h1>${TOOL_NAME} session ended</h1><p>${msg}</p>
 <a href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></body></html>`;
-  res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+  // Standards-based equivalent of the script above, for browsers that honour it (Chrome/
+  // Android). Deliberately NOT "cookies": the vault's per-device Cloudflare clearance lives
+  // in cookies on this origin and re-solving a challenge on every expiry would be worse than
+  // the bug. Safari ignores the header, which is why the inline script exists too.
+  if (wipe && TOOL_KEY === 'claude') headers['clear-site-data'] = '"cache", "storage"';
+  res.writeHead(403, headers);
   res.end(html);
 }
 
@@ -840,7 +1038,7 @@ function injectOverlay(html, capture, accountLabel) {
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
-    `<link rel="stylesheet" href="/__genz/overlay.css">` +
+    `<link rel="stylesheet" href="/__genz/overlay.css?v=${OVERLAY_CSS_HASH}">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
     `<script id="genz-overlay">${OVERLAY_JS_INLINE}</script>`;
   const m = html.match(/<head[^>]*>/i);
@@ -925,12 +1123,19 @@ function injectSupabaseBrowserSession(html, session, ctx) {
 // the UA + client-hints pinned and the proxy/hop headers stripped. UA is pinned
 // everywhere so a Cloudflare cf_clearance cookie (bound to its minting UA) stays valid.
 function buildUpstreamHeaders(req, upURL, session, minimal) {
+  // Desktop → the pinned desktop identity (byte-identical to before). Mobile → the
+  // client's own UA + client-hints, so Cloudflare's in-browser challenge fingerprint
+  // matches the HTTP headers and the phone can actually clear the challenge.
+  const id = upstreamIdentity(req);
+  // `...id.ch` sits in the SAME position the pinned hints held before (right after
+  // user-agent) so the DESKTOP header set is byte- and order-identical to the original;
+  // for mobile it is the client's own hints instead.
   let headers;
   if (minimal) {
     headers = {
       host: upURL.host,
-      'user-agent': UPSTREAM_UA,
-      'sec-ch-ua': UPSTREAM_CH_UA, 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': UPSTREAM_CH_PLATFORM,
+      'user-agent': id.ua,
+      ...id.ch,
       'upgrade-insecure-requests': '1',
       'accept': req.headers['accept'] || 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
       'accept-language': req.headers['accept-language'] || 'en-US,en;q=0.9',
@@ -941,8 +1146,16 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
   } else {
     headers = { ...req.headers };
     headers.host = upURL.host;
-    headers['user-agent'] = UPSTREAM_UA;
-    headers['sec-ch-ua'] = UPSTREAM_CH_UA; headers['sec-ch-ua-mobile'] = '?0'; headers['sec-ch-ua-platform'] = UPSTREAM_CH_PLATFORM;
+    headers['user-agent'] = id.ua;
+    if (isMobileClient(req)) {
+      // Mobile: keep the client's OWN sec-ch-ua* from the spread (do not overwrite with the
+      // desktop pins). Ensure the mobile flag is present so UA and hints agree.
+      if (headers['sec-ch-ua-mobile'] == null) headers['sec-ch-ua-mobile'] = '?1';
+    } else {
+      // Desktop: pin the 3 low-entropy hints exactly as before, leaving any high-entropy
+      // client hints in place — unchanged behaviour.
+      headers['sec-ch-ua'] = UPSTREAM_CH_UA; headers['sec-ch-ua-mobile'] = '?0'; headers['sec-ch-ua-platform'] = UPSTREAM_CH_PLATFORM;
+    }
     for (const h of STRIP_REQ_HEADERS) delete headers[h];
   }
   // Overlay/rewriting need uncompressed bodies.
@@ -958,6 +1171,20 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
   delete headers.cookie;
   if (session && session.cookieHeader) {
     headers.cookie = session.cookieHeader;
+    // Cloudflare binds cf_clearance to BOTH the egress IP and the exact User-Agent that
+    // minted it. The vault bundle's clearance was minted with the pinned DESKTOP UA, so
+    // sending it on a request that (correctly) carries a MOBILE UA is a guaranteed
+    // mismatch → Cloudflare rejects it → fresh challenge → the app reloads into the
+    // verification page. Desktop is unaffected (its UA matches the minting UA).
+    // So for a mobile client we drop ONLY the vault's Cloudflare cookies and let that
+    // device use its OWN clearance, which it solved through this gateway and which is
+    // therefore bound to the correct UA *and* to the gateway's egress IP. The vault's
+    // auth/session cookies (sessionKey etc.) are NOT UA-bound and are still sent, so the
+    // account stays logged in. Clearance becomes per-device; the session stays shared.
+    // Kill-switch: CLAUDE_PER_DEVICE_CLEARANCE=0 restores the previous behaviour.
+    if (PER_DEVICE_CLEARANCE && isMobileClient(req)) {
+      headers.cookie = stripCfCookies(headers.cookie);
+    }
     // CF pass-through: also forward the browser's Cloudflare cookies (cf_clearance /
     // __cf_bm / cf_chl*) so a challenge solved through THIS gateway reaches the upstream
     // together with the vault session. Only Cloudflare-managed cookies are forwarded.
@@ -1035,9 +1262,21 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
     }
 
-    const upstream = upLib.request(`${upURL.origin}${effUpPath}`, { method: req.method, headers }, (uRes) => {
+    const upstream = upLib.request(`${upURL.origin}${effUpPath}`, { method: req.method, headers, agent: agentFor(upURL.origin) }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
-      const isHtml = ct.includes('text/html');
+      // A file DOWNLOAD is content, not a page — it must reach the browser byte-for-byte.
+      // Binary types (PDF/DOCX/XLSX/PPTX/images/ZIP) were already safe because they are
+      // piped untouched, but a download whose type happens to be text-ish was not:
+      //   • text/html  → took the isHtml branch and got the overlay, critical hide CSS and
+      //                  URL rewriting injected INTO the saved file;
+      //   • text/plain, application/json, application/xml → got upstream-URL rewriting,
+      //                  silently altering the bytes the user downloaded.
+      // Content-Disposition: attachment is the upstream saying "this is a file". Honour it:
+      // no injection, no rewriting, no buffering — just stream it through with its own
+      // headers (filename, type, length) intact. Inline/preview responses are untouched, so
+      // preview, artifacts and the app's own JSON keep working exactly as before.
+      const isAttachment = /(^|;|\s)attachment\b/i.test(String(uRes.headers['content-disposition'] || ''));
+      const isHtml = ct.includes('text/html') && !isAttachment;
       const rawLoc = String(uRes.headers['location'] || '');
       const redirectedToLogin = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|log-?in|auth\/login)\b/i.test(rawLoc);
       const upstreamForbidden = uRes.statusCode === 401 || uRes.statusCode === 403;
@@ -1056,6 +1295,8 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         const verbose = process.env.PROXY_LOG_ALL === '1';
         if (!(verbose || isHtmlNav || uRes.statusCode >= 400 || redirectedToLogin)) return;
         const rec = {
+          cid: ctx.cid || null,
+          instance: INSTANCE_ID,
           tool_code: TOOL_KEY,
           request_path: reqPathOnly,
           upstream_url: `${upURL.origin}${reqPathOnly}`,
@@ -1063,8 +1304,11 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           content_type: ct.split(';')[0] || null,
           asset_rewrite_applied: !!asset_rewrite_applied,
           redirected_to_login: redirectedToLogin,
+          upstream_error: (uRes.statusCode >= 500 ? 'upstream_5xx' : cfChallengeDetected ? 'cf_challenge' : uRes.statusCode === 403 ? 'forbidden' : uRes.statusCode === 429 ? 'rate_limited' : null),
+          device: isMobileClient(req) ? 'mobile' : 'desktop',
           cookies_attached: (session && session.cookieCount) || 0,
           is_nav: !!isHtmlNav,
+          latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null,
           lease_id: ctx.jti || null,
         };
         // Captcha-debug: the reCAPTCHA query carries only public values (k=sitekey,
@@ -1098,20 +1342,30 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
-      if (cfPassthrough) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav });
+      // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
+      // without ever logging a cookie, token or the UA string itself.
+      if (cfPassthrough) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: isMobileClient(req) ? 'mobile' : 'desktop', lease_id: ctx.jti || null });
 
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
-        if (STRIP_RESP_HEADERS.has(k.toLowerCase())) continue;
+        const lk = k.toLowerCase();
+        // content-length is stripped in general because injection/rewriting changes the body
+        // length. An attachment is now passed through byte-for-byte, so its real length is
+        // still correct and worth keeping: without it the download streams chunked with an
+        // unknown size — no progress bar, and large files are markedly less reliable on iOS
+        // Safari. If this response ends up compressed, pipeMaybeCompressed drops it again.
+        if (lk === 'content-length' && isAttachment) { outHeaders[k] = v; continue; }
+        if (STRIP_RESP_HEADERS.has(lk)) continue;
         if (k.toLowerCase() === 'set-cookie') { outHeaders[k] = rewriteSetCookie(v, ctx && ctx.capture); continue; }
         if (k.toLowerCase() === 'location' && typeof v === 'string') { outHeaders[k] = rewriteUpstreamUrls(v).text; continue; }
         outHeaders[k] = v;
       }
 
-      const sanitizeJson = ctx.sanitizeBody && ct.includes('application/json') && !ct.includes('event-stream') && !ctx.capture;
+      const sanitizeJson = ctx.sanitizeBody && ct.includes('application/json') && !ct.includes('event-stream') && !ctx.capture && !isAttachment;
       // Never rewrite captcha JS/JSON bodies — Google's minified reCAPTCHA code must be
-      // served byte-for-byte intact (the in-browser shim + co-rewrite handle routing).
-      const rewriteText = isRewritableText(ct) && !isCaptchaReq;
+      // served byte-for-byte intact (the in-browser shim + co-rewrite handle routing) — and
+      // never rewrite an attachment, which is a file the user is saving (see above).
+      const rewriteText = isRewritableText(ct) && !isCaptchaReq && !isAttachment;
 
       if (isHtml) {
         const buf = [];
@@ -1159,8 +1413,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
           logIt(rw.applied);
-          res.writeHead(uRes.statusCode || 200, outHeaders);
-          res.end(html);
+          endMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, html);
         });
       } else if (sanitizeJson || rewriteText) {
         const buf = [];
@@ -1171,12 +1424,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           const rw = rewriteUpstreamUrls(body); body = rw.text;
           if (sanitizeJson) outHeaders['cache-control'] = 'no-store';
           logIt(rw.applied);
-          res.writeHead(uRes.statusCode || 200, outHeaders);
-          res.end(body);
+          endMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, body);
         });
       } else {
         logIt(false);
-        res.writeHead(uRes.statusCode || 200, outHeaders);
         // Claude quota tap: count the streamed answer's output chars WITHOUT buffering or
         // altering it (a passive 'data' listener coexists with pipe), then report settled usage
         // on stream end. Only for the completion response; fully fail-safe (never affects the
@@ -1193,7 +1444,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             });
           } catch (_) { /* tap failure must never affect the response */ }
         }
-        uRes.pipe(res);
+        // The tap above listens on uRes, i.e. BEFORE compression, so usage counts are
+        // unaffected. SSE/streaming content types are never compressed (see isCompressible).
+        pipeMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, uRes);
       }
     });
     // Upstream failure / timeout handling: never hang the browser on a dead or slow
@@ -1256,16 +1509,132 @@ function proxy(req, res, isHtmlNav, session, ctx) {
 }
 
 // ── Request handler ─────────────────────────────────────────────────────────────
+// ── Upstream connection reuse ────────────────────────────────────────────────
+// PERF: without an explicit agent each proxied request can pay a fresh TCP + TLS
+// handshake to the upstream origin. Those origins sit behind Cloudflare, where the
+// handshake dominates, and one page load fans out into dozens of asset requests.
+// Pooled keep-alive sockets amortise that away; 'lifo' keeps sockets warm.
+const GENZ_AGENT_OPTS = {
+  keepAlive: true,
+  keepAliveMsecs: 15000,
+  maxSockets: parseInt(process.env.UPSTREAM_MAX_SOCKETS, 10) || 64,
+  maxFreeSockets: 16,
+  timeout: parseInt(process.env.UPSTREAM_TIMEOUT_MS, 10) || 30000,
+  scheduling: 'lifo',
+};
+const upstreamAgents = {
+  'https:': new https.Agent(GENZ_AGENT_OPTS),
+  'http:': new http.Agent(GENZ_AGENT_OPTS),
+};
+function agentFor(originOrUrl) {
+  try { return upstreamAgents[new URL(String(originOrUrl)).protocol] || undefined; }
+  catch (_) { return undefined; }
+}
+
+// ── Response compression ─────────────────────────────────────────────────────
+// PERF: the gateway asks upstream for 'accept-encoding: identity' (the overlay
+// injection and URL rewriting need plaintext bodies) and strips 'content-encoding'
+// from the response. Net effect: EVERY byte — HTML, JS bundles, CSS, JSON — crossed
+// the gateway→browser leg UNCOMPRESSED, typically 3-5x what the origin would send.
+// This re-compresses on the way out. Purely a transport change: the bytes the browser
+// ends up with are identical. Disable with GATEWAY_COMPRESSION=0.
+const COMPRESSION_ON = process.env.GATEWAY_COMPRESSION !== '0';
+const COMPRESS_MIN_BYTES = parseInt(process.env.GATEWAY_COMPRESS_MIN_BYTES, 10) || 1024;
+// Already-compressed payloads (images, video, fonts, archives) are left alone.
+const COMPRESSIBLE_RE = /^(?:text\/|application\/(?:javascript|x-javascript|json|xml|manifest\+json|ld\+json|wasm)|image\/svg\+xml)/i;
+// NEVER compress Server-Sent Events / streaming responses: the compressor buffers, which
+// stalls token-by-token delivery (Claude chat, and any SSE the tools use). Also skip
+// anything already carrying a content-encoding.
+const NO_COMPRESS_RE = /^text\/event-stream/i;
+function isCompressible(contentType) {
+  const ct = String(contentType || '');
+  if (NO_COMPRESS_RE.test(ct)) return false;
+  return COMPRESSIBLE_RE.test(ct);
+}
+function pickEncoding(req) {
+  if (!COMPRESSION_ON) return null;
+  const ae = String((req.headers && req.headers['accept-encoding']) || '').toLowerCase();
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return null;
+}
+function compressBuffer(enc, buf, cb) {
+  try {
+    if (enc === 'br') {
+      // Quality 5 ≈ gzip CPU with better ratios; 11 is far too slow per-request.
+      return zlib.brotliCompress(buf, { params: {
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length,
+      } }, (err, out) => cb(err ? null : out));
+    }
+    return zlib.gzip(buf, { level: 6 }, (err, out) => cb(err ? null : out));
+  } catch (_) { return cb(null); }
+}
+function compressStream(enc) {
+  if (enc === 'br') return zlib.createBrotliCompress({ params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } });
+  return zlib.createGzip({ level: 6 });
+}
+/** Send a buffered body, compressing when worthwhile. Falls back to raw on any failure. */
+function endMaybeCompressed(req, res, status, outHeaders, body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
+  const enc = pickEncoding(req);
+  if (!enc || buf.length < COMPRESS_MIN_BYTES || !isCompressible(outHeaders['content-type'])) {
+    res.writeHead(status, outHeaders);
+    return res.end(buf);
+  }
+  compressBuffer(enc, buf, (out) => {
+    if (!out || out.length >= buf.length) {          // never ship a bigger body
+      res.writeHead(status, outHeaders);
+      return res.end(buf);
+    }
+    outHeaders['content-encoding'] = enc;
+    outHeaders['vary'] = outHeaders['vary'] ? outHeaders['vary'] + ', Accept-Encoding' : 'Accept-Encoding';
+    delete outHeaders['content-length'];
+    res.writeHead(status, outHeaders);
+    res.end(out);
+  });
+}
+/** Streamed pass-through with on-the-fly compression for compressible types. */
+function pipeMaybeCompressed(req, res, status, outHeaders, uRes) {
+  const enc = pickEncoding(req);
+  if (enc && isCompressible(outHeaders['content-type'])) {
+    outHeaders['content-encoding'] = enc;
+    outHeaders['vary'] = outHeaders['vary'] ? outHeaders['vary'] + ', Accept-Encoding' : 'Accept-Encoding';
+    delete outHeaders['content-length'];
+    res.writeHead(status, outHeaders);
+    const gz = compressStream(enc);
+    gz.on('error', () => { try { res.end(); } catch (_) {} });
+    return uRes.pipe(gz).pipe(res);
+  }
+  res.writeHead(status, outHeaders);
+  return uRes.pipe(res);
+}
+
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
   const pathName = u.pathname;
+  // Per-request correlation id + start clock for safe startup-timing diagnostics.
+  const cid = crypto.randomBytes(6).toString('hex');
+  const reqT0 = Date.now();
 
   if (pathName === '/__genz/overlay.js') {
-    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' });
+    // PERF: was no-cache → revalidated on EVERY navigation. Content-addressed (?v=<hash>)
+    // and immutable now, so a nav costs zero requests while a deploy busts the URL.
+    res.writeHead(200, {
+      'content-type': 'application/javascript; charset=utf-8',
+      'cache-control': u.searchParams.get('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'etag': OVERLAY_JS_ETAG,
+    });
     return res.end(OVERLAY_JS);
   }
   if (pathName === '/__genz/overlay.css') {
-    res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache' });
+    if (String(req.headers['if-none-match'] || '').replace(/^W\//, '') === OVERLAY_CSS_ETAG) { res.writeHead(304); return res.end(); }
+    res.writeHead(200, {
+      'content-type': 'text/css; charset=utf-8',
+      'cache-control': u.searchParams.get('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'etag': OVERLAY_CSS_ETAG,
+    });
     return res.end(OVERLAY_CSS);
   }
 
@@ -1302,6 +1671,30 @@ const server = http.createServer(async (req, res) => {
     };
     res.writeHead(missingEnv.length ? 503 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(body));
+  }
+
+  // ── Service workers are never allowed on this origin (CLAUDE ONLY) ──────────
+  // A worker registered by the proxied app is scoped to the GATEWAY origin and serves
+  // navigations out of its own Cache Storage. Once it has cached a "session ended" page it
+  // replays that document on every later visit — including the /gateway?lease=<NEW> launch —
+  // so the request never reaches this server, the fresh session cookie is never set, and no
+  // server-side change can dislodge it. Cache Storage also survives clearing cookies, which
+  // is why the expired screen came back after a restart. Phones are hit hardest: mobile
+  // browsers install and retain workers far more readily than desktop.
+  //
+  // The overlay already unregisters workers and blocks navigator.serviceWorker.register for
+  // Claude, so Claude is designed to run with no worker here — but that code only runs on a
+  // page the worker still lets through. Refusing the SCRIPT closes the loop: a new
+  // registration can never install, and an existing registration's update check gets a 404,
+  // which makes the browser drop the registration on its own.
+  if (TOOL_KEY === 'claude'
+      && (String(req.headers['sec-fetch-dest'] || '') === 'serviceworker'
+          || req.headers['service-worker'] === 'script'
+          || /^\/(sw|service-?worker|firebase-messaging-sw)[\w.-]*\.js$/i.test(pathName)
+          || /^\/workbox-[\w.-]+\.js$/i.test(pathName))) {
+    safeLog('service_worker_blocked', { request_path: pathName });
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end('Not found');
   }
 
   // Proxied CDN/asset/API origins (rewritten into the page as /__pxo/<i>/…). Served
@@ -1364,6 +1757,18 @@ const server = http.createServer(async (req, res) => {
   // (admin revoke / expiry) also revokes the opaque session.
   const claudeSess = (TOOL_KEY === 'claude') ? claudeGetSession(req) : null;
   const token = (TOOL_KEY === 'claude') ? (claudeSess ? claudeSess.jwt : null) : getLease(req);
+  // The overlay's own XHR endpoints must always answer in JSON. Falling through to the HTML
+  // block page here made `fetch(...).json()` fail, which the overlay (correctly) cannot read
+  // as a verdict — so an expired session was classified RETRYABLE and the widget sat on
+  // "Connection interrupted — retrying…" instead of stating plainly that the session ended.
+  // Answer the contract explicitly, and expire the dead opaque cookie on the way out.
+  if (TOOL_KEY === 'claude' && !token && (pathName === '/__genz/validate' || pathName === '/__genz/usage')) {
+    const jsonHeaders = { 'content-type': 'application/json', 'cache-control': 'no-store', 'set-cookie': claudeExpireCookie() };
+    res.writeHead(200, jsonHeaders);
+    return res.end(pathName === '/__genz/usage'
+      ? JSON.stringify({ ok: true, enabled: true, synced: false })
+      : JSON.stringify({ valid: false, terminal: true, retryable: false, code: 'lease_missing' }));
+  }
   if (!token) return sendBlockPage(res, 'lease_missing');
 
   const local = verifyLeaseLocal(token);
@@ -1381,15 +1786,40 @@ const server = http.createServer(async (req, res) => {
     const headers = { 'content-type': 'application/json', 'cache-control': 'no-store' };
     let out;
     if (r.status === 200 && r.body && r.body.valid) {
-      out = { valid: true, secondsRemaining: r.body.secondsRemaining || 0 };
+      // Relay the ABSOLUTE server-issued deadline, not just the relative countdown. The
+      // overlay anchors to `expiresAt` (corrected by `serverTime`), so a resumed mobile tab
+      // re-anchors to the NEW lease's expiry instead of carrying a stale local counter.
+      // Still no token/claims — these two fields are timestamps, not credentials.
+      out = {
+        valid: true,
+        secondsRemaining: r.body.secondsRemaining || 0,
+        expiresAt: r.body.expiresAt || null,
+        serverTime: r.body.serverTime || new Date().toISOString(),
+      };
       if (claudeSess && Date.now() - claudeSess.rotatedAt > 600000) {
         const nsid = claudeRotate(claudeSess.sid); const s = nsid && claudeSessions.get(nsid);
         if (s) headers['set-cookie'] = claudeSessionCookie(nsid, Math.floor((s.exp - Date.now()) / 1000));
       }
     } else {
-      if (claudeSess) claudeRevoke(claudeSess.sid);
-      headers['set-cookie'] = claudeExpireCookie();
-      out = { valid: false, code: (r.body && r.body.code) || 'lease_invalid' };
+      // A transient backend failure must NOT destroy a valid session. Previously ANY non-200
+      // — including status 0 (network error / the 8s timeout) — revoked the opaque session and
+      // cleared the cookie, so one backend blip permanently killed a live lease and no amount
+      // of client-side retrying could recover it. Only a CONFIRMED authorization denial from
+      // the backend revokes now; everything else is reported as retryable and the session is
+      // left intact for the overlay to retry against. Enforcement is unchanged: the backend is
+      // still the source of truth, and every terminal code below still revokes immediately.
+      const code = (r.body && r.body.code) || null;
+      const terminal = (r.body && typeof r.body.terminal === 'boolean')
+        ? r.body.terminal
+        : CLAUDE_TERMINAL_CODES.has(String(code || ''));
+      if (terminal) {
+        if (claudeSess) claudeRevoke(claudeSess.sid);
+        headers['set-cookie'] = claudeExpireCookie();
+        out = { valid: false, terminal: true, retryable: false, code: code || 'lease_invalid' };
+      } else {
+        out = { valid: false, terminal: false, retryable: true, code: code || 'backend_unavailable' };
+      }
+      safeLog('validate-fail', { upstream_status: r.status, code: out.code, terminal: out.terminal });
     }
     res.writeHead(200, headers);
     return res.end(JSON.stringify(out));
@@ -1422,12 +1852,29 @@ const server = http.createServer(async (req, res) => {
 
   const accept = String(req.headers.accept || '');
   const isHtmlNav = req.method === 'GET' && accept.includes('text/html');
+  // Kick off the account-session fetch NOW so it runs CONCURRENTLY with backend validation
+  // instead of after it. These were sequential (validate → then session), stacking two
+  // up-to-8s waits into the ~15s cold load; run in parallel the nav pays max(one), not sum.
+  const sessionP = capture ? Promise.resolve({ noAccount: true, capture: true }) : getSession(token, local && local.jti);
   if (isHtmlNav && !capture) {
-    const v = await backendValidate(token);
-    if (v.status === 0) {
-      if (local && local.unknown) return sendBlockPage(res, 'lease_invalid');
-    } else if (v.status !== 200 || !v.body || v.body.valid !== true) {
+    // Cached + deduped: a recent CONFIRMED-valid result is reused for a few seconds and
+    // simultaneous navs share one round-trip; failures are never cached (revocation stays
+    // prompt). We do not wait the full 8s when a valid result is already known.
+    const v = await backendValidateCached(token, local && local.jti);
+    // Only a CONFIRMED authorization denial blocks a navigation. A transient backend
+    // failure (status 0 network/timeout, 429, 5xx, malformed body) falls back to the LOCAL
+    // lease check, which still enforces the JWT signature and expiry — so an outage degrades
+    // to signature+expiry enforcement instead of throwing a block page at a valid session.
+    // Fails closed whenever the local check is also inconclusive.
+    const vTerminal = (v.body && typeof v.body.terminal === 'boolean')
+      ? v.body.terminal
+      : NAV_TERMINAL_CODES.has(String((v.body && v.body.code) || ''));
+    if (v.status === 200 && v.body && v.body.valid === true) {
+      // authoritative pass — continue
+    } else if (vTerminal) {
       return sendBlockPage(res, (v.body && v.body.code) || 'lease_expired');
+    } else if (local && local.unknown) {
+      return sendBlockPage(res, 'lease_invalid');
     }
   }
 
@@ -1478,15 +1925,23 @@ const server = http.createServer(async (req, res) => {
   //    structure but can break token SPAs, so it's per-tool and off by default.
   const sanitizeBody = IDENTITY_SHIELD && !capture && IDENTITY_ROUTE_RE.test(pathName);
 
-  let session;
-  if (capture) {
-    session = { noAccount: true, capture: true };
-  } else {
-    session = await getSession(token, local && local.jti);
-    if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
-  }
+  // Await the session fetch started concurrently above (already in flight during validate).
+  const session = await sessionP;
+  if (!capture && session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
 
-  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody });
+  // Safe startup-timing diagnostic — correlation id + stage total + which worker + whether
+  // the session had to be rehydrated from the durable store (the old failure mode) + device.
+  // Cookie PRESENCE only; never a cookie value, lease, session or credential.
+  if (isHtmlNav) {
+    safeLog('nav_timing', {
+      cid, instance: INSTANCE_ID, request_path: pathName,
+      device: isMobileClient(req) ? 'mobile' : 'desktop',
+      session_source: (claudeSess && claudeSess.source) || 'memory',
+      has_session_cookie: !!(claudeSess),
+      resolve_ms: Date.now() - reqT0,
+    });
+  }
+  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody, cid, t0: reqT0 });
 });
 
 server.listen(PORT, () => {

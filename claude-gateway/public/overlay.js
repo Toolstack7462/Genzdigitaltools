@@ -31,6 +31,37 @@
   }
   var LEASE = getCookie('pg_lease');
 
+  // ── Service-worker neutralisation (CLAUDE ONLY) ─────────────────────────────
+  // A service worker registered by the proxied app is scoped to THIS gateway origin and
+  // serves navigations from ITS OWN Cache Storage. If it ever caches a Cloudflare
+  // verification / "session ended" page, the browser keeps REPLAYING that cached page as
+  // the application page on every later visit — the device never reaches the gateway, so
+  // no server-side fix can dislodge it. Cache Storage also survives "clear cookies", which
+  // is why a cookie reset does not recover the session. Desktop is typically unaffected
+  // only because it never cached a broken page.
+  //
+  // We therefore (a) unregister any existing worker on this origin and delete its caches,
+  // and (b) stop new registrations. Claude works fine without one — a service worker here
+  // is only offline/caching sugar, and caching a lease-gated proxied app is never correct.
+  // This runs from the <head>-injected overlay, before the app's own scripts register.
+  // Gated to Claude (CFG.tool) so no other tool's behaviour changes.
+  if (CFG.tool === 'claude' && typeof navigator !== 'undefined' && navigator.serviceWorker) {
+    try {
+      navigator.serviceWorker.getRegistrations && navigator.serviceWorker.getRegistrations()
+        .then(function (regs) { for (var i = 0; i < regs.length; i++) { try { regs[i].unregister(); } catch (e) {} } })
+        .catch(function () {});
+      if (window.caches && caches.keys) {
+        caches.keys().then(function (keys) { for (var i = 0; i < keys.length; i++) { try { caches.delete(keys[i]); } catch (e) {} } }).catch(function () {});
+      }
+      // Block future registrations (resolve with a harmless rejection the app can handle).
+      var _reg = navigator.serviceWorker.register;
+      navigator.serviceWorker.register = function () {
+        return Promise.reject(new Error('service worker disabled by gateway'));
+      };
+      void _reg;
+    } catch (e) {}
+  }
+
   var MSG = {
     lease_expired:   'Your access session expired. Please open the tool again from your dashboard.',
     lease_revoked:   'Your access session ended. Please open the tool again from your dashboard.',
@@ -47,8 +78,39 @@
     return MSG.unavailable;
   }
 
-  var state = { secondsRemaining: 0, terminal: false, collapsed: false, friendlyShown: false };
-  var el = {};
+  // Shown INSTEAD of a terminal error while validation is failing for infrastructure
+  // reasons (network, timeout, 429, 5xx, malformed body). The session keeps running.
+  var MSG_RETRYING = 'Connection interrupted — retrying…';
+
+  // Confirmed authorization denials. ONLY these end a session. Mirrors the closed list in
+  // backend/utils/proxy/validationResponse.js — anything else is transient by definition.
+  var TERMINAL_CODES = {
+    lease_expired: 1, lease_revoked: 1, lease_invalid: 1, lease_missing: 1,
+    client_disabled: 1, client_not_found: 1, plan_expired: 1,
+    account_blocked: 1, account_no_session: 1
+  };
+
+  // How long a session may coast on the last SUCCESSFUL validation while the backend is
+  // unreachable. Bounded: an expired or revoked lease can never be extended by it, because
+  // the countdown below is driven by the server-issued absolute expiry, which keeps
+  // running during the outage and ends the session on time regardless.
+  var GRACE_MS = (typeof CFG.validateGraceMs === 'number' ? CFG.validateGraceMs : 120000);
+
+  var state = {
+    secondsRemaining: 0,
+    expiresAtMs: 0,        // absolute server-issued deadline; 0 = not yet known
+    skewMs: 0,             // serverTime - clientTime, so a wrong device clock cannot freeze or extend the countdown
+    terminal: false,
+    collapsed: false,
+    friendlyShown: false,
+    degraded: false,       // a retryable failure is currently being shown
+    failures: 0,           // consecutive retryable failures (drives backoff)
+    lastGoodAt: 0,
+    inFlight: false,       // guards against overlapping validations corrupting state
+    retryTimer: null,
+    lastResumeAt: 0        // throttles the mobile resume re-check (see resumeCheck below)
+  };
+    var el = {};
   function fmtTime(s) { if (s < 0) s = 0; var m = Math.floor(s / 60), x = s % 60; return m + ':' + (x < 10 ? '0' : '') + x; }
 
   // ── Floating widget — brand + tool name + session + support ─────────────────
@@ -96,18 +158,103 @@
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
   function toggleCollapse() { state.collapsed = !state.collapsed; el.widget.classList.toggle('genz-sw-collapsed', state.collapsed); el.min.textContent = state.collapsed ? '+' : '–'; }
-  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); }
+  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); el.widget.classList.toggle('genz-sw-degraded', !!state.degraded && !state.terminal); }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
   function clearMessage() { if (el.msg) { el.msg.textContent = ''; el.msg.style.display = 'none'; } }
   function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }
   function toast(text) { var t = document.createElement('div'); t.className = 'genz-sw-toast'; t.textContent = text; document.documentElement.appendChild(t); setTimeout(function () { t.classList.add('genz-sw-toast-out'); }, 2800); setTimeout(function () { t.remove(); }, 3400); }
 
-  function apiCall(endpoint, payload) {
-    return fetch(API + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + (LEASE || '') }, body: JSON.stringify(payload || {}) })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); });
+  // Safe client diagnostics — console only, and ONLY tool/route/status/code/latency style
+  // fields. Never the lease token, cookies, account session or any credential.
+  function log(evt, fields) {
+    try {
+      var safe = { evt: evt, tool: CFG.tool || null };
+      for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) safe[k] = fields[k];
+      if (window.console && console.debug) console.debug('[genz]', JSON.stringify(safe));
+    } catch (_) {}
   }
-  function validate() {
-    if (state.terminal) return Promise.resolve();
+
+  function apiCall(endpoint, payload) {
+    var startedAt = Date.now();
+    return fetch(API + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + (LEASE || '') }, body: JSON.stringify(payload || {}) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j, latencyMs: Date.now() - startedAt }; }); });
+  }
+  // ── Validation: permanent denial vs. temporary infrastructure failure ───────
+  // A non-200 alone means nothing. Only a CONFIRMED code from the list above ends the
+  // session; everything else (network error, timeout, 429, 5xx, malformed JSON) keeps the
+  // session alive and retries with bounded exponential backoff + jitter.
+  function isTerminalResponse(r) {
+    if (!r || !r.body) return false;
+    if (r.body.terminal === true) return true;      // server said so explicitly
+    if (r.body.retryable === true) return false;    // …or said the opposite
+    return !!TERMINAL_CODES[r.body.code];           // legacy backend: classify by code
+  }
+
+  // Absolute deadline wins over any local counter, so the countdown can never freeze on a
+  // stale value and never drifts. serverTime corrects a wrong device clock.
+  function adoptExpiry(body) {
+    var now = Date.now();
+    if (body && body.serverTime) {
+      var st = Date.parse(body.serverTime);
+      if (!isNaN(st)) state.skewMs = st - now;
+    }
+    if (body && body.expiresAt) {
+      var exp = Date.parse(body.expiresAt);
+      if (!isNaN(exp)) { state.expiresAtMs = exp; return; }
+    }
+    // Older backend without expiresAt — derive an absolute deadline from the relative value.
+    if (body && typeof body.secondsRemaining === 'number') {
+      state.expiresAtMs = now + state.skewMs + (body.secondsRemaining * 1000);
+    }
+  }
+  function computeRemaining() {
+    if (!state.expiresAtMs) return state.secondsRemaining;
+    return Math.max(0, Math.round((state.expiresAtMs - (Date.now() + state.skewMs)) / 1000));
+  }
+
+  function onRetryableFailure(why) {
+    state.failures += 1;
+    // Within the grace period a brief blip stays silent; past it, show the compact warning.
+    // Never terminal, so tick() keeps counting and validation keeps retrying.
+    if (!state.lastGoodAt || (Date.now() - state.lastGoodAt) > GRACE_MS) {
+      state.degraded = true;
+      showMessage(MSG_RETRYING, false);
+    }
+    log('validate_retryable', { reason: why, failures: state.failures });
+    scheduleRetry();
+  }
+  // Exponential backoff with jitter, capped — 2s, 4s, 8s … 30s max.
+  function scheduleRetry() {
+    if (state.terminal || state.retryTimer) return;
+    var base = Math.min(30000, 2000 * Math.pow(2, Math.min(state.failures - 1, 4)));
+    var delay = base * (0.7 + Math.random() * 0.6); // ±30% jitter avoids synchronized retry storms
+    state.retryTimer = setTimeout(function () { state.retryTimer = null; validate(); }, delay);
+  }
+
+  // A terminal screen is a CACHE of one past server verdict, not a fact about now. When an
+  // authorized dashboard launch installs a FRESH lease, the server starts answering `valid`
+  // again — at which point this document's dead state must be thrown away wholesale.
+  // Access is never granted here: we only mirror a server `valid:true`, so a refresh, a
+  // restored tab or a replayed page can never renew anything on its own.
+  function adoptRenewedSession() {
+    log('session_renewed', { was_terminal: true });
+    state.terminal = false;
+    state.friendlyShown = false;
+    state.degraded = false;
+    state.failures = 0;
+    state.expiresAtMs = 0;          // dropped: the NEW server expiry below is the only truth
+    state.secondsRemaining = 0;
+    state.skewMs = 0;
+    if (state.retryTimer) { clearTimeout(state.retryTimer); state.retryTimer = null; }
+    clearMessage();
+  }
+
+  // `resume` bypasses ONLY the terminal early-return, so a re-check can still reach the
+  // server after the widget has given up. Everything else is identical.
+  function validate(resume) {
+    if (state.terminal && !resume) return Promise.resolve();
+    if (state.inFlight) return Promise.resolve();   // concurrent calls must not corrupt state
+    state.inFlight = true;
     // Claude holds only the OPAQUE HttpOnly session cookie (it cannot read the lease JWT), so it
     // validates via the gateway's own same-origin endpoint (cookie sent automatically) rather than
     // sending a Bearer token to the backend. Every other tool keeps the Bearer flow unchanged.
@@ -116,11 +263,33 @@
           .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); })
       : apiCall('/validate', {});
     return p.then(function (r) {
-      if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; clearMessage(); render(); }
-      else showMessage(friendly(r.body && r.body.code), true);
-    }).catch(function () {});
+      state.inFlight = false;
+      if (r.status === 200 && r.body && r.body.valid) {
+        if (state.terminal) adoptRenewedSession();   // a new authorized lease replaced the dead one
+        adoptExpiry(r.body);
+        state.secondsRemaining = computeRemaining();
+        state.failures = 0; state.lastGoodAt = Date.now();
+        if (state.degraded) { state.degraded = false; }  // auto-clear the warning on recovery
+        clearMessage(); render();
+        return;
+      }
+      if (isTerminalResponse(r)) {                   // confirmed denial — stop, as before
+        log('validate_terminal', { code: (r.body && r.body.code) || null, status: r.status });
+        showMessage(friendly(r.body && r.body.code), true);
+        return;
+      }
+      onRetryableFailure('status_' + r.status);      // 429 / 5xx / malformed body / unknown code
+    }).catch(function (e) {
+      state.inFlight = false;
+      onRetryableFailure('network');                 // fetch rejected: offline, DNS, TLS, CORS
+    });
   }
-  function tick() { if (state.terminal) return; state.secondsRemaining -= 1; if (state.secondsRemaining <= 0) validate(); render(); }
+  function tick() {
+    if (state.terminal) return;
+    state.secondsRemaining = state.expiresAtMs ? computeRemaining() : Math.max(0, state.secondsRemaining - 1);
+    if (state.secondsRemaining <= 0) validate();
+    render();
+  }
 
   // ════════════════════════════════════════════════════════════════════════════
   // EXTRA UI cleanup (backup to the server-side shield): hide account / plan /
@@ -129,7 +298,14 @@
   var HIDE_RE = /^(account|my account|account settings|account details|profile|my profile|settings|preferences|log\s?out|sign\s?out|logout|plans?\s*&?\s*pricing|pricing|faq|faqs|help|help center|support|contact us|discord|community|affiliate|affiliate program|refer|refer a friend|invite friends?|earn|rewards|subscription|manage subscription|billing|manage plan|upgrade|upgrade plan|api keys?|api key|developer|get more|starter plan|free plan|basic plan|pro plan|premium( plan)?|enterprise)$/i;
   // Claude-only account-menu items to hide from the client view (beyond the shared HIDE_RE):
   // Language, Apps, Gift Claude, Learn More, Get help, etc. Applied ONLY when CFG.tool==='claude'.
-  var CLAUDE_HIDE_RE = /^(language|apps?|apps? ?(and|&) ?extensions|extensions|integrations|get the app|gift claude|gift|refer|learn more|get help|help( ?(and|&) ?support| ?(and|&) ?feedback| center)?|what'?s new|news|download( apps?| for .+)?|desktop app|mobile app|ios app|android app|keyboard shortcuts|shortcuts|role|feedback|send feedback|status|changelog|release notes|privacy( policy)?|terms( of service)?|usage policy|acceptable use|cookie preferences|manage cookies|switch account|add account|log ?in to another( account)?|sign ?in to another( account)?)$/i;
+  //
+  // CAREFUL with `download`: the target here is the account menu's app-download promos
+  // ("Download apps", "Download for Mac"), so the suffix is REQUIRED — `download( apps?| for .+)`
+  // and NOT `(...)?`. With the group optional, a bare "Download" matched, and since a text hit
+  // hides nearestControl() (up to 4 ancestors), it removed the file card's own Download control
+  // and menu item. That is the file-download bug: the request path was never blocked, the button
+  // was simply hidden. Any label added here must be a menu/promo item, never a working-area verb.
+  var CLAUDE_HIDE_RE = /^(language|apps?|apps? ?(and|&) ?extensions|extensions|integrations|get the app|gift claude|gift|refer|learn more|get help|help( ?(and|&) ?support| ?(and|&) ?feedback| center)?|what'?s new|news|download( apps?| for .+)|desktop app|mobile app|ios app|android app|keyboard shortcuts|shortcuts|role|feedback|send feedback|status|changelog|release notes|privacy( policy)?|terms( of service)?|usage policy|acceptable use|cookie preferences|manage cookies|switch account|add account|log ?in to another( account)?|sign ?in to another( account)?)$/i;
   var USAGE_RE = /(\d+\s*\/\s*\d+\s*(humaniz|scan|word|credit)|words?\s+(left|remaining)|credits?\s+left|resets?\s+(in|at|on|every|daily|tomorrow)|usage\s+resets)/i;
   var EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
   var FORBIDDEN_RE = /^(forbidden|403\s*forbidden|403|access denied|unauthorized|401)\.?$/i;
@@ -771,7 +947,42 @@
     setInterval(scheduleFull, 3000);
     validate();
     setInterval(tick, 1000);
-    setInterval(validate, 30000);
+    setInterval(function () { validate(); }, 30000);
+
+    // ── Mobile tab-resume re-check (CLAUDE ONLY) ──────────────────────────────
+    // ROOT CAUSE this fixes: on a phone, "reopen the tool from your dashboard" usually
+    // resurfaces the EXISTING tab out of bfcache / the frozen-tab store rather than
+    // creating a new document. That tab still holds `state.terminal = true` from the
+    // session that expired, and both validate() and tick() early-return on terminal — so
+    // the expired widget is replayed forever even though a fresh 30-minute lease was
+    // issued and its cookie is already installed on this origin. Desktop never hit this
+    // because `window.open(url, '_blank')` there really does build a fresh document.
+    //
+    // Timers do not fire while a mobile tab is frozen, so recovery cannot be left to the
+    // 30s poll — it has to be driven by the resume events themselves.
+    //
+    // SECURITY: this only ever ASKS the server again. Renewal happens exclusively when the
+    // server answers `valid:true`, which requires the fresh lease cookie an authorized
+    // dashboard launch installed. A refresh, a restored page or a replayed screen with no
+    // new lease still gets a terminal verdict and stays denied.
+    if (CLAUDE) {
+      var resumeCheck = function (why) {
+        var now = Date.now();
+        if (now - state.lastResumeAt < 3000) return;   // coalesce the burst of resume events
+        state.lastResumeAt = now;
+        log('resume_check', { reason: why, terminal: !!state.terminal });
+        validate(true);
+      };
+      // bfcache restore (Android Chrome + iOS Safari): `persisted` means this document was
+      // frozen whole and is being replayed — exactly the case that must not show stale state.
+      window.addEventListener('pageshow', function (e) { resumeCheck(e && e.persisted ? 'bfcache' : 'pageshow'); });
+      // Tab switcher / app switcher / screen unlock — no new document, just re-shown.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') resumeCheck('visible');
+      });
+      window.addEventListener('focus', function () { resumeCheck('focus'); });
+      window.addEventListener('online', function () { resumeCheck('online'); });
+    }
   }
 
   // ── Capture mode (admin) ─────────────────────────────────────────────────────

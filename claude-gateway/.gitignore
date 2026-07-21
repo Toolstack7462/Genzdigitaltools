@@ -1,0 +1,5 @@
+# Durable opaque-session store (AES-256-GCM-encrypted lease blobs) — runtime only,
+# per-deployment, and secret-bearing. Never commit these.
+tmp/sessions/
+node_modules/
+.env
