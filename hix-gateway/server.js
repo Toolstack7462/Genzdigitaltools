@@ -22,6 +22,7 @@ const { URL } = require('url');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 // Minimal .env loader (dependency-free). Real environment wins (hPanel/Passenger).
 (function loadEnv() {
@@ -127,6 +128,17 @@ function gatewayApiPost(subpath, token, jsonBody) {
 // ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
 const sessionCache = new Map();
 const SESSION_TTL_MS = 60 * 1000;
+// MEMORY: entries are keyed by lease jti and the 60s TTL was only ever checked on READ, so a
+// key never read again was never removed - every lease issued left its account cookie header
+// plus localStorage/sessionStorage blobs resident for the life of the worker, which is why RSS
+// climbed the longer a process stayed up. Sweep expired entries on a timer. .unref() so this
+// never holds the process open. Behaviour is unchanged: an entry past its TTL was already
+// treated as a miss and refetched.
+const _sessionCacheGc = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionCache) if (!v || v.exp <= now) sessionCache.delete(k);
+}, 60000);
+if (_sessionCacheGc.unref) _sessionCacheGc.unref();
 function hostMatchesCookieDomain(cookieDomain, host) {
   if (!cookieDomain) return true;
   const d = String(cookieDomain).replace(/^\./, '').toLowerCase();
@@ -225,6 +237,20 @@ function redactHtmlIdentity(html) { try { return html.replace(EMAIL_GLOBAL_RE, B
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
 
+// Content hashes → immutable cache URLs that bust themselves on deploy. Short digest is
+// plenty: it only has to change when the file does, and reveals nothing about contents.
+const OVERLAY_JS_HASH = crypto.createHash('sha256').update(OVERLAY_JS).digest('hex').slice(0, 12);
+const OVERLAY_CSS_HASH = crypto.createHash('sha256').update(OVERLAY_CSS).digest('hex').slice(0, 12);
+const OVERLAY_JS_ETAG = '"' + OVERLAY_JS_HASH + '"';
+const OVERLAY_CSS_ETAG = '"' + OVERLAY_CSS_HASH + '"';
+
+// Confirmed authorization denials — the ONLY codes that block a navigation outright.
+// Mirrors TERMINAL_CODES in backend/utils/proxy/validationResponse.js.
+const NAV_TERMINAL_CODES = new Set([
+  'lease_expired', 'lease_revoked', 'lease_invalid', 'lease_missing',
+  'client_disabled', 'client_not_found', 'plan_expired',
+  'account_blocked', 'account_no_session',
+]);
 function sendBlockPage(res, code) {
   const messages = {
     lease_missing: `No active session. Please reopen ${TOOL_NAME} from your Gen Z dashboard.`,
@@ -260,7 +286,7 @@ function rewriteSetCookie(values) { return [].concat(values || []).map(v => v.re
 function injectOverlay(html, capture) {
   const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY });
   const tags =
-    `<link rel="stylesheet" href="/__genz/overlay.css">` +
+    `<link rel="stylesheet" href="/__genz/overlay.css?v=${OVERLAY_CSS_HASH}">` +
     `<script>window.__GENZ_GATEWAY__=${cfg};</script>` +
     `<script src="/__genz/overlay.js" defer></script>`;
   if (html.includes('</body>')) return html.replace('</body>', tags + '</body>');
@@ -301,7 +327,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       if (passthru) headers.cookie = passthru;
     }
 
-    const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers }, (uRes) => {
+    const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers, agent: agentFor(TARGET_ORIGIN) }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
       const isHtml = ct.includes('text/html');
       const rawLoc = String(uRes.headers['location'] || '');
@@ -351,8 +377,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           html = injectOverlay(html, ctx.capture);
           outHeaders['content-type'] = 'text/html; charset=utf-8';
           outHeaders['cache-control'] = 'no-store';
-          res.writeHead(uRes.statusCode || 200, outHeaders);
-          res.end(html);
+          endMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, html);
         });
       } else if (sanitizeJson) {
         const buf = [];
@@ -364,8 +389,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           res.end(out);
         });
       } else {
-        res.writeHead(uRes.statusCode || 200, outHeaders);
-        uRes.pipe(res);
+        pipeMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, uRes);
       }
     });
     upstream.on('error', () => { if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/plain' }); } res.end('Upstream error'); });
@@ -374,16 +398,130 @@ function proxy(req, res, isHtmlNav, session, ctx) {
 }
 
 // ── Request handler ─────────────────────────────────────────────────────────────
+
+// ── Upstream connection reuse ────────────────────────────────────────────────
+// PERF: without an explicit agent each proxied request can pay a fresh TCP + TLS
+// handshake to the upstream origin. Those origins sit behind Cloudflare, where the
+// handshake dominates, and one page load fans out into dozens of asset requests.
+// Pooled keep-alive sockets amortise that away; 'lifo' keeps sockets warm.
+const GENZ_AGENT_OPTS = {
+  keepAlive: true,
+  keepAliveMsecs: 15000,
+  maxSockets: parseInt(process.env.UPSTREAM_MAX_SOCKETS, 10) || 64,
+  maxFreeSockets: 16,
+  timeout: parseInt(process.env.UPSTREAM_TIMEOUT_MS, 10) || 30000,
+  scheduling: 'lifo',
+};
+const upstreamAgents = {
+  'https:': new https.Agent(GENZ_AGENT_OPTS),
+  'http:': new http.Agent(GENZ_AGENT_OPTS),
+};
+function agentFor(originOrUrl) {
+  try { return upstreamAgents[new URL(String(originOrUrl)).protocol] || undefined; }
+  catch (_) { return undefined; }
+}
+
+// ── Response compression ─────────────────────────────────────────────────────
+// PERF: the gateway asks upstream for 'accept-encoding: identity' (the overlay
+// injection and URL rewriting need plaintext bodies) and strips 'content-encoding'
+// from the response. Net effect: EVERY byte — HTML, JS bundles, CSS, JSON — crossed
+// the gateway→browser leg UNCOMPRESSED, typically 3-5x what the origin would send.
+// This re-compresses on the way out. Purely a transport change: the bytes the browser
+// ends up with are identical. Disable with GATEWAY_COMPRESSION=0.
+const COMPRESSION_ON = process.env.GATEWAY_COMPRESSION !== '0';
+const COMPRESS_MIN_BYTES = parseInt(process.env.GATEWAY_COMPRESS_MIN_BYTES, 10) || 1024;
+// Already-compressed payloads (images, video, fonts, archives) are left alone.
+const COMPRESSIBLE_RE = /^(?:text\/|application\/(?:javascript|x-javascript|json|xml|manifest\+json|ld\+json|wasm)|image\/svg\+xml)/i;
+// NEVER compress Server-Sent Events / streaming responses: the compressor buffers, which
+// stalls token-by-token delivery (Claude chat, and any SSE the tools use). Also skip
+// anything already carrying a content-encoding.
+const NO_COMPRESS_RE = /^text\/event-stream/i;
+function isCompressible(contentType) {
+  const ct = String(contentType || '');
+  if (NO_COMPRESS_RE.test(ct)) return false;
+  return COMPRESSIBLE_RE.test(ct);
+}
+function pickEncoding(req) {
+  if (!COMPRESSION_ON) return null;
+  const ae = String((req.headers && req.headers['accept-encoding']) || '').toLowerCase();
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return null;
+}
+function compressBuffer(enc, buf, cb) {
+  try {
+    if (enc === 'br') {
+      // Quality 5 ≈ gzip CPU with better ratios; 11 is far too slow per-request.
+      return zlib.brotliCompress(buf, { params: {
+        [zlib.constants.BROTLI_PARAM_QUALITY]: 5,
+        [zlib.constants.BROTLI_PARAM_SIZE_HINT]: buf.length,
+      } }, (err, out) => cb(err ? null : out));
+    }
+    return zlib.gzip(buf, { level: 6 }, (err, out) => cb(err ? null : out));
+  } catch (_) { return cb(null); }
+}
+function compressStream(enc) {
+  if (enc === 'br') return zlib.createBrotliCompress({ params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 5 } });
+  return zlib.createGzip({ level: 6 });
+}
+/** Send a buffered body, compressing when worthwhile. Falls back to raw on any failure. */
+function endMaybeCompressed(req, res, status, outHeaders, body) {
+  const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
+  const enc = pickEncoding(req);
+  if (!enc || buf.length < COMPRESS_MIN_BYTES || !isCompressible(outHeaders['content-type'])) {
+    res.writeHead(status, outHeaders);
+    return res.end(buf);
+  }
+  compressBuffer(enc, buf, (out) => {
+    if (!out || out.length >= buf.length) {          // never ship a bigger body
+      res.writeHead(status, outHeaders);
+      return res.end(buf);
+    }
+    outHeaders['content-encoding'] = enc;
+    outHeaders['vary'] = outHeaders['vary'] ? outHeaders['vary'] + ', Accept-Encoding' : 'Accept-Encoding';
+    delete outHeaders['content-length'];
+    res.writeHead(status, outHeaders);
+    res.end(out);
+  });
+}
+/** Streamed pass-through with on-the-fly compression for compressible types. */
+function pipeMaybeCompressed(req, res, status, outHeaders, uRes) {
+  const enc = pickEncoding(req);
+  if (enc && isCompressible(outHeaders['content-type'])) {
+    outHeaders['content-encoding'] = enc;
+    outHeaders['vary'] = outHeaders['vary'] ? outHeaders['vary'] + ', Accept-Encoding' : 'Accept-Encoding';
+    delete outHeaders['content-length'];
+    res.writeHead(status, outHeaders);
+    const gz = compressStream(enc);
+    gz.on('error', () => { try { res.end(); } catch (_) {} });
+    return uRes.pipe(gz).pipe(res);
+  }
+  res.writeHead(status, outHeaders);
+  return uRes.pipe(res);
+}
+
 const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://localhost');
   const pathName = u.pathname;
 
   if (pathName === '/__genz/overlay.js') {
-    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-cache' });
+    // PERF: was 'no-cache', so the browser revalidated on EVERY navigation. Now
+    // content-addressed (?v=<hash>) and immutable, so a nav costs zero requests for it
+    // while a deploy busts the URL instantly.
+    res.writeHead(200, {
+      'content-type': 'application/javascript; charset=utf-8',
+      'cache-control': u.searchParams.get('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'etag': OVERLAY_JS_ETAG,
+    });
     return res.end(OVERLAY_JS);
   }
   if (pathName === '/__genz/overlay.css') {
-    res.writeHead(200, { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-cache' });
+    if (String(req.headers['if-none-match'] || '').replace(/^W\//, '') === OVERLAY_CSS_ETAG) { res.writeHead(304); return res.end(); }
+    res.writeHead(200, {
+      'content-type': 'text/css; charset=utf-8',
+      'cache-control': u.searchParams.get('v') ? 'public, max-age=31536000, immutable' : 'no-cache',
+      'etag': OVERLAY_CSS_ETAG,
+    });
     return res.end(OVERLAY_CSS);
   }
 
@@ -421,10 +559,20 @@ const server = http.createServer(async (req, res) => {
   const isHtmlNav = req.method === 'GET' && accept.includes('text/html');
   if (isHtmlNav && !capture) {
     const v = await backendValidate(token);
-    if (v.status === 0) {
-      if (local && local.unknown) return sendBlockPage(res, 'lease_invalid');
-    } else if (v.status !== 200 || !v.body || v.body.valid !== true) {
+    // Only a CONFIRMED authorization denial blocks a navigation. A transient backend
+    // failure (status 0 network/timeout, 429, 5xx, malformed body) falls back to the LOCAL
+    // lease check, which still enforces the JWT signature and expiry — so an outage degrades
+    // to signature+expiry enforcement instead of throwing a block page at a valid session.
+    // Fails closed whenever the local check is also inconclusive.
+    const vTerminal = (v.body && typeof v.body.terminal === 'boolean')
+      ? v.body.terminal
+      : NAV_TERMINAL_CODES.has(String((v.body && v.body.code) || ''));
+    if (v.status === 200 && v.body && v.body.valid === true) {
+      // authoritative pass — continue
+    } else if (vTerminal) {
       return sendBlockPage(res, (v.body && v.body.code) || 'lease_expired');
+    } else if (local && local.unknown) {
+      return sendBlockPage(res, 'lease_invalid');
     }
   }
 

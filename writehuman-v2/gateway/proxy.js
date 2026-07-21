@@ -250,6 +250,17 @@ function gatewayApiPost(subpath, token, jsonBody) {
 // ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
 const sessionCache = new Map();
 const SESSION_TTL_MS = 60 * 1000;
+// MEMORY: entries are keyed by lease jti and the 60s TTL was only ever checked on READ, so a
+// key never read again was never removed - every lease issued left its account cookie header
+// plus localStorage/sessionStorage blobs resident for the life of the worker, which is why RSS
+// climbed the longer a process stayed up. Sweep expired entries on a timer. .unref() so this
+// never holds the process open. Behaviour is unchanged: an entry past its TTL was already
+// treated as a miss and refetched.
+const _sessionCacheGc = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionCache) if (!v || v.exp <= now) sessionCache.delete(k);
+}, 60000);
+if (_sessionCacheGc.unref) _sessionCacheGc.unref();
 
 function hostMatchesCookieDomain(cookieDomain, host) {
   if (!cookieDomain) return true;
