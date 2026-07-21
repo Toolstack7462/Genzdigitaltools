@@ -35,12 +35,13 @@ ssh-keyscan -t rsa -p "${SFTP_PORT}" "${SFTP_HOST}" >> ~/.ssh/known_hosts 2>/dev
 
 # Runtime files only — NOT .env, node_modules, docs, or the .example template.
 # EVERY lib/*.js that server.js require()s MUST ship or the gateway boots into
-# "Cannot find module './lib/<name>'": lib/quotaTap.js (token-quota tap) and
-# lib/effortPrefs.js (default-effort preference). The .test.js files are NOT shipped.
+# "Cannot find module './lib/<name>'": lib/quotaTap.js (token-quota tap),
+# lib/effortPrefs.js (default-effort preference) and lib/modelPolicy.js (the Fable 5
+# model allowlist). The .test.js files are NOT shipped.
 FILES=(
   server.js package.json
   public/overlay.js public/overlay.css
-  lib/quotaTap.js lib/effortPrefs.js
+  lib/quotaTap.js lib/effortPrefs.js lib/modelPolicy.js
 )
 
 echo "==> Deploying Claude gateway  ->  ${SFTP_USER}@${SFTP_HOST}:${SERVER_DIR}  (vhost ${VHOST})"

@@ -68,6 +68,21 @@ const QUOTA_MODE = (() => { const m = String(process.env.CLAUDE_QUOTA_MODE || 'c
 const effortPrefs = require('./lib/effortPrefs');
 const CLAUDE_DEFAULT_EFFORT = effortPrefs.normalizeEffort(process.env.CLAUDE_DEFAULT_EFFORT, 'medium');
 const CLAUDE_THINKING_DEFAULT = effortPrefs.parseThinkingDefault(process.env.CLAUDE_THINKING_DEFAULT);
+
+// ── Model allowlist (claude-only) ────────────────────────────────────────────
+// ADMIN SETTING — "Allow Fable 5: On/Off", OFF by default:
+//     SetEnv CLAUDE_ALLOW_FABLE5 1     → On  (original behaviour, nothing is filtered)
+//     unset / 0 / false / anything else → Off (Fable 5 blocked)
+// Set in this gateway's .htaccess exactly like CLAUDE_DEFAULT_EFFORT / CLAUDE_THINKING_DEFAULT,
+// so it is reversible with a one-line change and no deploy. When On, every code path below
+// short-circuits and the proxy behaves byte-for-byte as it did before this feature existed.
+//
+// The fallback's EFFORT and THINKING are not separate settings here: CLAUDE_DEFAULT_EFFORT
+// already defaults to 'medium' and CLAUDE_THINKING_DEFAULT already defaults to off, which is
+// exactly the required fallback profile. They stay independently configurable.
+const modelPolicy = require('./lib/modelPolicy');
+const CLAUDE_ALLOW_FABLE5 = modelPolicy.parseAllowSetting(process.env.CLAUDE_ALLOW_FABLE5);
+const CLAUDE_FALLBACK_MODEL = modelPolicy.normalizeFallback(process.env.CLAUDE_FALLBACK_MODEL);
 const CLAUDE_EFFORT_TRIGGER_SEL = String(process.env.CLAUDE_EFFORT_TRIGGER_SEL || '').trim();
 const LEASE_COOKIE = 'pg_lease';
 // Max time to wait for the upstream tool to respond before failing over to a friendly
@@ -1046,7 +1061,10 @@ function injectOverlay(html, capture, accountLabel) {
   // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
   // backend /session response — never an email/cookie/token. Shown in the widget.
   const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null,
-    defaultEffort: CLAUDE_DEFAULT_EFFORT, thinkingDefault: CLAUDE_THINKING_DEFAULT, effortTriggerSel: CLAUDE_EFFORT_TRIGGER_SEL || null });
+    defaultEffort: CLAUDE_DEFAULT_EFFORT, thinkingDefault: CLAUDE_THINKING_DEFAULT, effortTriggerSel: CLAUDE_EFFORT_TRIGGER_SEL || null,
+    // Model allowlist, for the UI layer only. The block itself is enforced server-side; these
+    // just let the overlay hide the entry and explain why. No secret, no account data.
+    allowFable5: CLAUDE_ALLOW_FABLE5, blockedModelMsg: modelPolicy.BLOCKED_MESSAGE });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -1258,8 +1276,45 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       try { quotaRequestId = crypto.randomBytes(16).toString('hex'); } catch (_) { quotaRequestId = null; }
     }
 
+    // ── Model allowlist enforcement (claude-only, request side) ──────────────
+    // THE authoritative block. The picker is claude.ai's own React state, so hiding Fable 5 in
+    // the UI stops an honest click and nothing else — a modified request, a replayed or cached
+    // body, a direct call to the completion endpoint or a devtools fetch all bypass the UI.
+    // Rewriting here, on the way upstream, is the one place that cannot be bypassed from the
+    // browser. An existing conversation pinned to Fable 5 is therefore moved onto the fallback
+    // on its very next request, which is what "safely switch on the next request" means.
+    // Rewrites only ever go blocked -> fallback; no path here can emit a fable id.
+    // Cost: a byte scan for "fable" on request bodies only; JSON.parse happens only on the rare
+    // body that actually contains it. Fails OPEN — an unparseable body is forwarded untouched.
+    let modelSwitchedFrom = null;
+    if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_FABLE5 && !ctx.capture && !ctx.asset && bodyBuf.length) {
+      try {
+        const pol = modelPolicy.applyToRequestBody(bodyBuf, { allowed: false, fallback: CLAUDE_FALLBACK_MODEL });
+        if (pol.changed) {
+          bodyBuf = pol.body;
+          modelSwitchedFrom = pol.from;
+          safeLog('model_blocked', {
+            request_path: reqPathOnly,
+            from_model: pol.from,               // a model id, not a secret
+            to_model: CLAUDE_FALLBACK_MODEL,
+            auto_switch_disabled: !!pol.autoSwitchDisabled,
+            lease_id: ctx.jti || null,
+          });
+        }
+      } catch (_) { /* policy failure must never break the proxy */ }
+    }
+
     const runDispatch = () => {
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
+    // The rewrite above changes the body length, so the upstream must be told the new size or
+    // it will hang waiting for bytes that never arrive (or truncate the JSON). If the client
+    // sent the body CHUNKED there is no content-length to correct, and adding one while
+    // `transfer-encoding: chunked` is still present is a framing conflict that a strict server
+    // answers with 400 - so drop the chunked header whenever we set an explicit length.
+    if (modelSwitchedFrom !== null) {
+      delete headers['transfer-encoding'];
+      headers['content-length'] = Buffer.byteLength(bodyBuf);
+    }
 
     // Captcha: present the TOOL's origin so a domain-bound widget renders for its key
     // (the user still solves it). Origin/Referer forced to the tool; the `co` origin in a
@@ -1433,6 +1488,20 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.on('end', () => {
           let body = Buffer.concat(buf).toString('utf8');
           if (sanitizeJson) body = sanitizeJsonBody(body);
+          // ── Model allowlist (response side) — this is the picker removal ──
+          // The model list the picker renders comes down as JSON, so dropping the blocked
+          // entries here is what makes Fable 5 absent from the client-facing picker, for every
+          // client, without patching claude.ai's bundle. Any lingering scalar still naming the
+          // blocked model is rewritten to the fallback so a conversation previously on Fable 5
+          // renders as the fallback rather than an unknown/blank model. Every other model is
+          // passed through untouched. Attachments never reach this branch (isAttachment above),
+          // so a downloaded file that merely mentions the word is never altered.
+          if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_FABLE5 && !ctx.asset && !isCaptchaReq) {
+            try {
+              const pol = modelPolicy.applyToResponseBody(body, { allowed: false, fallback: CLAUDE_FALLBACK_MODEL });
+              if (pol.changed) { body = pol.text; safeLog('model_filtered', { request_path: reqPathOnly }); }
+            } catch (_) { /* filtering failure must never break the app */ }
+          }
           const rw = rewriteUpstreamUrls(body); body = rw.text;
           if (sanitizeJson) outHeaders['cache-control'] = 'no-store';
           logIt(rw.applied);

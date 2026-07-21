@@ -108,7 +108,8 @@
     lastGoodAt: 0,
     inFlight: false,       // guards against overlapping validations corrupting state
     retryTimer: null,
-    lastResumeAt: 0        // throttles the mobile resume re-check (see resumeCheck below)
+    lastResumeAt: 0,       // throttles the mobile resume re-check (see resumeCheck below)
+    blockedModelNotified: false  // one-shot: the "Fable 5 is disabled" notice per page
   };
     var el = {};
   function fmtTime(s) { if (s < 0) s = 0; var m = Math.floor(s / 60), x = s % 60; return m + ':' + (x < 10 ? '0' : '') + x; }
@@ -376,6 +377,13 @@
   // "Gen Z Digital Store" card on the left instead of branding the control in place.
   var CHATGPT = (CFG.tool === 'chatgpt');
   var CLAUDE = (CFG.tool === 'claude');
+  // Model allowlist (claude-only). Mirrors lib/modelPolicy.js. UI layer ONLY — the gateway
+  // enforces the block server-side, so nothing here is a security control; if this code fails
+  // to run, the model is still blocked upstream. Default is blocked: the flag must be
+  // explicitly true to allow, so a missing/garbled CFG never silently re-enables Fable 5.
+  var ALLOW_FABLE5 = (CFG.allowFable5 === true);
+  var BLOCKED_MODEL_RE = /fable/i;
+  var BLOCKED_MODEL_MSG = CFG.blockedModelMsg || 'Fable 5 is disabled by your administrator.';
   // ChatGPT and Claude both expose the real account bottom-left; HIDE it (our own switcher/card
   // replaces it) rather than branding it in place. Every other tool keeps the in-place branding.
   function brandOrHide(n) { if (CHATGPT) hide(n); else brandifyControl(n); }
@@ -625,6 +633,27 @@
     // Claude: hide the email at the LEAF so the native account button/dropdown stays intact
     // (hiding nearestControl could remove the whole clickable button).
     if (EMAIL_RE.test(t)) { if (CLAUDE) hide(n); else brandOrHide(nearestControl(n)); return; }
+    // Model allowlist, UI layer only. The real block is server-side (the gateway rewrites the
+    // model on the way upstream), so this is purely so the client does not see and click an
+    // option that would be silently switched anyway. Scoped to a menu-item-sized label that
+    // names the blocked model, so ordinary prose mentioning it in a message is never touched,
+    // and no other model is affected. Skips the composer/editor for the same reason.
+    if (CLAUDE && !ALLOW_FABLE5 && BLOCKED_MODEL_RE.test(t) && t.length <= 40 && !hasEditor(n)) {
+      var ctrl = nearestControl(n);
+      if (ctrl && !ctrl.__genzBlockedModel) {
+        ctrl.__genzBlockedModel = 1;
+        hide(ctrl);
+        // Explain it the first time the client opens the picker looking for it, rather than
+        // letting the option vanish with no reason given. Once per page, never repeated, and
+        // it uses the existing toast so no new UI surface is introduced.
+        if (!state.blockedModelNotified) {
+          state.blockedModelNotified = true;
+          try { toast(BLOCKED_MODEL_MSG); } catch (e) {}
+        }
+        log('model_option_hidden', {});
+      }
+      return;
+    }
     if (CLAUDE && CLAUDE_HIDE_RE.test(t)) { hide(nearestControl(n)); return; }
     if (HIDE_RE.test(t)) { hide(nearestControl(n)); return; }
     if (USAGE_RE.test(t)) { hide(n); }

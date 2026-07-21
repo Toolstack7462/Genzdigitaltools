@@ -303,3 +303,80 @@ asserting each arrives **byte-identical** with its filename, extension and conte
 intact — plus mobile UA runs, inline-preview preservation, Range support, and the two
 security assertions above. Verified meaningful: with both defects re-introduced, **10 of the
 24 fail**.
+
+## Model allowlist — Fable 5 disabled (claude-only, 2026-07-21)
+
+**Requirement.** Fable 5 must not be usable by proxy clients, and the block must survive a
+modified request, cached state, a direct endpoint call or browser devtools — not just a hidden
+menu entry.
+
+### Admin setting
+
+```apache
+# claude1.genzdigitalstore.com/public_html/.htaccess
+SetEnv CLAUDE_ALLOW_FABLE5 1      # On  — original behaviour, nothing filtered
+# (line absent, or 0/false/off)   # Off — Fable 5 blocked   <-- DEFAULT
+```
+
+**Off by default**: the value must be explicitly `1/true/on/yes` to allow, so an unset, empty
+or garbled value blocks rather than silently permitting. Reversible with a one-line `.htaccess`
+change and no deploy. When On, every code path short-circuits and the proxy behaves exactly as
+it did before this feature existed (asserted by test).
+
+Optional: `SetEnv CLAUDE_FALLBACK_MODEL claude-sonnet-5` overrides the fallback. A fallback
+that itself names Fable 5 is refused and falls back to Opus 4.8.
+
+**Fallback profile** — Model `claude-opus-4-8`, Effort **Medium**, Thinking **Off**. Effort and
+thinking are *not* new settings: `CLAUDE_DEFAULT_EFFORT` already defaults to `medium` and
+`CLAUDE_THINKING_DEFAULT` already defaults to off, which is exactly the required profile. They
+stay independently configurable.
+
+### How the block works — three layers, only one of which is a security control
+
+| Layer | File | Purpose |
+|---|---|---|
+| **Request rewrite (authoritative)** | `server.js`, before `runDispatch` | Rewrites any blocked model id in the outgoing JSON body to the fallback. This is the only layer that cannot be bypassed from a browser, and it is what "safely switch an existing conversation on its next request" means. |
+| **Response filter** | `server.js`, JSON-rewrite branch | Drops blocked entries from the model list, so Fable 5 is **absent from the client-facing picker** without patching claude.ai's bundle. Any lingering scalar naming it renders as the fallback. |
+| **Overlay hide + message** | `public/overlay.js` | Cosmetic only. Hides a menu-sized label naming the blocked model and shows *"Fable 5 is disabled by your administrator."* once per page. If this never runs, the model is still blocked upstream. |
+
+`lib/modelPolicy.js` holds the decision logic as a pure, I/O-free module so it is unit-testable
+without a browser or a live proxy.
+
+### Design notes
+
+- **Denylist by shape, not by exact id.** claude.ai model ids carry build/date suffixes that
+  change without notice, so an exact-match list would silently stop matching after a rename. The
+  matcher is `/fable/i`, which **fails closed** — an unrecognised Fable variant is still blocked.
+- **Every other model is untouched.** This is deliberately a denylist of one family, not an
+  allowlist of known-good ids, because an allowlist would break every future Claude model on the
+  day Anthropic ships it.
+- **Never silently back to Fable.** Rewrites only ever go blocked → fallback. No code path can
+  emit a Fable id, and a misconfigured fallback pointing at Fable 5 is refused (both asserted).
+- **Automatic model switching is forced off** where the body carries such a flag, so the
+  connected account cannot move a conversation onto Fable 5 behind the client's back.
+- **Fails open.** A malformed or non-JSON body is forwarded untouched rather than breaking the
+  request; any exception in the policy is swallowed and the proxy continues.
+- **Cost.** A byte scan for `fable` on request bodies only; `JSON.parse` happens solely on the
+  rare body that actually contains it, so ordinary traffic pays a memchr and nothing more.
+  Attachments never reach the response filter, so a downloaded file mentioning the word is never
+  altered.
+
+### Deploy
+
+`lib/modelPolicy.js` is in the `deploy-claude-gateway.sh` `FILES` list. **It must ship** — a
+missing `lib/*.js` makes the gateway boot into `Cannot find module`.
+
+### Tests
+
+- `lib/modelPolicy.test.js` (17) — id spellings, other models unaffected, nested/aliased keys,
+  reversibility, fail-open, the "can never emit a Fable id" invariant, and the byte pre-filter.
+- `test/modelBlock.test.js` (6) — end-to-end through a real gateway process against an upstream
+  stub that records what it actually received: straight request, handcrafted request that never
+  touched the UI, and an existing conversation replaying its pinned model — on desktop **and**
+  mobile UAs; picker payload; other models pass through in order; setting On restores everything;
+  and overlay/downloads/lease-gating unregressed.
+
+One real bug surfaced by the end-to-end test: when a client sends the body **chunked** there is
+no `content-length` to correct, and adding one while `transfer-encoding: chunked` is still
+present is a framing conflict that upstream answers with 400. The header is now dropped whenever
+an explicit length is set.
