@@ -14,6 +14,13 @@ const quota = require('./claudeQuota');
 function model() { return require('../../models/proxy/ClaudeSettings'); }
 
 let _loaded = null; // memoized promise (success only)
+// Boolean admin flags, cached alongside the numeric overrides. These do NOT go through
+// claudeQuota (its setGlobalConfig filters to finite numbers, which would silently drop a
+// boolean), so they are held here instead. Defaults are the SAFE state: allowFable5 false
+// = Fable 5 blocked, so a missing row, a DB error or a cold process all block rather than
+// permit. Never populated with anything but real booleans.
+let _flags = { allowFable5: false };
+function flags() { return Object.assign({}, _flags); }
 
 // Throws on a real DB error so ensureLoaded() can RETRY on the next call instead of caching a
 // boot-time failure forever (env defaults stay in effect meanwhile).
@@ -23,6 +30,8 @@ async function _readAndApply() {
   const row = await Settings.findById(id);
   const cfg = row ? pick(row) : {};
   quota.setGlobalConfig(cfg);
+  // Refresh the boolean flags from the same row. No row → keep the safe defaults.
+  _flags = { allowFable5: row ? Settings.toBool(row.allowFable5) : false };
   return cfg;
 }
 
@@ -64,15 +73,26 @@ async function update(patch) {
       data[k] = null;
     }
   }
+  // Boolean flags travel beside the numeric keys. Absent from the patch = leave as-is, so a
+  // quota-only save can never accidentally flip Fable 5 back on.
+  const nextFlags = {};
+  for (const k of Settings.BOOL_KEYS()) {
+    if (patch && Object.prototype.hasOwnProperty.call(patch, k)) nextFlags[k] = Settings.toBool(patch[k]);
+    else if (existing) nextFlags[k] = Settings.toBool(existing[k]);
+    else nextFlags[k] = false;
+    data[k] = nextFlags[k];
+  }
   if (existing) {
     for (const k of quota.OVERRIDE_KEYS) existing[k] = data[k];
+    for (const k of Settings.BOOL_KEYS()) existing[k] = data[k];
     await existing.save();
   } else {
     await Settings.create(Object.assign({ _id: id }, data));
   }
   const applied = quota.setGlobalConfig(data);
+  _flags = Object.assign({}, _flags, nextFlags);
   _loaded = Promise.resolve(applied); // refresh the memo
   return applied;
 }
 
-module.exports = { ensureLoaded, get, update };
+module.exports = { ensureLoaded, get, update, flags };

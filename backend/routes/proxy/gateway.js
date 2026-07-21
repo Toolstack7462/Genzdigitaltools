@@ -28,7 +28,8 @@ const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
 const claudeSettings = require('../../utils/proxy/claudeSettings');
 const ActivityLog = require('../../models/ActivityLog');
-const { apiLimiter } = require('../../middleware/rateLimiter');
+const { apiLimiter, validateLimiter } = require('../../middleware/rateLimiter');
+const vres = require('../../utils/proxy/validationResponse');
 
 router.use(apiLimiter);
 
@@ -86,22 +87,40 @@ function secondsRemaining(lease, now = Date.now()) {
 }
 
 // ─── Validate ───────────────────────────────────────────────────────────────
-router.post('/validate', async (req, res) => {
+// Responses carry {valid, terminal, retryable, code, secondsRemaining, expiresAt,
+// correlationId} so the overlay can tell a CONFIRMED denial (stop) from a transient
+// infrastructure failure (keep retrying). Authorization itself is unchanged — every
+// code that blocked before still blocks, with the same HTTP status.
+router.post('/validate', validateLimiter, async (req, res) => {
+  const startedAt = Date.now();
   try {
     const r = await resolveLease(req);
     if (!r.ok) {
-      dbg({ evt: 'validate', response_status: r.status, code: r.code, error_source: 'lease_check' });
-      return res.status(r.status).json({ valid: false, code: r.code });
+      const body = vres.fail(r.code);
+      dbg({
+        evt: 'validate', route: '/validate', tool: null, response_status: r.status,
+        code: r.code, terminal: body.terminal, latency_ms: Date.now() - startedAt,
+        correlation_id: body.correlationId, lease_ref: vres.hashRef(getLeaseToken(req)),
+        error_source: 'lease_check',
+      });
+      return res.status(r.status).json(body);
     }
-    return res.json({
-      valid: true,
+    return res.json(vres.ok(r.lease, {
       tool: r.tool,
       toolName: (tools.publicInfo(r.tool) || {}).name || r.tool,
       secondsRemaining: secondsRemaining(r.lease),
-    });
+    }));
   } catch (err) {
-    console.error('Proxy gateway validate error:', err.message);
-    return res.status(500).json({ valid: false, code: 'server_error' });
+    // A backend fault is NOT an authorization decision. It is explicitly retryable, so a
+    // DB blip or a Passenger restart can never permanently end a live session.
+    const body = vres.fail('server_error');
+    console.error('Proxy gateway validate error:', err.message, 'cid=' + body.correlationId);
+    dbg({
+      evt: 'validate', route: '/validate', response_status: 500, code: 'server_error',
+      terminal: false, latency_ms: Date.now() - startedAt, correlation_id: body.correlationId,
+      error_source: 'exception',
+    });
+    return res.status(500).json(body);
   }
 });
 
@@ -122,11 +141,22 @@ router.post('/session', requireGatewayKey, async (req, res) => {
     catch (_) { bundle = null; }
     if (!bundle) return res.json({ ok: false, blocked: true, code: 'account_no_session' });
 
-    return res.json({
+    // Claude model allowlist: hand the gateway the admin's current "Allow Fable 5" setting on
+    // the call it already makes for every session, so a change in the admin panel takes effect
+    // within the gateway's short session cache — no redeploy and no new endpoint. Sent only for
+    // Claude, and only ever a boolean (never a secret). If the settings load fails we send
+    // false, i.e. blocked, so an error can never silently re-enable the model.
+    const extra = {};
+    if (r.tool === 'claude') {
+      let allowFable5 = false;
+      try { await claudeSettings.ensureLoaded(); allowFable5 = !!claudeSettings.flags().allowFable5; } catch (_) { allowFable5 = false; }
+      extra.allowFable5 = allowFable5;
+    }
+    return res.json(Object.assign({
       ok: true,
       account: { id: account._id, status: account.status, label: account.label }, // label for server-side logs only
       bundle,
-    });
+    }, extra));
   } catch (err) {
     console.error('Proxy gateway session error:', err.message);
     return res.status(500).json({ ok: false, code: 'server_error' });

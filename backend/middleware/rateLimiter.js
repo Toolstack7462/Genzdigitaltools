@@ -65,10 +65,47 @@ const apiLimiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100,
   message: {
-    error: 'Too many requests from this IP. Please try again later.'
+    error: 'Too many requests from this IP. Please try again later.',
+    code: 'rate_limited'
   },
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
+  // Same rotating/shared-CDN-edge-IP problem documented above for authLimiter. The proxy
+  // and StealthWriter gateway routers mount this limiter, and their overlays poll
+  // /validate every 30s (30 requests per session per window) — so under the DEFAULT
+  // req.ip key roughly three concurrent sessions sharing an edge IP exhausted the budget
+  // and every further /validate returned 429. Keying by the real visitor stops unrelated
+  // clients from consuming each other's budget.
+  keyGenerator: clientIp,
+  validate: false
+});
+
+/**
+ * Liveness limiter for the gateway /validate polls.
+ *
+ * /validate is a cheap, read-mostly lease check that the injected overlay calls every 30s
+ * for the whole life of a session, so it must not share the general API budget (that is
+ * exactly what produced spurious "Access could not be verified" terminations). It still
+ * has a ceiling — a real flood is throttled — but one far above honest polling:
+ * 30s polling = 30 req/15min, so 400 leaves headroom for many tabs plus reconnect bursts.
+ *
+ * A 429 from here is explicitly RETRYABLE (see utils/proxy/validationResponse.js); the
+ * overlay backs off and retries rather than ending the session.
+ */
+const validateLimiter = rateLimit({
+  windowMs: parseInt(process.env.VALIDATE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.VALIDATE_RATE_LIMIT_MAX) || 400,
+  message: {
+    error: 'Too many validation requests. Please try again shortly.',
+    code: 'rate_limited',
+    valid: false,
+    terminal: false,
+    retryable: true
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: clientIp,
+  validate: false
 });
 
 /**
@@ -88,5 +125,6 @@ module.exports = {
   authLimiter,
   strictLimiter,
   apiLimiter,
+  validateLimiter,
   registerLimiter
 };

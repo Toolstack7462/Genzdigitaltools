@@ -64,6 +64,10 @@ const ClaudeUsageDashboard = () => {
   const [expanded, setExpanded] = useState(null);
   const [history, setHistory] = useState({});
   const [genAt, setGenAt] = useState(null);
+  // Admin model switch: "Allow Fable 5". Saved independently of the quota numbers so toggling
+  // it can never disturb the limits, and vice versa. Defaults to false (blocked) until loaded.
+  const [allowFable5, setAllowFable5] = useState(false);
+  const [savingF, setSavingF] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -77,6 +81,7 @@ const ClaudeUsageDashboard = () => {
       const eff = g.data?.global?.effective || {};
       const ov = g.data?.global?.overrides || {};
       setGlobals({ effective: eff, overrides: ov });
+      setAllowFable5(g.data?.global?.flags?.allowFable5 === true);
       // Pre-fill the editor with the current OVERRIDE values only (blank = inherit).
       setGForm(Object.fromEntries(GLOBAL_FIELDS.map(([k]) => [k, ov[k] != null ? String(ov[k]) : ''])));
     } catch (e) {
@@ -95,6 +100,20 @@ const ClaudeUsageDashboard = () => {
       showSuccess('Global limits saved'); load();
     } catch (e) { showError(e.response?.data?.error || 'Failed to save global limits'); }
     finally { setSavingG(false); }
+  };
+
+  // Sends ONLY allowFable5, so a model-switch change never rewrites the quota overrides.
+  const saveFable5 = async (next) => {
+    try {
+      setSavingF(true);
+      await proxyToolsAdmin.setGlobalConfig('claude', { allowFable5: next });
+      setAllowFable5(next);
+      showSuccess(next ? 'Fable 5 enabled for Claude clients' : 'Fable 5 disabled for Claude clients');
+      load();
+    } catch (e) {
+      showError(e.response?.data?.error || 'Failed to change the Fable 5 setting');
+      load();  // re-sync from the server so the switch never shows a state that was not saved
+    } finally { setSavingF(false); }
   };
 
   const toggleHistory = async (id) => {
@@ -135,6 +154,36 @@ const ClaudeUsageDashboard = () => {
           </button>
         </div>
         <p className="text-[11px] text-genz-muted mt-2">Priority: client override → Claude-account default → <b>global default</b> → system fallback. Blank = inherit. Applies immediately to future requests.</p>
+
+        {/* Model availability — separate from the quota numbers above and saved on its own, so
+            toggling a model can never rewrite the limits (and saving limits can never flip a
+            model back on). Enforced server-side in the Claude gateway, not just hidden in the UI. */}
+        <div className="mt-4 pt-4 border-t border-genz-border">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div className="min-w-0">
+              <p className="text-[12.5px] font-semibold text-genz-navy">Allow Fable 5</p>
+              <p className="text-[11px] text-genz-muted mt-0.5 max-w-xl">
+                {allowFable5
+                  ? 'Clients can select Fable 5.'
+                  : 'Fable 5 is hidden from the client model picker, and any request for it — including a modified or replayed one — is switched to Opus 4.8 (effort Medium, thinking Off). Existing Fable 5 conversations move over on their next message.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={allowFable5}
+              aria-label="Allow Fable 5"
+              disabled={savingF}
+              onClick={() => saveFable5(!allowFable5)}
+              className={`relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors disabled:opacity-60 ${allowFable5 ? 'bg-genz-teal' : 'bg-genz-border'}`}
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${allowFable5 ? 'translate-x-6' : 'translate-x-1'}`} />
+            </button>
+          </div>
+          <p className={`text-[11px] mt-2 font-medium ${allowFable5 ? 'text-amber-600' : 'text-genz-muted'}`}>
+            {savingF ? 'Saving…' : allowFable5 ? 'On — Fable 5 is available to clients.' : 'Off — Fable 5 is disabled by your administrator.'}
+          </p>
+        </div>
       </div>
 
       {/* Per-client usage table */}

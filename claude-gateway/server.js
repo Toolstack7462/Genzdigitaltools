@@ -552,6 +552,11 @@ async function getSession(token, jti) {
       sessionStorage: r.body.bundle.sessionStorage || null,
       accountId: (r.body.account && r.body.account.id) || null,
       accountLabel: (r.body.account && r.body.account.label) || null,
+      // "Allow Fable 5" as set in the admin panel. Only trusted when the backend actually sent
+      // a boolean; anything else leaves it undefined so the env fallback decides. This rides on
+      // the existing 60s session cache, so an admin toggle takes effect within ~a minute with
+      // no redeploy.
+      allowFable5: (typeof r.body.allowFable5 === 'boolean') ? r.body.allowFable5 : undefined,
     };
   }
   else data = { blocked: true, code: (r.body && r.body.code) || 'account_no_session' };
@@ -1057,14 +1062,16 @@ function buildCriticalCss() {
 // overlay JS is INLINED (executes during head parse, no extra round-trip) so its
 // MutationObserver is registered before <body> content is inserted. Capture (admin)
 // mode omits the critical CSS so the operator can still reach account pages to log in.
-function injectOverlay(html, capture, accountLabel) {
+function injectOverlay(html, capture, accountLabel, allowFable5Eff) {
   // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
   // backend /session response — never an email/cookie/token. Shown in the widget.
   const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, toolName: TOOL_NAME, tool: TOOL_KEY, hideSelectors: HIDE_SELECTORS, accountLabel: accountLabel || null,
     defaultEffort: CLAUDE_DEFAULT_EFFORT, thinkingDefault: CLAUDE_THINKING_DEFAULT, effortTriggerSel: CLAUDE_EFFORT_TRIGGER_SEL || null,
     // Model allowlist, for the UI layer only. The block itself is enforced server-side; these
     // just let the overlay hide the entry and explain why. No secret, no account data.
-    allowFable5: CLAUDE_ALLOW_FABLE5, blockedModelMsg: modelPolicy.BLOCKED_MESSAGE });
+    // Effective setting: admin panel when known, else the env fallback. Both default to blocked.
+    allowFable5: (typeof allowFable5Eff === 'boolean') ? allowFable5Eff : CLAUDE_ALLOW_FABLE5,
+    blockedModelMsg: modelPolicy.BLOCKED_MESSAGE });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -1286,8 +1293,14 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     // Rewrites only ever go blocked -> fallback; no path here can emit a fable id.
     // Cost: a byte scan for "fable" on request bodies only; JSON.parse happens only on the rare
     // body that actually contains it. Fails OPEN — an unparseable body is forwarded untouched.
+    // Effective setting: the ADMIN PANEL wins when the backend supplied one (it rides on the
+    // /session response and refreshes with the 60s session cache), otherwise the CLAUDE_ALLOW_FABLE5
+    // env var is the fallback — which also covers capture mode and any moment the backend is
+    // unreachable. Both default to blocked, so no failure mode re-enables Fable 5.
+    const allowFable5 = (session && typeof session.allowFable5 === 'boolean')
+      ? session.allowFable5 : CLAUDE_ALLOW_FABLE5;
     let modelSwitchedFrom = null;
-    if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_FABLE5 && !ctx.capture && !ctx.asset && bodyBuf.length) {
+    if (TOOL_KEY === 'claude' && !allowFable5 && !ctx.capture && !ctx.asset && bodyBuf.length) {
       try {
         const pol = modelPolicy.applyToRequestBody(bodyBuf, { allowed: false, fallback: CLAUDE_FALLBACK_MODEL });
         if (pol.changed) {
@@ -1329,6 +1342,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       }
     }
 
+    // Same effective setting as the request-side block, hoisted so the response filter and the
+    // overlay config agree with what was enforced on the way upstream.
+    const allowFable5Eff = allowFable5;
     const upstream = upLib.request(`${upURL.origin}${effUpPath}`, { method: req.method, headers, agent: agentFor(upURL.origin) }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
       // A file DOWNLOAD is content, not a page — it must reach the browser byte-for-byte.
@@ -1463,7 +1479,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             // call ends up FIRST in the document. Order them so the captcha shim and the
             // session bootstrap still run before the app's own scripts, while the overlay
             // (critical hide CSS + widget) is injected before <body> paints (no flash).
-            html = injectOverlay(html, ctx.capture, session && session.accountLabel);
+            html = injectOverlay(html, ctx.capture, session && session.accountLabel, allowFable5Eff);
             html = injectSessionBootstrap(html, session);
             // Client-side-auth SPA (WriteHuman): seed the vault's Supabase session cookies into
             // the browser so the in-browser SDK hydrates a logged-in app. Inserted before the
@@ -1496,7 +1512,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           // renders as the fallback rather than an unknown/blank model. Every other model is
           // passed through untouched. Attachments never reach this branch (isAttachment above),
           // so a downloaded file that merely mentions the word is never altered.
-          if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_FABLE5 && !ctx.asset && !isCaptchaReq) {
+          if (TOOL_KEY === 'claude' && !allowFable5Eff && !ctx.asset && !isCaptchaReq) {
             try {
               const pol = modelPolicy.applyToResponseBody(body, { allowed: false, fallback: CLAUDE_FALLBACK_MODEL });
               if (pol.changed) { body = pol.text; safeLog('model_filtered', { request_path: reqPathOnly }); }

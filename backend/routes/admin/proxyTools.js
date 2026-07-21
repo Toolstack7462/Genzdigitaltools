@@ -149,6 +149,9 @@ const schemas = {
     accountBaseTokens: Joi.number().integer().min(0).max(1000000000).allow(null),
     accountWeeklyBaseTokens: Joi.number().integer().min(0).max(10000000000).allow(null),
     safetyReservePct: Joi.number().integer().min(0).max(95).allow(null),
+    // "Allow Fable 5: On/Off". Omitted = leave unchanged, so saving quota numbers alone can
+    // never flip the model block. Strict boolean: the route below is the only writer.
+    allowFable5: Joi.boolean(),
   }).min(1),
 };
 
@@ -216,6 +219,10 @@ router.get('/:tool/global-config', async (req, res) => {
       },
       overrides: claudeQuota.getGlobalOverrides(), // only the keys explicitly set by an admin
       label: claudeQuota.USAGE_LABEL,
+      // Boolean admin switches. allowFable5 = "Allow Fable 5: On/Off"; false means the model
+      // is blocked for every proxy client and the gateway switches any request for it onto the
+      // fallback. Not a secret and not account data.
+      flags: claudeSettings.flags(),
     },
   });
 });
@@ -236,6 +243,7 @@ router.put('/:tool/global-config', validate(schemas.globalConfig), async (req, r
           safetyReservePct: claudeQuota.safetyReservePct(),
         },
         overrides: claudeQuota.getGlobalOverrides(),
+        flags: claudeSettings.flags(),
       },
     });
   } catch (err) {
