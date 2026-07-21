@@ -479,6 +479,18 @@ function gatewayApiPost(subpath, token, jsonBody) {
 // ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
 const sessionCache = new Map();
 const SESSION_TTL_MS = 60 * 1000;
+// MEMORY: entries are keyed by lease jti and the 60s TTL was only ever checked on READ, so a
+// key that is never read again was never removed — every lease issued left a permanent entry
+// holding its cookie header plus localStorage/sessionStorage blobs (tens of KB each). Over a
+// long-lived worker that is unbounded growth, and it is why RSS climbed the longer a process
+// stayed up. Sweep expired entries on a timer, exactly as validateCache already does.
+// .unref() so this never keeps the process alive. Behaviour is unchanged: an entry past its
+// TTL was already treated as a miss and refetched.
+const _sessionCacheGc = setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of sessionCache) if (!v || v.exp <= now) sessionCache.delete(k);
+}, 60000);
+if (_sessionCacheGc.unref) _sessionCacheGc.unref();
 
 function hostMatchesCookieDomain(cookieDomain, host) {
   if (!cookieDomain) return true;
@@ -1782,7 +1794,13 @@ const server = http.createServer(async (req, res) => {
   // fixation defence) and revoke + clear the cookie on an invalid/expired/revoked lease.
   if (pathName === '/__genz/validate') {
     if (TOOL_KEY !== 'claude') { res.writeHead(404, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end('{"valid":false}'); }
-    const r = await gatewayApiPost('/validate', token, {});
+    // LOAD: the overlay polls this every 30s per open tab, and each poll used to be its own
+    // backend round-trip even when a navigation had just validated the same lease. Share the
+    // nav path's short cache instead: only CONFIRMED-valid results are cached (failures never
+    // are), so revocation stays as prompt as it already is for navigations, and the countdown
+    // is anchored to the absolute expiresAt rather than the relative count, so a few seconds
+    // of staleness cannot affect it.
+    const r = await backendValidateCached(token, local && local.jti);
     const headers = { 'content-type': 'application/json', 'cache-control': 'no-store' };
     let out;
     if (r.status === 200 && r.body && r.body.valid) {
