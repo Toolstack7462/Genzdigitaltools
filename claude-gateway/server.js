@@ -121,12 +121,46 @@ const CLIENT_CH_HEADERS = [
 // END of the header list — an ordering only mobile clients would get, which is itself a
 // fingerprint tell. See the non-minimal branch of buildUpstreamHeaders.
 const PINNED_CH_HEADERS = new Set(['sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']);
-function isMobileClient(req) {
-  const chm = String((req.headers && req.headers['sec-ch-ua-mobile']) || '');
-  if (chm === '?1') return true;   // Chromium client hint — authoritative when present
-  if (chm === '?0') return false;
-  return /\b(Mobi|Android|iPhone|iPad|iPod)\b/i.test(String((req.headers && req.headers['user-agent']) || ''));
+// ── Device classification — computed ONCE, at ingress, from the UNTOUCHED request ──────────
+// REGRESSION-SENSITIVE. Two different things must never be conflated:
+//   (a) the CLIENT's real device class — a property of the browser that made this request. It is
+//       decided here, before anything rewrites a header, and then never recomputed.
+//   (b) the UPSTREAM compatibility headers we choose to send to claude.ai. Those are an output.
+// Deriving (a) lazily from `req.headers` at each call site invites a future header rewrite to
+// silently flip the classification mid-request; `classifyDevice` + `deviceOf` make (a) immutable.
+//
+// A duplicated header arrives joined ("?1, ?1"), and a proxy hop may pad it, so the hint is
+// matched loosely rather than by strict equality — a strict `=== '?1'` silently fell through to
+// the UA test whenever anything reformatted the value. The UA token check remains the fallback
+// for browsers that send no client hints at all (Safari and Firefox never do).
+const DEVICE_UA_MOBILE_RE = /\b(Mobi|Mobile|Android|iPhone|iPad|iPod|Windows Phone|IEMobile|BlackBerry|Silk|Kindle|Opera Mini)\b/i;
+function classifyDevice(headers) {
+  const h = headers || {};
+  const raw = h['sec-ch-ua-mobile'];
+  const chm = Array.isArray(raw) ? raw.join(',') : String(raw == null ? '' : raw);
+  const ua = String(h['user-agent'] || '');
+  const uaMobile = DEVICE_UA_MOBILE_RE.test(ua);
+  // The client hint is authoritative when the client actually sent one — including a phone in
+  // "Request desktop site" mode, which deliberately presents itself as a desktop and whose
+  // in-browser challenge fingerprint reports desktop too.
+  if (/\?1/.test(chm)) return { mobile: true, signal: 'ch:?1' };
+  if (/\?0/.test(chm)) {
+    // A UA that still carries a mobile token beside `?0` is worth recording: it is the signature
+    // of desktop-site mode (or of a hop rewriting one of the two), and it is exactly the case
+    // that made real phones look like desktops in the log.
+    return { mobile: false, signal: uaMobile ? 'ch:?0+mobile-ua' : 'ch:?0' };
+  }
+  if (uaMobile) return { mobile: true, signal: 'ua' };
+  return { mobile: false, signal: ua ? 'ua:desktop' : 'none' };
 }
+// Read the class decided at ingress. Falls back to classifying on the spot for the few internal
+// call sites that run outside the main handler (and for tests that call it directly).
+function deviceOf(req) {
+  if (req && req.__genzDevice) return req.__genzDevice;
+  return classifyDevice(req && req.headers);
+}
+function isMobileClient(req) { return deviceOf(req).mobile; }
+function deviceLabel(req) { return deviceOf(req).mobile ? 'mobile' : 'desktop'; }
 // EVIDENCE (live claude1 console.log, 2026-07-22): the gateway's egress is a DATACENTER IP, and the
 // ONLY Cloudflare cf_clearance that is valid for it is the vault's — minted via Capture-through-the-
 // gateway with the PINNED DESKTOP UA. With that clearance + desktop UA, /api/* returns 200 for the
@@ -143,7 +177,21 @@ function isMobileClient(req) {
 // vault's. Because a valid clearance means Cloudflare does not present a challenge, its in-browser
 // fingerprint is never cross-checked, so the old mobile↔desktop mismatch never arises. Reversible:
 // CLAUDE_MOBILE_UPSTREAM=own restores the (currently broken) per-device path for A/B testing.
-const MOBILE_RIDES_VAULT = String(process.env.CLAUDE_MOBILE_UPSTREAM || 'vault').toLowerCase() !== 'own';
+//
+// ★ REVERSED 2026-07-22 — the premise above was FALSE. A diagnostic on the live gateway showed
+// the vault bundle carries NO cf_clearance at all (25/25 sampled navigations:
+// cf_vault_clearance:false), so there was never a "working vault clearance" for a mobile client
+// to ride. Forcing the pinned DESKTOP User-Agent onto a phone therefore bought nothing, while
+// costing the one thing that can still work: a Cloudflare challenge is solved by JS in the REAL
+// browser, and it can only clear if the HTTP request agrees with what that browser reports. A
+// phone sending a desktop UA can never clear its own challenge.
+//
+// So the honest per-device identity is the DEFAULT again (this reverts 75341b4's direction).
+// It is also what keeps clearances per-device: nothing about one client's verification is
+// reused for another. `CLAUDE_MOBILE_UPSTREAM=vault` restores the pinned-desktop behaviour if a
+// future capture ever puts a genuinely valid clearance in the vault. DESKTOP IS UNAFFECTED by
+// this constant in either mode — it has always sent, and still sends, the pinned identity.
+const MOBILE_RIDES_VAULT = String(process.env.CLAUDE_MOBILE_UPSTREAM || 'own').toLowerCase() === 'vault';
 // Returns { ua, ch } to send upstream. Desktop, and mobile in the default 'vault' mode → the pinned
 // desktop identity (which is what the vault clearance is bound to). Mobile in 'own' mode → the
 // client's own UA + whatever client-hints it actually sent (kept only as a reversible kill-switch).
@@ -241,6 +289,66 @@ const CF_NAV_RETRY_DELAY_MS = Math.max(100, parseInt(process.env.CLAUDE_CF_NAV_R
 // the "reloads a few times then lands on the verification page" the client reports.
 // CLAUDE_CF_NAV_NOTICE=0 restores the raw passthrough.
 const CF_NAV_NOTICE = process.env.CLAUDE_CF_NAV_NOTICE !== '0';
+
+// ── Honest failure classification for a page navigation ──────────────────────
+// A single catch-all message ("… is busy right now") was actively harmful: it reported a
+// CAPACITY problem for what were really Cloudflare verifications and, worse, for a vault account
+// whose captured session carries no Cloudflare clearance — the one condition an operator can
+// actually fix. Each condition now gets its own safe code, its own HTTP status and its own
+// wording. Codes are stable identifiers for the log; they contain no cookie, lease or session.
+const UPSTREAM_ERROR = {
+  CLOUDFLARE_CHALLENGE: 'CLOUDFLARE_CHALLENGE',
+  ACCOUNT_SESSION_INVALID: 'ACCOUNT_SESSION_INVALID',
+  RATE_LIMITED: 'RATE_LIMITED',
+  UPSTREAM_OVERLOADED: 'UPSTREAM_OVERLOADED',
+  NETWORK_TIMEOUT: 'NETWORK_TIMEOUT',
+};
+// Does the vault bundle actually carry a Cloudflare clearance? PRESENCE only, never the value.
+// Live evidence (2026-07-22): 25/25 sampled navigations had NO vault clearance, which is why
+// almost every request was challenged from the datacenter egress IP.
+function hasVaultClearance(session) {
+  return !!(session && session.cookieHeader && /(^|;\s*)cf_clearance=/.test(session.cookieHeader));
+}
+function classifyUpstreamFailure({ status, cfChallenge, vaultClearance, retries }) {
+  if (cfChallenge) {
+    // A challenge on a request that carried no account clearance is not a transient blip and not
+    // capacity — the captured session simply cannot satisfy Cloudflare from this server's IP, and
+    // it stays that way until the account is re-captured through the proxy.
+    if (!vaultClearance) {
+      return {
+        code: UPSTREAM_ERROR.ACCOUNT_SESSION_INVALID,
+        httpStatus: 503,
+        title: `${TOOL_NAME} needs to be reconnected`,
+        msg: `${TOOL_NAME} could not verify our connection because the shared ${TOOL_NAME} account session needs refreshing. This is on our side, not yours — please contact support so it can be reconnected. Your access time is unaffected.`,
+      };
+    }
+    return {
+      code: UPSTREAM_ERROR.CLOUDFLARE_CHALLENGE,
+      httpStatus: 503,
+      title: `${TOOL_NAME} asked us to verify the connection`,
+      msg: `${TOOL_NAME} ran a routine security check that we could not complete automatically. This usually clears within a minute. Your session is still active — please try again.`,
+    };
+  }
+  if (status === 429) {
+    return {
+      code: UPSTREAM_ERROR.RATE_LIMITED, httpStatus: 503,
+      title: `${TOOL_NAME} is rate limiting us`,
+      msg: `${TOOL_NAME} is temporarily limiting how fast we can connect. Please wait a moment and try again — your session is still active.`,
+    };
+  }
+  if (status >= 500) {
+    return {
+      code: UPSTREAM_ERROR.UPSTREAM_OVERLOADED, httpStatus: 503,
+      title: `${TOOL_NAME} is busy right now`,
+      msg: `${TOOL_NAME} reported that it is overloaded. This is on ${TOOL_NAME}'s side and usually clears quickly — please try again in a moment.`,
+    };
+  }
+  return {
+    code: UPSTREAM_ERROR.NETWORK_TIMEOUT, httpStatus: 502,
+    title: `${TOOL_NAME} did not respond`,
+    msg: `We could not reach ${TOOL_NAME} just now. This is usually temporary — please try again in a moment.`,
+  };
+}
 // Per-device Cloudflare clearance (default ON). cf_clearance is bound to the minting
 // UA + egress IP, so the vault's desktop-minted clearance is invalid on a mobile UA.
 const PER_DEVICE_CLEARANCE = process.env.CLAUDE_PER_DEVICE_CLEARANCE !== '0';
@@ -387,7 +495,9 @@ function claudeMobileInvariants() {
   return [
     { key: 'cfChallengePassthrough', value: CF_CHALLENGE_PASSTHROUGH, ok: CF_CHALLENGE_PASSTHROUGH === true },
     { key: 'cfChallengeMode', value: CF_CHALLENGE_MODE, ok: CF_CHALLENGE_MODE === 'passthrough' },
-    { key: 'mobileRidesVaultClearance', value: MOBILE_RIDES_VAULT, ok: MOBILE_RIDES_VAULT === true },
+    // A phone must present its OWN identity upstream, so the challenge its own browser is asked to
+    // solve can actually clear. Reversed 2026-07-22 — see MOBILE_RIDES_VAULT.
+    { key: 'mobileHonestIdentity', value: !MOBILE_RIDES_VAULT, ok: MOBILE_RIDES_VAULT === false },
     { key: 'durableSessionStore', value: SESSION_STORE_WRITABLE, ok: SESSION_STORE_WRITABLE === true },
   ];
 }
@@ -1561,7 +1671,8 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           cf_vault_clearance: !!(session && session.cookieHeader && /(^|;\s*)cf_clearance=/.test(session.cookieHeader)),
           cf_browser_clearance: /(^|;\s*)cf_clearance=/.test(String(req.headers.cookie || '')),
           upstream_error: (uRes.statusCode >= 500 ? 'upstream_5xx' : cfChallengeDetected ? 'cf_challenge' : uRes.statusCode === 403 ? 'forbidden' : uRes.statusCode === 429 ? 'rate_limited' : null),
-          device: isMobileClient(req) ? 'mobile' : 'desktop',
+          device: deviceLabel(req),
+          device_signal: deviceOf(req).signal,
           cookies_attached: (session && session.cookieCount) || 0,
           is_nav: !!isHtmlNav,
           latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null,
@@ -1620,7 +1731,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         logIt(false); uRes.resume();
         safeLog('cf_challenge_retry', {
           cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
-          upstream_status: uRes.statusCode, attempt: cfNavRetries, device: isMobileClient(req) ? 'mobile' : 'desktop',
+          upstream_status: uRes.statusCode, attempt: cfNavRetries, device: deviceLabel(req),
           latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null,
         });
         const wait = CF_NAV_RETRY_DELAY_MS * cfNavRetries;
@@ -1637,22 +1748,28 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       // │     changed nothing. Kill-switch CLAUDE_CF_NAV_NOTICE=0 restores the raw passthrough.
       if (cfPassthrough && isHtmlNav && !ctx.asset && TOOL_KEY === 'claude' && CF_NAV_NOTICE) {
         logIt(false); uRes.resume();
-        safeLog('cf_challenge_unsolvable', {
+        // Classify what ACTUALLY happened instead of collapsing every failure into one message.
+        // "busy" is reserved for a confirmed upstream overload; a Cloudflare challenge is a
+        // verification condition; and a challenge on a request that carried NO account clearance
+        // is an account-session problem the operator has to fix — telling the client "busy" there
+        // hides the one thing that would get it working again.
+        const cls = classifyUpstreamFailure({
+          status: uRes.statusCode, cfChallenge: true,
+          vaultClearance: hasVaultClearance(session), retries: cfNavRetries,
+        });
+        safeLog('nav_failed', {
           cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
-          upstream_status: uRes.statusCode, device: isMobileClient(req) ? 'mobile' : 'desktop',
-          reload_reason: 'cf_challenge_nav', retries_spent: cfNavRetries,
+          upstream_status: uRes.statusCode, error_code: cls.code, challenge_category: 'managed_challenge',
+          device: deviceLabel(req), device_signal: deviceOf(req).signal,
+          reload_reason: 'cf_challenge_nav', redirect_count: cfNavRetries, retries_spent: cfNavRetries,
           latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null, lease_id: ctx.jti || null,
         });
-        return sendNoticePage(res, {
-          status: 503,
-          title: `${TOOL_NAME} is busy right now`,
-          msg: `${TOOL_NAME} briefly asked us to re-verify the connection. Your session is still active — please try again in a moment.`,
-        });
+        return sendNoticePage(res, { status: cls.httpStatus, title: cls.title, msg: cls.msg });
       }
       // └─ end Cloudflare-challenge navigation handling ─────────────────────────────────────────
       // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
       // without ever logging a cookie, token or the UA string itself.
-      if (cfPassthrough) safeLog('cf_challenge_passthrough', { cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: isMobileClient(req) ? 'mobile' : 'desktop', lease_id: ctx.jti || null });
+      if (cfPassthrough) safeLog('cf_challenge_passthrough', { cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: deviceLabel(req), lease_id: ctx.jti || null });
 
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {
@@ -1939,6 +2056,12 @@ const server = http.createServer(async (req, res) => {
   // Per-request correlation id + start clock for safe startup-timing diagnostics.
   const cid = crypto.randomBytes(6).toString('hex');
   const reqT0 = Date.now();
+  // REGRESSION-SENSITIVE: pin the CLIENT's real device class here, from the untouched inbound
+  // headers, before any handler can rewrite one. Everything downstream reads this snapshot, so
+  // the upstream compatibility headers we later choose can never feed back into the
+  // classification. `device_signal` records WHICH input decided it, which is what makes a
+  // "real phone logged as desktop" report diagnosable instead of a guess.
+  req.__genzDevice = classifyDevice(req.headers);
 
   if (pathName === '/__genz/overlay.js') {
     // PERF: was no-cache → revalidated on EVERY navigation. Content-addressed (?v=<hash>)
@@ -2003,6 +2126,13 @@ const server = http.createServer(async (req, res) => {
       const inv = claudeMobileInvariants();
       body.claudeMobile = Object.assign({ mobileReady: inv.every(i => i.ok) },
         inv.reduce((o, i) => { o[i.key] = i.value; return o; }, {}));
+      // How THIS request was classified, and which header decided it. Reflects only the caller's
+      // own request, contains no secret, and is the fastest way to answer "is my phone actually
+      // being seen as a phone?" — open this URL on the device itself. It is also how we can prove
+      // whether a hosting hop between the browser and Node is stripping or rewriting the client
+      // hints, which is otherwise invisible.
+      const d = classifyDevice(req.headers);
+      body.client = { device: d.mobile ? 'mobile' : 'desktop', signal: d.signal };
     }
     res.writeHead(missingEnv.length ? 503 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(body));
@@ -2276,7 +2406,8 @@ const server = http.createServer(async (req, res) => {
   if (isHtmlNav) {
     safeLog('nav_timing', {
       cid, instance: INSTANCE_ID, request_path: pathName,
-      device: isMobileClient(req) ? 'mobile' : 'desktop',
+      device: deviceLabel(req),
+      device_signal: deviceOf(req).signal,
       session_source: (claudeSess && claudeSess.source) || 'memory',
       has_session_cookie: !!(claudeSess),
       resolve_ms: Date.now() - reqT0,
@@ -2299,7 +2430,7 @@ server.listen(PORT, () => {
       for (const i of bad) console.warn(`      ${i.key} = ${JSON.stringify(i.value)} (expected the mobile-safe value)`);
       console.warn('      See /__genz/health .claudeMobile and claude-gateway/README.md before granting mobile clients.');
     } else {
-      console.log('  mobile    -> OK (cf passthrough + per-device clearance + durable session store)');
+      console.log('  mobile    -> OK (cf passthrough + honest per-device identity + durable session store)');
     }
   }
 });

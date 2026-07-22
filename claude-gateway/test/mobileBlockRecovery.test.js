@@ -166,12 +166,12 @@ test('CONTRACT: a refresh (no new cookie) stays expired; only a dashboard relaun
   } finally { gw.kill(); }
 });
 
-test('REGRESSION (Cloudflare fix intact): mobile still rides the vault clearance, not stripped', async () => {
+test('REGRESSION (Cloudflare fix intact): mobile keeps its own honest identity', async () => {
   const PORT = 3714; const gw = bootGateway(PORT);
   try {
     await waitHealth(PORT);
     const h = JSON.parse((await reqTo(PORT, 'GET', '/__genz/health')).body);
-    assert.strictEqual(h.claudeMobile.mobileRidesVaultClearance, true, 'the CF-loop fix must remain on');
+    assert.strictEqual(h.claudeMobile.mobileHonestIdentity, true, 'the CF-loop fix must remain on');
     assert.strictEqual(h.claudeMobile.mobileReady, true);
   } finally { gw.kill(); }
 });

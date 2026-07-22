@@ -140,24 +140,23 @@ test('desktop client → upstream sees the PINNED desktop identity (unchanged)',
   assert.strictEqual(up.chplat, '"Windows"', 'desktop platform pinned');
 });
 
-test('Android Chrome (default) → upstream rides the PINNED desktop identity so the vault clearance matches', async () => {
+test('Android Chrome (default) → upstream carries the phone’s OWN honest identity', async () => {
   const up = await navAs({ 'user-agent': UA_ANDROID, 'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"', 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"' });
-  assert.strictEqual(up.ua, PINNED_UA, 'mobile rides the pinned desktop UA (matches the vault cf_clearance)');
-  assert.strictEqual(up.chm, '?0', 'sec-ch-ua-mobile pinned to ?0 to match the desktop-minted clearance');
-  assert.strictEqual(up.chplat, '"Windows"', 'pinned desktop platform, not the phone’s');
+  assert.strictEqual(up.ua, UA_ANDROID, 'the phone’s real UA is forwarded — a desktop UA could never clear its own challenge');
+  assert.strictEqual(up.chm, '?1', 'and the hints agree with it');
+  assert.strictEqual(up.chplat, '"Android"', 'real platform, not a pinned Windows');
 });
 
-test('Android UA with NO client-hints (default) → still rides the pinned desktop identity', async () => {
+test('Android UA with NO client-hints (default) → own UA, and no hints are invented', async () => {
   const up = await navAs({ 'user-agent': UA_ANDROID });
-  assert.strictEqual(up.ua, PINNED_UA);
-  assert.strictEqual(up.chm, '?0');
+  assert.strictEqual(up.ua, UA_ANDROID);
+  assert.ok(up.chua == null, 'a sec-ch-ua the client never sent is itself a bot tell');
 });
 
-test('iOS Safari (default) → rides the pinned desktop identity too', async () => {
+test('iOS Safari (default) → own UA, and still no invented client-hints', async () => {
   const up = await navAs({ 'user-agent': UA_IPHONE });
-  assert.strictEqual(up.ua, PINNED_UA, 'iOS rides the pinned desktop UA (same working clearance path)');
-  assert.match(up.chua, /Google Chrome/, 'pinned desktop sec-ch-ua sent');
-  assert.strictEqual(up.chm, '?0');
+  assert.strictEqual(up.ua, UA_IPHONE, 'Safari’s real UA is forwarded');
+  assert.ok(up.chua == null, 'Safari sends no Sec-CH-UA at all — inventing one would be a bot tell');
 });
 
 // ── REGRESSION: the /api XHR (non-minimal) branch must be consistent too ──────
@@ -166,25 +165,24 @@ test('iOS Safari (default) → rides the pinned desktop identity too', async () 
 // went upstream as desktop-UA + mobile-hints → Cloudflare challenged them → the challenge_redirect
 // loop returned on API calls even though /new loaded. These tests pin BOTH the UA and the hints on
 // the XHR path. With the bug re-introduced, the model/mobile-flag assertions fail.
-test('REGRESSION: Android XHR/API (default) → desktop UA AND desktop hints, NO mobile hints leak', async () => {
+test('REGRESSION: Android XHR/API (default) → UA and hints AGREE (both mobile), on the XHR branch too', async () => {
+  // buildUpstreamHeaders has TWO branches (minimal = HTML nav, non-minimal = XHR/API). Whatever
+  // identity is chosen, BOTH must agree internally or Cloudflare's cross-check fails. This test
+  // exists because 75341b4 changed one branch and not the other.
   const up = await xhrAs('/api/organizations', {
     'user-agent': UA_ANDROID,
     'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"', 'sec-ch-ua-mobile': '?1',
-    'sec-ch-ua-platform': '"Android"', 'sec-ch-ua-model': '"Pixel 8"', 'sec-ch-ua-platform-version': '"14.0.0"',
+    'sec-ch-ua-platform': '"Android"', 'sec-ch-ua-model': '"Pixel 8"',
   });
-  assert.strictEqual(up.ua, PINNED_UA, 'XHR mobile UA is the pinned desktop UA');
-  assert.strictEqual(up.chm, '?0', 'sec-ch-ua-mobile MUST be ?0 to match the desktop UA (was ?1 = the bug)');
-  assert.strictEqual(up.chplat, '"Windows"', 'platform pinned to Windows, not Android');
-  assert.match(up.chua, /Google Chrome/, 'pinned desktop sec-ch-ua');
-  assert.ok(up.model == null, 'the mobile high-entropy sec-ch-ua-model must NOT leak (Pixel 8 beside a Windows UA is a mismatch)');
-  assert.ok(up.platver == null, 'the mobile platform-version must NOT leak either');
+  assert.strictEqual(up.ua, UA_ANDROID, 'XHR carries the phone’s real UA');
+  assert.strictEqual(up.chm, '?1', 'and a mobile hint beside a mobile UA — consistent');
+  assert.strictEqual(up.chplat, '"Android"', 'consistent platform');
 });
 
-test('REGRESSION: iOS XHR/API (default) → pinned desktop identity, no Apple hints', async () => {
+test('REGRESSION: iOS XHR/API (default) → own UA on the XHR branch as well', async () => {
   const up = await xhrAs('/api/account_profile', { 'user-agent': UA_IPHONE });
-  assert.strictEqual(up.ua, PINNED_UA);
-  assert.strictEqual(up.chm, '?0');
-  assert.strictEqual(up.chplat, '"Windows"');
+  assert.strictEqual(up.ua, UA_IPHONE);
+  assert.ok(up.chua == null, 'no invented hints on the XHR branch either');
 });
 
 test('desktop XHR/API is unchanged: pinned low-entropy hints, its own high-entropy hints kept', async () => {
@@ -244,87 +242,61 @@ test('desktop KEEPS the vault cf_clearance (UA matches the minting UA)', async (
   assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie present');
 });
 
-test('mobile (default) KEEPS the vault cf_clearance → rides the same working clearance as desktop', async () => {
+test('mobile (default): the shared vault clearance is NOT reused on a phone', async () => {
+  // Req 10 — a Cloudflare clearance is never shared between devices. The vault's clearance was
+  // minted under the pinned desktop identity, so it is meaningless to a phone sending its own UA,
+  // and reusing it across devices is exactly what we must not do.
   const up = await navAs({ 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1' });
-  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'mobile now reuses the vault clearance (matched by the pinned desktop UA)');
-  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie present → account stays logged in');
+  assert.ok(!/cf_clearance=VAULTCF/.test(up.cookie), 'the shared clearance is not sent for a phone');
+  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'but the account auth cookie IS — the account stays logged in');
 });
 
-// ── REGRESSION (the recurring mobile CF loop): device clearance must NOT displace the vault's ──
-// 75341b4 switched mobile onto the pinned desktop identity + the vault clearance, but the CF
-// pass-through merge stayed b-wins, so ANY cf_clearance the phone happened to hold on this origin
-// silently replaced the vault's on the upstream leg. A phone's clearance is solved by a MOBILE
-// browser, so Cloudflare bound it to a mobile fingerprint — invalid for the desktop-UA request the
-// gateway now sends. Result: the one working clearance is dropped, /api/* is challenged, and Claude
-// funnels each challenge through the unsolvable /api/challenge_redirect → the reload-into-
-// verification loop. It is also exactly why the failure APPEARS after a few working minutes: a
-// fresh phone holds no CF cookie until a challenge response deposits one.
-test('REGRESSION: mobile (vault mode) — a device-held cf_clearance never displaces the vault one', async () => {
+test('mobile (default): the device’s OWN clearance is what goes upstream', async () => {
   const sess = await openSession();
   seen = [];
   await get('/new', { cookie: sess + '; cf_clearance=MOBILE_OWN', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
   const up = seen[seen.length - 1];
-  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'the VAULT clearance is what reaches Cloudflare (this is the fix)');
-  assert.ok(!/MOBILE_OWN/.test(up.cookie), 'the phone’s own (mobile-fingerprint) clearance must not be sent instead');
-  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'the account auth cookie is untouched — still logged in');
+  assert.match(up.cookie, /cf_clearance=MOBILE_OWN/, 'the phone uses the clearance IT solved');
+  assert.ok(!/VAULTCF/.test(up.cookie), 'never the shared one');
 });
 
-test('REGRESSION: the same holds on the XHR/API path, which is where the loop actually starts', async () => {
-  const sess = await openSession();
-  seen = [];
-  await get('/api/organizations', { cookie: sess + '; cf_clearance=MOBILE_OWN; __cf_bm=MOBILE_BM', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'application/json' });
-  const up = seen[seen.length - 1];
-  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'XHR rides the vault clearance too');
-  assert.ok(!/MOBILE_OWN/.test(up.cookie), 'no mobile-minted clearance on the API path');
-});
-
-test('mobile: a Cloudflare cookie the vault does NOT have is still forwarded (nothing is deleted)', async () => {
-  const sess = await openSession();
-  seen = [];
-  await get('/new', { cookie: sess + '; __cf_bm=DEVICE_BM', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
-  const up = seen[seen.length - 1];
-  assert.match(up.cookie, /__cf_bm=DEVICE_BM/, 'only a NAME CLASH is resolved in the vault’s favour; nothing is dropped');
-  assert.match(up.cookie, /cf_clearance=VAULTCF/);
-});
-
-test('DESKTOP IS UNCHANGED: a desktop-held cf_clearance still wins over the vault one', async () => {
+test('DESKTOP IS UNCHANGED: it still uses the vault clearance, and its own still wins when present', async () => {
+  const a = await navAs({ 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0' });
+  assert.match(a.cookie, /cf_clearance=VAULTCF/, 'desktop still rides the vault clearance exactly as before');
   const sess = await openSession();
   seen = [];
   await get('/new', { cookie: sess + '; cf_clearance=DESKTOP_OWN', 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
-  const up = seen[seen.length - 1];
-  assert.match(up.cookie, /cf_clearance=DESKTOP_OWN/, 'desktop precedence is byte-identical to before (it was never the bug)');
-  assert.ok(!/VAULTCF/.test(up.cookie), 'the vault clearance does not shadow the desktop one');
+  const b = seen[seen.length - 1];
+  assert.match(b.cookie, /cf_clearance=DESKTOP_OWN/, 'and desktop precedence is byte-identical to before');
 });
 
-// ── The pinned client-hints must keep their POSITION for mobile ───────────────
-// 50cfb03 purged the phone's hints with `delete` and then re-assigned the pinned three, which
-// appends them at the END of the header list — an ordering only mobile clients get, and header
-// order is part of Cloudflare's fingerprint. Overwriting in place keeps mobile and desktop
-// structurally identical.
-test('REGRESSION: mobile’s pinned client-hints keep the same header POSITION as desktop’s', async () => {
-  // Chrome sends sec-ch-ua* EARLY — before user-agent, accept and accept-language. Reproduce that
-  // real ordering (xhrAs puts cookie/accept first, which would hide the defect) and drive the same
-  // request as each device, so the only variable is the purge.
+test('CLEARANCE IS NEVER SHARED BETWEEN CLIENTS (req 10)', async () => {
+  const sessA = await openSession();
+  seen = [];
+  await get('/new', { cookie: sessA + '; cf_clearance=AAA_clientA', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const upA = seen[seen.length - 1];
+  const sessB = await openSession();
+  seen = [];
+  await get('/new', { cookie: sessB + '; cf_clearance=BBB_clientB', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const upB = seen[seen.length - 1];
+  assert.match(upA.cookie, /AAA_clientA/); assert.ok(!/BBB_clientB/.test(upA.cookie));
+  assert.match(upB.cookie, /BBB_clientB/); assert.ok(!/AAA_clientA/.test(upB.cookie));
+});
+
+test('mobile keeps its own client-hints in their original header POSITION (nothing is purged)', async () => {
   const chromeOrder = (ua, hints) => Object.assign(
     { 'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"' }, hints,
-    { 'user-agent': ua, accept: 'application/json', 'accept-language': 'en-US,en;q=0.9', 'sec-fetch-mode': 'cors' }
+    { 'user-agent': ua, accept: 'application/json', 'accept-language': 'en-US,en;q=0.9' }
   );
-  const run = async (headers) => {
-    const sess = await openSession();
-    seen = [];
-    await get('/api/organizations', Object.assign({ cookie: sess }, headers));
-    return seen[seen.length - 1];
-  };
-  const mob = await run(chromeOrder(UA_ANDROID, { 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"', 'sec-ch-ua-model': '"Pixel 8"' }));
-  const dsk = await run(chromeOrder(UA_DESKTOP, { 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"' }));
+  const sess = await openSession();
+  seen = [];
+  await get('/api/organizations', Object.assign({ cookie: sess },
+    chromeOrder(UA_ANDROID, { 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"' })));
+  const mob = seen[seen.length - 1];
   const idx = (o, n) => o.order.indexOf(n);
-  assert.ok(!mob.order.includes('sec-ch-ua-model'), 'the mobile high-entropy hint is still purged');
   for (const h of ['sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']) {
-    assert.ok(idx(mob, h) >= 0, h + ' is sent upstream');
-    assert.ok(idx(mob, h) < idx(mob, 'user-agent'),
-      h + ' must keep its early Chrome slot — a delete+reassign appends it after user-agent/accept, an ordering only mobile would get');
-    assert.strictEqual(idx(mob, h) < idx(mob, 'accept'), idx(dsk, h) < idx(dsk, 'accept'),
-      h + ' sits on the same side of `accept` as it does for desktop');
+    assert.ok(idx(mob, h) >= 0, h + ' is forwarded');
+    assert.ok(idx(mob, h) < idx(mob, 'user-agent'), h + ' keeps its early Chrome slot, not appended last');
   }
 });
 
@@ -377,7 +349,7 @@ test('an XHR/API challenge is NOT retried or rewritten (only page navigations ar
 // Boots a SECOND gateway process in the old per-device mode and confirms it still behaves the old
 // way (real mobile UA forwarded, vault clearance stripped). This documents the escape hatch and
 // proves the default vs kill-switch really diverge.
-test('own mode: mobile forwards its REAL UA and the vault clearance is stripped (old behaviour preserved)', async () => {
+test('vault kill-switch: CLAUDE_MOBILE_UPSTREAM=vault restores the pinned-desktop behaviour', async () => {
   const upEcho = []; let up2, be2, gw2;
   be2 = http.createServer((q, r) => {
     let body = ''; q.on('data', c => body += c);
@@ -398,7 +370,7 @@ test('own mode: mobile forwards its REAL UA and the vault clearance is stripped 
     GATEWAY_PUBLIC_ORIGIN: 'http://127.0.0.1:' + PORT2, DEFAULT_PATH: '/new', SIGNIN_PATH: '/login',
     API_BASE: 'http://127.0.0.1:' + be2.address().port + '/api', LEASE_SECRET: SECRET, GATEWAY_KEY: 'k'.repeat(32),
     CF_CHALLENGE_PASSTHROUGH: '1', CF_CHALLENGE_MODE: 'passthrough', IDENTITY_SHIELD: '0', PROXY_LOG_ALL: '0',
-    CLAUDE_MOBILE_UPSTREAM: 'own',
+    CLAUDE_MOBILE_UPSTREAM: 'vault',
   });
   gw2 = spawn(process.execPath, ['server.js'], { cwd: GW, env, stdio: ['ignore', 'pipe', 'pipe'] });
   try {
@@ -411,11 +383,11 @@ test('own mode: mobile forwards its REAL UA and the vault clearance is stripped 
     upEcho.length = 0;
     await g('/new', { cookie: sess, 'user-agent': UA_ANDROID, accept: 'text/html' });
     const up = upEcho[upEcho.length - 1];
-    assert.strictEqual(up.ua, UA_ANDROID, 'own mode forwards the real mobile UA');
-    assert.ok(!/cf_clearance=VAULTCF/.test(up.cookie), 'own mode strips the vault clearance');
-    // own mode must be consistent on the XHR/API (non-minimal) branch too: real mobile UA there as well.
+    assert.strictEqual(up.ua, PINNED_UA, 'vault mode pins the desktop UA for a phone');
+    assert.match(up.cookie, /cf_clearance=VAULTCF/, 'and reuses the vault clearance');
+    // Both branches must agree in this mode too (the 50cfb03 lesson).
     upEcho.length = 0;
     await g('/api/organizations', { cookie: sess, 'user-agent': UA_ANDROID, accept: 'application/json', 'sec-ch-ua-mobile': '?1' });
-    assert.strictEqual(upEcho[upEcho.length - 1].ua, UA_ANDROID, 'own mode XHR forwards the real mobile UA too');
+    assert.strictEqual(upEcho[upEcho.length - 1].ua, PINNED_UA, 'vault mode XHR pins the desktop UA too');
   } finally { try { gw2.kill(); } catch (_) {} try { up2.close(); } catch (_) {} try { be2.close(); } catch (_) {} }
 });
