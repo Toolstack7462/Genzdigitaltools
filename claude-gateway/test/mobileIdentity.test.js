@@ -57,7 +57,7 @@ test.before(async () => {
   // Mock claude.ai: echoes the request headers + cookies it received as JSON. A cf_clearance
   // in the request cookie is echoed so we can assert which one reached upstream.
   upstream = http.createServer((q, r) => {
-    seen.push({ ua: q.headers['user-agent'], chm: q.headers['sec-ch-ua-mobile'], chua: q.headers['sec-ch-ua'], chplat: q.headers['sec-ch-ua-platform'], cookie: q.headers.cookie || '' });
+    seen.push({ ua: q.headers['user-agent'], chm: q.headers['sec-ch-ua-mobile'], chua: q.headers['sec-ch-ua'], chplat: q.headers['sec-ch-ua-platform'], model: q.headers['sec-ch-ua-model'], platver: q.headers['sec-ch-ua-platform-version'], cookie: q.headers.cookie || '' });
     r.writeHead(200, { 'content-type': 'text/html' });
     r.end('<html><head></head><body>ok</body></html>');
   });
@@ -112,6 +112,14 @@ async function navAs(deviceHeaders) {
   await get('/new', Object.assign({ cookie: sess, accept: 'text/html,application/xhtml+xml' }, deviceHeaders));
   return seen[seen.length - 1];
 }
+// Drive an XHR/API request (NON-HTML accept → the non-minimal branch of buildUpstreamHeaders, which
+// is the path that serves /api/* and was the one 75341b4 left with a desktop UA + mobile hints).
+async function xhrAs(pathName, deviceHeaders) {
+  const sess = await openSession();
+  seen = [];
+  await get(pathName, Object.assign({ cookie: sess, accept: 'application/json', 'sec-fetch-mode': 'cors', 'x-requested-with': 'XMLHttpRequest' }, deviceHeaders));
+  return seen[seen.length - 1];
+}
 
 test('desktop client → upstream sees the PINNED desktop identity (unchanged)', async () => {
   const up = await navAs({ 'user-agent': UA_DESKTOP, 'sec-ch-ua': '"Chromium";v="130"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"' });
@@ -139,6 +147,44 @@ test('iOS Safari (default) → rides the pinned desktop identity too', async () 
   assert.strictEqual(up.ua, PINNED_UA, 'iOS rides the pinned desktop UA (same working clearance path)');
   assert.match(up.chua, /Google Chrome/, 'pinned desktop sec-ch-ua sent');
   assert.strictEqual(up.chm, '?0');
+});
+
+// ── REGRESSION: the /api XHR (non-minimal) branch must be consistent too ──────
+// 75341b4 changed upstreamIdentity (fixing the HTML-nav/minimal branch) but LEFT the non-minimal
+// branch keeping the client's own MOBILE hints beside the now-desktop UA → every mobile /api/* call
+// went upstream as desktop-UA + mobile-hints → Cloudflare challenged them → the challenge_redirect
+// loop returned on API calls even though /new loaded. These tests pin BOTH the UA and the hints on
+// the XHR path. With the bug re-introduced, the model/mobile-flag assertions fail.
+test('REGRESSION: Android XHR/API (default) → desktop UA AND desktop hints, NO mobile hints leak', async () => {
+  const up = await xhrAs('/api/organizations', {
+    'user-agent': UA_ANDROID,
+    'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"', 'sec-ch-ua-mobile': '?1',
+    'sec-ch-ua-platform': '"Android"', 'sec-ch-ua-model': '"Pixel 8"', 'sec-ch-ua-platform-version': '"14.0.0"',
+  });
+  assert.strictEqual(up.ua, PINNED_UA, 'XHR mobile UA is the pinned desktop UA');
+  assert.strictEqual(up.chm, '?0', 'sec-ch-ua-mobile MUST be ?0 to match the desktop UA (was ?1 = the bug)');
+  assert.strictEqual(up.chplat, '"Windows"', 'platform pinned to Windows, not Android');
+  assert.match(up.chua, /Google Chrome/, 'pinned desktop sec-ch-ua');
+  assert.ok(up.model == null, 'the mobile high-entropy sec-ch-ua-model must NOT leak (Pixel 8 beside a Windows UA is a mismatch)');
+  assert.ok(up.platver == null, 'the mobile platform-version must NOT leak either');
+});
+
+test('REGRESSION: iOS XHR/API (default) → pinned desktop identity, no Apple hints', async () => {
+  const up = await xhrAs('/api/account_profile', { 'user-agent': UA_IPHONE });
+  assert.strictEqual(up.ua, PINNED_UA);
+  assert.strictEqual(up.chm, '?0');
+  assert.strictEqual(up.chplat, '"Windows"');
+});
+
+test('desktop XHR/API is unchanged: pinned low-entropy hints, its own high-entropy hints kept', async () => {
+  const up = await xhrAs('/api/organizations', {
+    'user-agent': UA_DESKTOP, 'sec-ch-ua': '"Chromium";v="130"', 'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"', 'sec-ch-ua-platform-version': '"15.0.0"',
+  });
+  assert.strictEqual(up.ua, PINNED_UA);
+  assert.strictEqual(up.chm, '?0');
+  assert.strictEqual(up.chplat, '"Windows"');
+  assert.strictEqual(up.platver, '"15.0.0"', 'desktop keeps its OWN (matching) high-entropy hints — purge is mobile-only');
 });
 
 test('desktop UA + desktop hints is byte-consistent across repeats (stable fingerprint)', async () => {
@@ -240,5 +286,9 @@ test('own mode: mobile forwards its REAL UA and the vault clearance is stripped 
     const up = upEcho[upEcho.length - 1];
     assert.strictEqual(up.ua, UA_ANDROID, 'own mode forwards the real mobile UA');
     assert.ok(!/cf_clearance=VAULTCF/.test(up.cookie), 'own mode strips the vault clearance');
+    // own mode must be consistent on the XHR/API (non-minimal) branch too: real mobile UA there as well.
+    upEcho.length = 0;
+    await g('/api/organizations', { cookie: sess, 'user-agent': UA_ANDROID, accept: 'application/json', 'sec-ch-ua-mobile': '?1' });
+    assert.strictEqual(upEcho[upEcho.length - 1].ua, UA_ANDROID, 'own mode XHR forwards the real mobile UA too');
   } finally { try { gw2.kill(); } catch (_) {} try { up2.close(); } catch (_) {} try { be2.close(); } catch (_) {} }
 });

@@ -176,6 +176,39 @@ expose an `aria-label` containing "effort", set `CLAUDE_EFFORT_TRIGGER_SEL` to t
 selector so detection is reliable (the heuristic requires an effort-labelled control to avoid
 mis-clicking).
 
+## Mobile Cloudflare identity — REGRESSION-SENSITIVE (claude-only, fixed 2026-07-22)
+
+**Design.** The gateway's egress is a datacenter IP, and the only Cloudflare `cf_clearance` that
+is valid for it is the vault's — minted (via *Capture through the gateway*) with the **pinned
+desktop User-Agent**. A `cf_clearance` is bound to *both* the egress IP and the exact UA that
+minted it. So **every client — desktop and mobile — must present that same pinned desktop identity
+upstream** to reuse the working clearance. A mobile phone stays a real phone in the browser; only
+the *upstream* HTTP identity is the desktop vault's. This is not a bypass: it reuses a
+legitimately-solved clearance, exactly as desktop does, and a valid clearance means Cloudflare
+never shows a challenge, so its in-browser fingerprint is never cross-checked.
+
+- Default: `CLAUDE_MOBILE_UPSTREAM=vault` (mobile rides the vault clearance + desktop identity).
+- Kill-switch: `CLAUDE_MOBILE_UPSTREAM=own` restores the older per-device path (real mobile UA +
+  the device solving its own clearance). Live logs proved a phone **cannot** solve its own
+  challenge through the proxy (`/api/challenge_redirect` loops 100%), so `own` is for A/B only.
+- `/__genz/health.claudeMobile.mobileRidesVaultClearance` reports the effective mode; a boot
+  warning fires if it (or CF passthrough) is misconfigured.
+
+**⚠ The regression-sensitive boundary.** In `server.js`, `buildUpstreamHeaders` builds upstream
+headers in **two** branches — `minimal` (top-level HTML navigation) and non-minimal (XHR / API /
+assets). **In BOTH branches the upstream User-Agent and the `sec-ch-ua*` client-hints MUST agree.**
+If the UA is the pinned desktop one but the hints are the phone's (`sec-ch-ua-mobile: ?1`,
+`sec-ch-ua-model: "Pixel 8"`, …), Cloudflare's fingerprint cross-check fails and challenges the
+request — and because Claude's app funnels a challenged call through `/api/challenge_redirect`
+(which cannot complete same-origin through a proxy), the mobile verification loop returns.
+
+Commit `75341b4` fixed the minimal branch (via `upstreamIdentity` → `...id.ch`) but left the
+non-minimal branch keeping the phone's own hints beside the now-desktop UA, so **HTML pages loaded
+but every `/api/*` call was challenged**. The fix pins the desktop hints (and purges leftover
+mobile high-entropy hints) for vault-mode mobile in the non-minimal branch too. Desktop is
+untouched. Guarded by `test/mobileIdentity.test.js` — the `REGRESSION:` XHR tests fail if the two
+branches ever disagree again. Do not "simplify" either branch without keeping UA ⇄ hints consistent.
+
 ## Mobile session renewal (claude-only, fixed 2026-07-21)
 
 **Symptom.** On a phone, once the 30-minute session expired, reopening Claude from the

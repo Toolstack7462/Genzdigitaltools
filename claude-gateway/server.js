@@ -1235,13 +1235,14 @@ function injectSupabaseBrowserSession(html, session, ctx) {
 // the UA + client-hints pinned and the proxy/hop headers stripped. UA is pinned
 // everywhere so a Cloudflare cf_clearance cookie (bound to its minting UA) stays valid.
 function buildUpstreamHeaders(req, upURL, session, minimal) {
-  // Desktop → the pinned desktop identity (byte-identical to before). Mobile → the
-  // client's own UA + client-hints, so Cloudflare's in-browser challenge fingerprint
-  // matches the HTTP headers and the phone can actually clear the challenge.
+  // REGRESSION-SENSITIVE (mobile ⇄ Cloudflare identity). Desktop AND vault-mode mobile → the pinned
+  // desktop identity (which the vault cf_clearance is bound to); only the 'own' kill-switch sends a
+  // real mobile UA. The UA and the client-hints MUST agree in BOTH branches below, or Cloudflare
+  // challenges every request. See upstreamIdentity + the non-minimal branch's boundary comment.
   const id = upstreamIdentity(req);
-  // `...id.ch` sits in the SAME position the pinned hints held before (right after
-  // user-agent) so the DESKTOP header set is byte- and order-identical to the original;
-  // for mobile it is the client's own hints instead.
+  // `...id.ch` sits in the SAME position the pinned hints held before (right after user-agent) so the
+  // header set is byte- and order-identical for desktop; for vault-mode mobile id.ua/id.ch are ALSO
+  // the desktop identity, so the minimal (HTML-nav) request is inherently consistent.
   let headers;
   if (minimal) {
     headers = {
@@ -1259,15 +1260,27 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
     headers = { ...req.headers };
     headers.host = upURL.host;
     headers['user-agent'] = id.ua;
-    if (isMobileClient(req)) {
-      // Mobile: keep the client's OWN sec-ch-ua* from the spread (do not overwrite with the
-      // desktop pins). Ensure the mobile flag is present so UA and hints agree.
+    // ┌─ REGRESSION-SENSITIVE: the mobile ⇄ Cloudflare identity boundary. DO NOT let the UA and the
+    // │  client-hints below disagree. `id.ua` is the PINNED DESKTOP UA for a mobile client in the
+    // │  default 'vault' mode (see upstreamIdentity + MOBILE_RIDES_VAULT), which is what the vault
+    // │  cf_clearance is bound to. If the hints here stay MOBILE while the UA is desktop, Cloudflare's
+    // │  fingerprint cross-check fails and every XHR/API call is challenged → the /api/challenge_redirect
+    // │  loop returns. That is precisely the regression commit 75341b4 left in THIS branch (it changed
+    // │  id.ua but not these hints). The minimal branch above is already consistent via `...id.ch`.
+    if (isMobileClient(req) && !MOBILE_RIDES_VAULT) {
+      // 'own' kill-switch ONLY (CLAUDE_MOBILE_UPSTREAM=own): the device sends its OWN real UA, so
+      // keep its OWN hints — UA and hints still agree (both mobile).
       if (headers['sec-ch-ua-mobile'] == null) headers['sec-ch-ua-mobile'] = '?1';
     } else {
-      // Desktop: pin the 3 low-entropy hints exactly as before, leaving any high-entropy
-      // client hints in place — unchanged behaviour.
+      // Desktop, AND vault-mode mobile: present the pinned desktop identity. For a mobile client we
+      // first PURGE every client-hint the spread carried, so no leftover mobile high-entropy hint
+      // (sec-ch-ua-model:"Pixel 8", sec-ch-ua-platform-version, …) survives beside the desktop
+      // sec-ch-ua — that pairing is itself a fingerprint mismatch. Desktop clients are untouched by
+      // the purge (they keep their own matching high-entropy hints exactly as before).
+      if (isMobileClient(req)) { for (const chh of CLIENT_CH_HEADERS) delete headers[chh]; }
       headers['sec-ch-ua'] = UPSTREAM_CH_UA; headers['sec-ch-ua-mobile'] = '?0'; headers['sec-ch-ua-platform'] = UPSTREAM_CH_PLATFORM;
     }
+    // └─ end mobile⇄Cloudflare identity boundary ─────────────────────────────────────────────────
     for (const h of STRIP_REQ_HEADERS) delete headers[h];
   }
   // Overlay/rewriting need uncompressed bodies.
