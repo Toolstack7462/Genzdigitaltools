@@ -57,7 +57,14 @@ test.before(async () => {
   // Mock claude.ai: echoes the request headers + cookies it received as JSON. A cf_clearance
   // in the request cookie is echoed so we can assert which one reached upstream.
   upstream = http.createServer((q, r) => {
-    seen.push({ ua: q.headers['user-agent'], chm: q.headers['sec-ch-ua-mobile'], chua: q.headers['sec-ch-ua'], chplat: q.headers['sec-ch-ua-platform'], model: q.headers['sec-ch-ua-model'], platver: q.headers['sec-ch-ua-platform-version'], cookie: q.headers.cookie || '' });
+    // rawHeaders preserves ARRIVAL ORDER, which is itself part of Cloudflare's fingerprint.
+    const order = []; for (let i = 0; i < q.rawHeaders.length; i += 2) order.push(String(q.rawHeaders[i]).toLowerCase());
+    seen.push({ ua: q.headers['user-agent'], chm: q.headers['sec-ch-ua-mobile'], chua: q.headers['sec-ch-ua'], chplat: q.headers['sec-ch-ua-platform'], model: q.headers['sec-ch-ua-model'], platver: q.headers['sec-ch-ua-platform-version'], cookie: q.headers.cookie || '', order });
+    // A genuine Cloudflare managed-challenge response, for the passthrough/notice branch.
+    if (q.url.split('?')[0] === '/api/challenge_redirect') {
+      r.writeHead(403, { 'content-type': 'text/html', server: 'cloudflare', 'cf-ray': '9abc123', 'cf-mitigated': 'challenge' });
+      return r.end('<html><body>Verifying you are human… <script>window.location.reload()</script></body></html>');
+    }
     r.writeHead(200, { 'content-type': 'text/html' });
     r.end('<html><head></head><body>ok</body></html>');
   });
@@ -205,9 +212,11 @@ test('COOKIE ISOLATION: one client’s cf_clearance never reaches upstream for a
   await get('/new', { cookie: sessB + '; cf_clearance=BBB_clientB', 'user-agent': UA_ANDROID, accept: 'text/html' });
   const upB = seen[seen.length - 1];
 
-  assert.match(upA.cookie, /cf_clearance=AAA_clientA/, 'client A’s own clearance is forwarded for A');
+  // The guarantee that matters is NON-LEAKAGE: no client's device cookie may ever appear in
+  // another client's upstream request. (Which clearance is USED is the separate vault-precedence
+  // contract below — in vault mode both clients ride the vault's, which is per-account, not
+  // per-device, and was never derived from either browser.)
   assert.ok(!/BBB_clientB/.test(upA.cookie), 'client B’s clearance never leaks into A’s request');
-  assert.match(upB.cookie, /cf_clearance=BBB_clientB/, 'client B’s own clearance is forwarded for B');
   assert.ok(!/AAA_clientA/.test(upB.cookie), 'client A’s clearance never leaks into B’s request');
 });
 
@@ -237,13 +246,99 @@ test('mobile (default) KEEPS the vault cf_clearance → rides the same working c
   assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie present → account stays logged in');
 });
 
-test('a device’s OWN browser cf_clearance still wins over the vault one when present', async () => {
+// ── REGRESSION (the recurring mobile CF loop): device clearance must NOT displace the vault's ──
+// 75341b4 switched mobile onto the pinned desktop identity + the vault clearance, but the CF
+// pass-through merge stayed b-wins, so ANY cf_clearance the phone happened to hold on this origin
+// silently replaced the vault's on the upstream leg. A phone's clearance is solved by a MOBILE
+// browser, so Cloudflare bound it to a mobile fingerprint — invalid for the desktop-UA request the
+// gateway now sends. Result: the one working clearance is dropped, /api/* is challenged, and Claude
+// funnels each challenge through the unsolvable /api/challenge_redirect → the reload-into-
+// verification loop. It is also exactly why the failure APPEARS after a few working minutes: a
+// fresh phone holds no CF cookie until a challenge response deposits one.
+test('REGRESSION: mobile (vault mode) — a device-held cf_clearance never displaces the vault one', async () => {
   const sess = await openSession();
   seen = [];
-  await get('/new', { cookie: sess + '; cf_clearance=MOBILE_OWN', 'user-agent': UA_ANDROID, accept: 'text/html' });
+  await get('/new', { cookie: sess + '; cf_clearance=MOBILE_OWN', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
   const up = seen[seen.length - 1];
-  assert.match(up.cookie, /cf_clearance=MOBILE_OWN/, 'the browser’s own clearance overrides the vault one');
-  assert.ok(!/VAULTCF/.test(up.cookie), 'and it is not shadowed by the vault clearance');
+  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'the VAULT clearance is what reaches Cloudflare (this is the fix)');
+  assert.ok(!/MOBILE_OWN/.test(up.cookie), 'the phone’s own (mobile-fingerprint) clearance must not be sent instead');
+  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'the account auth cookie is untouched — still logged in');
+});
+
+test('REGRESSION: the same holds on the XHR/API path, which is where the loop actually starts', async () => {
+  const sess = await openSession();
+  seen = [];
+  await get('/api/organizations', { cookie: sess + '; cf_clearance=MOBILE_OWN; __cf_bm=MOBILE_BM', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'application/json' });
+  const up = seen[seen.length - 1];
+  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'XHR rides the vault clearance too');
+  assert.ok(!/MOBILE_OWN/.test(up.cookie), 'no mobile-minted clearance on the API path');
+});
+
+test('mobile: a Cloudflare cookie the vault does NOT have is still forwarded (nothing is deleted)', async () => {
+  const sess = await openSession();
+  seen = [];
+  await get('/new', { cookie: sess + '; __cf_bm=DEVICE_BM', 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const up = seen[seen.length - 1];
+  assert.match(up.cookie, /__cf_bm=DEVICE_BM/, 'only a NAME CLASH is resolved in the vault’s favour; nothing is dropped');
+  assert.match(up.cookie, /cf_clearance=VAULTCF/);
+});
+
+test('DESKTOP IS UNCHANGED: a desktop-held cf_clearance still wins over the vault one', async () => {
+  const sess = await openSession();
+  seen = [];
+  await get('/new', { cookie: sess + '; cf_clearance=DESKTOP_OWN', 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
+  const up = seen[seen.length - 1];
+  assert.match(up.cookie, /cf_clearance=DESKTOP_OWN/, 'desktop precedence is byte-identical to before (it was never the bug)');
+  assert.ok(!/VAULTCF/.test(up.cookie), 'the vault clearance does not shadow the desktop one');
+});
+
+// ── The pinned client-hints must keep their POSITION for mobile ───────────────
+// 50cfb03 purged the phone's hints with `delete` and then re-assigned the pinned three, which
+// appends them at the END of the header list — an ordering only mobile clients get, and header
+// order is part of Cloudflare's fingerprint. Overwriting in place keeps mobile and desktop
+// structurally identical.
+test('REGRESSION: mobile’s pinned client-hints keep the same header POSITION as desktop’s', async () => {
+  // Chrome sends sec-ch-ua* EARLY — before user-agent, accept and accept-language. Reproduce that
+  // real ordering (xhrAs puts cookie/accept first, which would hide the defect) and drive the same
+  // request as each device, so the only variable is the purge.
+  const chromeOrder = (ua, hints) => Object.assign(
+    { 'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"' }, hints,
+    { 'user-agent': ua, accept: 'application/json', 'accept-language': 'en-US,en;q=0.9', 'sec-fetch-mode': 'cors' }
+  );
+  const run = async (headers) => {
+    const sess = await openSession();
+    seen = [];
+    await get('/api/organizations', Object.assign({ cookie: sess }, headers));
+    return seen[seen.length - 1];
+  };
+  const mob = await run(chromeOrder(UA_ANDROID, { 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"', 'sec-ch-ua-model': '"Pixel 8"' }));
+  const dsk = await run(chromeOrder(UA_DESKTOP, { 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"' }));
+  const idx = (o, n) => o.order.indexOf(n);
+  assert.ok(!mob.order.includes('sec-ch-ua-model'), 'the mobile high-entropy hint is still purged');
+  for (const h of ['sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']) {
+    assert.ok(idx(mob, h) >= 0, h + ' is sent upstream');
+    assert.ok(idx(mob, h) < idx(mob, 'user-agent'),
+      h + ' must keep its early Chrome slot — a delete+reassign appends it after user-agent/accept, an ordering only mobile would get');
+    assert.strictEqual(idx(mob, h) < idx(mob, 'accept'), idx(dsk, h) < idx(dsk, 'accept'),
+      h + ' sits on the same side of `accept` as it does for desktop');
+  }
+});
+
+// ── An unsolvable challenge must not become a reload loop ─────────────────────
+test('mobile: a Cloudflare challenge on a nav returns ONE recoverable notice, never a self-reloading page', async () => {
+  const sess = await openSession();
+  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  assert.strictEqual(r.status, 503, 'a recoverable notice, not the 403 challenge document');
+  assert.match(r.body, /try again/i, 'offers a MANUAL retry');
+  assert.ok(!/location\.reload|window\.location\s*=|http-equiv=["']?refresh/i.test(r.body), 'and nothing in it reloads or redirects on its own');
+  assert.ok(!/Verifying you are human/i.test(r.body), 'the self-reloading challenge document is not replayed');
+});
+
+test('DESKTOP IS UNCHANGED: a Cloudflare challenge is still passed through for the user to solve', async () => {
+  const sess = await openSession();
+  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
+  assert.strictEqual(r.status, 403, 'desktop still receives the real challenge');
+  assert.match(r.body, /Verifying you are human/i, 'byte-passed through, unmodified — we never bypass the check');
 });
 
 // ── 'own' kill-switch (CLAUDE_MOBILE_UPSTREAM=own) — the reversible fallback ───

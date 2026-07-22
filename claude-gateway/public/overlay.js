@@ -96,6 +96,10 @@
   // running during the outage and ends the session on time regardless.
   var GRACE_MS = (typeof CFG.validateGraceMs === 'number' ? CFG.validateGraceMs : 120000);
 
+  // A validation still outstanding after this long is not slow, it is abandoned — the tab was
+  // frozen mid-request. Only a resume event may retire it (see validate()).
+  var STALE_REQUEST_MS = 15000;
+
   var state = {
     secondsRemaining: 0,
     expiresAtMs: 0,        // absolute server-issued deadline; 0 = not yet known
@@ -107,8 +111,10 @@
     failures: 0,           // consecutive retryable failures (drives backoff)
     lastGoodAt: 0,
     inFlight: false,       // guards against overlapping validations corrupting state
+    inFlightSince: 0,      // when it started — a frozen tab can leave one outstanding forever
     retryTimer: null,
     lastResumeAt: 0,       // throttles the mobile resume re-check (see resumeCheck below)
+    gen: 0,                // session generation; bumped when a NEW lease replaces a dead one
     blockedModelNotified: false  // one-shot: the "Fable 5 is disabled" notice per page
   };
     var el = {};
@@ -239,6 +245,11 @@
   // restored tab or a replayed page can never renew anything on its own.
   function adoptRenewedSession() {
     log('session_renewed', { was_terminal: true });
+    // Bump the generation FIRST: any validation that was already in flight against the OLD
+    // session belongs to a session that no longer exists, and its (stale) expiry/countdown must
+    // never be applied on top of the new one. validate() below drops any response whose
+    // generation no longer matches.
+    state.gen += 1;
     state.terminal = false;
     state.friendlyShown = false;
     state.degraded = false;
@@ -254,8 +265,20 @@
   // server after the widget has given up. Everything else is identical.
   function validate(resume) {
     if (state.terminal && !resume) return Promise.resolve();
-    if (state.inFlight) return Promise.resolve();   // concurrent calls must not corrupt state
+    if (state.inFlight) {
+      // Concurrent calls must not corrupt state — but a tab frozen mid-request can leave a fetch
+      // that never settles, and this guard would then block EVERY later validation for the life of
+      // the page: the resumed tab keeps replaying stale state and never learns about the fresh
+      // lease a dashboard relaunch installed. On a RESUME event only, abandon a request that has
+      // been outstanding far longer than any real round-trip and start a clean one. Bumping the
+      // generation is what makes the abandoned response harmless if it ever does arrive.
+      if (!(resume && state.inFlightSince && (Date.now() - state.inFlightSince) > STALE_REQUEST_MS)) return Promise.resolve();
+      state.gen += 1;
+      log('validate_abandoned_stale', { age_ms: Date.now() - state.inFlightSince });
+    }
     state.inFlight = true;
+    state.inFlightSince = Date.now();
+    var gen = state.gen;                            // this response belongs to THIS session only
     // Claude holds only the OPAQUE HttpOnly session cookie (it cannot read the lease JWT), so it
     // validates via the gateway's own same-origin endpoint (cookie sent automatically) rather than
     // sending a Bearer token to the backend. Every other tool keeps the Bearer flow unchanged.
@@ -265,6 +288,9 @@
       : apiCall('/validate', {});
     return p.then(function (r) {
       state.inFlight = false;
+      // A response issued for a session that has since been replaced is stale by definition —
+      // dropping it is what stops an old verdict (or an old expiry) overwriting a fresh lease.
+      if (gen !== state.gen) { log('validate_stale_dropped', { gen: gen }); return; }
       if (r.status === 200 && r.body && r.body.valid) {
         if (state.terminal) adoptRenewedSession();   // a new authorized lease replaced the dead one
         adoptExpiry(r.body);
@@ -282,6 +308,7 @@
       onRetryableFailure('status_' + r.status);      // 429 / 5xx / malformed body / unknown code
     }).catch(function (e) {
       state.inFlight = false;
+      if (gen !== state.gen) return;                 // stale: belonged to a replaced session
       onRetryableFailure('network');                 // fetch rejected: offline, DNS, TLS, CORS
     });
   }

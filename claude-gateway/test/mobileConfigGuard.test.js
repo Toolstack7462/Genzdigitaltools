@@ -121,3 +121,21 @@ test('the mobile invariants are CLAUDE-ONLY (a non-claude gateway health has no 
     assert.doesNotMatch(gw.stderrBuf, /MOBILE CONFIG DRIFT/, 'non-claude tools never emit the claude mobile warning');
   } finally { gw.kill(); }
 });
+
+// ── Diagnostics must be legible without ever leaking a secret ────────────────
+// The mobile-vs-desktop CLASS is the single most important field for diagnosing a mobile-only
+// Cloudflare regression from the live log, and it was being blanked because the redaction list
+// matched the bare key `device`. Identifiers must stay redacted; a device class must not.
+test('safe logging: the device CLASS is readable, every identifier stays redacted', () => {
+  const fs = require('fs');
+  const src = fs.readFileSync(require('path').resolve(__dirname, '..', 'server.js'), 'utf8');
+  const m = src.match(/const REDACT_KEY_RE = (\/.+\/i);/);
+  assert.ok(m, 'REDACT_KEY_RE is still declared as a literal');
+  const re = eval(m[1]);   // the exact regex the gateway ships
+  assert.strictEqual(re.test('device'), false, "'device' (mobile|desktop) must be readable in the log");
+  for (const k of ['device_id', 'device-id', 'deviceId', 'cookie', 'set-cookie', 'authorization',
+                   'token', 'jwt', 'lease_id', 'sid', 'session', 'email', 'password', 'secret',
+                   'org', 'account_id', 'clearance']) {
+    assert.strictEqual(re.test(k), true, k + ' must still be redacted');
+  }
+});

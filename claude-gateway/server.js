@@ -116,6 +116,11 @@ const CLIENT_CH_HEADERS = [
   'sec-ch-ua-full-version-list', 'sec-ch-ua-full-version', 'sec-ch-ua-model',
   'sec-ch-ua-arch', 'sec-ch-ua-bitness', 'sec-ch-ua-wow64',
 ];
+// The three low-entropy hints we PIN to the desktop identity. They are overwritten in place
+// rather than purged-and-reappended, because deleting a key and re-adding it moves it to the
+// END of the header list — an ordering only mobile clients would get, which is itself a
+// fingerprint tell. See the non-minimal branch of buildUpstreamHeaders.
+const PINNED_CH_HEADERS = new Set(['sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform']);
 function isMobileClient(req) {
   const chm = String((req.headers && req.headers['sec-ch-ua-mobile']) || '');
   if (chm === '?1') return true;   // Chromium client hint — authoritative when present
@@ -618,7 +623,12 @@ async function getSession(token, jti) {
 // Redact anything that looks like a secret before it can reach a log line: emails, JWTs,
 // long hex/base64 blobs (cookie/token values), UUIDs (org/account/device ids) and known
 // sensitive keys. Callers already pass only counts/booleans, but this makes leakage impossible.
-const REDACT_KEY_RE = /(cookie|token|auth|authorization|secret|jwt|lease|sid|session|email|password|bearer|set-cookie|org|account|device|clearance)/i;
+// NOTE on `device`: this used to match the bare key `device`, whose only value anywhere in this
+// file is the literal string 'mobile' or 'desktop' — a device CLASS, not an identifier. Redacting
+// it made the mobile-vs-desktop diagnostics unreadable in the live log, which is precisely the
+// signal needed to diagnose a mobile-only Cloudflare regression. Narrowed to device *identifiers*
+// (device_id / device-id / deviceId), which stay redacted, as do org/account/clearance/lease ids.
+const REDACT_KEY_RE = /(cookie|token|auth|authorization|secret|jwt|lease|sid|session|email|password|bearer|set-cookie|org|account|device[_-]?id|clearance)/i;
 function redactValue(v) {
   if (v == null) return v;
   if (typeof v === 'number' || typeof v === 'boolean') return v;
@@ -935,7 +945,14 @@ function sendBlockPage(res, code) {
   // relaunch) still resolves to valid:false → stays expired, exactly as required. location.replace()
   // is a full navigation, so no stale terminal/countdown/validation state can survive into the new
   // session, and an in-flight guard + one-shot `done` flag stop a delayed response from acting twice.
-  const recover = (TOOL_KEY === 'claude')
+  //
+  // SCOPE (regression-sensitive): gated to `wipe`, i.e. the lease_* codes only — the states an
+  // authorized dashboard relaunch genuinely resolves. It must NOT ride along on a TRANSIENT block
+  // ('unavailable', 'session_expired', account/plan codes), because there the lease is still valid,
+  // so /__genz/validate answers valid:true and the page would navigate back into a screen that is
+  // still failing — a reload-on-temporary-error loop, driven once per app-switch. Temporary trouble
+  // is the notice page's job (manual retry, never automatic).
+  const recover = (TOOL_KEY === 'claude' && wipe)
     ? '<script>(function(){var GO=' + JSON.stringify(DEFAULT_PATH || '/') + ';var busy=false,done=false,last=0;'
       + 'function chk(){if(done||busy)return;var n=Date.now();if(n-last<2500)return;last=n;busy=true;'
       + "try{fetch('/__genz/validate',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json'}})"
@@ -955,10 +972,14 @@ a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:
 <body><div class="card"><h1>${TOOL_NAME} session ended</h1><p>${msg}</p>
 <a href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></body></html>`;
   const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
-  // Standards-based equivalent of the script above, for browsers that honour it (Chrome/
-  // Android). Deliberately NOT "cookies": the vault's per-device Cloudflare clearance lives
-  // in cookies on this origin and re-solving a challenge on every expiry would be worse than
-  // the bug. Safari ignores the header, which is why the inline script exists too.
+  // REGRESSION-SENSITIVE (session ⇄ Cloudflare boundary). Standards-based equivalent of the
+  // script above, for browsers that honour it (Chrome/Android). The directive list is
+  // deliberately "cache", "storage" and MUST NEVER gain "cookies" or "*": Cloudflare clearance
+  // and the opaque session both live in cookies on this origin, and clearing them on every
+  // expiry would force a fresh challenge the proxy cannot help solve — i.e. it would recreate
+  // the verification loop this whole file exists to prevent. Renewing a lease replaces the
+  // application lease and nothing else. Safari ignores the header, which is why the inline
+  // script exists too — and it, likewise, touches only caches and DOM storage.
   if (wipe && TOOL_KEY === 'claude') headers['clear-site-data'] = '"cache", "storage"';
   res.writeHead(403, headers);
   res.end(html);
@@ -1277,7 +1298,10 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
       // (sec-ch-ua-model:"Pixel 8", sec-ch-ua-platform-version, …) survives beside the desktop
       // sec-ch-ua — that pairing is itself a fingerprint mismatch. Desktop clients are untouched by
       // the purge (they keep their own matching high-entropy hints exactly as before).
-      if (isMobileClient(req)) { for (const chh of CLIENT_CH_HEADERS) delete headers[chh]; }
+      // Purge ONLY the hints we do not pin, and overwrite the pinned three IN PLACE: a
+      // delete-then-reassign appends them at the end of the header list, giving mobile a
+      // header ORDER no real Chrome produces (order is part of Cloudflare's fingerprint).
+      if (isMobileClient(req)) { for (const chh of CLIENT_CH_HEADERS) if (!PINNED_CH_HEADERS.has(chh)) delete headers[chh]; }
       headers['sec-ch-ua'] = UPSTREAM_CH_UA; headers['sec-ch-ua-mobile'] = '?0'; headers['sec-ch-ua-platform'] = UPSTREAM_CH_PLATFORM;
     }
     // └─ end mobile⇄Cloudflare identity boundary ─────────────────────────────────────────────────
@@ -1318,10 +1342,39 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
     // CF pass-through: also forward the browser's Cloudflare cookies (cf_clearance /
     // __cf_bm / cf_chl*) so a challenge solved through THIS gateway reaches the upstream
     // together with the vault session. Only Cloudflare-managed cookies are forwarded.
+    // ┌─ REGRESSION-SENSITIVE: the mobile ⇄ Cloudflare CLEARANCE boundary. This is the third and
+    // │  last place the "mobile rides the vault clearance" decision has to be honoured (the other
+    // │  two are upstreamIdentity and the two buildUpstreamHeaders branches above).
+    // │
+    // │  mergeCookieHeaders is b-wins, so `merge(vault, browserCf)` lets ANY Cloudflare cookie the
+    // │  device happens to hold on this origin REPLACE the vault's on the upstream leg. On desktop
+    // │  that is harmless: the device's clearance was minted through this same gateway, from this
+    // │  same egress IP, under the same pinned desktop UA, so the two are interchangeable.
+    // │
+    // │  On MOBILE in the default 'vault' mode it is the bug. The gateway now presents the pinned
+    // │  DESKTOP identity upstream, but a clearance the phone obtained was solved by a MOBILE
+    // │  browser, so Cloudflare bound it to a mobile fingerprint. Letting it override the vault's
+    // │  clearance silently undoes the entire fix: the one clearance that is valid for this egress
+    // │  IP is dropped, every /api/* call is challenged, Claude's app funnels each challenge through
+    // │  /api/challenge_redirect, and an interactive challenge cannot complete same-origin through a
+    // │  reverse proxy — the reload-into-verification loop. It also explains the "works, then breaks"
+    // │  shape: a fresh phone has no CF cookie of its own and rides the vault clearance happily until
+    // │  the first challenge response deposits one, after which every request is poisoned.
+    // │
+    // │  So in vault mode a mobile client merges the OTHER way round — the vault's Cloudflare
+    // │  cookies WIN. Nothing is deleted: a browser CF cookie the vault does not have is still
+    // │  forwarded, so a device is never left worse off than before. DESKTOP AND 'own' MODE KEEP
+    // │  THE ORIGINAL b-wins ORDER, byte for byte.
     if (CF_CHALLENGE_PASSTHROUGH) {
       const cf = extractCfCookies(req.headers.cookie);
-      if (cf) headers.cookie = mergeCookieHeaders(headers.cookie, cf);
+      if (cf) {
+        const vaultWins = TOOL_KEY === 'claude' && MOBILE_RIDES_VAULT && isMobileClient(req);
+        headers.cookie = vaultWins
+          ? mergeCookieHeaders(cf, headers.cookie)   // vault clearance survives the merge
+          : mergeCookieHeaders(headers.cookie, cf);  // unchanged for desktop / 'own' mode
+      }
     }
+    // └─ end mobile ⇄ Cloudflare clearance boundary ────────────────────────────────────────────
     // Claude NATIVE workspace switch: claude.ai's own account dropdown sets `lastActiveOrg`
     // client-side when the user picks a workspace. Browser cookies are otherwise stripped before
     // upstream, so forward JUST that one native preference (overriding the vault default) — this
@@ -1480,6 +1533,11 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           content_type: ct.split(';')[0] || null,
           asset_rewrite_applied: !!asset_rewrite_applied,
           redirected_to_login: redirectedToLogin,
+          // Redirect chain, PATH ONLY — the query string is dropped because a redirect target can
+          // carry a one-time token. This is what makes a reload/redirect loop legible in the log
+          // alongside cid + instance + latency, without ever recording a credential.
+          redirect_to: (uRes.statusCode >= 300 && uRes.statusCode < 400 && rawLoc) ? String(rawLoc).split('?')[0].slice(0, 200) : null,
+          cf_challenge: !!cfChallengeDetected,
           upstream_error: (uRes.statusCode >= 500 ? 'upstream_5xx' : cfChallengeDetected ? 'cf_challenge' : uRes.statusCode === 403 ? 'forbidden' : uRes.statusCode === 429 ? 'rate_limited' : null),
           device: isMobileClient(req) ? 'mobile' : 'desktop',
           cookies_attached: (session && session.cookieCount) || 0,
@@ -1518,9 +1576,33 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
+      // ┌─ REGRESSION-SENSITIVE: no self-reloading challenge on the one path that cannot clear.
+      // │  A Cloudflare managed challenge is solved by JS in the CLIENT's browser. In the default
+      // │  'vault' mode a mobile client's upstream leg carries the pinned DESKTOP identity, so the
+      // │  in-browser fingerprint and the HTTP request can never agree and the challenge cannot
+      // │  complete (live evidence: /api/challenge_redirect 54/54 hits, none ever cleared). The
+      // │  challenge page refreshes itself, which IS the "reloads three or four times and ends on
+      // │  the verification page" the client sees. Serve ONE recoverable notice with a manual retry
+      // │  instead — nothing is bypassed, weakened or auto-solved; we simply stop replaying a
+      // │  verification the proxy has no legitimate way to satisfy. Desktop (which CAN solve it,
+      // │  its fingerprint matches) and the 'own' kill-switch keep the passthrough unchanged.
+      if (cfPassthrough && isHtmlNav && !ctx.asset && TOOL_KEY === 'claude' && MOBILE_RIDES_VAULT && isMobileClient(req)) {
+        logIt(false); uRes.resume();
+        safeLog('cf_challenge_unsolvable', {
+          cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
+          upstream_status: uRes.statusCode, device: 'mobile', reload_reason: 'cf_challenge_nav',
+          latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null, lease_id: ctx.jti || null,
+        });
+        return sendNoticePage(res, {
+          status: 503,
+          title: `${TOOL_NAME} needs a moment`,
+          msg: `${TOOL_NAME} asked for a security check we could not complete for you automatically. Your session is still active — please try again.`,
+        });
+      }
+      // └─ end unsolvable-challenge guard ───────────────────────────────────────────────────────
       // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
       // without ever logging a cookie, token or the UA string itself.
-      if (cfPassthrough) safeLog('cf_challenge_passthrough', { request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: isMobileClient(req) ? 'mobile' : 'desktop', lease_id: ctx.jti || null });
+      if (cfPassthrough) safeLog('cf_challenge_passthrough', { cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: isMobileClient(req) ? 'mobile' : 'desktop', lease_id: ctx.jti || null });
 
       const outHeaders = {};
       for (const [k, v] of Object.entries(uRes.headers)) {

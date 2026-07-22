@@ -209,6 +209,39 @@ mobile high-entropy hints) for vault-mode mobile in the non-minimal branch too. 
 untouched. Guarded by `test/mobileIdentity.test.js` — the `REGRESSION:` XHR tests fail if the two
 branches ever disagree again. Do not "simplify" either branch without keeping UA ⇄ hints consistent.
 
+**⚠ The THIRD point of the same boundary — the clearance itself (fixed 2026-07-22).** Presenting
+the desktop identity is only half of "mobile rides the vault clearance"; the vault's clearance also
+has to *survive the cookie merge*. `mergeCookieHeaders` is **b-wins**, and the Cloudflare
+pass-through called `merge(vaultCookies, browserCfCookies)` — so **any `cf_clearance` the phone
+happened to hold on this origin silently replaced the vault's on the upstream leg**. A phone's
+clearance is solved by a *mobile* browser, so Cloudflare bound it to a mobile fingerprint: it is
+invalid for the desktop-UA request the gateway now sends. The result was the exact reported
+symptom — Claude opens and works, then a few reloads later lands on the Cloudflare verification
+page — and it is "delayed" because a fresh phone holds no CF cookie until a challenge response
+deposits one, after which every request is poisoned and it never self-heals.
+
+In vault mode a **mobile** client now merges the other way round (`merge(browserCf, vaultCookies)`),
+so the vault's Cloudflare cookies win a name clash. Nothing is deleted: a browser CF cookie the
+vault does not have is still forwarded. **Desktop and `own` mode keep the original b-wins order
+byte for byte** — a desktop device's clearance was minted through this same gateway under the same
+pinned UA, so it was never the problem.
+
+Two supporting guards landed with it, both mobile-only:
+
+- The pinned hints are now overwritten **in place** instead of `delete`d and re-assigned. A
+  delete-then-reassign appends them at the *end* of the header list, giving mobile a header
+  **order** no real Chrome produces — header order is itself part of Cloudflare's fingerprint.
+- A detected Cloudflare challenge on a mobile top-level navigation is answered with **one
+  recoverable notice page** (manual "Try again") instead of the real challenge document. In vault
+  mode that challenge provably cannot clear — the in-browser fingerprint and the upstream identity
+  can never agree — and the challenge page refreshes itself, which *is* the "reloads three or four
+  times" the client sees. Nothing is bypassed, weakened or auto-solved; we just stop replaying a
+  verification the proxy has no legitimate way to satisfy. **Desktop still receives the real
+  challenge, unmodified**, because desktop can actually solve it.
+
+Guarded by the `REGRESSION:` cookie-precedence, header-order and challenge-notice tests in
+`test/mobileIdentity.test.js`, each of which fails if the corresponding change is reverted.
+
 ## Mobile session renewal (claude-only, fixed 2026-07-21)
 
 **Symptom.** On a phone, once the 30-minute session expired, reopening Claude from the
@@ -271,6 +304,33 @@ Chrome, iPhone Safari and Desktop, asserting desktop behaviour is unchanged.
 `backend/tests/overlayValidation.test.js` §13 (6 tests) loads the shipped `overlay.js` into a
 virtual-clock sandbox and fires the real resume events; §13e/§13f assert that **only** the
 Claude overlay registers them and every other gateway is untouched.
+
+### Follow-up hardening (2026-07-22) — renewal must never turn into a reload loop
+
+- **The block-page recovery is scoped to `lease_*` codes only.** It exists to notice that an
+  authorized dashboard relaunch happened, which is meaningful only when the session actually
+  ended. On a *transient* block (`unavailable`, `session_expired`, account/plan codes) the lease
+  is still valid, so `/__genz/validate` answers `valid:true` and the page would `location.replace`
+  straight back into a screen that is still failing — a reload-on-temporary-error loop, one
+  bounce per app-switch. Temporary trouble stays on the notice page, with a **manual** retry.
+- **A frozen tab no longer stalls validation forever.** A tab frozen mid-`/__genz/validate` can
+  leave a fetch that never settles; `state.inFlight` then blocked every later validation for the
+  life of the page, so the resumed tab kept replaying stale state and never learned about the
+  fresh lease. On a resume event only, a request outstanding for more than 15s is abandoned and
+  a clean one is issued.
+- **A stale response can never overwrite a newly issued session.** `state.gen` is bumped whenever
+  a session is replaced or a request is abandoned, and a response whose generation no longer
+  matches is dropped — so the dead session's verdict or expiry cannot land on top of a live
+  30-minute lease. Enforcement is unchanged: a denial for the *current* session is still terminal
+  immediately. Covered by `test/overlayStaleResponse.test.js` (4 tests).
+- **Diagnostics.** The proxy log record carries `cid` + `instance` + `latency_ms` (already), plus
+  `redirect_to` (redirect chain, **path only** — the query is dropped because a redirect target
+  can carry a one-time token) and `cf_challenge`. An unsolvable mobile challenge logs
+  `cf_challenge_unsolvable` with `reload_reason`. The redaction list no longer blanks the bare
+  `device` key — its only value anywhere is the literal `mobile`/`desktop` **class**, which is the
+  one field that makes a mobile-only regression legible in the live log; every *identifier*
+  (`device_id`, cookies, tokens, leases, sessions, orgs, accounts, emails) is still redacted, and
+  that split is asserted by a test in `test/mobileConfigGuard.test.js`.
 
 ## File downloads (claude-only, fixed 2026-07-21)
 

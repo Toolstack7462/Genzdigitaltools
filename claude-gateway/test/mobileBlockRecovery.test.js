@@ -69,7 +69,12 @@ function sessionCookieFrom(res) {
 }
 
 test.before(async () => {
-  upstream = http.createServer((q, r) => { r.writeHead(200, { 'content-type': 'text/html' }); r.end('<html><head></head><body>CLAUDE_APP_OK</body></html>'); });
+  upstream = http.createServer((q, r) => {
+    // A plain (non-Cloudflare) upstream 403 on a nav → the TRANSIENT 'unavailable' block page,
+    // i.e. a block served while the lease is still perfectly valid.
+    if (q.url.split('?')[0] === '/__deny') { r.writeHead(403, { 'content-type': 'text/html' }); return r.end('<html><body>Forbidden</body></html>'); }
+    r.writeHead(200, { 'content-type': 'text/html' }); r.end('<html><head></head><body>CLAUDE_APP_OK</body></html>');
+  });
   backend = http.createServer((q, r) => {
     let body = ''; q.on('data', c => body += c);
     q.on('end', () => {
@@ -100,6 +105,30 @@ test('the claude expired block page carries the mobile resume-recovery re-check'
     assert.match(r.body, /"\/new"/, 'target is DEFAULT_PATH (/new)');
     // Crucially it must NOT auto-recover on first paint (only resume events) — no bare onload redirect.
     assert.ok(!/onload\s*=\s*["']?location/.test(r.body), 'never redirects on initial load (a genuine expiry stays expired)');
+  } finally { gw.kill(); }
+});
+
+// ── SCOPE: the recovery belongs to an ENDED session, never to a temporary failure ──────────
+// On a transient block the lease is still valid, so /__genz/validate answers valid:true. If the
+// recovery rode along there, every app-switch would location.replace() straight back into a page
+// that is still failing — a reload-on-temporary-error loop. Temporary trouble must stay on a
+// manual-retry notice instead.
+test('a TRANSIENT block page (lease still valid) carries NO auto-recovery', async () => {
+  const PORT = 3716; const gw = bootGateway(PORT);
+  try {
+    await waitHealth(PORT);
+    const open = await reqTo(PORT, 'GET', '/gateway?lease=' + encodeURIComponent(mintLease()));
+    const cookie = sessionCookieFrom(open);
+    assert.ok(cookie, 'a valid session was installed');
+    const r = await reqTo(PORT, 'GET', '/__deny', { accept: 'text/html', cookie });
+    assert.strictEqual(r.status, 403, 'upstream 403 on a nav → the block page');
+    assert.match(r.body, /could not be verified/i, 'the TRANSIENT "unavailable" block page');
+    assert.ok(!/__genz\/validate/.test(r.body), 'no re-check: the lease is valid, so it would bounce back into the failing page');
+    assert.ok(!/location\.replace/.test(r.body), 'and nothing navigates on its own');
+    // The genuinely-ended page still recovers — the two must not be conflated.
+    const ended = await reqTo(PORT, 'GET', '/new', { accept: 'text/html' });
+    assert.strictEqual(ended.status, 403);
+    assert.match(ended.body, /__genz\/validate/, 'an ENDED session page keeps its dashboard-relaunch recovery');
   } finally { gw.kill(); }
 });
 
