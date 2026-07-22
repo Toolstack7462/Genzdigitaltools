@@ -1,8 +1,15 @@
 'use strict';
 /**
- * Claude mobile Cloudflare-challenge fix — the gateway must present a DEVICE-CONSISTENT
- * identity upstream so Cloudflare's in-browser challenge fingerprint matches the HTTP
- * headers (desktop pinned unchanged; mobile forwards its own honest UA + client-hints).
+ * Claude mobile Cloudflare-challenge fix (CORRECTED 2026-07-22 from live-log evidence).
+ *
+ * The gateway's egress is a datacenter IP whose ONLY valid Cloudflare cf_clearance is the vault's,
+ * minted with the pinned DESKTOP UA. Live logs proved a mobile client that sends its own UA + has
+ * the vault clearance stripped is challenged on ~every /api/* call and then loops forever on the
+ * unsolvable /api/challenge_redirect. So by DEFAULT ('vault' mode) a mobile client now rides the
+ * SAME pinned desktop upstream identity + reused vault clearance as desktop — the browser stays
+ * mobile, only the upstream HTTP identity is the desktop vault's. The previous per-device behaviour
+ * (real mobile UA + own clearance) is kept ONLY as the reversible CLAUDE_MOBILE_UPSTREAM=own
+ * kill-switch, and is still covered at the bottom of this file against a second gateway process.
  *
  * Boots the REAL claude-gateway/server.js against a mock upstream that echoes the headers
  * (and cookies) it received, then drives a full lease → nav for desktop and several mobile
@@ -114,26 +121,24 @@ test('desktop client → upstream sees the PINNED desktop identity (unchanged)',
   assert.strictEqual(up.chplat, '"Windows"', 'desktop platform pinned');
 });
 
-test('Android Chrome → upstream sees the REAL mobile identity, not desktop', async () => {
+test('Android Chrome (default) → upstream rides the PINNED desktop identity so the vault clearance matches', async () => {
   const up = await navAs({ 'user-agent': UA_ANDROID, 'sec-ch-ua': '"Chromium";v="130", "Google Chrome";v="130"', 'sec-ch-ua-mobile': '?1', 'sec-ch-ua-platform': '"Android"' });
-  assert.strictEqual(up.ua, UA_ANDROID, 'mobile UA is forwarded verbatim');
-  assert.strictEqual(up.chm, '?1', 'sec-ch-ua-mobile forwarded as ?1');
-  assert.strictEqual(up.chplat, '"Android"', 'real Android platform forwarded');
-  assert.notStrictEqual(up.ua, PINNED_UA, 'mobile is NOT rewritten to the desktop UA');
+  assert.strictEqual(up.ua, PINNED_UA, 'mobile rides the pinned desktop UA (matches the vault cf_clearance)');
+  assert.strictEqual(up.chm, '?0', 'sec-ch-ua-mobile pinned to ?0 to match the desktop-minted clearance');
+  assert.strictEqual(up.chplat, '"Windows"', 'pinned desktop platform, not the phone’s');
 });
 
-test('Android UA with NO client-hints → detected mobile, real UA, mobile flag synthesised', async () => {
+test('Android UA with NO client-hints (default) → still rides the pinned desktop identity', async () => {
   const up = await navAs({ 'user-agent': UA_ANDROID });
-  assert.strictEqual(up.ua, UA_ANDROID);
-  // No hints were sent, so we do not invent a full sec-ch-ua; UA regex still classes it mobile.
-  assert.notStrictEqual(up.ua, PINNED_UA);
+  assert.strictEqual(up.ua, PINNED_UA);
+  assert.strictEqual(up.chm, '?0');
 });
 
-test('iOS Safari → real Safari UA forwarded, and NO fake sec-ch-ua invented', async () => {
+test('iOS Safari (default) → rides the pinned desktop identity too', async () => {
   const up = await navAs({ 'user-agent': UA_IPHONE });
-  assert.strictEqual(up.ua, UA_IPHONE, 'Safari UA forwarded verbatim');
-  assert.ok(up.chua == null || up.chua === undefined, 'no sec-ch-ua invented for Safari (bot tell)');
-  assert.ok(up.chm == null || up.chm === undefined, 'no sec-ch-ua-mobile invented for Safari');
+  assert.strictEqual(up.ua, PINNED_UA, 'iOS rides the pinned desktop UA (same working clearance path)');
+  assert.match(up.chua, /Google Chrome/, 'pinned desktop sec-ch-ua sent');
+  assert.strictEqual(up.chm, '?0');
 });
 
 test('desktop UA + desktop hints is byte-consistent across repeats (stable fingerprint)', async () => {
@@ -169,27 +174,71 @@ test('the lease cookie itself is NEVER forwarded upstream', async () => {
   assert.ok(!/claude_session/.test(up.cookie), 'opaque session cookie never reaches the upstream');
 });
 
-// ── Per-device Cloudflare clearance ──────────────────────────────────────────
-// cf_clearance is bound to the UA (and egress IP) that minted it. The vault's clearance
-// is minted with the pinned DESKTOP UA, so sending it alongside a real mobile UA is a
-// guaranteed Cloudflare rejection → endless challenge. Clearance must be per-device.
+// ── Shared vault Cloudflare clearance (default 'vault' mode) ──────────────────
+// The vault clearance is the ONLY one valid for this gateway's datacenter egress IP, and it is
+// bound to the pinned desktop UA. Because mobile now also rides that pinned desktop UA (above),
+// mobile can — and must — reuse the SAME vault clearance as desktop. That is exactly what keeps
+// a mobile client OFF the unsolvable /api/challenge_redirect loop.
 test('desktop KEEPS the vault cf_clearance (UA matches the minting UA)', async () => {
   const up = await navAs({ 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0' });
   assert.match(up.cookie, /cf_clearance=VAULTCF/, 'desktop still uses the vault clearance');
   assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie present');
 });
 
-test('mobile does NOT receive the desktop-minted vault cf_clearance (UA mismatch)', async () => {
+test('mobile (default) KEEPS the vault cf_clearance → rides the same working clearance as desktop', async () => {
   const up = await navAs({ 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1' });
-  assert.ok(!/cf_clearance=VAULTCF/.test(up.cookie), 'vault (desktop-UA) clearance must NOT be sent with a mobile UA');
-  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie STILL sent → account stays logged in');
+  assert.match(up.cookie, /cf_clearance=VAULTCF/, 'mobile now reuses the vault clearance (matched by the pinned desktop UA)');
+  assert.match(up.cookie, /sessionKey=VAULT_SECRET/, 'auth cookie present → account stays logged in');
 });
 
-test('mobile USES ITS OWN solved clearance when it has one', async () => {
+test('a device’s OWN browser cf_clearance still wins over the vault one when present', async () => {
   const sess = await openSession();
   seen = [];
   await get('/new', { cookie: sess + '; cf_clearance=MOBILE_OWN', 'user-agent': UA_ANDROID, accept: 'text/html' });
   const up = seen[seen.length - 1];
-  assert.match(up.cookie, /cf_clearance=MOBILE_OWN/, 'the device’s own clearance is forwarded');
+  assert.match(up.cookie, /cf_clearance=MOBILE_OWN/, 'the browser’s own clearance overrides the vault one');
   assert.ok(!/VAULTCF/.test(up.cookie), 'and it is not shadowed by the vault clearance');
+});
+
+// ── 'own' kill-switch (CLAUDE_MOBILE_UPSTREAM=own) — the reversible fallback ───
+// Boots a SECOND gateway process in the old per-device mode and confirms it still behaves the old
+// way (real mobile UA forwarded, vault clearance stripped). This documents the escape hatch and
+// proves the default vs kill-switch really diverge.
+test('own mode: mobile forwards its REAL UA and the vault clearance is stripped (old behaviour preserved)', async () => {
+  const upEcho = []; let up2, be2, gw2;
+  be2 = http.createServer((q, r) => {
+    let body = ''; q.on('data', c => body += c);
+    q.on('end', () => {
+      r.setHeader('content-type', 'application/json');
+      if (q.url.endsWith('/session')) return r.end(JSON.stringify({ ok: true, account: { id: 'acc1', maskedId: 'a***1' }, bundle: { cookies: [{ name: 'sessionKey', value: 'VAULT_SECRET' }, { name: 'cf_clearance', value: 'VAULTCF' }] } }));
+      if (q.url.endsWith('/validate')) return r.end(JSON.stringify({ valid: true, secondsRemaining: 1800 }));
+      r.end('{}');
+    });
+  });
+  await new Promise((res) => be2.listen(0, res));
+  up2 = http.createServer((q, r) => { upEcho.push({ ua: q.headers['user-agent'], cookie: q.headers.cookie || '' }); r.writeHead(200, { 'content-type': 'text/html' }); r.end('<html></html>'); });
+  await new Promise((res) => up2.listen(0, res));
+  const PORT2 = 18861;
+  const env = Object.assign({}, process.env, {
+    PORT: String(PORT2), TOOL_KEY: 'claude', TOOL_NAME: 'Claude AI',
+    TARGET_ORIGIN: 'http://127.0.0.1:' + up2.address().port,
+    GATEWAY_PUBLIC_ORIGIN: 'http://127.0.0.1:' + PORT2, DEFAULT_PATH: '/new', SIGNIN_PATH: '/login',
+    API_BASE: 'http://127.0.0.1:' + be2.address().port + '/api', LEASE_SECRET: SECRET, GATEWAY_KEY: 'k'.repeat(32),
+    CF_CHALLENGE_PASSTHROUGH: '1', CF_CHALLENGE_MODE: 'passthrough', IDENTITY_SHIELD: '0', PROXY_LOG_ALL: '0',
+    CLAUDE_MOBILE_UPSTREAM: 'own',
+  });
+  gw2 = spawn(process.execPath, ['server.js'], { cwd: GW, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const started = Date.now();
+    const g = (p, h) => new Promise((resolve) => { const r = http.request({ port: PORT2, path: p, method: 'GET', headers: h || {} }, (res) => { const b = []; res.on('data', c => b.push(c)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(b).toString('utf8') })); }); r.on('error', () => resolve({ status: 0, headers: {}, body: '' })); r.end(); });
+    while (Date.now() - started < 15000) { if ((await g('/__genz/health')).status === 200) break; await new Promise(r => setTimeout(r, 200)); }
+    const lease = mintLease();
+    const so = await g('/gateway?lease=' + encodeURIComponent(lease), { 'user-agent': UA_DESKTOP });
+    const sess = [].concat(so.headers['set-cookie'] || []).find(c => /claude_session=/.test(c)).split(';')[0];
+    upEcho.length = 0;
+    await g('/new', { cookie: sess, 'user-agent': UA_ANDROID, accept: 'text/html' });
+    const up = upEcho[upEcho.length - 1];
+    assert.strictEqual(up.ua, UA_ANDROID, 'own mode forwards the real mobile UA');
+    assert.ok(!/cf_clearance=VAULTCF/.test(up.cookie), 'own mode strips the vault clearance');
+  } finally { try { gw2.kill(); } catch (_) {} try { up2.close(); } catch (_) {} try { be2.close(); } catch (_) {} }
 });

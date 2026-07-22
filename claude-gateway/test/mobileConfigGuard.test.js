@@ -81,17 +81,18 @@ test('MOBILE-SAFE config → health reports claudeMobile.mobileReady:true and ev
     assert.strictEqual(body.claudeMobile.mobileReady, true, 'mobileReady must be true when all invariants hold');
     assert.strictEqual(body.claudeMobile.cfChallengePassthrough, true);
     assert.strictEqual(body.claudeMobile.cfChallengeMode, 'passthrough');
-    assert.strictEqual(body.claudeMobile.perDeviceClearance, true);
+    assert.strictEqual(body.claudeMobile.mobileRidesVaultClearance, true);
     assert.strictEqual(body.claudeMobile.durableSessionStore, true, 'tmp/sessions must be writable');
     assert.doesNotMatch(gw.stderrBuf + gw.stdoutBuf, /MOBILE CONFIG DRIFT/, 'no drift warning when correctly configured');
   } finally { gw.kill(); }
 });
 
-test('DRIFTED config (no passthrough + per-device clearance off) → health flags it AND the boot warns loud', async () => {
+test('DRIFTED config (no passthrough + mobile upstream=own) → health flags it AND the boot warns loud', async () => {
   const PORT = 3612;
-  // Exactly the regression: CF passthrough removed (→ mode defaults to 'block') and the
-  // per-device clearance kill-switch set. This is the state that made phones loop on verification.
-  const gw = bootGateway(PORT, { CF_CHALLENGE_PASSTHROUGH: '', CLAUDE_PER_DEVICE_CLEARANCE: '0' });
+  // Exactly the regression: CF passthrough removed (→ mode defaults to 'block') and the mobile
+  // upstream flipped to the 'own' kill-switch (real mobile UA + vault clearance stripped). That is
+  // the state that puts phones back on the unsolvable /api/challenge_redirect verification loop.
+  const gw = bootGateway(PORT, { CF_CHALLENGE_PASSTHROUGH: '', CLAUDE_MOBILE_UPSTREAM: 'own' });
   try {
     const h = await waitHealth(PORT);
     // Still a 200 (not fatal — documented kill-switches exist), but clearly marked not-mobile-ready.
@@ -101,12 +102,12 @@ test('DRIFTED config (no passthrough + per-device clearance off) → health flag
     assert.strictEqual(body.claudeMobile.mobileReady, false, 'mobileReady must be false under drift');
     assert.strictEqual(body.claudeMobile.cfChallengePassthrough, false);
     assert.notStrictEqual(body.claudeMobile.cfChallengeMode, 'passthrough');
-    assert.strictEqual(body.claudeMobile.perDeviceClearance, false);
+    assert.strictEqual(body.claudeMobile.mobileRidesVaultClearance, false);
     // The loud boot warning is the signal that stops a silent regression.
     await new Promise(r => setTimeout(r, 200)); // let the listen callback flush
     assert.match(gw.stderrBuf, /MOBILE CONFIG DRIFT/, 'boot must warn loudly about mobile config drift');
     assert.match(gw.stderrBuf, /cfChallengePassthrough/, 'the warning names the offending flags');
-    assert.match(gw.stderrBuf, /perDeviceClearance/);
+    assert.match(gw.stderrBuf, /mobileRidesVaultClearance/);
   } finally { gw.kill(); }
 });
 

@@ -122,10 +122,28 @@ function isMobileClient(req) {
   if (chm === '?0') return false;
   return /\b(Mobi|Android|iPhone|iPad|iPod)\b/i.test(String((req.headers && req.headers['user-agent']) || ''));
 }
-// Returns { ua, ch } to send upstream. Desktop → the pinned identity (unchanged working
-// flow). Mobile → the client's own UA + whatever client-hints it actually sent.
+// EVIDENCE (live claude1 console.log, 2026-07-22): the gateway's egress is a DATACENTER IP, and the
+// ONLY Cloudflare cf_clearance that is valid for it is the vault's — minted via Capture-through-the-
+// gateway with the PINNED DESKTOP UA. With that clearance + desktop UA, /api/* returns 200 for the
+// vast majority of calls (481×200 vs 120×403). A mobile client, however, was sending its OWN UA AND
+// having the vault clearance stripped (the two "mobile identity" experiments), so it had NO usable
+// clearance → Cloudflare challenged nearly every /api/* call → Claude's app navigated the tab to
+// /api/challenge_redirect to solve it → that returns a 403 CF challenge through the proxy on 100% of
+// hits (54/54) and NEVER clears (an interactive managed challenge cannot complete same-origin through
+// a reverse proxy) → endless verification loop → nav_loop_break. That is the recurring mobile bug.
+//
+// FIX: a mobile client rides the SAME upstream identity + reused vault clearance as desktop, so it
+// gets the same 200s and never triggers the unsolvable challenge_redirect loop. The browser stays a
+// real mobile browser; only the UPSTREAM HTTP identity (and the reused clearance) are the desktop
+// vault's. Because a valid clearance means Cloudflare does not present a challenge, its in-browser
+// fingerprint is never cross-checked, so the old mobile↔desktop mismatch never arises. Reversible:
+// CLAUDE_MOBILE_UPSTREAM=own restores the (currently broken) per-device path for A/B testing.
+const MOBILE_RIDES_VAULT = String(process.env.CLAUDE_MOBILE_UPSTREAM || 'vault').toLowerCase() !== 'own';
+// Returns { ua, ch } to send upstream. Desktop, and mobile in the default 'vault' mode → the pinned
+// desktop identity (which is what the vault clearance is bound to). Mobile in 'own' mode → the
+// client's own UA + whatever client-hints it actually sent (kept only as a reversible kill-switch).
 function upstreamIdentity(req) {
-  if (!isMobileClient(req)) {
+  if (!isMobileClient(req) || MOBILE_RIDES_VAULT) {
     return { ua: UPSTREAM_UA, ch: { 'sec-ch-ua': UPSTREAM_CH_UA, 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': UPSTREAM_CH_PLATFORM } };
   }
   const ch = {};
@@ -338,10 +356,12 @@ const SESSION_STORE_WRITABLE = (function () {
 // Single source of truth for the "is Claude mobile still correctly configured?" invariants, used
 // by BOTH the /__genz/health report and the boot-time warning. Each is a documented requirement of
 // the mobile Cloudflare fix:
-//   • cfChallengePassthrough / cfChallengeMode=passthrough — a phone must receive and solve its OWN
-//     managed challenge and have its cf_clearance forwarded; without passthrough the challenge loops.
-//   • perDeviceClearance — mobile must drop the vault's desktop-minted cf_clearance (bound to the
-//     desktop UA+IP) and use its own; off → UA mismatch → endless verification.
+//   • cfChallengePassthrough / cfChallengeMode=passthrough — if Cloudflare ever does present a
+//     challenge, its page/assets must be forwarded to the browser rather than blocked.
+//   • mobileRidesVaultClearance — mobile must ride the SAME desktop upstream identity + reused vault
+//     cf_clearance as desktop. Off (CLAUDE_MOBILE_UPSTREAM=own) strips the clearance and sends a
+//     mobile UA the datacenter IP has no clearance for → Cloudflare challenges every /api/* call →
+//     the unsolvable /api/challenge_redirect loop (the recurring mobile bug — proven in live logs).
 //   • durableSessionStore — the opaque session must persist across Passenger workers/recycles;
 //     a non-writable store → cross-worker session miss → reload into the verification page.
 // Booleans only; no secret. Off is never fatal (documented kill-switches exist) — just loud.
@@ -349,7 +369,7 @@ function claudeMobileInvariants() {
   return [
     { key: 'cfChallengePassthrough', value: CF_CHALLENGE_PASSTHROUGH, ok: CF_CHALLENGE_PASSTHROUGH === true },
     { key: 'cfChallengeMode', value: CF_CHALLENGE_MODE, ok: CF_CHALLENGE_MODE === 'passthrough' },
-    { key: 'perDeviceClearance', value: PER_DEVICE_CLEARANCE, ok: PER_DEVICE_CLEARANCE === true },
+    { key: 'mobileRidesVaultClearance', value: MOBILE_RIDES_VAULT, ok: MOBILE_RIDES_VAULT === true },
     { key: 'durableSessionStore', value: SESSION_STORE_WRITABLE, ok: SESSION_STORE_WRITABLE === true },
   ];
 }
@@ -1249,7 +1269,12 @@ function buildUpstreamHeaders(req, upURL, session, minimal) {
     // auth/session cookies (sessionKey etc.) are NOT UA-bound and are still sent, so the
     // account stays logged in. Clearance becomes per-device; the session stays shared.
     // Kill-switch: CLAUDE_PER_DEVICE_CLEARANCE=0 restores the previous behaviour.
-    if (PER_DEVICE_CLEARANCE && isMobileClient(req)) {
+    // SUPERSEDED by MOBILE_RIDES_VAULT (default): the live logs proved a mobile device CANNOT solve
+    // its own clearance through the proxy (challenge_redirect loops 100%), so stripping the vault
+    // clearance just guarantees the loop. In the default 'vault' mode we KEEP the vault clearance for
+    // mobile and send the matching desktop UA (see upstreamIdentity), so mobile rides the same working
+    // clearance as desktop. Only the 'own' kill-switch (CLAUDE_MOBILE_UPSTREAM=own) still strips.
+    if (!MOBILE_RIDES_VAULT && PER_DEVICE_CLEARANCE && isMobileClient(req)) {
       headers.cookie = stripCfCookies(headers.cookie);
     }
     // CF pass-through: also forward the browser's Cloudflare cookies (cf_clearance /
