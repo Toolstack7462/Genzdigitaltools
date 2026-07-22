@@ -285,6 +285,70 @@ Two consequences that matter more than any of the identity work above:
   which distinguishes "the vault clearance was challenged" — an egress-IP problem with nothing in
   the request to fix — from "the browser's stale clearance displaced the vault's".
 
+### Device classification — decided at ingress, never re-derived (2026-07-22)
+
+`classifyDevice()` runs **once**, in the request handler, on the untouched inbound headers, and the
+result is pinned to `req.__genzDevice`. Everything downstream reads that snapshot through
+`deviceOf()` / `deviceLabel()`. Two things must never be conflated:
+
+- **the client's real device class** — a property of the browser that made the request (input);
+- **the upstream compatibility headers** we send to claude.ai (output).
+
+Deriving the first lazily from `req.headers` at each call site is what let a header rewrite
+potentially flip the classification mid-request. It also compared the client hint with strict
+equality (`chm === '?1'`), which silently fell through to the UA test whenever a hop reformatted the
+value — a duplicated header arrives joined as `"?1, ?1"`. The hint is now matched loosely and the UA
+fallback covers Firefox, Windows Phone, Silk and Kindle in addition to the Chromium tokens.
+
+Every log line carries **`device_signal`** naming which input decided the class:
+
+| signal | meaning |
+|---|---|
+| `ch:?1` | the browser sent `Sec-CH-UA-Mobile: ?1` |
+| `ch:?0` | the browser sent `?0` — a genuine desktop |
+| `ch:?0+mobile-ua` | `?0` but a mobile UA — a phone in **"Request desktop site"** mode |
+| `ua` | no hint; a mobile token in the User-Agent decided it |
+| `ua:desktop` | no hint, no mobile token |
+
+`GET /__genz/health` returns `client: { device, signal }` for the caller — **open it on the phone
+itself** to settle "is my device actually seen as mobile?" without reading a log. Verified live
+through LiteSpeed/Passenger: Android Chrome (with and without hints) and iPhone Safari all classify
+as `mobile`; desktop Chrome classifies as `desktop`. No hosting hop strips or rewrites the signals.
+
+**Honest limit.** The class can only be as good as what reaches Node. A phone in desktop-site mode
+sends `?0` *and* a spoofed navigator, so `desktop` is the correct class there — its in-browser
+challenge fingerprint reports desktop too. That case is no longer indistinguishable from a real
+desktop; it logs `ch:?0+mobile-ua`.
+
+### Mobile sends its OWN identity again (reverts 75341b4)
+
+`CLAUDE_MOBILE_UPSTREAM` defaults to **`own`**: a phone forwards its real User-Agent and its real
+client hints, and uses its **own** Cloudflare clearance. The pinned-desktop behaviour is still
+available with `=vault`, and **desktop is unaffected by this setting in either mode**.
+
+Why the reversal: 75341b4 pinned the desktop UA onto phones so they could reuse "the vault's
+clearance". The `cf_vault_clearance` diagnostic disproved the premise — 25/25 sampled live
+navigations reported `false`, i.e. there is no clearance in the vault to ride. The pin bought
+nothing, and cost the only thing that can still work: a challenge is solved by JS in the *real*
+browser and can only clear if the HTTP request agrees with what that browser reports. Sending each
+device's own identity also keeps clearances from being reused across devices or clients.
+
+### Failure classification — "busy" means overloaded, nothing else
+
+A single catch-all notice reported a capacity problem for every failure. Each condition now has its
+own safe code, HTTP status and wording, logged as `error_code`:
+
+| code | condition | what the client is told |
+|---|---|---|
+| `ACCOUNT_SESSION_INVALID` | challenge **and** no vault clearance | the shared account needs reconnecting — contact support |
+| `CLOUDFLARE_CHALLENGE` | challenge with a clearance present | a routine security check we could not complete; try again |
+| `RATE_LIMITED` | upstream 429 | we are being rate limited; wait a moment |
+| `UPSTREAM_OVERLOADED` | upstream 5xx | **the only case that says "busy"** |
+| `NETWORK_TIMEOUT` | no response | we could not reach it |
+
+`ACCOUNT_SESSION_INVALID` is the one that matters operationally: it is the condition an operator can
+actually fix, and calling it "busy" hid it.
+
 **If challenges become constant rather than intermittent**, that is a different problem: the
 vault's `cf_clearance` has aged out. Re-add the Claude account with **Capture via proxy**, which
 mints a fresh clearance from the server's own egress. No gateway change can substitute for that.
