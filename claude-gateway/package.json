@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test lib/quotaTap.test.js lib/effortPrefs.test.js lib/modelPolicy.test.js test/mobileIdentity.test.js test/durableSession.test.js test/mobileRelaunch.test.js test/fileDownload.test.js test/modelBlock.test.js"
+    "test": "node --test lib/quotaTap.test.js lib/effortPrefs.test.js lib/modelPolicy.test.js test/mobileIdentity.test.js test/durableSession.test.js test/mobileRelaunch.test.js test/fileDownload.test.js test/modelBlock.test.js test/mobileConfigGuard.test.js"
   },
   "engines": {
     "node": ">=18"

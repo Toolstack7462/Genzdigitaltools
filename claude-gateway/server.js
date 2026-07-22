@@ -323,6 +323,36 @@ const CLAUDE_SESSION_COOKIE = '__Host-claude_session';
 const claudeSessions = new Map(); // sid -> { jwt, jti, exp(ms), cap, createdAt, lastSeen, rotatedAt }
 const SESSION_DIR = path.join(__dirname, 'tmp', 'sessions');
 try { fs.mkdirSync(SESSION_DIR, { recursive: true }); } catch (_) {}
+// Boot-time probe: is the durable session store actually WRITABLE? If tmp/sessions cannot be
+// written (wiped/perms-changed by a deploy, read-only mount), the opaque session can't persist
+// across Passenger workers/recycles — which silently reintroduces the "reloads into the Cloudflare
+// verification page mid-session" bug on mobile. Surfaced in /__genz/health so a deploy check can
+// catch the drift instead of a user discovering it. Read-only probe result; never on the hot path.
+const SESSION_STORE_WRITABLE = (function () {
+  try {
+    const probe = path.join(SESSION_DIR, '.wtest-' + process.pid);
+    fs.writeFileSync(probe, '1'); fs.unlinkSync(probe);
+    return true;
+  } catch (_) { return false; }
+})();
+// Single source of truth for the "is Claude mobile still correctly configured?" invariants, used
+// by BOTH the /__genz/health report and the boot-time warning. Each is a documented requirement of
+// the mobile Cloudflare fix:
+//   • cfChallengePassthrough / cfChallengeMode=passthrough — a phone must receive and solve its OWN
+//     managed challenge and have its cf_clearance forwarded; without passthrough the challenge loops.
+//   • perDeviceClearance — mobile must drop the vault's desktop-minted cf_clearance (bound to the
+//     desktop UA+IP) and use its own; off → UA mismatch → endless verification.
+//   • durableSessionStore — the opaque session must persist across Passenger workers/recycles;
+//     a non-writable store → cross-worker session miss → reload into the verification page.
+// Booleans only; no secret. Off is never fatal (documented kill-switches exist) — just loud.
+function claudeMobileInvariants() {
+  return [
+    { key: 'cfChallengePassthrough', value: CF_CHALLENGE_PASSTHROUGH, ok: CF_CHALLENGE_PASSTHROUGH === true },
+    { key: 'cfChallengeMode', value: CF_CHALLENGE_MODE, ok: CF_CHALLENGE_MODE === 'passthrough' },
+    { key: 'perDeviceClearance', value: PER_DEVICE_CLEARANCE, ok: PER_DEVICE_CLEARANCE === true },
+    { key: 'durableSessionStore', value: SESSION_STORE_WRITABLE, ok: SESSION_STORE_WRITABLE === true },
+  ];
+}
 // Short per-worker id so timing logs reveal WHICH Passenger process served a request — this
 // is how a multi-worker/recycle session miss shows up (same sid, different instance).
 const INSTANCE_ID = crypto.randomBytes(3).toString('hex');
@@ -1766,6 +1796,19 @@ const server = http.createServer(async (req, res) => {
       },
       missingEnv,
     };
+    // ── Mobile-critical invariants (claude only) ──────────────────────────────
+    // These three env flags + a writable durable store are what keep Claude working on mobile
+    // WITHOUT the recurring Cloudflare verification loop. They are configured server-side in this
+    // gateway's .htaccess (NOT in the repo), so a redeploy or a hand-edit can silently flip one
+    // and the mobile fix quietly regresses while the repo tests stay green and health stays 200.
+    // Expose them here (booleans only — no secret) so a deploy/monitoring check catches the drift
+    // immediately. `mobileReady` is false when any is wrong; it does NOT force health to 503 (these
+    // have documented kill-switches, and a restart loop would be worse than the warning).
+    if (TOOL_KEY === 'claude') {
+      const inv = claudeMobileInvariants();
+      body.claudeMobile = Object.assign({ mobileReady: inv.every(i => i.ok) },
+        inv.reduce((o, i) => { o[i.key] = i.value; return o; }, {}));
+    }
     res.writeHead(missingEnv.length ? 503 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(body));
   }
@@ -2052,4 +2095,16 @@ server.listen(PORT, () => {
   console.log(`  tool      -> ${TOOL_KEY}`);
   console.log(`  proxying  -> ${TARGET_ORIGIN}`);
   console.log(`  api base  -> ${API_BASE}`);
+  // Fail LOUD (not fatal) if a mobile-critical invariant has drifted — this is what stops the
+  // Cloudflare-verification-on-mobile bug from silently returning after a redeploy/.htaccess edit.
+  if (TOOL_KEY === 'claude') {
+    const bad = claudeMobileInvariants().filter(i => !i.ok);
+    if (bad.length) {
+      console.warn('  ⚠ MOBILE CONFIG DRIFT — Claude may loop on Cloudflare verification on phones:');
+      for (const i of bad) console.warn(`      ${i.key} = ${JSON.stringify(i.value)} (expected the mobile-safe value)`);
+      console.warn('      See /__genz/health .claudeMobile and claude-gateway/README.md before granting mobile clients.');
+    } else {
+      console.log('  mobile    -> OK (cf passthrough + per-device clearance + durable session store)');
+    }
+  }
 });
