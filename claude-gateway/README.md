@@ -242,6 +242,53 @@ Two supporting guards landed with it, both mobile-only:
 Guarded by the `REGRESSION:` cookie-precedence, header-order and challenge-notice tests in
 `test/mobileIdentity.test.js`, each of which fails if the corresponding change is reverted.
 
+### ⚠ READ THIS FIRST: the challenge is TRANSIENT and NOT device-specific (2026-07-22)
+
+Once `device` became legible in the live log, the picture changed and several earlier conclusions
+in this file turned out to be wrong about the *cause*:
+
+```
+NAV /new -> 200  cf=false dev=desktop ck=21
+NAV /new -> 200  cf=false dev=desktop ck=21
+NAV /new -> 403  cf=TRUE  dev=desktop ck=21   <- same cookies, same identity, minutes later
+NAV /new -> 403  cf=TRUE  dev=desktop ck=21
+NAV /new -> 200  cf=false dev=desktop ck=21   <- recovers on its own
+NAV /new -> 403  cf=TRUE  dev=desktop ck=21
+```
+
+**Nothing about the request differs between a success and a challenge** — same 21 vault cookies,
+same pinned identity, same device. So the challenge is *not* caused by a clearance, User-Agent or
+client-hint mismatch. It is Cloudflare intermittently challenging this gateway's **shared
+datacenter egress IP**, and it clears by itself on a later attempt.
+
+Two consequences that matter more than any of the identity work above:
+
+1. **Every request classified as `desktop`, including while the fault was being reported.** Any fix
+   gated on `isMobileClient()` therefore never executed for the affected client. *Do not gate a
+   Cloudflare fix by device.* If you think you have a mobile-only bug, confirm it in the log first.
+2. **Never hand Cloudflare's challenge document to the browser on a navigation.** It refreshes
+   *itself*, so the client sees the page reload three or four times and settle on the verification
+   screen — the exact reported symptom. It can never clear, because the browser solving it is not
+   the party making the upstream request: the proxy is, from a different IP with a different TLS
+   fingerprint.
+
+**The fix.** A challenged *navigation* is treated as a transient upstream condition:
+
+- **Retry it upstream** — `CLAUDE_CF_NAV_RETRIES` (default 2, max 4, `0` disables) with a
+  `CLAUDE_CF_NAV_RETRY_DELAY_MS` (default 700ms) linear backoff. Navigations only, never assets or
+  XHR, and bounded, so we never hammer an IP that is already being rate-limited. This is an
+  ordinary retry of *our own* request — it does not solve, bypass, automate or weaken the
+  challenge.
+- **If the retries are spent, serve one recoverable notice** with a manual "Try again", not the
+  self-reloading challenge. `CLAUDE_CF_NAV_NOTICE=0` restores the raw passthrough.
+- The proxy log now records `cf_vault_clearance` / `cf_browser_clearance` (booleans, never values),
+  which distinguishes "the vault clearance was challenged" — an egress-IP problem with nothing in
+  the request to fix — from "the browser's stale clearance displaced the vault's".
+
+**If challenges become constant rather than intermittent**, that is a different problem: the
+vault's `cf_clearance` has aged out. Re-add the Claude account with **Capture via proxy**, which
+mints a fresh clearance from the server's own egress. No gateway change can substitute for that.
+
 ## Mobile session renewal (claude-only, fixed 2026-07-21)
 
 **Symptom.** On a phone, once the 30-minute session expired, reopening Claude from the

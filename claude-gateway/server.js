@@ -228,6 +228,19 @@ const CF_CHALLENGE_PASSTHROUGH = process.env.CF_CHALLENGE_PASSTHROUGH === '1' ||
 // other gateway byte-for-byte unchanged.
 const CF_CHALLENGE_MODE = (process.env.CF_CHALLENGE_MODE || (CF_CHALLENGE_PASSTHROUGH ? 'passthrough' : 'block')).toLowerCase();
 const CF_COOKIE_RE = /^(cf_clearance|__cf_bm|__cflb|cf_chl|__cf_chl|__cf_waf)/i;
+// ── Transient Cloudflare challenge on a page navigation ──────────────────────
+// Live evidence (see the boundary comment in proxy()): identical requests to /new alternate
+// between 200 and a 403 challenge, so a challenged navigation is a TRANSIENT condition of the
+// shared datacenter egress IP, not a property of the request. Re-send it a bounded number of
+// times before giving up; nav-only and bounded so we never hammer an IP that is already being
+// rate-limited. Set CLAUDE_CF_NAV_RETRIES=0 to disable.
+const CF_NAV_RETRIES = Math.max(0, Math.min(4, parseInt(process.env.CLAUDE_CF_NAV_RETRIES, 10) >= 0 ? parseInt(process.env.CLAUDE_CF_NAV_RETRIES, 10) : 2));
+const CF_NAV_RETRY_DELAY_MS = Math.max(100, parseInt(process.env.CLAUDE_CF_NAV_RETRY_DELAY_MS, 10) || 700);
+// After the retries are spent, show a recoverable notice rather than Cloudflare's own challenge
+// document — that document refreshes ITSELF and can never clear through a reverse proxy, which is
+// the "reloads a few times then lands on the verification page" the client reports.
+// CLAUDE_CF_NAV_NOTICE=0 restores the raw passthrough.
+const CF_NAV_NOTICE = process.env.CLAUDE_CF_NAV_NOTICE !== '0';
 // Per-device Cloudflare clearance (default ON). cf_clearance is bound to the minting
 // UA + egress IP, so the vault's desktop-minted clearance is invalid on a mobile UA.
 const PER_DEVICE_CLEARANCE = process.env.CLAUDE_PER_DEVICE_CLEARANCE !== '0';
@@ -1463,6 +1476,9 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       } catch (_) { /* policy failure must never break the proxy */ }
     }
 
+    // How many times this navigation has already been re-sent after a Cloudflare challenge.
+    // Lives OUTSIDE runDispatch so a retry can re-enter it with the same buffered body.
+    let cfNavRetries = 0;
     const runDispatch = () => {
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
     // The rewrite above changes the body length, so the upstream must be told the new size or
@@ -1538,6 +1554,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           // alongside cid + instance + latency, without ever recording a credential.
           redirect_to: (uRes.statusCode >= 300 && uRes.statusCode < 400 && rawLoc) ? String(rawLoc).split('?')[0].slice(0, 200) : null,
           cf_challenge: !!cfChallengeDetected,
+          // WHICH Cloudflare clearance went upstream — booleans only, never a cookie value. This
+          // is what distinguishes "the vault clearance was challenged" (an egress-IP/bot-score
+          // problem, nothing in the request to fix) from "the browser's stale clearance displaced
+          // the vault's" (a precedence problem). Presence, not content.
+          cf_vault_clearance: !!(session && session.cookieHeader && /(^|;\s*)cf_clearance=/.test(session.cookieHeader)),
+          cf_browser_clearance: /(^|;\s*)cf_clearance=/.test(String(req.headers.cookie || '')),
           upstream_error: (uRes.statusCode >= 500 ? 'upstream_5xx' : cfChallengeDetected ? 'cf_challenge' : uRes.statusCode === 403 ? 'forbidden' : uRes.statusCode === 429 ? 'rate_limited' : null),
           device: isMobileClient(req) ? 'mobile' : 'desktop',
           cookies_attached: (session && session.cookieCount) || 0,
@@ -1576,30 +1598,58 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
-      // ┌─ REGRESSION-SENSITIVE: no self-reloading challenge on the one path that cannot clear.
-      // │  A Cloudflare managed challenge is solved by JS in the CLIENT's browser. In the default
-      // │  'vault' mode a mobile client's upstream leg carries the pinned DESKTOP identity, so the
-      // │  in-browser fingerprint and the HTTP request can never agree and the challenge cannot
-      // │  complete (live evidence: /api/challenge_redirect 54/54 hits, none ever cleared). The
-      // │  challenge page refreshes itself, which IS the "reloads three or four times and ends on
-      // │  the verification page" the client sees. Serve ONE recoverable notice with a manual retry
-      // │  instead — nothing is bypassed, weakened or auto-solved; we simply stop replaying a
-      // │  verification the proxy has no legitimate way to satisfy. Desktop (which CAN solve it,
-      // │  its fingerprint matches) and the 'own' kill-switch keep the passthrough unchanged.
-      if (cfPassthrough && isHtmlNav && !ctx.asset && TOOL_KEY === 'claude' && MOBILE_RIDES_VAULT && isMobileClient(req)) {
+      // ┌─ REGRESSION-SENSITIVE: a Cloudflare challenge on a page navigation ─────────────────────
+      // │
+      // │  LIVE EVIDENCE (claude1 console.log, 2026-07-22, `device` finally legible): navigations
+      // │  to /new alternate between 200 and a 403 challenge with the SAME 21 vault cookies, the
+      // │  SAME pinned identity and the SAME device, minutes apart — 200,200 → 403,403 → 200,200 →
+      // │  403,403,403. Nothing about the request changes between a success and a challenge. So
+      // │  this is NOT a clearance/UA/fingerprint mismatch (the theory the earlier device-specific
+      // │  fixes were built on, none of which even ran here — every request classifies as
+      // │  'desktop'). It is Cloudflare transiently challenging this gateway's shared datacenter
+      // │  egress IP, and it clears by itself on a later attempt.
+      // │
+      // │  1) RETRY. A challenged navigation is a TRANSIENT upstream condition, so re-send it
+      // │     server-side after a short pause instead of surfacing it. This is an ordinary
+      // │     retry of our own request — it does not solve, bypass, automate or weaken the
+      // │     challenge, and it is deliberately bounded and nav-only so it cannot become a
+      // │     hammer on an IP that is already being rate-limited.
+      if (cfChallengeDetected && isHtmlNav && !ctx.asset && !isCaptchaReq && !ctx.capture
+          && cfNavRetries < CF_NAV_RETRIES && !res.headersSent) {
+        cfNavRetries += 1;
+        logIt(false); uRes.resume();
+        safeLog('cf_challenge_retry', {
+          cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
+          upstream_status: uRes.statusCode, attempt: cfNavRetries, device: isMobileClient(req) ? 'mobile' : 'desktop',
+          latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null,
+        });
+        const wait = CF_NAV_RETRY_DELAY_MS * cfNavRetries;
+        return setTimeout(() => { try { runDispatch(); } catch (_) { try { onUpstreamFail(); } catch (__) {} } }, wait);
+      }
+      // │  2) NEVER REPLAY THE CHALLENGE DOCUMENT. Once the retries are spent, serving Cloudflare's
+      // │     real challenge page is what produces the reported failure: it refreshes ITSELF, so
+      // │     the client sees the page reload three or four times and settle on the verification
+      // │     screen. It can never clear, because the browser solving it is not the party making
+      // │     the upstream request — the proxy is, from a different IP with a different TLS
+      // │     fingerprint. Serve ONE recoverable notice with a MANUAL retry instead. This is
+      // │     device-independent on purpose: the live log shows the failure has nothing to do
+      // │     with mobile-vs-desktop, and gating it by device is exactly why earlier rounds
+      // │     changed nothing. Kill-switch CLAUDE_CF_NAV_NOTICE=0 restores the raw passthrough.
+      if (cfPassthrough && isHtmlNav && !ctx.asset && TOOL_KEY === 'claude' && CF_NAV_NOTICE) {
         logIt(false); uRes.resume();
         safeLog('cf_challenge_unsolvable', {
           cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
-          upstream_status: uRes.statusCode, device: 'mobile', reload_reason: 'cf_challenge_nav',
+          upstream_status: uRes.statusCode, device: isMobileClient(req) ? 'mobile' : 'desktop',
+          reload_reason: 'cf_challenge_nav', retries_spent: cfNavRetries,
           latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null, lease_id: ctx.jti || null,
         });
         return sendNoticePage(res, {
           status: 503,
-          title: `${TOOL_NAME} needs a moment`,
-          msg: `${TOOL_NAME} asked for a security check we could not complete for you automatically. Your session is still active — please try again.`,
+          title: `${TOOL_NAME} is busy right now`,
+          msg: `${TOOL_NAME} briefly asked us to re-verify the connection. Your session is still active — please try again in a moment.`,
         });
       }
-      // └─ end unsolvable-challenge guard ───────────────────────────────────────────────────────
+      // └─ end Cloudflare-challenge navigation handling ─────────────────────────────────────────
       // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
       // without ever logging a cookie, token or the UA string itself.
       if (cfPassthrough) safeLog('cf_challenge_passthrough', { cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: isMobileClient(req) ? 'mobile' : 'desktop', lease_id: ctx.jti || null });

@@ -37,7 +37,7 @@ const UA_ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 
 const UA_IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
 const PINNED_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
-let proc, upstream, backend, GW_PORT, seen = [];
+let proc, upstream, backend, GW_PORT, seen = [], flakyHits = 0;
 
 test.before(async () => {
   // Mock Gen Z backend: the gateway fetches the vault account session from here (server-to-
@@ -60,11 +60,15 @@ test.before(async () => {
     // rawHeaders preserves ARRIVAL ORDER, which is itself part of Cloudflare's fingerprint.
     const order = []; for (let i = 0; i < q.rawHeaders.length; i += 2) order.push(String(q.rawHeaders[i]).toLowerCase());
     seen.push({ ua: q.headers['user-agent'], chm: q.headers['sec-ch-ua-mobile'], chua: q.headers['sec-ch-ua'], chplat: q.headers['sec-ch-ua-platform'], model: q.headers['sec-ch-ua-model'], platver: q.headers['sec-ch-ua-platform-version'], cookie: q.headers.cookie || '', order });
-    // A genuine Cloudflare managed-challenge response, for the passthrough/notice branch.
-    if (q.url.split('?')[0] === '/api/challenge_redirect') {
+    const p = q.url.split('?')[0];
+    const challenge = () => {
       r.writeHead(403, { 'content-type': 'text/html', server: 'cloudflare', 'cf-ray': '9abc123', 'cf-mitigated': 'challenge' });
-      return r.end('<html><body>Verifying you are human… <script>window.location.reload()</script></body></html>');
-    }
+      r.end('<html><body>Verifying you are human… <script>window.location.reload()</script></body></html>');
+    };
+    // Always challenges — exhausts the retries and lands on the notice.
+    if (p === '/api/challenge_redirect') return challenge();
+    // Challenges the FIRST hit only, then succeeds — the transient shape the live log shows.
+    if (p === '/flaky') { flakyHits += 1; if (flakyHits === 1) return challenge(); }
     r.writeHead(200, { 'content-type': 'text/html' });
     r.end('<html><head></head><body>ok</body></html>');
   });
@@ -334,11 +338,39 @@ test('mobile: a Cloudflare challenge on a nav returns ONE recoverable notice, ne
   assert.ok(!/Verifying you are human/i.test(r.body), 'the self-reloading challenge document is not replayed');
 });
 
-test('DESKTOP IS UNCHANGED: a Cloudflare challenge is still passed through for the user to solve', async () => {
+test('DESKTOP gets the same treatment — the failure is not device-specific', async () => {
+  // The live log showed EVERY request classifying as 'desktop' while the client was reporting the
+  // fault, so gating this by device is precisely why the earlier rounds changed nothing.
   const sess = await openSession();
   const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
-  assert.strictEqual(r.status, 403, 'desktop still receives the real challenge');
-  assert.match(r.body, /Verifying you are human/i, 'byte-passed through, unmodified — we never bypass the check');
+  assert.strictEqual(r.status, 503, 'desktop also gets the recoverable notice, not the challenge document');
+  assert.ok(!/Verifying you are human/i.test(r.body), 'the self-reloading challenge is not replayed on desktop either');
+});
+
+// ── A challenged navigation is TRANSIENT — retry it rather than surface it ────
+// Live: /new alternates 200,200 -> 403,403 -> 200,200 -> 403,403,403 with the SAME 21 vault
+// cookies, same identity, same device. Nothing in the request differs between a success and a
+// challenge, so re-sending it usually just works and the client never sees anything.
+test('a transiently challenged navigation is retried upstream and succeeds invisibly', async () => {
+  const sess = await openSession();
+  flakyHits = 0;
+  const r = await get('/flaky', { cookie: sess, 'user-agent': UA_DESKTOP, accept: 'text/html' });
+  assert.strictEqual(r.status, 200, 'the client sees the app, not a challenge');
+  assert.ok(flakyHits >= 2, 'the gateway re-sent the navigation upstream (hits: ' + flakyHits + ')');
+  assert.ok(!/Verifying you are human/i.test(r.body), 'no challenge document reached the browser');
+});
+
+test('retries are BOUNDED — a permanently challenged path gives up and never loops', async () => {
+  const sess = await openSession();
+  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  assert.strictEqual(r.status, 503, 'it stops and reports, rather than retrying forever');
+  assert.match(r.body, /try again/i, 'and the retry is the user’s to make');
+});
+
+test('an XHR/API challenge is NOT retried or rewritten (only page navigations are)', async () => {
+  const sess = await openSession();
+  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, accept: 'application/json' });
+  assert.notStrictEqual(r.status, 503, 'the app’s own fetch handler still sees the real upstream answer');
 });
 
 // ── 'own' kill-switch (CLAUDE_MOBILE_UPSTREAM=own) — the reversible fallback ───
