@@ -921,8 +921,33 @@ function sendBlockPage(res, code) {
       + 'try{if(window.caches&&caches.keys)caches.keys().then(function(k){for(var i=0;i<k.length;i++){try{caches.delete(k[i]);}catch(e){}}}).catch(function(){});}catch(e){}'
       + 'try{localStorage.clear();}catch(e){}try{sessionStorage.clear();}catch(e){}})();</script>'
     : '';
+  // ── Mobile block-page resume-recovery (CLAUDE ONLY) ──────────────────────────
+  // ROOT CAUSE this fixes: on a phone, "reopen from the dashboard" resurfaces the EXISTING tab that
+  // is showing THIS expired block page, rather than building a fresh document (desktop uses a real
+  // new tab, so it never sees a stale block page). This page carries no overlay, so nothing noticed
+  // that an authorized dashboard relaunch had already installed a FRESH __Host-claude_session cookie
+  // on this origin — the phone just kept showing "session ended" through refreshes and app-switches.
+  //
+  // Fix: on a RESUME event only (never on first paint), ask the server — same-origin, the HttpOnly
+  // session cookie is sent automatically — whether a valid session now exists, and if so replace the
+  // page with the app. It NEVER renews anything itself: it only mirrors the backend's own valid:true,
+  // which requires the fresh lease cookie that only a dashboard relaunch mints. A plain refresh (no
+  // relaunch) still resolves to valid:false → stays expired, exactly as required. location.replace()
+  // is a full navigation, so no stale terminal/countdown/validation state can survive into the new
+  // session, and an in-flight guard + one-shot `done` flag stop a delayed response from acting twice.
+  const recover = (TOOL_KEY === 'claude')
+    ? '<script>(function(){var GO=' + JSON.stringify(DEFAULT_PATH || '/') + ';var busy=false,done=false,last=0;'
+      + 'function chk(){if(done||busy)return;var n=Date.now();if(n-last<2500)return;last=n;busy=true;'
+      + "try{fetch('/__genz/validate',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json'}})"
+      + '.then(function(r){return r.json().catch(function(){return{};});})'
+      + '.then(function(j){busy=false;if(j&&j.valid===true){done=true;location.replace(GO);}})'
+      + '.catch(function(){busy=false;});}catch(e){busy=false;}}'
+      + "document.addEventListener('visibilitychange',function(){if(document.visibilityState==='visible')chk();});"
+      + "window.addEventListener('focus',chk);window.addEventListener('online',chk);"
+      + "window.addEventListener('pageshow',function(e){if(e&&e.persisted)chk();});})();</script>"
+    : '';
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Session ended</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">${heal}
+<meta name="viewport" content="width=device-width, initial-scale=1">${heal}${recover}
 <style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center}
 .card{max-width:420px;text-align:center;padding:40px 32px;background:#111a2e;border:1px solid rgba(6,182,212,.25);border-radius:16px}
 h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 20px}
