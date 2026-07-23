@@ -56,7 +56,10 @@ test.before(async () => {
   // Mock claude.ai — always answers a Cloudflare managed-challenge on the challenge path, so the
   // nav retries are exhausted and the gateway must fall through to classifyUpstreamFailure.
   upstream = http.createServer((q, r) => {
-    if (q.url.split('?')[0] === '/api/challenge_redirect') {
+    // A GENERIC always-challenged nav path. (Not /api/challenge_redirect, which is now specially
+    // bounced for mobile — see test/mobileXhrShield.test.js. This test is about the message
+    // CLASSIFICATION of a surviving challenge, so it needs a path that still reaches the notice.)
+    if (q.url.split('?')[0] === '/perma-challenge') {
       r.writeHead(403, { 'content-type': 'text/html', server: 'cloudflare', 'cf-ray': '9abc123', 'cf-mitigated': 'challenge' });
       return r.end('<html><body>Verifying you are human… <script>window.location.reload()</script></body></html>');
     }
@@ -121,12 +124,12 @@ function assertRecoverableNotice(r) {
 
 test('mobile, vault has NO cf_clearance: a surviving CF challenge is recoverable, NOT "needs to be reconnected"', async () => {
   const sess = await openSession();
-  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const r = await get('/perma-challenge', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
   assertRecoverableNotice(r);
 });
 
 test('desktop, vault has NO cf_clearance: same recoverable notice — the failure is device-independent', async () => {
   const sess = await openSession();
-  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
+  const r = await get('/perma-challenge', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
   assertRecoverableNotice(r);
 });

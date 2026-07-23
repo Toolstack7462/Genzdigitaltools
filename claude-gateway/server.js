@@ -290,6 +290,21 @@ const CF_NAV_RETRY_DELAY_MS = Math.max(100, parseInt(process.env.CLAUDE_CF_NAV_R
 // CLAUDE_CF_NAV_NOTICE=0 restores the raw passthrough.
 const CF_NAV_NOTICE = process.env.CLAUDE_CF_NAV_NOTICE !== '0';
 
+// ── Mobile-only: keep a Cloudflare challenge OUT of Claude's background fetches ────────────────
+// ROOT CAUSE (live console.log, 4,591 lines): the shared datacenter egress IP is CF-challenged on
+// ~35% of requests, and NONE of those challenges is a login/session problem (redirected_to_login
+// is false on 100% of them — pure Cloudflare). When one lands on an XHR/API fetch, the gateway used
+// to forward the raw 403 challenge DOCUMENT into Claude's SPA, which reacts by full-page-navigating
+// the tab to /api/challenge_redirect to "solve" it. Through a reverse proxy from a datacenter IP an
+// interactive managed challenge can never clear same-origin, so it just re-challenges: 179 XHR
+// challenges → 288 challenge_redirect navs (all 403) → retries spent → the 3–4 reloads clients see.
+// This shield returns a benign, NON-navigating transient error for those XHR challenges (Fix A) and
+// bounces a stray challenge_redirect navigation straight back to the app (Fix B), so the loop cannot
+// form. DESKTOP IS UNAFFECTED — every use is gated on isMobileClient(req), so the desktop path stays
+// byte-for-byte frozen. Auth is untouched (the vault session still goes upstream; we only decline to
+// forward an unsolvable challenge document to a background fetch). Default ON; =0 restores passthrough.
+const CLAUDE_MOBILE_XHR_SHIELD = TOOL_KEY === 'claude' && process.env.CLAUDE_MOBILE_XHR_SHIELD !== '0';
+
 // ── Honest failure classification for a page navigation ──────────────────────
 // A single catch-all message ("… is busy right now") was actively harmful: it reported a
 // CAPACITY problem for what were really Cloudflare verifications and, worse, for a vault account
@@ -1712,6 +1727,22 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
+      // ┌─ Fix B (mobile-only): break the loop's TAIL ───────────────────────────────────────────
+      // /api/challenge_redirect is Claude's attempt to solve a challenge by NAVIGATING the whole
+      // tab; through this proxy it can never clear, so don't retry it or show a notice — bounce
+      // straight back to the app so the loop cannot form. Runs BEFORE the nav-retry block so a
+      // mobile client never spends the 2 retry waits on this dead path. Desktop is untouched.
+      if (cfChallengeDetected && isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD && isMobileClient(req)
+          && /^\/api\/challenge_redirect\b/.test(reqPathOnly) && !res.headersSent) {
+        logIt(false); uRes.resume();
+        safeLog('cf_redirect_break', {
+          cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
+          device: deviceLabel(req), device_signal: deviceOf(req).signal, lease_id: ctx.jti || null,
+        });
+        res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
+        return res.end();
+      }
+      // └─ end Fix B ────────────────────────────────────────────────────────────────────────────
       // ┌─ REGRESSION-SENSITIVE: a Cloudflare challenge on a page navigation ─────────────────────
       // │
       // │  LIVE EVIDENCE (claude1 console.log, 2026-07-22, `device` finally legible): navigations
@@ -1770,6 +1801,23 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         return sendNoticePage(res, { status: cls.httpStatus, title: cls.title, msg: cls.msg });
       }
       // └─ end Cloudflare-challenge navigation handling ─────────────────────────────────────────
+      // ┌─ Fix A (mobile-only): a Cloudflare challenge on an XHR/API fetch must NOT reach the app ─
+      // Return a benign, NON-navigating transient error so Claude's SPA retries the call in place
+      // instead of navigating the whole tab into the unsolvable /api/challenge_redirect loop. This
+      // is the HEAD of the loop (Fix B above is the tail). Auth is untouched — the challenge is
+      // never a login/session failure (redirected_to_login=false on 100% of these); we only refuse
+      // to forward an unsolvable challenge DOCUMENT to a background fetch. Desktop never reaches here.
+      if (cfChallengeDetected && !isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD && isMobileClient(req) && !res.headersSent) {
+        logIt(false); uRes.resume();
+        safeLog('cf_xhr_shield', {
+          cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
+          upstream_status: uRes.statusCode, device: deviceLabel(req), device_signal: deviceOf(req).signal,
+          lease_id: ctx.jti || null,
+        });
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end('{"error":"cf_verification","retryable":true}');
+      }
+      // └─ end Fix A ────────────────────────────────────────────────────────────────────────────
       // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
       // without ever logging a cookie, token or the UA string itself.
       if (cfPassthrough) safeLog('cf_challenge_passthrough', { cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly, upstream_status: uRes.statusCode, is_nav: !!isHtmlNav, device: deviceLabel(req), lease_id: ctx.jti || null });

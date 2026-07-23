@@ -67,6 +67,10 @@ test.before(async () => {
     };
     // Always challenges — exhausts the retries and lands on the notice.
     if (p === '/api/challenge_redirect') return challenge();
+    // A GENERIC always-challenged nav path. /api/challenge_redirect is now specially handled for
+    // mobile (bounced back — see test/mobileXhrShield.test.js), so the general "a challenged nav
+    // gives a recoverable notice" behaviour is asserted against this generic path instead.
+    if (p === '/perma-challenge') return challenge();
     // Challenges the FIRST hit only, then succeeds — the transient shape the live log shows.
     if (p === '/flaky') { flakyHits += 1; if (flakyHits === 1) return challenge(); }
     r.writeHead(200, { 'content-type': 'text/html' });
@@ -303,7 +307,7 @@ test('mobile keeps its own client-hints in their original header POSITION (nothi
 // ── An unsolvable challenge must not become a reload loop ─────────────────────
 test('mobile: a Cloudflare challenge on a nav returns ONE recoverable notice, never a self-reloading page', async () => {
   const sess = await openSession();
-  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const r = await get('/perma-challenge', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
   assert.strictEqual(r.status, 503, 'a recoverable notice, not the 403 challenge document');
   assert.match(r.body, /try again/i, 'offers a MANUAL retry');
   assert.ok(!/location\.reload|window\.location\s*=|http-equiv=["']?refresh/i.test(r.body), 'and nothing in it reloads or redirects on its own');
@@ -334,7 +338,7 @@ test('a transiently challenged navigation is retried upstream and succeeds invis
 
 test('retries are BOUNDED — a permanently challenged path gives up and never loops', async () => {
   const sess = await openSession();
-  const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
+  const r = await get('/perma-challenge', { cookie: sess, 'user-agent': UA_ANDROID, 'sec-ch-ua-mobile': '?1', accept: 'text/html' });
   assert.strictEqual(r.status, 503, 'it stops and reports, rather than retrying forever');
   assert.match(r.body, /try again/i, 'and the retry is the user’s to make');
 });
