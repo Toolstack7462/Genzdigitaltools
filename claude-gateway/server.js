@@ -311,17 +311,20 @@ function hasVaultClearance(session) {
 }
 function classifyUpstreamFailure({ status, cfChallenge, vaultClearance, retries }) {
   if (cfChallenge) {
-    // A challenge on a request that carried no account clearance is not a transient blip and not
-    // capacity — the captured session simply cannot satisfy Cloudflare from this server's IP, and
-    // it stays that way until the account is re-captured through the proxy.
-    if (!vaultClearance) {
-      return {
-        code: UPSTREAM_ERROR.ACCOUNT_SESSION_INVALID,
-        httpStatus: 503,
-        title: `${TOOL_NAME} needs to be reconnected`,
-        msg: `${TOOL_NAME} could not verify our connection because the shared ${TOOL_NAME} account session needs refreshing. This is on our side, not yours — please contact support so it can be reconnected. Your access time is unaffected.`,
-      };
-    }
+    // A Cloudflare challenge is a RECOVERABLE condition, never a confirmation that the account
+    // session is dead. The earlier "no vault clearance ⇒ account needs reconnecting" branch was a
+    // FALSE POSITIVE: the same live diagnostic that added the nav-retry logic proved the vault
+    // bundle essentially never carries a cf_clearance (25/25 sampled navigations: none), yet those
+    // very navigations alternate 200 ⇄ 403 with identical cookies and mostly succeed on a retry —
+    // i.e. absence of a vault clearance says nothing about session validity. Mapping it to
+    // "needs to be reconnected / contact support" therefore fired that operator-facing page for a
+    // perfectly valid account on any transient datacenter-IP challenge, and (per requirement) the
+    // reconnect page must show ONLY for a CONFIRMED-invalid session. A confirmed-invalid session is
+    // detected independently — a real login redirect or a logged-out document → /account-expired +
+    // sendBlockPage('session_expired') — and is unaffected by this. So a surviving challenge always
+    // classifies as the recoverable CLOUDFLARE_CHALLENGE ("try again"). `vaultClearance` is retained
+    // in the signature for the caller/log; it no longer gates the message. Reversible: nothing here
+    // touches identity, cookies or retry behaviour — only the wording of the post-retry notice.
     return {
       code: UPSTREAM_ERROR.CLOUDFLARE_CHALLENGE,
       httpStatus: 503,
