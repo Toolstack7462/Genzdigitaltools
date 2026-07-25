@@ -42,7 +42,10 @@ ssh-keyscan -t rsa -p "${PORT}" "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 # ── 1) BACKEND: the shared access helper MUST ship alongside the two routes
 #       that now require('../../utils/getClientAccessibleTool') — otherwise
 #       Passenger boots into "module not found". admin/toolsEnhanced.js keeps
-#       admin tool-save in sync. Restart trigger goes LAST. One curl call. ─────
+#       admin tool-save in sync. Restart trigger goes LAST. One curl call.
+#       middleware/rateLimiter.js MUST ship alongside routes/proxy/gateway.js: that
+#       router imports gatewayServiceLimiter + leaseValidateLimiter from it, so
+#       shipping one without the other boots Passenger into "not a function". ─────
 RESTART_TMP="$(mktemp)"
 date -u +"restart %Y-%m-%dT%H:%M:%SZ" > "${RESTART_TMP}"
 
@@ -63,6 +66,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/admin/securityAlerts.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/securityAlerts.js" \
   -T backend/routes/authEnhanced.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEnhanced.js" \
   -T backend/middleware/validation.js         "sftp://${HOST}:${PORT}${API_ROOT}/middleware/validation.js" \
+  -T backend/middleware/rateLimiter.js        "sftp://${HOST}:${PORT}${API_ROOT}/middleware/rateLimiter.js" \
   -T backend/routes/admin/clientsEnhanced.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/clientsEnhanced.js" \
   -T backend/routes/admin/assignments.js      "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/assignments.js" \
   -T backend/routes/admin/activity.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/activity.js" \

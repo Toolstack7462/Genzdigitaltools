@@ -689,7 +689,39 @@ function gatewayApiPost(subpath, token, jsonBody) {
 
 // ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
 const sessionCache = new Map();
-const SESSION_TTL_MS = 60 * 1000;
+const SESSION_TTL_MS = Math.max(1, parseInt(process.env.CLAUDE_SESSION_TTL_MS, 10) || 60 * 1000);
+// ── Transient vs CONFIRMED on the account-vault fetch ────────────────────────────────────────
+// ROOT CAUSE this fixes (desktop, laptop and incognito alike): the lease/validate path already
+// separates a confirmed authorization denial from a transient infrastructure failure, but the
+// OTHER backend call every request makes — POST /session, which fetches the vault bundle — did
+// not. Every response that was not a recognised success became `{ blocked: true }`, and the
+// request handler renders that as the 403 "<tool> session ended" page. So a 429 from the
+// backend's shared per-IP budget (its `code` is `rate_limited`, absent from sendBlockPage's
+// message map → the generic "Access could not be verified."), a 500, a 503 or a malformed body
+// each ENDED a live session whose lease and vault account were both perfectly valid — and the
+// verdict was cached for a minute, so refreshing repeated it.
+//
+// Only these codes are a CONFIRMED account/authorization denial (mirrors CLAUDE_TERMINAL_CODES
+// and TERMINAL_CODES in backend/utils/proxy/validationResponse.js). Anything else — 429, 5xx,
+// a network failure, a malformed body, a gateway-key misconfiguration — is temporary by
+// definition and must be retried, never terminated. Unknown codes therefore fail SAFE for
+// availability while still granting nothing: a transient verdict injects no account cookies.
+const ACCOUNT_TERMINAL_CODES = new Set([
+  'account_blocked', 'account_no_session',
+  'lease_expired', 'lease_revoked', 'lease_invalid', 'lease_missing',
+  'client_disabled', 'client_not_found', 'plan_expired',
+]);
+// How long a lease's LAST KNOWN GOOD vault bundle may be reused while the backend is failing.
+// This is what keeps a live page working through a backend blip instead of interrupting it: the
+// bundle is the account's own cookies, already served to this same lease, so reusing it grants
+// nothing new. Bounded, and it can never outlive the lease — authorization is still decided by
+// the backend /validate on every navigation and every 30s overlay poll, which is unchanged.
+const SESSION_GRACE_MS = Math.max(0, parseInt(process.env.CLAUDE_SESSION_GRACE_MS, 10) || 10 * 60 * 1000);
+// Coalesce concurrent /session calls for one lease into a single round-trip, exactly as
+// backendValidateCached already does for /validate. Without this, a page's parallel requests
+// each issued their own fetch and the LAST one to resolve won the cache — so a late failure
+// could overwrite a good bundle that a newer, successful response had already stored.
+const sessionInflight = new Map();
 // MEMORY: entries are keyed by lease jti and the 60s TTL was only ever checked on READ, so a
 // key that is never read again was never removed — every lease issued left a permanent entry
 // holding its cookie header plus localStorage/sessionStorage blobs (tens of KB each). Over a
@@ -697,9 +729,12 @@ const SESSION_TTL_MS = 60 * 1000;
 // stayed up. Sweep expired entries on a timer, exactly as validateCache already does.
 // .unref() so this never keeps the process alive. Behaviour is unchanged: an entry past its
 // TTL was already treated as a miss and refetched.
+// A GOOD entry is kept past its serving TTL until `graceUntil` so it can still be reused while
+// the backend is failing (see SESSION_GRACE_MS); every other entry is removed at `exp` exactly as
+// before. Still strictly bounded — nothing outlives graceUntil, and a lease is short-lived.
 const _sessionCacheGc = setInterval(() => {
   const now = Date.now();
-  for (const [k, v] of sessionCache) if (!v || v.exp <= now) sessionCache.delete(k);
+  for (const [k, v] of sessionCache) if (!v || (v.graceUntil || v.exp) <= now) sessionCache.delete(k);
 }, 60000);
 if (_sessionCacheGc.unref) _sessionCacheGc.unref();
 
@@ -729,14 +764,29 @@ async function fetchAccountSession(token) {
   if (!GATEWAY_KEY) return { noKey: true };
   return gatewayApiPost('/session', token, {});
 }
+// Returns exactly one of:
+//   { noAccount }            — this lease legitimately has no vault account (nothing to inject)
+//   { …bundle fields }       — a usable account session
+//   { blocked, code }        — a CONFIRMED denial; the caller may end the session
+//   { transient, code }      — a TEMPORARY failure; the caller must keep the session and retry
 async function getSession(token, jti) {
   const key = jti || ('t:' + String(token).slice(-24));
   const hit = sessionCache.get(key);
   if (hit && hit.exp > Date.now()) return hit.data;
+  const flying = sessionInflight.get(key);
+  if (flying) return flying;                 // one round-trip per lease, no last-writer-wins race
+  const p = getSessionFresh(token, key, hit);
+  sessionInflight.set(key, p);
+  p.finally(() => { sessionInflight.delete(key); }).catch(() => {});
+  return p;
+}
+async function getSessionFresh(token, key, hit) {
   const r = await fetchAccountSession(token);
+  // The last KNOWN-GOOD bundle for this same lease, if it is still inside its grace window.
+  const lastGood = (hit && hit.good && (hit.graceUntil || 0) > Date.now()) ? hit.data : null;
   let data;
+  let cache = true;
   if (r.noKey) data = { noAccount: true };
-  else if (r.status === 0) data = hit ? hit.data : { noInject: true };
   else if (r.body && r.body.ok === true && r.body.account == null) data = { noAccount: true };
   else if (r.body && r.body.ok === true && r.body.bundle) {
     const cookieHeader = buildCookieHeader(r.body.bundle);
@@ -755,8 +805,28 @@ async function getSession(token, jti) {
       allowFable5: (typeof r.body.allowFable5 === 'boolean') ? r.body.allowFable5 : undefined,
     };
   }
-  else data = { blocked: true, code: (r.body && r.body.code) || 'account_no_session' };
-  sessionCache.set(key, { exp: Date.now() + SESSION_TTL_MS, data });
+  else {
+    const code = (r.body && r.body.code) || null;
+    // status 0 is our own network error / 8s timeout — never an authorization decision.
+    const terminal = r.status !== 0 && ACCOUNT_TERMINAL_CODES.has(String(code || ''));
+    if (terminal) {
+      data = { blocked: true, code };
+    } else if (lastGood) {
+      // Keep the live page working: reuse the bundle this lease was already served. Not cached,
+      // so the very next call re-checks and the moment the backend answers we are back to normal.
+      data = lastGood;
+      cache = false;
+      safeLog('account_session_stale_served', { instance: INSTANCE_ID, upstream_status: r.status, code: code || 'account_session_unavailable' });
+    } else {
+      data = { transient: true, code: code || 'account_session_unavailable', upstreamStatus: r.status };
+      cache = false;             // a temporary verdict must never be remembered
+    }
+  }
+  if (cache) {
+    const good = !data.blocked && !data.transient;
+    const exp = Date.now() + SESSION_TTL_MS;
+    sessionCache.set(key, { exp, good, graceUntil: good ? Date.now() + SESSION_GRACE_MS : exp, data });
+  }
   return data;
 }
 
@@ -2449,7 +2519,30 @@ const server = http.createServer(async (req, res) => {
 
   // Await the session fetch started concurrently above (already in flight during validate).
   const session = await sessionP;
+  // A CONFIRMED vault-account denial is terminal — unchanged.
   if (!capture && session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
+  // A TRANSIENT vault-fetch failure is NOT. The lease is untouched, the account is untouched and
+  // the next attempt will very likely succeed, so nothing here may set a terminal state: no 403
+  // block page, no expired session cookie, no Clear-Site-Data. A navigation gets the recoverable
+  // notice with a MANUAL retry (the same page a transient upstream failure already uses); a
+  // background fetch gets a small non-navigating 503 JSON, so the app retries the call in place
+  // instead of reacting to an HTML error document by navigating the whole tab.
+  if (!capture && session && session.transient) {
+    safeLog('account_session_transient', {
+      cid, instance: INSTANCE_ID, request_path: pathName, code: session.code,
+      upstream_status: session.upstreamStatus, device: deviceLabel(req),
+      is_nav: !!isHtmlNav, lease_id: local && local.jti,
+    });
+    if (isHtmlNav) {
+      return sendNoticePage(res, {
+        status: 503,
+        title: `${TOOL_NAME} is reconnecting`,
+        msg: `We could not reach the Gen Z session service for a moment. Your access is still active — please try again.`,
+      });
+    }
+    res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    return res.end('{"error":"session_unavailable","retryable":true}');
+  }
 
   // Safe startup-timing diagnostic — correlation id + stage total + which worker + whether
   // the session had to be rehydrated from the durable store (the old failure mode) + device.
