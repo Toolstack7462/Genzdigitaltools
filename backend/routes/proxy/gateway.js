@@ -28,10 +28,32 @@ const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
 const claudeSettings = require('../../utils/proxy/claudeSettings');
 const ActivityLog = require('../../models/ActivityLog');
-const { apiLimiter, validateLimiter } = require('../../middleware/rateLimiter');
+const { apiLimiter, gatewayServiceLimiter, leaseValidateLimiter } = require('../../middleware/rateLimiter');
 const vres = require('../../utils/proxy/validationResponse');
 
-router.use(apiLimiter);
+// ── Rate limiting: pick the bucket that matches who is actually calling ──────────────────────
+// The blanket `router.use(apiLimiter)` this replaces keyed EVERY route on this router by client IP
+// with a 100/15min budget. For Claude that is a single shared bucket for all clients at once,
+// because Claude's overlay cannot read its lease JWT and so every backend call on its behalf is
+// made server-to-server by the gateway, from the gateway's one stable egress IP. A single open tab
+// spends that whole budget within a window, and the 429s that followed were surfaced as a terminal
+// "session ended / Access could not be verified" screen (see leaseKey in middleware/rateLimiter.js).
+// It also silently defeated /validate's dedicated validateLimiter, which exists precisely so
+// liveness polling does not share the general API budget.
+//
+// Now: gateway-only endpoints (already authenticated by the shared PROXY_GATEWAY_KEY) and
+// /validate are limited PER LEASE — the correct unit, since every route here carries one — and
+// anything else keeps apiLimiter exactly as before. Every ceiling is still enforced.
+const GATEWAY_SERVICE_PATHS = new Set([
+  '/session', '/account-expired', '/capture-session',
+  '/quota-precheck', '/usage-report', '/quota-release', '/quota-status',
+]);
+router.use((req, res, next) => {
+  const p = req.path || '';
+  if (GATEWAY_SERVICE_PATHS.has(p)) return gatewayServiceLimiter(req, res, next);
+  if (p === '/validate') return next();          // has its own per-lease limiter on the route
+  return apiLimiter(req, res, next);
+});
 
 // Safe debug logger — IDs / statuses / counts only. NEVER cookies, tokens or secrets.
 function dbg(fields) { try { console.log('[proxy]', JSON.stringify(fields)); } catch (_) {} }
@@ -91,7 +113,7 @@ function secondsRemaining(lease, now = Date.now()) {
 // correlationId} so the overlay can tell a CONFIRMED denial (stop) from a transient
 // infrastructure failure (keep retrying). Authorization itself is unchanged — every
 // code that blocked before still blocks, with the same HTTP status.
-router.post('/validate', validateLimiter, async (req, res) => {
+router.post('/validate', leaseValidateLimiter, async (req, res) => {
   const startedAt = Date.now();
   try {
     const r = await resolveLease(req);

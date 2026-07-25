@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 
 /**
  * Real client IP behind Hostinger's CDN/proxy chain (hcdn edge -> LiteSpeed -> Node).
@@ -109,6 +110,77 @@ const validateLimiter = rateLimit({
 });
 
 /**
+ * Per-LEASE key for the proxy gateway router.
+ *
+ * ROOT CAUSE this exists for. Keying by the real client IP is right for traffic that comes from a
+ * BROWSER, but the Claude gateway is the one tool whose backend calls are all server-to-server:
+ * the browser cannot read Claude's lease JWT (it holds only an opaque HttpOnly session id), so the
+ * overlay calls the GATEWAY and the gateway relays to /validate, /session, /quota-status,
+ * /quota-precheck and /usage-report itself. Every one of those presents the gateway server's
+ * single, stable egress IP — so under a per-IP key they all collapse into ONE bucket shared by
+ * every Claude client at once. Ordinary polling for a SINGLE open tab is ~30 /validate + ~30
+ * /quota-status + ~15 /session per 15 minutes plus two calls per message, i.e. it exhausts
+ * apiLimiter's 100/15min budget on its own, mid-session. The resulting 429s were then surfaced to
+ * clients as a terminal "session ended / Access could not be verified" screen.
+ *
+ * Every route on that router carries the lease as a Bearer token, which is the correct unit: one
+ * bucket per session, no client can consume another's budget, and a real flood is still capped.
+ * The token is HASHED, so no credential material can reach a limiter key, a store or a log.
+ * Falls back to the real client IP when there is no bearer token (unchanged behaviour).
+ */
+function leaseKey(req) {
+  const auth = req.headers.authorization;
+  const tok = (auth && auth.startsWith('Bearer ')) ? auth.slice(7).trim() : null;
+  if (!tok) return clientIp(req);
+  return 'lease:' + crypto.createHash('sha256').update(tok).digest('hex').slice(0, 32);
+}
+
+/**
+ * Gateway-only, server-to-server endpoints (/session, /quota-*, /usage-report, /account-expired,
+ * /capture-session). These are already authenticated by the shared PROXY_GATEWAY_KEY that only the
+ * gateway server holds, so an IP budget adds no security here — it only created the shared-bucket
+ * failure above. Keyed per lease with a ceiling far above honest use: a busy tab spends well under
+ * 100 per window, so 1200 is ~10x headroom for many tabs and reconnect bursts while still stopping
+ * a runaway loop. A 429 from here is explicitly retryable and never ends a session.
+ */
+const gatewayServiceLimiter = rateLimit({
+  windowMs: parseInt(process.env.GATEWAY_SERVICE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.GATEWAY_SERVICE_RATE_LIMIT_MAX) || 1200,
+  message: {
+    ok: false,
+    error: 'Too many gateway requests. Please try again shortly.',
+    code: 'rate_limited',
+    terminal: false,
+    retryable: true
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: leaseKey,
+  validate: false
+});
+
+/**
+ * Same budget as validateLimiter, keyed per LEASE instead of per IP — for the proxy gateway
+ * router, whose /validate is relayed server-side for Claude (see leaseKey). validateLimiter itself
+ * is left exactly as it is, so the StealthWriter router keeps its current per-IP behaviour.
+ */
+const leaseValidateLimiter = rateLimit({
+  windowMs: parseInt(process.env.VALIDATE_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  max: parseInt(process.env.VALIDATE_RATE_LIMIT_MAX) || 400,
+  message: {
+    error: 'Too many validation requests. Please try again shortly.',
+    code: 'rate_limited',
+    valid: false,
+    terminal: false,
+    retryable: true
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: leaseKey,
+  validate: false
+});
+
+/**
  * Registration limiter
  */
 const registerLimiter = rateLimit({
@@ -126,5 +198,9 @@ module.exports = {
   strictLimiter,
   apiLimiter,
   validateLimiter,
-  registerLimiter
+  gatewayServiceLimiter,
+  leaseValidateLimiter,
+  registerLimiter,
+  // exported for tests
+  leaseKey
 };
