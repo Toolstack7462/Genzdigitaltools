@@ -140,11 +140,26 @@ const AdminRenewals = () => {
     setBusyFor(c.clientId, true);
     try {
       const res = await api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'email', offer: getOffer(c), stage: c.suggestedStage });
-      if (res.data?.success) showSuccess(`Renewal email sent to ${c.fullName || c.email}`);
+      if (res.data?.deduped) showWarning(res.data.message || 'A renewal email was just sent to this client — not sending a duplicate.');
+      else if (res.data?.success) showSuccess(`Renewal email sent to ${c.fullName || c.email}`);
       else if (res.data?.emailEnabled === false) showWarning('Email is not configured on the server. Use WhatsApp instead.');
       else showError(res.data?.error || 'Could not send the email.');
       load();
-    } catch (e) { showError(e.response?.data?.error || 'Could not send the email.'); }
+    } catch (e) {
+      // Distinguish "the provider refused it" (the server answered, with a code and a
+      // safe explanation) from "the API never answered at all" — the second is a server
+      // fault, NOT an email fault, and saying "could not send the email" for it sends
+      // whoever is debugging in entirely the wrong direction.
+      const data = e.response?.data;
+      if (data?.error) {
+        const cid = data.correlationId ? ` (ref ${data.correlationId})` : '';
+        showError(`${data.error}${cid}`);
+      } else if (!e.response) {
+        showError('The server did not respond, so nothing was sent. Please retry — if it keeps happening, check the API server logs.');
+      } else {
+        showError(`The server returned an unexpected error (HTTP ${e.response.status}). Nothing was sent.`);
+      }
+    }
     finally { setBusyFor(c.clientId, false); }
   };
 

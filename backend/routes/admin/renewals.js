@@ -23,8 +23,34 @@ const ActivityLog = require('../../models/ActivityLog');
 const RenewalReminderLog = require('../../models/RenewalReminderLog');
 const RenewalFollowup = require('../../models/RenewalFollowup');
 const { requireAuth, requireAdmin } = require('../../middleware/authEnhanced');
-const { isEmailEnabled, sendRenewalReminderEmail } = require('../../utils/email');
+const { isEmailEnabled, sendRenewalReminderEmail, EMAIL_CODES, adminMessageFor } = require('../../utils/email');
 const proxyTools = require('../../utils/proxy/tools');
+const crypto = require('crypto');
+const { withLock } = require('../../utils/keyedLock');
+
+const RECIPIENT_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// Two email reminders to the same client inside this window are treated as one
+// (double-click / retry after a lost response) — the second is a no-op, not a
+// second message in the client's inbox.
+const DUPLICATE_WINDOW_MS = Number(process.env.RENEWAL_EMAIL_DEDUPE_MS) || 60 * 1000;
+
+/** Most recent CONFIRMED email reminder for a client inside `windowMs`, else null. */
+async function recentEmailReminder(clientId, windowMs) {
+  try {
+    const cutoff = Date.now() - windowMs;
+    const rows = await RenewalReminderLog.find({ clientId: String(clientId), channel: 'email' })
+      .sort({ sentAt: -1 })
+      .limit(5);
+    for (const r of rows || []) {
+      const at = new Date(r.sentAt || r.createdAt || 0).getTime();
+      if (at && at >= cutoff) return new Date(at);
+    }
+  } catch (e) {
+    // A dedupe read must never block a legitimate send.
+    console.error('[renewal-email] dedupe check failed:', e.message);
+  }
+  return null;
+}
 
 router.use(requireAuth);
 router.use(requireAdmin);
@@ -265,6 +291,9 @@ router.get('/', async (req, res) => {
 //    client-side via wa.me); this just stamps "last reminded".
 // Always records a RenewalReminderLog + ActivityLog entry.
 router.post('/:clientId/remind', async (req, res) => {
+  // Correlation id for this send: stamped on the log line, the RenewalReminderLog
+  // row and the response, so one report can be traced end-to-end. Not a secret.
+  const cid = String(req.requestId || crypto.randomUUID());
   try {
     const { clientId } = req.params;
     const channel = req.body && req.body.channel === 'whatsapp' ? 'whatsapp' : 'email';
@@ -288,7 +317,7 @@ router.post('/:clientId/remind', async (req, res) => {
       return res.status(400).json({ error: 'This client has no expiring or expired tools to remind about.' });
     }
 
-    const record = async () => {
+    const record = async (extra = {}) => {
       await RenewalReminderLog.create({
         clientId: String(client._id),
         clientEmail: client.email || null,
@@ -298,9 +327,15 @@ router.post('/:clientId/remind', async (req, res) => {
         tools: tools.map(t => ({ toolId: String(t.toolId || ''), toolName: t.toolName, endDate: t.endDate })),
         sentBy: req.userId,
         sentAt: new Date(),
+        // Provider + correlation evidence: the only proof a send was ACCEPTED,
+        // and the handle needed to trace one message end-to-end.
+        status: 'sent',
+        template: 'renewal_reminder',
+        correlationId: cid,
+        ...extra,
       });
       await ActivityLog.log('ADMIN', req.userId, 'RENEWAL_REMINDER_SENT', {
-        clientId: String(client._id), channel, toolCount: tools.length, offer,
+        clientId: String(client._id), channel, toolCount: tools.length, offer, correlationId: cid,
       });
       // Advance the recovery follow-up state: stamp the touch, record the offer,
       // and clear any snooze (a fresh follow-up reopens the client).
@@ -319,26 +354,69 @@ router.post('/:clientId/remind', async (req, res) => {
       return res.json({ success: true, channel, sentAt: new Date(), toolCount: tools.length });
     }
 
-    // Email channel.
+    // ── Email channel ────────────────────────────────────────────────────────
     if (!isEmailEnabled()) {
-      return res.json({ success: false, emailEnabled: false, message: 'Email is not configured on the server. Use WhatsApp instead.' });
+      return res.status(503).json({
+        success: false, emailEnabled: false, code: EMAIL_CODES.NOT_CONFIGURED,
+        error: 'Email is not configured on the server. Use WhatsApp instead.',
+      });
     }
+    // Validate the recipient and the template data BEFORE calling the provider,
+    // so an obviously-undeliverable send is reported precisely instead of as a
+    // provider fault.
     if (!client.email) {
-      return res.status(400).json({ error: 'This client has no email address on file.' });
+      return res.status(400).json({ success: false, code: EMAIL_CODES.INVALID_RECIPIENT, error: 'This client has no email address on file.' });
     }
-    const r = await sendRenewalReminderEmail(client.email, {
-      clientName: client.fullName,
-      tools,
-      offer,
+    if (!RECIPIENT_RE.test(String(client.email))) {
+      return res.status(400).json({ success: false, code: EMAIL_CODES.INVALID_RECIPIENT, error: 'This client\'s email address is not valid. Fix it on the client record and retry.' });
+    }
+
+    console.log(`[renewal-email] stage=start cid=${cid} client=${String(client._id)} tools=${tools.length}`);
+
+    // Duplicate protection. withLock serialises rapid double-clicks for this
+    // client; the recent-send check then makes the second one a no-op instead of
+    // a second email. "Reminder sent" is still only recorded on acceptance.
+    const lockKey = `renewal-email:${String(client._id)}`;
+    const outcome = await withLock(lockKey, async () => {
+      const recent = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
+      if (recent) return { deduped: true, sentAt: recent };
+
+      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer });
+      if (!r || r.error || r.skipped) {
+        const code = (r && r.code) || EMAIL_CODES.UNKNOWN;
+        // Provider wording stays in the server log; the admin gets a safe, useful line.
+        console.error(`[renewal-email] stage=failed cid=${cid} code=${code} detail=${(r && r.error) || 'no response'}`);
+        return { failed: true, code, adminMessage: adminMessageFor(code), domainNotVerified: !!(r && r.domainNotVerified) };
+      }
+      console.log(`[renewal-email] stage=accepted cid=${cid} msgId=${r.messageId || '-'}`);
+      await record({ providerMessageId: r.messageId || null });
+      console.log(`[renewal-email] stage=recorded cid=${cid}`);
+      return { sent: true, messageId: r.messageId || null };
     });
-    if (r && r.error) {
-      return res.json({ success: false, error: r.error, domainNotVerified: !!r.domainNotVerified });
+
+    if (outcome.deduped) {
+      return res.json({
+        success: true, channel: 'email', deduped: true, sentAt: outcome.sentAt,
+        toolCount: tools.length, correlationId: cid,
+        message: 'A renewal email was just sent to this client — not sending a duplicate.',
+      });
     }
-    await record();
-    res.json({ success: true, channel: 'email', sentAt: new Date(), toolCount: tools.length });
+    if (outcome.failed) {
+      // 502: we reached the handler fine, the PROVIDER refused. Structured so the
+      // UI can show something true instead of a generic fallback.
+      return res.status(502).json({
+        success: false, code: outcome.code, error: outcome.adminMessage,
+        domainNotVerified: outcome.domainNotVerified, correlationId: cid,
+      });
+    }
+    res.json({
+      success: true, channel: 'email', sentAt: new Date(), toolCount: tools.length,
+      providerMessageId: outcome.messageId, correlationId: cid,
+    });
   } catch (error) {
-    console.error('Send renewal reminder error:', error);
-    res.status(500).json({ error: 'Failed to send renewal reminder' });
+    console.error(`[renewal-email] stage=exception cid=${cid} name=${error && error.name} msg=${error && error.message}`);
+    console.error(error && error.stack ? error.stack : error);
+    res.status(500).json({ success: false, code: 'RENEWAL_SEND_FAILED', error: 'Failed to send renewal reminder', correlationId: cid });
   }
 });
 

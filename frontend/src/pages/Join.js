@@ -103,7 +103,11 @@ const Join = () => {
           // when the request did not execute (connection failure / gateway error).
           const isTimeout = err.code === 'ECONNABORTED';
           const connFailed = err.request && !err.response && !isTimeout;
-          const gateway = err.response && [502, 503, 504].includes(err.response.status);
+          // A 502/503 that carries an application `code` is a DELIBERATE answer (e.g.
+          // the email provider refused the send) — not a lost request. Retrying it
+          // would re-send the same doomed message, so only retry bodiless gateway errors.
+          const deliberate = !!err.response?.data?.code;
+          const gateway = err.response && [502, 503, 504].includes(err.response.status) && !deliberate;
           if (attempt < 2 && (connFailed || gateway)) {
             await new Promise((r) => setTimeout(r, 1200));
             continue;
@@ -114,7 +118,12 @@ const Join = () => {
       if (response.data.success) {
         if (response.data.emailVerificationRequired) {
           setVerifyStep(true);
-          showSuccess('Account created. Enter the code we emailed you.');
+          // The account does NOT exist yet — it is created only once the code is
+          // verified — so the wording must not promise otherwise. `resumed` means
+          // an older unverified account is being reclaimed with its password intact.
+          showSuccess(response.data.message || (response.data.resumed
+            ? 'This email is already registered but unverified. Enter the new code we just sent.'
+            : 'Enter the 6-digit code we just emailed you to finish creating your account.'));
         } else {
           setSuccess(true);
           showSuccess('Account created successfully! You can now login.');

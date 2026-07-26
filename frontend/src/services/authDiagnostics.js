@@ -193,6 +193,19 @@ export function sanitizeError(error, ctx = {}) {
   } else if (serverCode === 'DEVICE_BLOCKED' || serverCode === 'DEVICE_MISMATCH') {
     code = 'DEVICE_BLOCKED';
     userMessage = 'This device is not approved for your account. Please ask the admin to approve or reset your device.';
+  } else if (serverCode === 'RESEND_COOLDOWN' || serverCode === 'RESEND_LIMIT') {
+    // Safe + actionable: tell them exactly how long to wait. No host, no internals.
+    const wait = Number(error?.response?.data?.retryAfterSeconds) || 0;
+    code = serverCode;
+    userMessage = wait
+      ? `Please wait ${wait} seconds before requesting another code.`
+      : 'You have requested too many codes. Please wait a moment and try again.';
+  } else if (typeof serverCode === 'string' && /^(EMAIL_|SMTP_|TEMPLATE_ERROR)/.test(serverCode)) {
+    // The server reached us fine; sending the message failed. Naming the email step
+    // is safe (it exposes nothing about our infrastructure) and far more useful than
+    // the generic fallback, because retrying is the correct user action.
+    code = serverCode;
+    userMessage = 'We could not send your verification email just now. Please check the address and try again in a moment.';
   } else if (status === 401) {
     code = 'WRONG_CREDENTIALS';
     userMessage = 'Incorrect email or password. Please check them and try again.';

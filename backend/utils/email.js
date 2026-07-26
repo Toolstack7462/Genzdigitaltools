@@ -47,18 +47,78 @@ function isEmailEnabled() {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
- * Low-level send. Best-effort: returns { id } on success, { skipped: true } when
- * email is not configured, or { error, status, domainNotVerified } on failure.
+ * Stable, admin-safe failure codes. The caller decides what to show a human; the
+ * provider's own wording stays server-side in the log. Named after the generic
+ * transport vocabulary (SMTP_*) even though the transport is Resend's HTTP API,
+ * so the codes remain meaningful if the provider is ever swapped.
+ */
+const EMAIL_CODES = {
+  NOT_CONFIGURED: 'EMAIL_NOT_CONFIGURED',
+  INVALID_RECIPIENT: 'EMAIL_INVALID_RECIPIENT',
+  TEMPLATE_ERROR: 'TEMPLATE_ERROR',
+  AUTH_FAILED: 'SMTP_AUTH_FAILED',
+  CONNECTION_FAILED: 'SMTP_CONNECTION_FAILED',
+  REJECTED: 'EMAIL_REJECTED',
+  RATE_LIMITED: 'EMAIL_RATE_LIMITED',
+  TIMEOUT: 'EMAIL_TIMEOUT',
+  UNKNOWN: 'EMAIL_SEND_FAILED',
+};
+
+/**
+ * Map a provider HTTP status (+ its safe message) onto a stable code.
+ * 401/403 = the key is wrong, revoked, or the sending domain is not verified —
+ * an operator problem, not a recipient problem. 422/400 = this specific message
+ * or recipient was refused. 429 = throttled. 5xx = provider outage.
+ */
+function classifyStatus(status, detail = '') {
+  if (status === 401) return EMAIL_CODES.AUTH_FAILED;
+  if (status === 403) {
+    return /not verified|verify (a |your )?domain|domain is not/i.test(detail)
+      ? EMAIL_CODES.AUTH_FAILED
+      : EMAIL_CODES.REJECTED;
+  }
+  if (status === 429) return EMAIL_CODES.RATE_LIMITED;
+  if (status === 422 || status === 400) return EMAIL_CODES.REJECTED;
+  if (status >= 500) return EMAIL_CODES.CONNECTION_FAILED;
+  return EMAIL_CODES.UNKNOWN;
+}
+
+/**
+ * Short, admin-safe sentence per code. Tells the operator what to DO without
+ * ever exposing the API key, the recipient list, or the message body.
+ */
+function adminMessageFor(code) {
+  switch (code) {
+    case EMAIL_CODES.NOT_CONFIGURED:   return 'Email is not configured on the server.';
+    case EMAIL_CODES.AUTH_FAILED:      return 'The email provider rejected our credentials or sending domain. Check the API key and domain verification.';
+    case EMAIL_CODES.CONNECTION_FAILED:return 'Could not reach the email provider. It may be down — try again shortly.';
+    case EMAIL_CODES.REJECTED:         return 'The email provider refused this message or recipient address.';
+    case EMAIL_CODES.RATE_LIMITED:     return 'The email provider is rate-limiting us. Wait a moment and retry.';
+    case EMAIL_CODES.TIMEOUT:          return 'The email provider did not respond in time. The message was not sent.';
+    case EMAIL_CODES.INVALID_RECIPIENT:return 'That recipient address is not a valid email address.';
+    case EMAIL_CODES.TEMPLATE_ERROR:   return 'The email could not be built (missing subject or body).';
+    default:                           return 'The email could not be sent. Please try again.';
+  }
+}
+
+/**
+ * Low-level send. Best-effort: returns { id, messageId } on success,
+ * { skipped: true, code } when email is not configured, or
+ * { error, code, adminMessage, status, domainNotVerified } on failure.
  * Never throws.
  */
 async function sendEmail({ to, subject, html, text }) {
   const { apiKey, from } = getConfig();
   if (!apiKey || !from) {
     console.warn('[email] RESEND_API_KEY/EMAIL_FROM not configured — skipping email send.');
-    return { skipped: true };
+    return { skipped: true, code: EMAIL_CODES.NOT_CONFIGURED, adminMessage: adminMessageFor(EMAIL_CODES.NOT_CONFIGURED) };
   }
-  if (!to || !EMAIL_RE.test(String(to))) return { error: 'Invalid recipient email address' };
-  if (!subject || (!html && !text)) return { error: 'Email is missing subject or body' };
+  if (!to || !EMAIL_RE.test(String(to))) {
+    return { error: 'Invalid recipient email address', code: EMAIL_CODES.INVALID_RECIPIENT, adminMessage: adminMessageFor(EMAIL_CODES.INVALID_RECIPIENT) };
+  }
+  if (!subject || (!html && !text)) {
+    return { error: 'Email is missing subject or body', code: EMAIL_CODES.TEMPLATE_ERROR, adminMessage: adminMessageFor(EMAIL_CODES.TEMPLATE_ERROR) };
+  }
 
   // Cap the outbound Resend call. A slow/unreachable email API must never hang the
   // request that triggered it — signup AWAITS this, and without a timeout the await
@@ -89,19 +149,33 @@ async function sendEmail({ to, subject, html, text }) {
       } catch (_) {
         try { detail = (await resp.text()).slice(0, 300); } catch (_) { /* noop */ }
       }
-      console.error(`[email] Resend rejected "${subject}" — HTTP ${resp.status}: ${detail}`);
+      const code = classifyStatus(resp.status, detail);
+      console.error(`[email] Resend rejected "${subject}" — HTTP ${resp.status} code=${code}: ${detail}`);
       const domainNotVerified =
         resp.status === 403 || /not verified|verify (a |your )?domain|domain is not/i.test(detail);
-      return { error: detail || `Resend HTTP ${resp.status}`, status: resp.status, domainNotVerified };
+      return {
+        error: detail || `Resend HTTP ${resp.status}`,
+        code,
+        adminMessage: adminMessageFor(code),
+        status: resp.status,
+        domainNotVerified,
+      };
     }
 
     const data = await resp.json().catch(() => ({}));
-    return { id: data.id };
+    // messageId is the provider's own id for this send — the only reliable proof
+    // of acceptance, and what we persist for correlation/audit.
+    return { id: data.id, messageId: data.id || null };
   } catch (err) {
     clearTimeout(timer);
     const aborted = err && err.name === 'AbortError';
-    console.error('[email] Failed to send email:', aborted ? 'timed out after 8s' : err.message);
-    return { error: aborted ? 'Email service timed out' : 'Failed to send email' };
+    const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.CONNECTION_FAILED;
+    console.error(`[email] Failed to send email code=${code}:`, aborted ? 'timed out after 8s' : err.message);
+    return {
+      error: aborted ? 'Email service timed out' : 'Failed to send email',
+      code,
+      adminMessage: adminMessageFor(code),
+    };
   }
 }
 
@@ -303,6 +377,9 @@ async function sendOfferEmail(to, { clientName, offer = {}, ctaUrl } = {}) {
 }
 
 module.exports = {
+  EMAIL_CODES,
+  classifyStatus,
+  adminMessageFor,
   isEmailEnabled,
   sendEmail,
   sendVerificationEmail,

@@ -1,93 +1,150 @@
 const express = require('express');
 const router = express.Router();
+const bcrypt = require('bcryptjs');
 const Blog = require('../models/Blog');
 const Contact = require('../models/Contact');
 const User = require('../models/User');
 const EmailVerification = require('../models/EmailVerification');
 const { sendVerificationEmail, isEmailEnabled } = require('../utils/email');
 const { normalizeAuthInputs } = require('../middleware/normalize');
+const {
+  normalizeEmail, emailMatch, isValidEmail, classifyExisting, RESEND_COOLDOWN_MS,
+} = require('../utils/signupPolicy');
+
+const maskE = (e) => { const s = String(e || ''); const at = s.indexOf('@'); return at <= 0 ? (s ? '***' : '(none)') : s[0] + '***' + s.slice(at); };
 
 // POST /api/crm/public/register - Public client registration
+//
+// ORDER MATTERS. Nothing is written to `users` here. The flow is:
+//   pending registration (hashed OTP) → send the email → only report "code sent"
+//   once the provider ACCEPTED it. The account itself is created by
+//   POST /auth/verify-email, and only after the correct code is presented.
+//
+// This replaces the previous "create the account first, email best-effort after"
+// order, which produced active unverified accounts whenever mail delivery failed
+// and then permanently blocked the retry with "Email already exists".
 router.post('/register', normalizeAuthInputs, async (req, res) => {
   const t0 = Date.now(); // [signup-diag] total request timing
   try {
-    const { fullName, email, password } = req.body;
-    const maskE = (e) => { const s = String(e || ''); const at = s.indexOf('@'); return at <= 0 ? (s ? '***' : '(none)') : s[0] + '***' + s.slice(at); };
+    const { fullName, password } = req.body;
+    const email = normalizeEmail(req.body && req.body.email);
     console.log(`[signup] stage=attempt rid=${req.requestId || ''} email=${maskE(email)}`);
 
     // Validation
     if (!fullName || !email || !password) {
-      return res.status(400).json({ 
-        error: 'Full name, email, and password are required' 
+      return res.status(400).json({
+        error: 'Full name, email, and password are required',
+        code: 'SIGNUP_VALIDATION',
       });
     }
-    
-    // Email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      return res.status(400).json({ error: 'Invalid email address' });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Invalid email address', code: 'SIGNUP_VALIDATION' });
     }
-    
-    // Password validation
     if (password.length < 6) {
-      return res.status(400).json({ 
-        error: 'Password must be at least 6 characters' 
+      return res.status(400).json({
+        error: 'Password must be at least 6 characters',
+        code: 'SIGNUP_VALIDATION',
       });
     }
-    
-    // Check if user already exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(409).json({ 
-        error: 'An account with this email already exists' 
+
+    if (!isEmailEnabled()) {
+      // Without a mailer we cannot verify anyone, and we refuse to fall back to
+      // creating an unverified account — that is the bug being fixed.
+      console.error('[signup] stage=email result=not_configured');
+      return res.status(503).json({
+        error: 'We cannot send verification emails right now. Please try again shortly.',
+        code: 'EMAIL_NOT_CONFIGURED',
       });
     }
-    
-    // Create new client user
-    const client = await User.create({
-      fullName: fullName.trim(),
-      email: email.trim().toLowerCase(),
-      passwordHash: password, // Will be hashed by pre-save hook
-      role: 'CLIENT',
-      status: 'active',
-      emailVerified: false,
-      devicePolicy: {
-        enabled: true, // Enable device binding for clients
-        maxDevices: 1
+
+    // Case-insensitive existence check. A bare findOne({email}) resolves through the
+    // adapter's case-SENSITIVE compare and misses legacy rows, which is how duplicate
+    // accounts got created for the same person.
+    const existingUser = await User.findOne({ email: emailMatch(email) });
+    const kind = classifyExisting(existingUser);
+
+    if (kind === 'verified') {
+      // A proven account. Never modify it, never leak more than the caller already knows.
+      console.log(`[signup] stage=exists_verified rid=${req.requestId || ''} email=${maskE(email)}`);
+      return res.status(409).json({
+        error: 'An account with this email already exists. Please log in, or use "forgot password" if you need a new one.',
+        code: 'ACCOUNT_EXISTS',
+      });
+    }
+
+    if (kind === 'unverified') {
+      // Legacy account created by the OLD flow (or an interrupted one). Let the real
+      // owner finish verifying — but do NOT touch the stored password: these accounts
+      // can already log in, so accepting a new password here would be account takeover.
+      const { code } = await EmailVerification.issueOtp({ userId: existingUser._id, email });
+      const r = await sendVerificationEmail(email, code);
+      if (r.error || r.skipped) {
+        console.error(`[signup] stage=email result=failed kind=legacy code=${r.code || 'UNKNOWN'}`);
+        return res.status(502).json({
+          error: 'We could not send your verification code. Please try again in a moment.',
+          code: r.code || 'EMAIL_SEND_FAILED',
+        });
       }
+      console.log(`[signup] stage=resume_legacy rid=${req.requestId || ''} email=${maskE(email)} ms=${Date.now() - t0}`);
+      return res.status(200).json({
+        success: true,
+        emailVerificationRequired: true,
+        resumed: true,
+        code: 'VERIFICATION_RESUMED',
+        message: 'This email is already registered but not verified. We just sent you a new code — enter it to finish, then log in with your existing password.',
+      });
+    }
+
+    // ── No account exists: pending registration only ─────────────────────────
+    // Hash now so the plaintext password never reaches storage, not even the
+    // pending record. User.preSave detects an existing bcrypt hash and will not
+    // re-hash it when the account is finally created.
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const issued = await EmailVerification.issueSignupOtp({
+      email,
+      fullName: String(fullName).trim(),
+      passwordHash,
     });
 
-    console.log(`[signup] stage=created rid=${req.requestId || ''} email=${maskE(client.email)} ms=${Date.now() - t0}`);
-
-    // Send an email-verification OTP (best-effort — never blocks signup). Login
-    // is intentionally left unchanged; verification is additive. The Resend call is
-    // now time-capped (utils/email.js) so a slow email API cannot hang signup.
-    let emailSent = false;
-    try {
-      if (isEmailEnabled()) {
-        const te = Date.now();
-        const { code } = await EmailVerification.issueOtp({ userId: client._id, email: client.email });
-        const r = await sendVerificationEmail(client.email, code);
-        emailSent = !r.error && !r.skipped;
-        console.log(`[signup] stage=email result=${emailSent ? 'sent' : (r.skipped ? 'skipped' : 'failed')} emailMs=${Date.now() - te}${r.error ? ' err=' + r.error : ''}`);
-      }
-    } catch (e) {
-      console.error(`[signup] stage=email_exception msg=${e.message}`);
+    if (issued.cooldownMs) {
+      const retryAfter = Math.ceil(issued.cooldownMs / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({
+        error: `Please wait ${retryAfter}s before requesting another code.`,
+        code: 'RESEND_COOLDOWN',
+        retryAfterSeconds: retryAfter,
+      });
+    }
+    if (issued.sendsExhausted) {
+      return res.status(429).json({
+        error: 'Too many codes requested for this email. Please try again later.',
+        code: 'RESEND_LIMIT',
+        retryAfterSeconds: Math.ceil(RESEND_COOLDOWN_MS / 1000),
+      });
     }
 
-    res.status(201).json({
+    // Send BEFORE reporting success. If this fails we report failure and no account
+    // exists — the pending record stays 'active' so the very next attempt just
+    // re-issues a code (a failed send never consumes the cooldown or send budget).
+    const te = Date.now();
+    const r = await sendVerificationEmail(email, issued.code);
+    if (r.error || r.skipped) {
+      console.error(`[signup] stage=email result=failed rid=${req.requestId || ''} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te}`);
+      return res.status(502).json({
+        error: 'We could not send your verification code. Please check the address and try again.',
+        code: r.code || 'EMAIL_SEND_FAILED',
+      });
+    }
+    await EmailVerification.markSignupSent(email);
+    console.log(`[signup] stage=email result=sent rid=${req.requestId || ''} email=${maskE(email)} msgId=${r.messageId || '-'} emailMs=${Date.now() - te} totalMs=${Date.now() - t0}`);
+
+    // 202 Accepted: the registration is pending verification, NOT created.
+    return res.status(202).json({
       success: true,
-      message: emailSent
-        ? 'Account created. Check your email for a verification code.'
-        : 'Account created successfully! You can now login.',
-      emailVerificationRequired: emailSent,
-      user: {
-        id: client._id,
-        email: client.email,
-        fullName: client.fullName,
-        role: client.role,
-        emailVerified: false
-      }
+      emailVerificationRequired: true,
+      code: 'VERIFICATION_SENT',
+      message: 'Check your email for a 6-digit verification code to finish creating your account.',
     });
   } catch (error) {
     // [signup-diag] Capture the EXACT failure point + timing + error so a generic
