@@ -122,10 +122,17 @@ async function sendEmail({ to, subject, html, text }) {
 
   // Cap the outbound Resend call. A slow/unreachable email API must never hang the
   // request that triggered it — signup AWAITS this, and without a timeout the await
-  // blocked past the client's limit, surfacing to users as
-  // "Server is busy, please try again later". 8s keeps signup well under that limit.
+  // blocked past the client's limit.
+  //
+  // WHY 4s AND NOT 8s (measured in production 2026-07-27): when the outbound call to
+  // api.resend.com stalls, the web server kills the unresponsive worker after ~4.6-7.2s
+  // and serves its OWN 503 page. That page bypasses Express, so it carries no CORS
+  // header and no JSON body — the browser reports a CORS error and the UI falls back to
+  // a generic message. An 8s cap always lost that race, so the caller never saw a real
+  // error. Aborting first means we always return a structured EMAIL_TIMEOUT instead.
+  const timeoutMs = Number(process.env.EMAIL_TIMEOUT_MS) || 4000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
@@ -170,7 +177,7 @@ async function sendEmail({ to, subject, html, text }) {
     clearTimeout(timer);
     const aborted = err && err.name === 'AbortError';
     const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.CONNECTION_FAILED;
-    console.error(`[email] Failed to send email code=${code}:`, aborted ? 'timed out after 8s' : err.message);
+    console.error(`[email] Failed to send email code=${code}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
     return {
       error: aborted ? 'Email service timed out' : 'Failed to send email',
       code,

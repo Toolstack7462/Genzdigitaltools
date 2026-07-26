@@ -79,7 +79,7 @@ test('13. a provider timeout is EMAIL_TIMEOUT and never hangs the request', asyn
   const r = await sendEmail({ to: 'admin@example.com', subject: 'x', text: 'x' });
   assert.equal(r.code, EMAIL_CODES.TIMEOUT);
   assert.equal(r.code, 'EMAIL_TIMEOUT');
-  assert.ok(Date.now() - started < 15000, 'the 8s cap bounds the request');
+  assert.ok(Date.now() - started < 15000, 'the abort cap bounds the request');
 });
 
 test('13b. a provider outage is SMTP_CONNECTION_FAILED, and the next send recovers', async () => {
