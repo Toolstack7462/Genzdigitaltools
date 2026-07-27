@@ -58,6 +58,24 @@ const GATEWAY_KEY = process.env.STEALTH_GATEWAY_KEY || ''; // shared key for the
 const LEASE_COOKIE = 'sw_lease';
 const LEASE_TYPE = 'stealth_lease';
 
+// ── One-time POST launch bootstrap ───────────────────────────────────────────
+// /launch takes a single-use code in a POST BODY, redeems it server-to-server, installs an
+// OPAQUE HttpOnly session cookie and 303s to the clean tool URL. Replaces the old
+// /gateway?lease=<JWT> entry point, which put a bearer credential in the address bar, in
+// history, in the Referer of the first upstream request and in every access log on the way —
+// and then stored that same JWT in a NON-HttpOnly `sw_lease` cookie that page script and any
+// cookie-editor extension could read straight back out.
+//
+// ALLOW_URL_LEASE keeps /gateway alive so a backend rollback (LAUNCH_FLOW=url /
+// STEALTH_LAUNCH_FLOW=url) works without redeploying this gateway. Set
+// `SetEnv ALLOW_URL_LEASE 0` once the POST flow is verified. Default ON.
+const ALLOW_URL_LEASE = String(process.env.ALLOW_URL_LEASE || '1') !== '0';
+// A launch body carries one ~43-char code and nothing else.
+const LAUNCH_BODY_LIMIT = 4096;
+// __Host- REQUIRES Secure + Path=/ + NO Domain, so the cookie is host-only and cannot be set
+// or overwritten by any other host under genzdigitalstore.com.
+const SESSION_COOKIE = '__Host-stealth_session';
+
 // Optional: extra CSS selectors (comma-separated) for StealthWriter's exact top-bar
 // and bottom account-area containers. These are added to the critical hide CSS that
 // is injected into <head> BEFORE first paint, so they never flash. Use this to hide
@@ -185,22 +203,176 @@ function getLease(req) {
   return parseCookies(req.headers.cookie)[LEASE_COOKIE] || null;
 }
 
-// Strip ONLY the sw_lease cookie from a raw Cookie header, preserving every other
-// cookie's value byte-for-byte (no decode/encode) — important for tokens like
-// __Secure-better-auth.session_token that contain %2B / %2F / %3D / dots.
+// ── Opaque session store — durable across Passenger workers + process recycles ──
+// The browser must never hold the lease JWT. Instead it gets a random, opaque, HttpOnly,
+// host-only `__Host-stealth_session` id that maps to THIS server-side record, which holds
+// the JWT for server→backend calls only. The opaque id reveals no user, account, client,
+// lease or expiry, and it is useless to anyone who cannot reach this store.
+//
+// WHY IT IS ON DISK, NOT JUST IN A MAP (learned the hard way on the Claude gateway): Passenger
+// runs several Node workers and recycles idle ones, so a per-process Map means the next request
+// can land on a worker that never saw the sid → "no session" → block page mid-session. The Map
+// stays the hot path; a miss rehydrates from an AES-256-GCM-encrypted file under this app's own
+// tmp/, which every worker on the box can read. The key is derived from the lease secret each
+// worker already has, so the blob on disk is worthless on its own, and a tampered or
+// wrong-key blob simply fails authentication and reads as "no session".
+const stealthSessions = new Map(); // sid -> { jwt, jti, exp(ms), cap, createdAt, lastSeen, rotatedAt }
+const SESSION_DIR = path.join(__dirname, 'tmp', 'sessions');
+try { fs.mkdirSync(SESSION_DIR, { recursive: true }); } catch (_) {}
+const SESSION_STORE_WRITABLE = (function () {
+  try {
+    const probe = path.join(SESSION_DIR, '.wtest-' + process.pid);
+    fs.writeFileSync(probe, '1'); fs.unlinkSync(probe);
+    return true;
+  } catch (_) { return false; }
+})();
+const SESSION_ENC_KEY = crypto.createHash('sha256')
+  .update('stealth-opaque-session:v1|' + (process.env.STEALTH_LEASE_SECRET || process.env.JWT_SECRET || ''))
+  .digest();
+function sessFile(sid) { return path.join(SESSION_DIR, crypto.createHash('sha256').update(String(sid)).digest('hex') + '.bin'); }
+function sessEncrypt(obj) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', SESSION_ENC_KEY, iv);
+  const ct = Buffer.concat([c.update(Buffer.from(JSON.stringify(obj), 'utf8')), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]);
+}
+function sessDecrypt(buf) {
+  try {
+    const d = crypto.createDecipheriv('aes-256-gcm', SESSION_ENC_KEY, buf.subarray(0, 12));
+    d.setAuthTag(buf.subarray(12, 28));
+    return JSON.parse(Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString('utf8'));
+  } catch (_) { return null; }
+}
+function sessPersist(sid, rec) {
+  try {
+    const tmp = sessFile(sid) + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, sessEncrypt({ jwt: rec.jwt, jti: rec.jti, exp: rec.exp, cap: rec.cap, createdAt: rec.createdAt, rotatedAt: rec.rotatedAt }));
+    fs.renameSync(tmp, sessFile(sid)); // atomic publish
+  } catch (_) {}
+}
+function sessLoad(sid) {
+  try {
+    const o = sessDecrypt(fs.readFileSync(sessFile(sid)));
+    if (!o) return null;
+    if (Date.now() > o.exp) { try { fs.unlinkSync(sessFile(sid)); } catch (_) {} return null; }
+    return o;
+  } catch (_) { return null; }
+}
+function sessRemove(sid) { try { fs.unlinkSync(sessFile(sid)); } catch (_) {} }
+
+function newSid() { return crypto.randomBytes(32).toString('base64url'); }
+function createSession(jwt, payload) {
+  const sid = newSid(); // fresh id per launch → session fixation is not possible
+  const exp = payload && payload.exp ? payload.exp * 1000 : Date.now() + 30 * 60 * 1000;
+  const rec = { jwt, jti: (payload && payload.jti) || null, exp, cap: !!(payload && payload.cap), createdAt: Date.now(), lastSeen: Date.now(), rotatedAt: Date.now() };
+  stealthSessions.set(sid, rec);
+  sessPersist(sid, rec);
+  return sid;
+}
+// NOTE the name: `getSession(token, jti)` further down is the ACCOUNT VAULT fetch and is a
+// completely different thing. Both are function declarations, so reusing the name would have
+// silently overwritten one with the other at parse time — with no syntax error and no test
+// failure until the vault stopped loading in production.
+function getOpaqueSession(req) {
+  const sid = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (!sid) return null;
+  let s = stealthSessions.get(sid);
+  if (!s) {
+    const o = sessLoad(sid);
+    if (!o) return null;
+    s = { jwt: o.jwt, jti: o.jti, exp: o.exp, cap: o.cap, createdAt: o.createdAt || Date.now(), lastSeen: Date.now(), rotatedAt: o.rotatedAt || Date.now() };
+    stealthSessions.set(sid, s);
+  }
+  if (Date.now() > s.exp) { stealthSessions.delete(sid); sessRemove(sid); return null; }
+  s.lastSeen = Date.now();
+  return Object.assign({ sid }, s);
+}
+function revokeSession(sid) { if (sid) { stealthSessions.delete(sid); sessRemove(sid); } }
+function sessionCookie(sid, maxAgeSec) {
+  return `${SESSION_COOKIE}=${sid}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${Math.max(30, maxAgeSec)}`;
+}
+function expireSessionCookie() { return `${SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`; }
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, s] of stealthSessions) if (now > s.exp) stealthSessions.delete(sid);
+  try {
+    for (const f of fs.readdirSync(SESSION_DIR)) {
+      if (!f.endsWith('.bin')) continue;
+      const fp = path.join(SESSION_DIR, f);
+      try { const o = sessDecrypt(fs.readFileSync(fp)); if (!o || now > o.exp) fs.unlinkSync(fp); } catch (_) {}
+    }
+  } catch (_) {}
+}, 60000).unref();
+
+// LEASE RESOLUTION (see the request handler): the opaque session wins; the legacy readable
+// `sw_lease` cookie is still accepted so a session already in flight when this build deploys
+// is not cut off mid-use. Nothing mints sw_lease any more — even the legacy /gateway entry
+// point now exchanges the URL lease for an opaque session — so that fallback drains away on
+// its own as live leases expire.
+
+// ── Launch helpers ───────────────────────────────────────────────────────────
+// No lease exists yet at redemption time, so this call is authenticated solely by the shared
+// gateway key. The backend redeems atomically, re-checks lease/plan/revocation, and returns a
+// freshly signed lease — which stays in this process.
+function redeemLaunchCode(code) { return gatewayApiPost('/redeem-launch', null, { code }); }
+
+// Bounded body reader for /launch only. Accepts the dashboard's form encoding and JSON.
+function readLaunchBody(req) {
+  return new Promise((resolve) => {
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    let size = 0; const chunks = []; let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > LAUNCH_BODY_LIMIT) { try { req.destroy(); } catch (_) {} return finish(null); }
+      chunks.push(c);
+    });
+    req.on('error', () => finish(null));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        if (ct.includes('application/json')) return finish(JSON.parse(raw || '{}'));
+        const out = {};
+        for (const [k, v] of new URLSearchParams(raw)) out[k] = v;
+        return finish(out);
+      } catch (_) { return finish(null); }
+    });
+  });
+}
+
+// Strip OUR OWN cookies (the legacy sw_lease and the opaque __Host-stealth_session) from a raw
+// Cookie header, preserving every other cookie's value byte-for-byte (no decode/encode) —
+// important for tokens like __Secure-better-auth.session_token that contain %2B / %2F / %3D
+// / dots.
+//
+// Both callers make this security-critical, not cosmetic: one builds the Cookie header sent
+// UPSTREAM in capture mode, the other collects the cookies that get saved into the account
+// vault. Leaving the opaque session id in either would leak a Gen Z session id to
+// stealthwriter.ai, or bake it into a stored vault bundle that is later replayed for every
+// client on that account.
+const OWN_COOKIES = new Set([LEASE_COOKIE, SESSION_COOKIE]);
 function stripLeaseCookie(rawCookieHeader) {
   return String(rawCookieHeader || '').split(';').map(s => s.trim()).filter(Boolean)
-    .filter(p => { const i = p.indexOf('='); const name = (i < 0 ? p : p.slice(0, i)).trim(); return name !== LEASE_COOKIE; })
+    .filter(p => { const i = p.indexOf('='); const name = (i < 0 ? p : p.slice(0, i)).trim(); return !OWN_COOKIES.has(name); })
     .join('; ');
 }
 
 // ── Authoritative backend validation (HTML loads) ───────────────────────────
-function backendValidate(token) {
+function backendValidate(token) { return backendPostJson('/validate', token, {}); }
+
+/**
+ * Lease-authenticated POST to the backend gateway API (NO gateway key — /validate and
+ * /consume are authorized by the lease itself). Used by the HTML-nav validation and by the
+ * same-origin overlay endpoints, which relay the response verbatim so StealthWriter's
+ * metering, limits and reset labels behave exactly as they did when the overlay called the
+ * backend directly.
+ */
+function backendPostJson(subpath, token, jsonBody) {
   return new Promise((resolve) => {
     try {
-      const u = new URL(`${API_BASE}/validate`);
+      const u = new URL(`${API_BASE}${subpath}`);
       const lib = u.protocol === 'https:' ? https : http;
-      const body = Buffer.from(JSON.stringify({}));
+      const body = Buffer.from(JSON.stringify(jsonBody || {}));
       const r = lib.request(u, {
         method: 'POST',
         headers: {
@@ -335,7 +507,12 @@ function gatewayApiPost(subpath, token, jsonBody) {
       const body = Buffer.from(JSON.stringify(jsonBody || {}));
       const r = lib.request(ul, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': body.length, 'authorization': `Bearer ${token}`, 'x-gateway-key': GATEWAY_KEY },
+        // /redeem-launch runs BEFORE any lease exists, so it passes token=null and is
+        // authenticated by the gateway key alone. Every other caller still sends its bearer.
+        headers: Object.assign(
+          { 'content-type': 'application/json', 'content-length': body.length, 'x-gateway-key': GATEWAY_KEY },
+          token ? { 'authorization': `Bearer ${token}` } : {},
+        ),
         timeout: 8000,
       }, (resp) => { let d = ''; resp.on('data', c => { d += c; }); resp.on('end', () => { try { resolve({ status: resp.statusCode, body: JSON.parse(d || '{}') }); } catch { resolve({ status: resp.statusCode, body: {} }); } }); });
       r.on('error', () => resolve({ status: 0, body: {} }));
@@ -390,7 +567,9 @@ h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 20p
 a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:600}</style></head>
 <body><div class="card"><h1>StealthWriter session ended</h1><p>${msg}</p>
 <a href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></body></html>`;
-  res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  // no-referrer: this page is reachable from a launch attempt and must never pass this
+  // origin (or anything on its URL) onward in a Referer header.
+  res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
   res.end(html);
 }
 
@@ -463,7 +642,11 @@ const OVERLAY_JS_INLINE = OVERLAY_JS.replace(/<\/script>/gi, '<\\/script>');
 function injectOverlay(html, capture, accountLabel) {
   // accountLabel is the operator's SAFE account label (e.g. "Account 1") from the
   // backend /session response — never an email/cookie/token. Shown in the widget.
-  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, accountLabel: accountLabel || null });
+  // sameOrigin tells the overlay to call THIS gateway's /__genz/validate + /__genz/consume
+  // with the HttpOnly session cookie instead of the backend directly with a Bearer lease it
+  // would have to read out of a JS-readable cookie. `api` is still published so an older
+  // cached overlay keeps working during a rollout.
+  const cfg = JSON.stringify({ api: API_BASE, capture: !!capture, accountLabel: accountLabel || null, sameOrigin: true });
   // Capture (admin) mode must NOT hide account UI — the operator needs to log in and
   // reach account pages to capture a session — so the critical hide CSS is omitted.
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
@@ -741,33 +924,116 @@ const server = http.createServer(async (req, res) => {
     return res.end(OVERLAY_CSS);
   }
 
-  // Entry point: capture the lease, set a host-scoped cookie, redirect to app root.
+  // ── Entry point (preferred): one-time POST launch bootstrap ─────────────────
+  // The dashboard submits a hidden form here with a single-use `code` in the BODY. We redeem
+  // it once, server-to-server, install the opaque HttpOnly session and 303 to the clean tool
+  // URL. Nothing sensitive touches the address bar, history, Referer or an access log, and a
+  // captured request body cannot be replayed because the code dies on first use.
+  //
+  // 303 (not 302) is deliberate: it forces the follow-up to be a GET, so the POST is never
+  // replayed onto the app root or resubmittable from history.
+  if (pathName === '/launch') {
+    const launchHeaders = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+    if (req.method !== 'POST') {
+      res.writeHead(405, Object.assign({ 'content-type': 'text/plain; charset=utf-8', 'allow': 'POST' }, launchHeaders));
+      return res.end('Method Not Allowed');
+    }
+    const body = await readLaunchBody(req);
+    const code = body && typeof body.code === 'string' ? body.code.trim() : '';
+    if (!code) { safeLog('launch_reject', { reason: 'code_missing' }); return sendBlockPage(res, 'lease_missing'); }
+
+    const r = await redeemLaunchCode(code); // the code is NEVER logged
+    if (!(r.status === 200 && r.body && r.body.ok && r.body.lease)) {
+      const code0 = (r.body && r.body.code) || (r.status === 0 ? 'unavailable' : 'lease_invalid');
+      // `failure_code`, not `code` — this is the backend's error code (launch_code_used, …).
+      // Naming it `code` here would read, to anyone auditing the logs, as the launch code
+      // itself. The launch code is never logged, in any field, anywhere.
+      safeLog('launch_reject', { upstream_status: r.status, failure_code: code0 });
+      // A spent or stale launch has the same user-facing remedy as an expired lease.
+      return sendBlockPage(res, /^launch_code_/.test(String(code0)) ? 'lease_expired' : code0);
+    }
+
+    const leaseToken = r.body.lease;
+    const payload = verifyLeaseLocal(leaseToken);
+    if (payload === null) { safeLog('launch_reject', { reason: 'lease_unverifiable' }); return sendBlockPage(res, 'lease_invalid'); }
+
+    const landing = payload.cap ? (process.env.STEALTH_SIGNIN_PATH || '/sign-in') : DEFAULT_PATH;
+    const sid = createSession(leaseToken, payload);
+    const maxAge = Math.floor(((payload.exp ? payload.exp * 1000 : Date.now() + 1800000) - Date.now()) / 1000);
+    safeLog('launch_ok', { lease_id: payload.jti, cap: !!payload.cap, seconds: maxAge }); // no code, sid or JWT
+    res.writeHead(303, Object.assign({
+      // Opaque session only; also clear any legacy readable sw_lease this browser still holds.
+      'set-cookie': [sessionCookie(sid, maxAge), `${LEASE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
+      'location': landing,
+    }, launchHeaders));
+    return res.end();
+  }
+
+  // ── Entry point (legacy, feature-flagged): lease in the URL ─────────────────
+  // Retained ONLY so a backend rollback to the URL flow works without redeploying this
+  // gateway. Even on this path the JWT is now exchanged for the same opaque session rather
+  // than written into a readable cookie, so the browser never holds it either way.
+  // Set ALLOW_URL_LEASE=0 to close this door once the POST flow is verified.
   if (pathName === '/gateway') {
-    const token = u.searchParams.get('lease');
-    if (!token) return sendBlockPage(res, 'lease_missing');
-    // Not HttpOnly on purpose: the injected overlay reads this to authenticate its
-    // /validate and /consume calls. The lease is already visible in the open URL,
-    // and it only authorizes metered, backend-validated StealthWriter usage.
-    const secure = (PUBLIC_ORIGIN.startsWith('https://')) ? ' Secure;' : '';
-    // Capture (admin) leases land on the sign-in page to log in fresh; client leases
-    // land directly on the authenticated humanizer dashboard.
-    const cap = !!(verifyLeaseLocal(token) || {}).cap;
-    const landing = cap ? (process.env.STEALTH_SIGNIN_PATH || '/sign-in') : DEFAULT_PATH;
+    if (!ALLOW_URL_LEASE) {
+      safeLog('url_lease_disabled', { request_path: pathName });
+      return sendBlockPage(res, 'lease_missing');
+    }
+    const urlToken = u.searchParams.get('lease');
+    if (!urlToken) return sendBlockPage(res, 'lease_missing');
+    const payload = verifyLeaseLocal(urlToken);
+    if (payload === null) return sendBlockPage(res, 'lease_invalid');
+    const landing = payload.cap ? (process.env.STEALTH_SIGNIN_PATH || '/sign-in') : DEFAULT_PATH;
+    const sid = createSession(urlToken, payload);
+    const maxAge = Math.floor(((payload.exp ? payload.exp * 1000 : Date.now() + 1800000) - Date.now()) / 1000);
+    safeLog('session_open', { lease_id: payload.jti, cap: !!payload.cap, via: 'url' });
     res.writeHead(302, {
-      'set-cookie': `${LEASE_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax;${secure}`,
+      'set-cookie': [sessionCookie(sid, maxAge), `${LEASE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
       'location': landing,
       'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
     });
     return res.end();
   }
 
-  const token = getLease(req);
+  // The opaque session is the source of the lease; the legacy readable sw_lease cookie is
+  // still accepted so a session already in flight when this build deploys is not cut off.
+  const sess = getOpaqueSession(req);
+  const token = sess ? sess.jwt : getLease(req);
   if (!token) return sendBlockPage(res, 'lease_missing');
 
   // Local signature/expiry check (fast fail).
   const local = verifyLeaseLocal(token);
-  if (local === null) return sendBlockPage(res, 'lease_invalid');
+  if (local === null) { if (sess) revokeSession(sess.sid); return sendBlockPage(res, 'lease_invalid'); }
   const capture = !!(local && local.cap); // admin "Refresh Cookies Through Proxy" lease
+
+  // ── Same-origin overlay API (replaces the overlay's Bearer-authenticated calls) ──
+  // The overlay used to read the lease JWT out of the non-HttpOnly sw_lease cookie and send
+  // it to the backend as `Authorization: Bearer <lease>`. That is precisely what made the
+  // cookie unable to be HttpOnly. Now the overlay calls THESE same-origin endpoints with
+  // `credentials: 'same-origin'`; the HttpOnly cookie rides along automatically and the
+  // server attaches the lease on its behalf. The backend's /validate and /consume responses
+  // are relayed VERBATIM, so plan status, limits, metering and reset labels are unchanged.
+  if (pathName === '/__genz/validate' || pathName === '/__genz/consume') {
+    const jsonHeaders = { 'content-type': 'application/json', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+    if (req.method !== 'POST') { res.writeHead(405, jsonHeaders); return res.end('{"valid":false,"code":"method_not_allowed"}'); }
+    const body = (await readLaunchBody(req)) || {};
+    const sub = pathName === '/__genz/validate' ? '/validate' : '/consume';
+    // Only the fields these endpoints actually take — never a caller-supplied lease.
+    const payload = sub === '/consume' ? { action: body.action } : {};
+    const r = await backendPostJson(sub, token, payload);
+    if (r.status === 0) {
+      // Transport failure is explicitly retryable: it must never be read as an ended session.
+      res.writeHead(200, jsonHeaders);
+      return res.end(JSON.stringify({ valid: false, terminal: false, retryable: true, code: 'backend_unavailable' }));
+    }
+    // A CONFIRMED terminal verdict also tears down the opaque session, so a later request
+    // cannot ride a session the backend has already refused.
+    const terminal = !!(r.body && r.body.terminal === true);
+    if (terminal && sess) { revokeSession(sess.sid); jsonHeaders['set-cookie'] = expireSessionCookie(); }
+    res.writeHead(r.status, jsonHeaders);
+    return res.end(JSON.stringify(r.body || {}));
+  }
 
   // Capture-mode save: collect the StealthWriter cookies accumulated under this
   // gateway host (server-side) and post them to the backend to (re)fill the account.
@@ -848,4 +1114,11 @@ server.listen(PORT, () => {
   console.log(`StealthWriter gateway listening on :${PORT}`);
   console.log(`  proxying  -> ${TARGET_ORIGIN}`);
   console.log(`  api base  -> ${API_BASE}`);
+  console.log(`  launch    -> POST /launch${ALLOW_URL_LEASE ? ' (legacy /gateway?lease= still ACCEPTED — set ALLOW_URL_LEASE=0 to close it)' : ' (legacy URL lease CLOSED)'}`);
+  // A non-writable store means the opaque session cannot survive a Passenger worker switch or
+  // recycle, which shows up to users as a mid-session block page. Loud, but never fatal —
+  // sessions still work within a single worker.
+  if (!SESSION_STORE_WRITABLE) {
+    console.warn('[stealth-gw] WARNING: tmp/sessions is not writable — opaque sessions cannot persist across Passenger workers/recycles. Fix permissions on stealth-gateway/tmp/sessions.');
+  }
 });

@@ -35,6 +35,10 @@
 #genz-sw-widget.genz-sw-warn{border-color:rgba(251,191,36,.5);}
 #genz-sw-widget.genz-sw-warn #genz-sw-time{color:#fde68a;}
 #genz-sw-widget.genz-sw-error{border-color:rgba(248,113,113,.55);}
+/* degraded = validation temporarily failing (retrying). Deliberately calmer than the
+   error state: the session is still live and the countdown is still running. */
+#genz-sw-widget.genz-sw-degraded{border-color:rgba(148,163,184,.55);}
+#genz-sw-widget.genz-sw-degraded .genz-sw-msg{color:#cbd5e1;}
 
 /* collapsed → just the brand pill (never covers the editor/buttons) */
 #genz-sw-widget.genz-sw-collapsed{width:168px;}

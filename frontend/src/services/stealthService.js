@@ -22,7 +22,7 @@ export const stealthAdmin = {
   refreshAccountSession: (id, sessionBundle) => api.post(`/admin/stealth/accounts/${id}/session`, { sessionBundle }),
   verifyAccount: (id) => api.post(`/admin/stealth/accounts/${id}/verify`),
   accountLeases: (id) => api.get(`/admin/stealth/accounts/${id}/leases`),
-  captureLease: (id) => api.post(`/admin/stealth/accounts/${id}/capture-lease`),
+  captureLease: (id, headers = {}) => api.post(`/admin/stealth/accounts/${id}/capture-lease`, {}, { headers }),
   setAccountPrimary: (id) => api.post(`/admin/stealth/accounts/${id}/primary`),
   setAccountStatus: (id, status) => api.post(`/admin/stealth/accounts/${id}/status`, { status }),
   revokeAccountLeases: (id) => api.post(`/admin/stealth/accounts/${id}/revoke-leases`),
@@ -32,5 +32,6 @@ export const stealthAdmin = {
 // ── Client ────────────────────────────────────────────────────────────────
 export const stealthClient = {
   getDashboard: () => api.get('/client/stealth'),
-  open: () => api.post('/client/stealth/open', {}),
+  // `headers` carries the launch CSRF token (see services/launchService.js).
+  open: (headers = {}) => api.post('/client/stealth/open', {}, { headers }),
 };

@@ -23,6 +23,9 @@ const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
 const claudeSettings = require('../../utils/proxy/claudeSettings');
 const { recordPresence } = require('../../utils/presence');
+const launchCode = require('../../utils/launchCode');
+const launchStore = require('../../utils/launchStore');
+const { requireCsrf } = require('../../middleware/csrf');
 
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 
@@ -125,7 +128,11 @@ router.get('/', async (req, res) => {
 });
 
 // ─── Open a proxy tool (mint a lease) ────────────────────────────────────────
-router.post('/:tool/open', async (req, res) => {
+// CSRF-gated: this route is cookie-authenticated and the auth cookie is SameSite=None in
+// production, so without a header only a preflight-free form POST from any site the client
+// visits could force a launch (burning leases and shared Claude allowance). See
+// middleware/csrf.js — and note LAUNCH_CSRF_ENFORCE=0 disables rejection if a rollback needs it.
+router.post('/:tool/open', requireCsrf, async (req, res) => {
   try {
     const tool = String(req.params.tool || '');
     if (!tools.isValidTool(tool)) return res.status(404).json({ error: 'Unknown tool', code: 'unknown_tool' });
@@ -231,19 +238,33 @@ router.post('/:tool/open', async (req, res) => {
       await account.save();
     }
 
-    const token = leaseUtil.signLease({
-      jti: leaseRow._id,
-      userId: req.userId,
-      tool,
-      accountId: account ? account._id : undefined,
-      ttlMinutes: leaseMinutes,
-    });
-    leaseRow.tokenHash = leaseUtil.hashToken(token);
-    await leaseRow.save();
+    // ── Launch carrier ──────────────────────────────────────────────────────
+    // POST flow (default for Claude): the lease token is NOT signed here at all. The client
+    // receives only a one-time, 30–60s launch code, which it POSTs to the gateway; the
+    // gateway redeems it server-to-server and the backend signs the lease at that moment
+    // (see routes/proxy/gateway.js /redeem-launch). So the lease JWT never exists in the
+    // browser, in a URL, in history or in a log — and an unused code simply expires.
+    //
+    // URL flow (every other tool, and the rollback path): unchanged from before — sign now
+    // and return `/gateway?lease=<JWT>`.
+    const usePostFlow = launchCode.postFlowEnabled('proxy', tool);
+    let token = null;
+    if (!usePostFlow) {
+      token = leaseUtil.signLease({
+        jti: leaseRow._id,
+        userId: req.userId,
+        tool,
+        accountId: account ? account._id : undefined,
+        ttlMinutes: leaseMinutes,
+      });
+      leaseRow.tokenHash = leaseUtil.hashToken(token);
+      await leaseRow.save();
+    }
 
     await ActivityLog.log('CLIENT', req.userId, 'PROXY_LEASE_ISSUED', {
       tool, proxyClientId: client._id, leaseId: leaseRow._id, ttlMinutes: leaseMinutes,
       accountId: account ? account._id : null, accountLabel: account ? account.label : null,
+      launchFlow: usePostFlow ? 'post' : 'url', // audit which carrier was used (never the code)
       ip: getClientIp(req),
     });
 
@@ -257,6 +278,36 @@ router.post('/:tool/open', async (req, res) => {
       toolName: (toolInfo && toolInfo.name) || tool,
       ip: getClientIp(req),
     });
+
+    // Neither response may be cached or referred onward: one carries a launch code, the
+    // other a lease token.
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+
+    if (usePostFlow) {
+      const issued = await launchStore.issue({
+        module: 'proxy', tool,
+        userId: req.userId,
+        clientRefId: client._id,
+        accountId: account ? account._id : null,
+        leaseId: leaseRow._id,
+        ip: getClientIp(req),
+        userAgent: req.headers['user-agent'] || '',
+      });
+      return res.json({
+        success: true,
+        // `code` is returned exactly once, to this authenticated caller, and is dead after
+        // one redemption or `expiresInSeconds`, whichever comes first.
+        launch: {
+          method: 'POST',
+          url: tools.gatewayLaunchUrl(tool),
+          field: 'code',
+          code: issued.code,
+          expiresInSeconds: issued.ttlSeconds,
+        },
+        lease: { id: leaseRow._id, expiresAt, durationMinutes: leaseMinutes },
+      });
+    }
 
     return res.json({
       success: true,

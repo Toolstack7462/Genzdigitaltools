@@ -221,6 +221,15 @@ function gatewayOpenUrl(tool, token) {
   return `${base}/gateway?lease=${encodeURIComponent(token)}`;
 }
 
+// One-time POST bootstrap endpoint. Carries NO query string: the launch code travels in the
+// POST body, so nothing sensitive reaches the address bar, history, Referer or an access log.
+// The gateway answers it with a 303 to the clean tool URL. See utils/launchCode.js.
+function gatewayLaunchUrl(tool) {
+  const base = gatewayBase(tool);
+  if (!base) return '';
+  return `${base}/launch`;
+}
+
 function defaultPath(tool) {
   const t = getTool(tool); if (!t) return '/';
   const p = process.env[t.defaultPathEnv] || t.defaultPath;
@@ -294,6 +303,6 @@ function publicInfo(tool) {
 
 module.exports = {
   TOOLS, TOOL_KEYS, isValidTool, getTool, hasLiveAgent,
-  targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, defaultPath, verifyPath, verifyMode, supabaseConfig, publicInfo,
+  targetOrigin, targetHost, gatewayBase, gatewayOpenUrl, gatewayLaunchUrl, defaultPath, verifyPath, verifyMode, supabaseConfig, publicInfo,
   defaultLeaseMinutes, clampMinutes, ABS_FALLBACK_LEASE_MINUTES, shouldDetectLoggedOut,
 };

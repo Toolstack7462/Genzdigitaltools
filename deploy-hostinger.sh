@@ -139,6 +139,22 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
   -T backend/routes/proxy/agentSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   -T backend/routes/admin/writehumanV2.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/writehumanV2.js" \
+  `# ── One-time POST launch bootstrap ────────────────────────────────────────────` \
+  `# These SIX files are a require-graph that must ship TOGETHER. routes/client/{proxyTools,` \
+  `# stealth}.js and routes/admin/{proxyTools,stealth}.js all require utils/launchCode.js,` \
+  `# utils/launchStore.js and middleware/csrf.js at module load; utils/launchStore.js requires` \
+  `# models/LaunchCode.js; server-crm.js mounts routes/launchToken.js. Ship a route without its` \
+  `# helper and Passenger boots into "module not found" — i.e. the whole API is down, not just` \
+  `# the launch flow. db/mysqlAdapter.js carries the launch_codes table registration, and` \
+  `# ensureTables() creates it at boot (CREATE TABLE IF NOT EXISTS — safe to re-run).` \
+  -T backend/utils/launchCode.js                 "sftp://${HOST}:${PORT}${API_ROOT}/utils/launchCode.js" \
+  -T backend/utils/launchStore.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/launchStore.js" \
+  -T backend/models/LaunchCode.js                "sftp://${HOST}:${PORT}${API_ROOT}/models/LaunchCode.js" \
+  -T backend/middleware/csrf.js                  "sftp://${HOST}:${PORT}${API_ROOT}/middleware/csrf.js" \
+  -T backend/routes/launchToken.js               "sftp://${HOST}:${PORT}${API_ROOT}/routes/launchToken.js" \
+  `# Every OTHER file this flow touches (db/mysqlAdapter.js, routes/{client,admin}/{proxyTools,` \
+  `# stealth}.js, routes/{proxy,stealth}/gateway.js, utils/{proxy,stealth}/lease.js,` \
+  `# utils/proxy/tools.js) is ALREADY in the list above — do not add it twice.` \
   -T backend/server-crm.js                    "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                          "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 

@@ -25,8 +25,13 @@ function leaseSecret() {
 /** Sign a lease. ttlMinutes controls expiry; jti must match the DB lease row id.
  *  accountId binds the lease to a vault account; the gateway uses it to load the
  *  correct encrypted session server-side (never exposed to the browser). */
-function signLease({ jti, userId, stealthClientId, accountId, fixed, ttlMinutes, capture }) {
-  const expiresIn = `${Math.max(1, Math.trunc(ttlMinutes))}m`;
+function signLease({ jti, userId, stealthClientId, accountId, fixed, ttlMinutes, ttlSeconds, capture }) {
+  // ttlSeconds is used by the one-time launch redemption, which signs for the REMAINING life
+  // of an existing lease row (see routes/stealth/gateway.js /redeem-launch). Existing callers
+  // pass ttlMinutes and behave exactly as before.
+  const expiresIn = Number.isFinite(ttlSeconds)
+    ? `${Math.max(1, Math.trunc(ttlSeconds))}s`
+    : `${Math.max(1, Math.trunc(ttlMinutes))}m`;
   const payload = { jti, sub: String(userId), scid: String(stealthClientId || ''), type: LEASE_TYPE, fixed: !!fixed };
   if (accountId) payload.acid = String(accountId);
   if (capture) payload.cap = true; // admin "Refresh Cookies Through Proxy" lease
@@ -55,4 +60,16 @@ function gatewayUrl(token) {
   return `${base}${sep}lease=${encodeURIComponent(token)}`;
 }
 
-module.exports = { LEASE_TYPE, signLease, verifyLease, hashToken, gatewayUrl, leaseSecret };
+/**
+ * One-time POST bootstrap endpoint on the StealthWriter gateway. No query string: the launch
+ * code travels in the POST body, so no credential reaches the address bar, history, Referer
+ * or an access log. STEALTH_GATEWAY_URL points at `<origin>/gateway`, so we swap the last
+ * path segment rather than assume the origin.
+ */
+function gatewayLaunchUrl() {
+  const base = process.env.STEALTH_GATEWAY_URL || 'https://stealth1.genzdigitalstore.com/gateway';
+  try { return new URL('/launch', base).toString(); }
+  catch (_) { return String(base).replace(/\/gateway\/?$/, '') + '/launch'; }
+}
+
+module.exports = { LEASE_TYPE, signLease, verifyLease, hashToken, gatewayUrl, gatewayLaunchUrl, leaseSecret };

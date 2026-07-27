@@ -58,6 +58,10 @@ const tableNames = {
   ClaudeUsage: 'claude_usage',
   // ── Claude global quota settings (single-row, claude-only) — isolated ───────
   ClaudeSettings: 'claude_settings',
+  // ── One-time POST launch bootstrap (proxy + stealth) — isolated, 30–60s rows ─
+  // The row id is the code's truncated SHA-256 digest, so redemption is an atomic
+  // DELETE by primary key. See models/LaunchCode.js and utils/launchStore.js.
+  LaunchCode: 'launch_codes',
 };
 
 // Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated

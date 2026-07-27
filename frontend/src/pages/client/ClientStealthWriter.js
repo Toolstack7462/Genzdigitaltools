@@ -5,6 +5,7 @@ import {
   Gauge, ScanSearch, Loader2, RefreshCw, Lock
 } from 'lucide-react';
 import { stealthClient } from '../../services/stealthService';
+import { withCsrfRetry, openFromLaunchResponse } from '../../services/launchService';
 import { useToast } from '../../components/Toast';
 
 const fmtLimit = (used, remaining, limit) => {
@@ -63,9 +64,10 @@ const ClientStealthWriter = () => {
   const handleOpen = async () => {
     try {
       setOpening(true);
-      const res = await stealthClient.open();
-      if (res.data?.url) {
-        window.open(res.data.url, '_blank', 'noopener');
+      // One-time POST launch code (nothing in the URL), or a legacy gateway URL on the
+      // rollback flow — openFromLaunchResponse handles both.
+      const res = await withCsrfRetry((headers) => stealthClient.open(headers));
+      if (openFromLaunchResponse(res.data)) {
         load(); // refresh remaining/lease info
       }
     } catch (e) {

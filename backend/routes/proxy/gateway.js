@@ -30,6 +30,8 @@ const claudeSettings = require('../../utils/proxy/claudeSettings');
 const ActivityLog = require('../../models/ActivityLog');
 const { apiLimiter, gatewayServiceLimiter, leaseValidateLimiter } = require('../../middleware/rateLimiter');
 const vres = require('../../utils/proxy/validationResponse');
+const launchStore = require('../../utils/launchStore');
+const launchCode = require('../../utils/launchCode');
 
 // ── Rate limiting: pick the bucket that matches who is actually calling ──────────────────────
 // The blanket `router.use(apiLimiter)` this replaces keyed EVERY route on this router by client IP
@@ -47,6 +49,10 @@ const vres = require('../../utils/proxy/validationResponse');
 const GATEWAY_SERVICE_PATHS = new Set([
   '/session', '/account-expired', '/capture-session',
   '/quota-precheck', '/usage-report', '/quota-release', '/quota-status',
+  // One-time launch redemption is gateway-to-backend too, and arrives from the gateway's one
+  // stable egress IP. It must NOT sit in the per-IP apiLimiter bucket, or a busy hour of
+  // legitimate launches would rate-limit itself into "Access could not be verified".
+  '/redeem-launch',
 ]);
 router.use((req, res, next) => {
   const p = req.path || '';
@@ -143,6 +149,80 @@ router.post('/validate', leaseValidateLimiter, async (req, res) => {
       error_source: 'exception',
     });
     return res.status(500).json(body);
+  }
+});
+
+// ─── One-time launch redemption (gateway-only) ───────────────────────────────
+// The gateway POSTs the code it received in a form body; we redeem it atomically, RE-CHECK
+// authorization from scratch, and only then sign the lease token — which is returned
+// server-to-server and never reaches the browser.
+//
+// Re-validating here is the point, not ceremony: the code was minted at click time, and an
+// admin may have revoked the lease, disabled the client or let the plan lapse in the seconds
+// since. Every check that guards a live request guards this one too, so a launch can never
+// out-run a revocation.
+router.post('/redeem-launch', requireGatewayKey, async (req, res) => {
+  const startedAt = Date.now();
+  const rawCode = req.body && req.body.code;
+  try {
+    const r = await launchStore.redeem(rawCode);
+    if (!r.ok) {
+      // Logged by non-reversible reference only — the code itself is never written anywhere.
+      dbg({ evt: 'redeem_launch', response_status: 400, code: r.code, code_ref: launchCode.ref(rawCode), latency_ms: Date.now() - startedAt });
+      return res.status(400).json({ ok: false, code: r.code });
+    }
+    const rec = r.record;
+    if (rec.module !== 'proxy' || !rec.leaseId) {
+      dbg({ evt: 'redeem_launch', response_status: 400, code: 'launch_code_invalid', reason: 'module_mismatch' });
+      return res.status(400).json({ ok: false, code: 'launch_code_invalid' });
+    }
+
+    const lease = await ProxyLease.findById(rec.leaseId);
+    if (!lease) return res.status(403).json({ ok: false, code: 'lease_invalid' });
+    if (lease.revoked) return res.status(403).json({ ok: false, code: 'lease_revoked' });
+    if (!lease.isActive()) return res.status(403).json({ ok: false, code: 'lease_expired' });
+    if (!tools.isValidTool(lease.tool)) return res.status(403).json({ ok: false, code: 'lease_invalid' });
+
+    const capture = !!(lease.capture || rec.capture);
+    if (!capture) {
+      const client = await ProxyClient.findById(lease.proxyClientId);
+      if (!client) return res.status(403).json({ ok: false, code: 'client_not_found' });
+      if (!client.isActive()) {
+        return res.status(403).json({ ok: false, code: client.isExpired() ? 'plan_expired' : 'client_disabled' });
+      }
+    }
+
+    // Sign for exactly the remaining life of the lease ROW, which stays the authority: the
+    // token can never outlive it, and /validate re-checks the row on every navigation.
+    const remainingSec = Math.max(1, Math.floor((new Date(lease.expiresAt).getTime() - Date.now()) / 1000));
+    const token = leaseUtil.signLease({
+      jti: lease._id,
+      userId: lease.userId,
+      tool: lease.tool,
+      accountId: lease.accountId || undefined,
+      capture,
+      ttlSeconds: remainingSec,
+    });
+    lease.tokenHash = leaseUtil.hashToken(token); // hash only, as before — never the token
+    await lease.save();
+
+    dbg({
+      evt: 'redeem_launch', response_status: 200, tool: lease.tool, lease_id: lease._id,
+      account_id: lease.accountId || null, capture, seconds_remaining: remainingSec,
+      latency_ms: Date.now() - startedAt,
+    });
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      ok: true,
+      lease: token,               // server-to-server only
+      tool: lease.tool,
+      capture,
+      expiresAt: lease.expiresAt,
+      secondsRemaining: remainingSec,
+    });
+  } catch (err) {
+    console.error('Proxy redeem-launch error:', err.message);
+    return res.status(500).json({ ok: false, code: 'server_error' });
   }
 });
 

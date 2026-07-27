@@ -41,7 +41,22 @@
     var m = document.cookie.match('(?:^|; )' + name.replace(/([.*+?^${}()|[\]\\])/g, '\\$1') + '=([^;]*)');
     return m ? decodeURIComponent(m[1]) : null;
   }
-  var LEASE = getCookie('sw_lease');
+  // ── How this overlay authenticates ──────────────────────────────────────────
+  // SAME-ORIGIN MODE (CFG.sameOrigin, the current gateway): the lease lives ONLY in an
+  // HttpOnly `__Host-stealth_session` cookie that page script deliberately cannot read. We
+  // call the gateway's own /__genz/validate and /__genz/consume with credentials:'same-origin'
+  // — the cookie rides along automatically and the server attaches the lease on our behalf.
+  // Request/response shapes are identical to the direct backend calls, so metering, limits
+  // and messages are unchanged.
+  //
+  // LEGACY MODE (older gateway build): read the JS-readable `sw_lease` cookie and send it to
+  // the backend as a Bearer token. Kept only so a cached overlay from a previous deploy still
+  // works during a rollout; nothing mints that cookie any more.
+  var SAME_ORIGIN = !!CFG.sameOrigin; // eslint-disable-line no-unused-vars — read below
+  var LEASE = SAME_ORIGIN ? null : getCookie('sw_lease');
+  // In same-origin mode the absence of a readable lease says NOTHING about whether a session
+  // exists, so "do we have access?" must be answered by the server, never by a cookie read.
+  var HAS_SESSION = SAME_ORIGIN ? true : !!LEASE;
 
   var MSG = {
     lease_expired:   'Your access session expired. Please open StealthWriter again from your dashboard.',
@@ -61,8 +76,37 @@
     return MSG.unavailable;
   }
 
-  var state = { secondsRemaining: 0, terminal: false, collapsed: false };
-  var el = {};
+  // Shown INSTEAD of a terminal error while validation is failing for infrastructure
+  // reasons (network, timeout, 429, 5xx, malformed body). The session keeps running.
+  var MSG_RETRYING = 'Connection interrupted — retrying…';
+
+  // Confirmed authorization denials. ONLY these end a session. Mirrors the closed list in
+  // backend/utils/proxy/validationResponse.js — anything else is transient by definition.
+  var TERMINAL_CODES = {
+    lease_expired: 1, lease_revoked: 1, lease_invalid: 1, lease_missing: 1,
+    client_disabled: 1, client_not_found: 1, plan_expired: 1,
+    account_blocked: 1, account_no_session: 1
+  };
+
+  // How long a session may coast on the last SUCCESSFUL validation while the backend is
+  // unreachable. Bounded: an expired or revoked lease can never be extended by it, because
+  // the countdown below is driven by the server-issued absolute expiry, which keeps
+  // running during the outage and ends the session on time regardless.
+  var GRACE_MS = (typeof CFG.validateGraceMs === 'number' ? CFG.validateGraceMs : 120000);
+
+  var state = {
+    secondsRemaining: 0,
+    expiresAtMs: 0,        // absolute server-issued deadline; 0 = not yet known
+    skewMs: 0,             // serverTime - clientTime, so a wrong device clock cannot freeze or extend the countdown
+    terminal: false,
+    collapsed: false,
+    degraded: false,       // a retryable failure is currently being shown
+    failures: 0,           // consecutive retryable failures (drives backoff)
+    lastGoodAt: 0,
+    inFlight: false,       // guards against overlapping validations corrupting state
+    retryTimer: null
+  };
+    var el = {};
   function fmtTime(s) { if (s < 0) s = 0; var m = Math.floor(s / 60), x = s % 60; return m + ':' + (x < 10 ? '0' : '') + x; }
 
   // ── Floating widget — compact: title + 2 usage lines + session + support ─────
@@ -99,7 +143,7 @@
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
   function toggleCollapse() { state.collapsed = !state.collapsed; el.widget.classList.toggle('genz-sw-collapsed', state.collapsed); el.min.textContent = state.collapsed ? '+' : '–'; }
-  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); }
+  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); el.widget.classList.toggle('genz-sw-degraded', !!state.degraded && !state.terminal); }
 
   // Daily usage from the Genz backend. Limit -1 = unlimited; remaining null = unlimited.
   function fmtLimit(n) { return (n == null || Number(n) < 0) ? '∞' : String(n); }
@@ -117,19 +161,116 @@
   function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }
   function toast(text) { var t = document.createElement('div'); t.className = 'genz-sw-toast'; t.textContent = text; document.documentElement.appendChild(t); setTimeout(function () { t.classList.add('genz-sw-toast-out'); }, 2800); setTimeout(function () { t.remove(); }, 3400); }
 
+  // Safe client diagnostics — console only, and ONLY tool/route/status/code/latency style
+  // fields. Never the lease token, cookies, account session or any credential.
+  function log(evt, fields) {
+    try {
+      var safe = { evt: evt, tool: CFG.tool || null };
+      for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) safe[k] = fields[k];
+      if (window.console && console.debug) console.debug('[genz]', JSON.stringify(safe));
+    } catch (_) {}
+  }
+
   function apiCall(endpoint, payload) {
-    return fetch(API + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + (LEASE || '') }, body: JSON.stringify(payload || {}) })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); });
+    var startedAt = Date.now();
+    // Same-origin: no Authorization header exists to send — the HttpOnly session cookie is
+    // the credential, and the gateway relays the backend's answer byte-for-byte.
+    var url = SAME_ORIGIN ? ('/__genz' + endpoint) : (API + endpoint);
+    var opts = {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload || {}),
+    };
+    if (SAME_ORIGIN) opts.credentials = 'same-origin';
+    else opts.headers.authorization = 'Bearer ' + (LEASE || '');
+    return fetch(url, opts)
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j, latencyMs: Date.now() - startedAt }; }); });
+  }
+
+  // ── Validation: permanent denial vs. temporary infrastructure failure ───────
+  // A non-200 alone means nothing. Only a CONFIRMED code from the list above ends the
+  // session; everything else (network error, timeout, 429, 5xx, malformed JSON) keeps the
+  // session alive and retries with bounded exponential backoff + jitter.
+  function isTerminalResponse(r) {
+    if (!r || !r.body) return false;
+    if (r.body.terminal === true) return true;      // server said so explicitly
+    if (r.body.retryable === true) return false;    // …or said the opposite
+    return !!TERMINAL_CODES[r.body.code];           // legacy backend: classify by code
+  }
+
+  // Absolute deadline wins over any local counter, so the countdown can never freeze on a
+  // stale value and never drifts. serverTime corrects a wrong device clock.
+  function adoptExpiry(body) {
+    var now = Date.now();
+    if (body && body.serverTime) {
+      var st = Date.parse(body.serverTime);
+      if (!isNaN(st)) state.skewMs = st - now;
+    }
+    if (body && body.expiresAt) {
+      var exp = Date.parse(body.expiresAt);
+      if (!isNaN(exp)) { state.expiresAtMs = exp; return; }
+    }
+    // Older backend without expiresAt — derive an absolute deadline from the relative value.
+    if (body && typeof body.secondsRemaining === 'number') {
+      state.expiresAtMs = now + state.skewMs + (body.secondsRemaining * 1000);
+    }
+  }
+  function computeRemaining() {
+    if (!state.expiresAtMs) return state.secondsRemaining;
+    return Math.max(0, Math.round((state.expiresAtMs - (Date.now() + state.skewMs)) / 1000));
+  }
+
+  function onRetryableFailure(why) {
+    state.failures += 1;
+    // Within the grace period a brief blip stays silent; past it, show the compact warning.
+    // Never terminal, so tick() keeps counting and validation keeps retrying.
+    if (!state.lastGoodAt || (Date.now() - state.lastGoodAt) > GRACE_MS) {
+      state.degraded = true;
+      showMessage(MSG_RETRYING, false);
+    }
+    log('validate_retryable', { reason: why, failures: state.failures });
+    scheduleRetry();
+  }
+  // Exponential backoff with jitter, capped — 2s, 4s, 8s … 30s max.
+  function scheduleRetry() {
+    if (state.terminal || state.retryTimer) return;
+    var base = Math.min(30000, 2000 * Math.pow(2, Math.min(state.failures - 1, 4)));
+    var delay = base * (0.7 + Math.random() * 0.6); // ±30% jitter avoids synchronized retry storms
+    state.retryTimer = setTimeout(function () { state.retryTimer = null; validate(); }, delay);
   }
 
   function validate() {
     if (state.terminal) return Promise.resolve();
+    if (state.inFlight) return Promise.resolve();   // concurrent calls must not corrupt state
+    state.inFlight = true;
     return apiCall('/validate', {}).then(function (r) {
-      if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; updateUsage(r.body.plan); clearMessage(); render(); }
-      else showMessage(friendly(r.body && r.body.code), true);
-    }).catch(function () {});
+      state.inFlight = false;
+      if (r.status === 200 && r.body && r.body.valid) {
+        adoptExpiry(r.body);
+        updateUsage(r.body.plan);   // StealthWriter-only: refresh the Humanizer/Detector counters
+        state.secondsRemaining = computeRemaining();
+        state.failures = 0; state.lastGoodAt = Date.now();
+        if (state.degraded) { state.degraded = false; }  // auto-clear the warning on recovery
+        clearMessage(); render();
+        return;
+      }
+      if (isTerminalResponse(r)) {                   // confirmed denial — stop, as before
+        log('validate_terminal', { code: (r.body && r.body.code) || null, status: r.status });
+        showMessage(friendly(r.body && r.body.code), true);
+        return;
+      }
+      onRetryableFailure('status_' + r.status);      // 429 / 5xx / malformed body / unknown code
+    }).catch(function (e) {
+      state.inFlight = false;
+      onRetryableFailure('network');                 // fetch rejected: offline, DNS, TLS, CORS
+    });
   }
-  function tick() { if (state.terminal) return; state.secondsRemaining -= 1; if (state.secondsRemaining <= 0) validate(); render(); }
+  function tick() {
+    if (state.terminal) return;
+    state.secondsRemaining = state.expiresAtMs ? computeRemaining() : Math.max(0, state.secondsRemaining - 1);
+    if (state.secondsRemaining <= 0) validate();
+    render();
+  }
 
   // ── Usage metering — INTENT-DRIVEN ─────────────────────────────────────────
   // Genz usage counts ONLY for the MAIN "Humanize" / "Check for AI" actions in the
@@ -331,7 +472,9 @@
 
   // ── Widget + metering: needs <body>, so it waits for DOMContentLoaded ───────
   function startWidget() {
-    if (!LEASE) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
+    // HAS_SESSION, not LEASE: in same-origin mode the lease is intentionally unreadable, so
+    // only the server can say whether a session exists — validate() below asks it.
+    if (!HAS_SESSION) { buildWidget(); showMessage(MSG.lease_missing, true); return; }
     if (CFG.capture) { buildCaptureUI(); return; }
     buildWidget();
     validate();
@@ -341,7 +484,7 @@
 
   function start() {
     // Hiding can begin before the body exists; only real client views hide chrome.
-    if (LEASE && !CFG.capture) startHiding();
+    if (HAS_SESSION && !CFG.capture) startHiding();
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startWidget);
     else startWidget();
   }

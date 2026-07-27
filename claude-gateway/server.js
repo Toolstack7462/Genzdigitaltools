@@ -52,6 +52,19 @@ const LEASE_SECRET = process.env.LEASE_SECRET || ''; // must match backend PROXY
 const GATEWAY_KEY = process.env.GATEWAY_KEY || '';   // must match backend PROXY_GATEWAY_KEY
 const TOOL_KEY = process.env.TOOL_KEY || '';         // 'hix' | 'bypassgpt' (lease.tool must match)
 const TOOL_NAME = process.env.TOOL_NAME || 'AI Tool';
+
+// ── One-time POST launch bootstrap ───────────────────────────────────────────
+// /launch accepts a single-use code in a POST BODY, redeems it server-to-server against the
+// backend, installs the opaque session cookie and 303s to the clean tool URL. Nothing
+// sensitive ever appears in a URL, in history, in a Referer or in an access log.
+//
+// ALLOW_URL_LEASE keeps the ORIGINAL /gateway?lease=<JWT> entry point alive so a backend
+// rollback (LAUNCH_FLOW=url) works without redeploying this gateway. Ship with it on, then
+// set `SetEnv ALLOW_URL_LEASE 0` once the POST flow is confirmed — that is the moment the
+// lease genuinely stops being URL-reachable. Default ON for backward compatibility.
+const ALLOW_URL_LEASE = String(process.env.ALLOW_URL_LEASE || '1') !== '0';
+// A launch body carries one ~43-char code and nothing else. Anything larger is not ours.
+const LAUNCH_BODY_LIMIT = 4096;
 // ── Claude token-quota tap (claude-only) ─────────────────────────────────────
 // Pure char-extraction helpers; only ever handle character COUNTS, never prompt text/secrets.
 // Mode: 'off' (disabled) | 'count' (measure + report only, never blocks) | 'enforce' (block an
@@ -668,8 +681,7 @@ function backendPost(subpath, token, extraHeaders, jsonBody) {
       const headers = Object.assign({
         'content-type': 'application/json',
         'content-length': body.length,
-        'authorization': `Bearer ${token}`,
-      }, extraHeaders || {});
+      }, token ? { 'authorization': `Bearer ${token}` } : {}, extraHeaders || {});
       const r = lib.request(u, { method: 'POST', headers, timeout: 8000 }, (resp) => {
         let data = '';
         resp.on('data', c => { data += c; });
@@ -685,6 +697,43 @@ function backendValidate(token) { return backendPost('/validate', token, null, {
 function gatewayApiPost(subpath, token, jsonBody) {
   if (!GATEWAY_KEY) return Promise.resolve({ status: 0, body: {} });
   return backendPost(subpath, token, { 'x-gateway-key': GATEWAY_KEY }, jsonBody);
+}
+
+// ── One-time launch redemption ───────────────────────────────────────────────
+// No lease exists yet, so this call is authenticated solely by the shared gateway key. The
+// backend redeems the code atomically, re-checks the client/plan/lease, and hands back a
+// freshly signed lease token — which stays in this process and is never sent to the browser.
+function redeemLaunchCode(code) {
+  return gatewayApiPost('/redeem-launch', null, { code });
+}
+
+// ── Request body reader (bounded) ────────────────────────────────────────────
+// Used ONLY by /launch. Bounded so a hostile POST cannot buffer memory here, and it accepts
+// both form-encoded (the dashboard's hidden form) and JSON (tests / programmatic launches).
+function readLaunchBody(req) {
+  return new Promise((resolve) => {
+    const ct = String(req.headers['content-type'] || '').toLowerCase();
+    let size = 0;
+    const chunks = [];
+    let done = false;
+    const finish = (val) => { if (!done) { done = true; resolve(val); } };
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > LAUNCH_BODY_LIMIT) { try { req.destroy(); } catch (_) {} return finish(null); }
+      chunks.push(c);
+    });
+    req.on('error', () => finish(null));
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      try {
+        if (ct.includes('application/json')) return finish(JSON.parse(raw || '{}'));
+        const params = new URLSearchParams(raw);
+        const out = {};
+        for (const [k, v] of params) out[k] = v;
+        return finish(out);
+      } catch (_) { return finish(null); }
+    });
+  });
 }
 
 // ── Account Vault session (gateway-only) — fetch + short in-process cache ─────
@@ -1182,7 +1231,9 @@ h1{font-size:20px;margin:0 0 12px}p{color:#94a3b8;line-height:1.6;margin:0 0 20p
 a{display:inline-block;background:linear-gradient(135deg,#2563EB,#06B6D4);color:#fff;text-decoration:none;padding:11px 22px;border-radius:10px;font-weight:600}</style></head>
 <body><div class="card"><h1>${TOOL_NAME} session ended</h1><p>${msg}</p>
 <a href="https://app.genzdigitalstore.com/client/dashboard">Back to dashboard</a></div></body></html>`;
-  const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+  // no-referrer: this page can be reached from a launch attempt, so it must never pass this
+  // origin (or anything on its URL) onward in a Referer header.
+  const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
   // REGRESSION-SENSITIVE (session ⇄ Cloudflare boundary). Standards-based equivalent of the
   // script above, for browsers that honour it (Chrome/Android). The directive list is
   // deliberately "cache", "storage" and MUST NEVER gain "cookies" or "*": Cloudflare clearance
@@ -2305,8 +2356,66 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Entry point: capture the lease into a host-scoped cookie, redirect to the tool.
+  // ── Entry point (preferred): one-time POST launch bootstrap ─────────────────
+  // The dashboard submits a hidden form here with a single-use `code` in the BODY. We redeem
+  // it once, server-to-server, install the opaque HttpOnly session and 303 to the clean tool
+  // URL. Compared to /gateway?lease=<JWT> this removes the credential from the address bar,
+  // browser history, the Referer header and every access log on the path — and the code is
+  // dead the instant it is used, so a captured request body cannot be replayed.
+  //
+  // 303 (not 302) is deliberate: it forces the follow-up to be a GET of the landing page. A
+  // 302 leaves the method up to the browser, and a POST replayed onto the tool root is both
+  // wrong and re-submittable from history.
+  if (pathName === '/launch') {
+    const launchHeaders = { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+    if (req.method !== 'POST') {
+      // A GET here means someone reached for /launch as a URL — which is exactly the habit
+      // this endpoint exists to remove. Never treat it as a launch.
+      res.writeHead(405, Object.assign({ 'content-type': 'text/plain; charset=utf-8', 'allow': 'POST' }, launchHeaders));
+      return res.end('Method Not Allowed');
+    }
+    const body = await readLaunchBody(req);
+    const code = body && typeof body.code === 'string' ? body.code.trim() : '';
+    if (!code) { safeLog('launch_reject', { reason: 'code_missing' }); return sendBlockPage(res, 'lease_missing'); }
+
+    const r = await redeemLaunchCode(code); // the code is NEVER logged, here or in backendPost
+    if (!(r.status === 200 && r.body && r.body.ok && r.body.lease)) {
+      const code0 = (r.body && r.body.code) || (r.status === 0 ? 'unavailable' : 'lease_invalid');
+      // `failure_code`, not `code` — this is the backend's error code (launch_code_used, …).
+      // Naming it `code` here would read, to anyone auditing the logs, as the launch code
+      // itself. The launch code is never logged, in any field, anywhere.
+      safeLog('launch_reject', { upstream_status: r.status, failure_code: code0 });
+      // launch_code_* codes mean "this launch is spent or stale" — the user's fix is the same
+      // as an expired lease: reopen from the dashboard. Map them onto that message rather
+      // than inventing a new screen.
+      const shown = /^launch_code_/.test(String(code0)) ? 'lease_expired' : code0;
+      return sendBlockPage(res, shown);
+    }
+
+    const token = r.body.lease;
+    const payload = verifyLeaseLocal(token);
+    if (payload === null) { safeLog('launch_reject', { reason: 'lease_unverifiable' }); return sendBlockPage(res, 'lease_invalid'); }
+
+    const landing = payload.cap ? SIGNIN_PATH : DEFAULT_PATH;
+    const sid = claudeCreateSession(token, payload);
+    const maxAge = Math.floor(((payload.exp ? payload.exp * 1000 : Date.now() + 1800000) - Date.now()) / 1000);
+    safeLog('launch_ok', { jti: payload.jti, cap: !!payload.cap, seconds: maxAge }); // no code, sid or JWT
+    res.writeHead(303, Object.assign({
+      // Opaque session only. Also clears any legacy readable pg_lease a previous build left.
+      'set-cookie': [claudeSessionCookie(sid, maxAge), `${LEASE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
+      'location': landing,
+    }, launchHeaders));
+    return res.end();
+  }
+
+  // ── Entry point (legacy, feature-flagged): lease in the URL ─────────────────
+  // Retained ONLY so a backend rollback to LAUNCH_FLOW=url works without redeploying this
+  // gateway. Set ALLOW_URL_LEASE=0 to close it once the POST flow is verified.
   if (pathName === '/gateway') {
+    if (!ALLOW_URL_LEASE) {
+      safeLog('url_lease_disabled', { request_path: pathName });
+      return sendBlockPage(res, 'lease_missing');
+    }
     const token = u.searchParams.get('lease');
     if (!token) return sendBlockPage(res, 'lease_missing');
     // Claude: exchange the one-time lease JWT (in the URL) for an OPAQUE server-side session.
@@ -2323,7 +2432,7 @@ const server = http.createServer(async (req, res) => {
         // Set the opaque session AND proactively clear any legacy readable pg_lease cookie a
         // previous build may have left in the browser (host-only expiry).
         'set-cookie': [claudeSessionCookie(sid, maxAge), `${LEASE_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`],
-        'location': landing, 'cache-control': 'no-store',
+        'location': landing, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
       });
       return res.end();
     }

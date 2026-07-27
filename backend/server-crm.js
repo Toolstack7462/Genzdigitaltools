@@ -73,9 +73,14 @@ const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
 // StealthWriter Proxy Gateway origin — a fixed first-party origin whose injected
 // overlay calls the gateway API cross-origin. Allowed in code (derived from
 // STEALTH_GATEWAY_URL) so it never depends on ALLOWED_ORIGINS being edited.
+// The fallback MUST match utils/stealth/lease.js, which already defaults to this URL when
+// STEALTH_GATEWAY_URL is unset. Without it the backend minted leases pointing at an origin
+// its own CORS allowlist then rejected — the stealth overlay's /validate preflight failed
+// and the session died, while every proxy-tool gateway (auto-derived from utils/proxy/tools)
+// kept working. Deriving both from the same default keeps them from ever disagreeing.
 let STEALTH_GATEWAY_ORIGIN = '';
 try {
-  if (process.env.STEALTH_GATEWAY_URL) STEALTH_GATEWAY_ORIGIN = new URL(process.env.STEALTH_GATEWAY_URL).origin;
+  STEALTH_GATEWAY_ORIGIN = new URL(process.env.STEALTH_GATEWAY_URL || 'https://stealth1.genzdigitalstore.com/gateway').origin;
 } catch (_) { /* ignore malformed URL */ }
 
 // Proxy-Tools gateway origins (HIX / BypassGPT) — their injected overlays call the
@@ -308,8 +313,13 @@ const proxyGatewayRoutes      = require('./routes/proxy/gateway');
 const proxyAgentSyncRoutes    = require('./routes/proxy/agentSync');
 // WriteHuman V2 monitoring module (isolated) — read-mostly proxy to the standalone V2 service.
 const adminWriteHumanV2Routes = require('./routes/admin/writehumanV2');
+// CSRF token for tool-launch POSTs (one-time launch bootstrap). Any authenticated session.
+const launchTokenRoutes       = require('./routes/launchToken');
 
 // Mount routes
+// Launch CSRF token — mounted early and standalone so it stays reachable regardless of the
+// module routers below. Read-only; issues no access of any kind.
+app.use('/api/crm/launch-token',     launchTokenRoutes);
 app.use('/api/crm/auth',             authRoutes);
 app.use('/api/crm/auth',             authEmailRoutes); // email verification + password reset (additive)
 app.use('/api/crm/public',           publicRoutes);

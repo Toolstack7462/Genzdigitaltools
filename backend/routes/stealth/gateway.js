@@ -33,10 +33,20 @@ const TARGET_HOST = (() => {
   try { return new URL(process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').hostname; }
   catch (_) { return 'stealthwriter.ai'; }
 })();
-const { apiLimiter } = require('../../middleware/rateLimiter');
+const { apiLimiter, validateLimiter, gatewayServiceLimiter } = require('../../middleware/rateLimiter');
+const vres = require('../../utils/proxy/validationResponse');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
+const launchStore = require('../../utils/launchStore');
+const launchCode = require('../../utils/launchCode');
 
-router.use(apiLimiter);
+// Every route keeps the per-IP apiLimiter it has always had, EXCEPT the gateway-to-backend
+// launch redemption: that arrives from the gateway's single stable egress IP, so the 100/15min
+// per-IP budget would be spent by a busy hour of legitimate launches. It gets the roomier
+// gateway-service bucket on the route itself instead. No existing route's limit changes.
+router.use((req, res, next) => {
+  if ((req.path || '') === '/redeem-launch') return next();
+  return apiLimiter(req, res, next);
+});
 
 // Safe debug logger — IDs / statuses / counts only. NEVER cookies, tokens or secrets.
 function dbg(fields) { try { console.log('[stealth]', JSON.stringify(fields)); } catch (_) {} }
@@ -85,23 +95,104 @@ function secondsRemaining(lease, now = Date.now()) {
   return Math.max(0, Math.floor((new Date(lease.expiresAt).getTime() - now) / 1000));
 }
 
+// ─── One-time launch redemption (gateway-only) ───────────────────────────────
+// The StealthWriter gateway POSTs the launch code it received in a form body. We redeem it
+// atomically (utils/launchStore.js), RE-CHECK authorization from scratch, and only then sign
+// the lease — returned server-to-server, never to the browser.
+//
+// Plan status, expiry and revocation are re-read here rather than trusted from click time, so
+// an admin action in the seconds between the click and the landing still takes effect. Daily
+// Humanizer/Detector limits are deliberately NOT re-checked here: they are enforced per action
+// by /consume, exactly as before, and blocking the launch on them would change behaviour.
+router.post('/redeem-launch', gatewayServiceLimiter, requireGatewayKey, async (req, res) => {
+  const startedAt = Date.now();
+  const rawCode = req.body && req.body.code;
+  try {
+    const r = await launchStore.redeem(rawCode);
+    if (!r.ok) {
+      dbg({ evt: 'redeem_launch', response_status: 400, code: r.code, code_ref: launchCode.ref(rawCode), latency_ms: Date.now() - startedAt });
+      return res.status(400).json({ ok: false, code: r.code });
+    }
+    const rec = r.record;
+    if (rec.module !== 'stealth' || !rec.leaseId) {
+      dbg({ evt: 'redeem_launch', response_status: 400, code: 'launch_code_invalid', reason: 'module_mismatch' });
+      return res.status(400).json({ ok: false, code: 'launch_code_invalid' });
+    }
+
+    const lease = await StealthLease.findById(rec.leaseId);
+    if (!lease) return res.status(403).json({ ok: false, code: 'lease_invalid' });
+    if (lease.revoked) return res.status(403).json({ ok: false, code: 'lease_revoked' });
+    if (!lease.isActive()) return res.status(403).json({ ok: false, code: 'lease_expired' });
+
+    const capture = !!(lease.capture || rec.capture);
+    if (!capture) {
+      const client = await StealthClient.findById(lease.stealthClientId);
+      if (!client) return res.status(403).json({ ok: false, code: 'client_not_found' });
+      const status = access.assessStatus(client);
+      if (!status.allowed) return res.status(403).json({ ok: false, code: status.reason });
+    }
+
+    // Signed for exactly the remaining life of the lease ROW, which stays the authority.
+    const remainingSec = Math.max(1, Math.floor((new Date(lease.expiresAt).getTime() - Date.now()) / 1000));
+    const token = leaseUtil.signLease({
+      jti: lease._id,
+      userId: lease.userId,
+      stealthClientId: lease.stealthClientId,
+      accountId: lease.accountId || undefined,
+      fixed: !!lease.fixedLease,
+      capture,
+      ttlSeconds: remainingSec,
+    });
+    lease.tokenHash = leaseUtil.hashToken(token); // hash only, as before
+    await lease.save();
+
+    dbg({
+      evt: 'redeem_launch', response_status: 200, lease_id: lease._id,
+      account_id: lease.accountId || null, capture, seconds_remaining: remainingSec,
+      latency_ms: Date.now() - startedAt,
+    });
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      ok: true,
+      lease: token,
+      capture,
+      fixedLease: !!lease.fixedLease,
+      expiresAt: lease.expiresAt,
+      secondsRemaining: remainingSec,
+    });
+  } catch (err) {
+    console.error('Stealth redeem-launch error:', err.message);
+    return res.status(500).json({ ok: false, code: 'server_error' });
+  }
+});
+
 // ─── Validate ───────────────────────────────────────────────────────────────
-router.post('/validate', async (req, res) => {
+// Same structured contract as the proxy-tools gateway (see
+// utils/proxy/validationResponse.js): {valid, terminal, retryable, code, secondsRemaining,
+// expiresAt, correlationId}. The plan/usage payload below is unchanged — StealthWriter's
+// metering, limits and reset labels behave exactly as before.
+router.post('/validate', validateLimiter, async (req, res) => {
+  const startedAt = Date.now();
   try {
     const r = await resolveLease(req);
     if (!r.ok) {
-      dbg({ evt: 'validate', response_status: r.status, code: r.code, error_source: 'lease_check' });
-      return res.status(r.status).json({ valid: false, code: r.code });
+      const body = vres.fail(r.code);
+      dbg({
+        evt: 'validate', route: '/validate', tool: 'stealth', response_status: r.status,
+        code: r.code, terminal: body.terminal, latency_ms: Date.now() - startedAt,
+        correlation_id: body.correlationId, error_source: 'lease_check',
+      });
+      return res.status(r.status).json(body);
     }
 
     const snap = await access.snapshot(r.client);
     const status = access.assessStatus(r.client);
     if (!status.allowed) {
-      dbg({ evt: 'validate', lease_id: r.lease._id, account_id: r.lease.accountId || null, client_id: r.client._id, response_status: 403, code: status.reason, error_source: 'account_check' });
-      return res.status(403).json({ valid: false, code: status.reason, plan: { status: snap.status, expired: snap.expired } });
+      const body = vres.fail(status.reason, { plan: { status: snap.status, expired: snap.expired } });
+      dbg({ evt: 'validate', route: '/validate', tool: 'stealth', lease_id: r.lease._id, account_id: r.lease.accountId || null, client_id: r.client._id, response_status: 403, code: status.reason, terminal: body.terminal, latency_ms: Date.now() - startedAt, correlation_id: body.correlationId, error_source: 'account_check' });
+      return res.status(403).json(body);
     }
-    return res.json({
-      valid: true,
+    return res.json(vres.ok(r.lease, {
       secondsRemaining: secondsRemaining(r.lease),
       fixedLease: r.lease.fixedLease,
       plan: {
@@ -113,10 +204,13 @@ router.post('/validate', async (req, res) => {
       },
       resetLabel: RESET_LABEL,
       nextResetAt: nextResetAt(),
-    });
+    }));
   } catch (err) {
-    console.error('Stealth gateway validate error:', err.message);
-    return res.status(500).json({ valid: false, code: 'server_error' });
+    // Retryable by design — a DB/backend fault must never end a live StealthWriter session.
+    const body = vres.fail('server_error');
+    console.error('Stealth gateway validate error:', err.message, 'cid=' + body.correlationId);
+    dbg({ evt: 'validate', route: '/validate', tool: 'stealth', response_status: 500, code: 'server_error', terminal: false, latency_ms: Date.now() - startedAt, correlation_id: body.correlationId, error_source: 'exception' });
+    return res.status(500).json(body);
   }
 });
 

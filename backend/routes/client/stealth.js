@@ -20,6 +20,9 @@ const config = require('../../utils/stealth/config');
 const accountSelect = require('../../utils/stealth/accountSelect');
 const lease = require('../../utils/stealth/lease');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
+const launchCode = require('../../utils/launchCode');
+const launchStore = require('../../utils/launchStore');
+const { requireCsrf } = require('../../middleware/csrf');
 
 // Human-readable phrasing for a pinned account's health (no secrets) — used in
 // the client-facing "your assigned account is currently …" message.
@@ -85,7 +88,10 @@ router.get('/', async (req, res) => {
 });
 
 // ─── Open StealthWriter (mint a lease) ──────────────────────────────────────────
-router.post('/open', async (req, res) => {
+// CSRF-gated for the same reason as the proxy-tools open route: cookie auth +
+// SameSite=None means a form POST from any site the client visits would otherwise mint a
+// lease and consume the daily Humanizer/Detector allowance. See middleware/csrf.js.
+router.post('/open', requireCsrf, async (req, res) => {
   try {
     const client = await StealthClient.findOne({ userId: req.userId });
     if (!client) return res.status(404).json({ error: 'No StealthWriter plan assigned', code: 'no_plan' });
@@ -184,23 +190,61 @@ router.post('/open', async (req, res) => {
       await account.save();
     }
 
-    const token = lease.signLease({
-      jti: leaseRow._id,
-      userId: req.userId,
-      stealthClientId: client._id,
-      accountId: account ? account._id : undefined,
-      fixed,
-      ttlMinutes,
-    });
-    // Store only the hash — never the raw token.
-    leaseRow.tokenHash = lease.hashToken(token);
-    await leaseRow.save();
+    // ── Launch carrier ──────────────────────────────────────────────────────
+    // POST flow (default): no lease token is signed here. The client gets a one-time,
+    // 30–60s launch code, POSTs it to the gateway, and the backend signs the lease only at
+    // redemption (routes/stealth/gateway.js /redeem-launch) — so the JWT never reaches the
+    // browser, a URL, history or a log. URL flow (STEALTH_LAUNCH_FLOW=url, or the global
+    // LAUNCH_FLOW=url rollback) is byte-for-byte the previous behaviour.
+    const usePostFlow = launchCode.postFlowEnabled('stealth');
+    let token = null;
+    if (!usePostFlow) {
+      token = lease.signLease({
+        jti: leaseRow._id,
+        userId: req.userId,
+        stealthClientId: client._id,
+        accountId: account ? account._id : undefined,
+        fixed,
+        ttlMinutes,
+      });
+      // Store only the hash — never the raw token.
+      leaseRow.tokenHash = lease.hashToken(token);
+      await leaseRow.save();
+    }
 
     await ActivityLog.log('CLIENT', req.userId, 'STEALTH_LEASE_ISSUED', {
       stealthClientId: client._id, leaseId: leaseRow._id, ttlMinutes, fixed,
       accountId: account ? account._id : null, accountLabel: account ? account.label : null,
+      launchFlow: usePostFlow ? 'post' : 'url', // audit which carrier was used (never the code)
       ip: getClientIp(req),
     });
+
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+
+    if (usePostFlow) {
+      const issued = await launchStore.issue({
+        module: 'stealth',
+        tool: 'stealth',
+        userId: req.userId,
+        clientRefId: client._id,
+        accountId: account ? account._id : null,
+        leaseId: leaseRow._id,
+        ip: getClientIp(req),
+        userAgent: req.headers['user-agent'] || '',
+      });
+      return res.json({
+        success: true,
+        launch: {
+          method: 'POST',
+          url: lease.gatewayLaunchUrl(),
+          field: 'code',
+          code: issued.code,
+          expiresInSeconds: issued.ttlSeconds,
+        },
+        lease: { id: leaseRow._id, expiresAt, durationMinutes: ttlMinutes, fixedLease: fixed },
+      });
+    }
 
     return res.json({
       success: true,

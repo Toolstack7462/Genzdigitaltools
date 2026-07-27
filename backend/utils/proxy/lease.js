@@ -33,8 +33,14 @@ function leaseSecret() {
   return crypto.createHmac('sha256', base).update('proxytools:lease:v1').digest('hex');
 }
 
-function signLease({ jti, userId, tool, accountId, ttlMinutes, capture }) {
-  const expiresIn = `${Math.max(1, Math.trunc(ttlMinutes || 30))}m`;
+function signLease({ jti, userId, tool, accountId, ttlMinutes, ttlSeconds, capture }) {
+  // ttlSeconds is used by the one-time launch redemption, which signs a token for the
+  // REMAINING life of an already-created lease row. Rounding that to whole minutes would
+  // either overshoot the row's expiry or truncate a live session, so the exact figure wins
+  // when supplied. Every existing caller passes ttlMinutes and is unaffected.
+  const expiresIn = Number.isFinite(ttlSeconds)
+    ? `${Math.max(1, Math.trunc(ttlSeconds))}s`
+    : `${Math.max(1, Math.trunc(ttlMinutes || 30))}m`;
   const payload = { jti, sub: String(userId), tool: String(tool), type: LEASE_TYPE };
   if (accountId) payload.acid = String(accountId);
   if (capture) payload.cap = true; // admin "capture cookies through proxy" lease

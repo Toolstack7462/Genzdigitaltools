@@ -26,6 +26,9 @@ const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify'
 const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/stealth/cookies');
 const { unavailableReason, accountHealth } = require('../../utils/stealth/accountSelect');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
+const launchCode = require('../../utils/launchCode');
+const launchStore = require('../../utils/launchStore');
+const { requireCsrf } = require('../../middleware/csrf');
 
 const TARGET_HOST = (() => {
   try { return new URL(process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').hostname; }
@@ -528,7 +531,10 @@ router.post('/accounts/:id/session', validate(schemas.accountSession), async (re
 // Returns a gateway URL the admin opens to log into StealthWriter THROUGH the
 // proxy; the gateway then captures the session in the proxy context and saves it
 // back to this account (so cookies always work from the proxy IP/context).
-router.post('/accounts/:id/capture-lease', async (req, res) => {
+// CSRF-gated and launch-code aware for the same reason as the proxy-tools capture route:
+// a capture lease is the most privileged lease in the system, so it must not be the one
+// thing still travelling in an address bar once the URL flow is switched off.
+router.post('/accounts/:id/capture-lease', requireCsrf, async (req, res) => {
   try {
     const account = await StealthAccount.findById(req.params.id);
     if (!account) return res.status(404).json({ error: 'Account not found' });
@@ -542,10 +548,26 @@ router.post('/accounts/:id/capture-lease', async (req, res) => {
       ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
     });
     const lease = require('../../utils/stealth/lease');
+    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_CAPTURE_LEASE', { accountId: account._id, label: account.label, ip: getClientIp(req) });
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+
+    if (launchCode.postFlowEnabled('stealth')) {
+      const issued = await launchStore.issue({
+        module: 'stealth', tool: 'stealth', userId: req.userId,
+        accountId: account._id, leaseId: leaseRow._id, capture: true,
+        ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
+      });
+      return res.json({
+        success: true,
+        launch: { method: 'POST', url: lease.gatewayLaunchUrl(), field: 'code', code: issued.code, expiresInSeconds: issued.ttlSeconds },
+        expiresAt, ttlMinutes,
+      });
+    }
+
     const token = lease.signLease({ jti: leaseRow._id, userId: req.userId, accountId: account._id, fixed: true, ttlMinutes, capture: true });
     leaseRow.tokenHash = lease.hashToken(token);
     await leaseRow.save();
-    await ActivityLog.log('ADMIN', req.userId, 'STEALTH_CAPTURE_LEASE', { accountId: account._id, label: account.label, ip: getClientIp(req) });
     return res.json({ success: true, url: lease.gatewayUrl(token), expiresAt, ttlMinutes });
   } catch (err) {
     console.error('Stealth capture-lease error:', err.message);

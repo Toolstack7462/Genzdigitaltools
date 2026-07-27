@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Zap, ShieldCheck, ExternalLink, Lock, AlertTriangle, Loader2, User } from 'lucide-react';
 import { proxyToolsClient } from '../services/proxyToolsService';
+import { withCsrfRetry, openFromLaunchResponse } from '../services/launchService';
 import { useToast } from './Toast';
 
 /**
@@ -68,8 +69,11 @@ const ProxyToolCard = ({ tool }) => {
   const handleOpen = async () => {
     try {
       setOpening(true);
-      const res = await proxyToolsClient.open(tool.tool);
-      if (res.data?.url) window.open(res.data.url, '_blank', 'noopener');
+      // The response carries either a one-time launch code (POST bootstrap — nothing lands in
+      // a URL) or, on the rollback flow, a legacy gateway URL. openFromLaunchResponse handles
+      // both, so this build works against either backend state.
+      const res = await withCsrfRetry((headers) => proxyToolsClient.open(tool.tool, headers));
+      openFromLaunchResponse(res.data);
     } catch (e) {
       showError(e.response?.data?.error || `Unable to open ${tool.name}`);
     } finally {

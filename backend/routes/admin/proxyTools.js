@@ -33,6 +33,9 @@ const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
 const claudeUsage = require('../../utils/proxy/claudeUsage');
+const launchCode = require('../../utils/launchCode');
+const launchStore = require('../../utils/launchStore');
+const { requireCsrf } = require('../../middleware/csrf');
 const claudeSettings = require('../../utils/proxy/claudeSettings');
 // Apply admin-editable global Claude defaults at boot (fail-safe; env defaults until loaded).
 claudeSettings.ensureLoaded().catch(() => {});
@@ -854,7 +857,10 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
   }
 });
 
-router.post('/:tool/accounts/:id/capture-lease', async (req, res) => {
+// CSRF-gated (admin cookie auth, SameSite=None) and launch-code aware: without this the
+// URL lease flow could never actually be switched off, because "Capture via proxy" would
+// still be putting a capture lease — the most privileged lease there is — in an address bar.
+router.post('/:tool/accounts/:id/capture-lease', requireCsrf, async (req, res) => {
   try {
     const account = await ProxyAccount.findById(req.params.id);
     if (!account || account.tool !== req.proxyTool) return res.status(404).json({ error: 'Account not found' });
@@ -866,10 +872,26 @@ router.post('/:tool/accounts/:id/capture-lease', async (req, res) => {
       tool: req.proxyTool, userId: req.userId, proxyClientId: null, accountId: account._id, accountLabel: account.label,
       issuedAt, expiresAt, revoked: false, capture: true, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
     });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_CAPTURE_LEASE', { tool: req.proxyTool, accountId: account._id, label: account.label, ip: getClientIp(req) });
+    res.set('Cache-Control', 'no-store');
+    res.set('Referrer-Policy', 'no-referrer');
+
+    if (launchCode.postFlowEnabled('proxy', req.proxyTool)) {
+      const issued = await launchStore.issue({
+        module: 'proxy', tool: req.proxyTool, userId: req.userId,
+        accountId: account._id, leaseId: leaseRow._id, capture: true,
+        ip: getClientIp(req), userAgent: req.headers['user-agent'] || '',
+      });
+      return res.json({
+        success: true,
+        launch: { method: 'POST', url: tools.gatewayLaunchUrl(req.proxyTool), field: 'code', code: issued.code, expiresInSeconds: issued.ttlSeconds },
+        expiresAt, ttlMinutes: captureMinutes,
+      });
+    }
+
     const token = leaseUtil.signLease({ jti: leaseRow._id, userId: req.userId, tool: req.proxyTool, accountId: account._id, ttlMinutes: captureMinutes, capture: true });
     leaseRow.tokenHash = leaseUtil.hashToken(token);
     await leaseRow.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_CAPTURE_LEASE', { tool: req.proxyTool, accountId: account._id, label: account.label, ip: getClientIp(req) });
     return res.json({ success: true, url: leaseUtil.gatewayUrl(req.proxyTool, token), expiresAt, ttlMinutes: captureMinutes });
   } catch (err) {
     console.error('Proxy capture-lease error:', err.message);

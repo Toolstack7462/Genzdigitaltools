@@ -26,7 +26,7 @@ export const proxyToolsAdmin = {
   refreshAccountSession: (tool, id, sessionBundle) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/session`, { sessionBundle }),
   verifyAccount: (tool, id) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/verify`),
   accountLeases: (tool, id) => api.get(`/admin/proxy-tools/${tool}/accounts/${id}/leases`),
-  captureLease: (tool, id) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/capture-lease`),
+  captureLease: (tool, id, headers = {}) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/capture-lease`, {}, { headers }),
   setAccountPrimary: (tool, id) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/primary`),
   setAccountStatus: (tool, id, status) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/status`, { status }),
   revokeAccountLeases: (tool, id) => api.post(`/admin/proxy-tools/${tool}/accounts/${id}/revoke-leases`),
@@ -48,5 +48,7 @@ export const proxyToolsAdmin = {
 // ── Client ────────────────────────────────────────────────────────────────
 export const proxyToolsClient = {
   list: () => api.get('/client/proxy-tools'),
-  open: (tool) => api.post(`/client/proxy-tools/${tool}/open`, {}),
+  // `headers` carries the launch CSRF token (see services/launchService.js). Callers should
+  // go through withCsrfRetry() so an aged-out token is refetched instead of failing the click.
+  open: (tool, headers = {}) => api.post(`/client/proxy-tools/${tool}/open`, {}, { headers }),
 };

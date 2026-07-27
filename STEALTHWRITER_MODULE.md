@@ -10,6 +10,15 @@ usage limits. The frontend / overlay / localStorage is never trusted.
 
 ---
 
+
+> **Launch flow (2026-07-27):** StealthWriter now launches via a one-time **POST**
+> bootstrap. The lease JWT is no longer placed in a URL, and no longer stored in the
+> JS-readable `sw_lease` cookie — the browser holds only an opaque HttpOnly
+> `__Host-stealth_session`, and the injected overlay authenticates via the gateway's
+> same-origin `/__genz/validate` and `/__genz/consume`. Metering, daily limits and reset
+> labels are relayed verbatim and are unchanged. The `?lease=` flow is retained behind
+> `ALLOW_URL_LEASE` for rollback. See `LAUNCH_BOOTSTRAP.md`.
+
 ## 1. Architecture
 
 ```
@@ -254,3 +263,49 @@ through and injects that account's session server-side.
 - [ ] Mark an account `blocked` → its sessions stop; Revoke Active Leases cuts them immediately.
 - [ ] Refresh Session clears `session_expired`; admin UI shows only cookie counts, never raw values.
 - [ ] Lease/usage logs show the account label; no secrets anywhere.
+
+---
+
+## Session validation: terminal vs. retryable (2026-07-21)
+
+StealthWriter shares the proxy-tools validation contract. Full rationale and the shared
+design are in **PROXY_TOOLS_MODULE.md → "Session validation: terminal vs. retryable"**;
+this section records only what is StealthWriter-specific.
+
+### What changed here
+`backend/routes/stealth/gateway.js` `POST /validate` now returns the shared structured body
+via `utils/proxy/validationResponse.js`:
+
+```
+{ valid, terminal, retryable, code, secondsRemaining, expiresAt, serverTime, correlationId,
+  fixedLease, plan:{planName,limits,used,remaining,expiryDate}, resetLabel, nextResetAt }
+```
+
+The plan/usage payload is **unchanged** — daily Humanizer/Detector limits, `resetLabel`,
+`nextResetAt`, the 5:00 AM PKT reset and all intent-driven metering behave exactly as before.
+`/consume` is untouched, including its deliberate `200 + allowed:false` on `limit_reached`.
+`limit_humanizer` / `limit_detector` remain client-side message keys, never wire codes.
+
+`stealth-gateway/public/overlay.js` keeps calling `updateUsage(r.body.plan)` on every
+successful validation, so the widget's Humanizer / AI Detector counters refresh as before.
+
+### Codes
+Terminal (block, unchanged): `lease_missing`, `lease_invalid`, `lease_revoked`,
+`lease_expired`, `client_not_found`, `client_disabled`, `plan_expired`.
+Retryable (retry, previously fatal): `server_error`, 429, 5xx, network/timeout, malformed body.
+
+### CORS — action required if `STEALTH_GATEWAY_URL` is unset
+`server-crm.js` previously added the stealth gateway origin to the CORS allowlist **only**
+when `STEALTH_GATEWAY_URL` was set, while `utils/stealth/lease.js` already fell back to
+`https://stealth1.genzdigitalstore.com`. With the env unset the backend minted leases for an
+origin its own CORS then rejected, so the overlay's `/validate` preflight failed and the
+session died — while every proxy-tool gateway (auto-derived from `utils/proxy/tools.js`) kept
+working. `server-crm.js` now uses the same fallback, so the two can no longer disagree.
+Setting `STEALTH_GATEWAY_URL` explicitly in production is still recommended.
+
+### Deploy
+`routes/stealth/gateway.js`, `middleware/rateLimiter.js`, `server-crm.js` and the **new**
+`utils/proxy/validationResponse.js` → `nodejs/...`, then `tmp/restart.txt`.
+Gateway: `stealth-gateway/server.js` + `public/overlay.{js,css}`, then its own restart.
+The stealth gateway requires `utils/proxy/validationResponse.js` on the backend — ship it
+with the routes or `/validate` will throw on boot of the first request.
