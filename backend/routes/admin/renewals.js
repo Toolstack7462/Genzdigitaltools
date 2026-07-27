@@ -27,6 +27,7 @@ const { isEmailEnabled, sendRenewalReminderEmail, EMAIL_CODES, adminMessageFor }
 const proxyTools = require('../../utils/proxy/tools');
 const crypto = require('crypto');
 const { withLock } = require('../../utils/keyedLock');
+const { sendAfterResponse } = require('../../utils/deferredSend');
 
 const RECIPIENT_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Two email reminders to the same client inside this window are treated as one

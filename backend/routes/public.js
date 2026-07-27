@@ -6,6 +6,7 @@ const Contact = require('../models/Contact');
 const User = require('../models/User');
 const EmailVerification = require('../models/EmailVerification');
 const { sendVerificationEmail, isEmailEnabled } = require('../utils/email');
+const { sendAfterResponse } = require('../utils/deferredSend');
 const { normalizeAuthInputs } = require('../middleware/normalize');
 const {
   normalizeEmail, emailMatch, isValidEmail, classifyExisting, RESEND_COOLDOWN_MS,
