@@ -14,6 +14,8 @@
  */
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
+// One-shot guard so a clamped EMAIL_TIMEOUT_MS is reported once at first send, not per email.
+let warnedTimeoutClamp = false;
 
 // Public brand assets used inside emails.
 const SITE_URL = 'https://genzdigitalstore.com';
@@ -130,7 +132,23 @@ async function sendEmail({ to, subject, html, text }) {
   // header and no JSON body — the browser reports a CORS error and the UI falls back to
   // a generic message. An 8s cap always lost that race, so the caller never saw a real
   // error. Aborting first means we always return a structured EMAIL_TIMEOUT instead.
-  const timeoutMs = Number(process.env.EMAIL_TIMEOUT_MS) || 4000;
+  // MEASURED AGAIN 2026-07-28, and the previous 4s cap was still losing the race. Observed
+  // time-to-kill on live signups: 3.1s, 5.2s, 5.4s — plus one request that hung to a 504 at
+  // 55s. So the cap has to sit BELOW the fastest observed kill (3.1s), or the worker dies
+  // before Express can return its structured 502 and LiteSpeed serves the CORS-less 503 page
+  // instead. A healthy send completes in ~1.1s, so 2.5s is still >2x headroom.
+  //
+  // The upper CLAMP is deliberate: a timeout longer than the platform's worker-kill window can
+  // never produce a structured error, so it is strictly worse than useless. It exists so a
+  // stale EMAIL_TIMEOUT_MS left in the server env (this box has carried one before) cannot
+  // silently reintroduce the failure this constant is here to prevent.
+  const EMAIL_TIMEOUT_CEILING_MS = 3000;
+  const requested = Number(process.env.EMAIL_TIMEOUT_MS) || 2500;
+  const timeoutMs = Math.max(500, Math.min(EMAIL_TIMEOUT_CEILING_MS, requested));
+  if (requested > EMAIL_TIMEOUT_CEILING_MS && !warnedTimeoutClamp) {
+    warnedTimeoutClamp = true;
+    console.warn(`[email] EMAIL_TIMEOUT_MS=${requested}ms exceeds the ${EMAIL_TIMEOUT_CEILING_MS}ms ceiling and was clamped — a longer cap cannot beat the worker-kill window, so it would surface as an opaque 503 instead of a structured error.`);
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -143,7 +161,12 @@ async function sendEmail({ to, subject, html, text }) {
       body: JSON.stringify({ from, to, subject, html, text }),
       signal: controller.signal,
     });
-    clearTimeout(timer);
+    // NOTE: the timer is NOT cleared here. `fetch` resolves as soon as the RESPONSE HEADERS
+    // arrive — the body is still streaming. Clearing the timeout at this point (which is what
+    // this code used to do) left every `await resp.json()` / `await body.json()` below
+    // completely uncapped, so a connection that delivered headers and then stalled would hang
+    // with no abort armed at all. That is the shape of the 55-second 504 observed in
+    // production. The abort now stays armed until the body is fully read; `finally` clears it.
 
     if (!resp.ok) {
       // Resend returns a small JSON error like { statusCode, name, message }.
@@ -169,12 +192,25 @@ async function sendEmail({ to, subject, html, text }) {
       };
     }
 
-    const data = await resp.json().catch(() => ({}));
+    // We are past `resp.ok`, so Resend has ALREADY ACCEPTED the message — the 2xx status line
+    // is the acceptance. The body only carries the id. So if reading it stalls and the abort
+    // fires, the correct answer is "accepted, id unknown", NOT a failure: reporting a failure
+    // here would tell the user we could not send a mail that is already on its way, and push
+    // them into sending a duplicate. What must never happen is HANGING, and the abort (still
+    // armed, see above) now guarantees it returns promptly either way.
+    let data = {};
+    try {
+      data = await resp.json();
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        console.warn(`[email] accepted by provider (HTTP ${resp.status}) but the response body stalled and was aborted after ${timeoutMs}ms — send stands, messageId unavailable`);
+      }
+      data = {};
+    }
     // messageId is the provider's own id for this send — the only reliable proof
     // of acceptance, and what we persist for correlation/audit.
     return { id: data.id, messageId: data.id || null };
   } catch (err) {
-    clearTimeout(timer);
     const aborted = err && err.name === 'AbortError';
     const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.CONNECTION_FAILED;
     console.error(`[email] Failed to send email code=${code}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
@@ -183,6 +219,9 @@ async function sendEmail({ to, subject, html, text }) {
       code,
       adminMessage: adminMessageFor(code),
     };
+  } finally {
+    // Single clear point, covering the header wait AND the body read on every path.
+    clearTimeout(timer);
   }
 }
 
