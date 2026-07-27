@@ -33,18 +33,33 @@ const TARGET_HOST = (() => {
   try { return new URL(process.env.STEALTH_TARGET_ORIGIN || 'https://stealthwriter.ai').hostname; }
   catch (_) { return 'stealthwriter.ai'; }
 })();
-const { apiLimiter, validateLimiter, gatewayServiceLimiter } = require('../../middleware/rateLimiter');
+const { apiLimiter, leaseValidateLimiter, gatewayServiceLimiter } = require('../../middleware/rateLimiter');
 const vres = require('../../utils/proxy/validationResponse');
 const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
 const launchStore = require('../../utils/launchStore');
 const launchCode = require('../../utils/launchCode');
 
-// Every route keeps the per-IP apiLimiter it has always had, EXCEPT the gateway-to-backend
-// launch redemption: that arrives from the gateway's single stable egress IP, so the 100/15min
-// per-IP budget would be spent by a busy hour of legitimate launches. It gets the roomier
-// gateway-service bucket on the route itself instead. No existing route's limit changes.
+// ── Rate limiting: key by the unit that actually varies per client ───────────────────────────
+// WHO CALLS THESE CHANGED, so the keying had to change with it. The StealthWriter overlay used
+// to call /validate and /consume DIRECTLY FROM THE BROWSER, so a per-IP budget was per-client
+// and correct — which is exactly why rateLimiter.js says validateLimiter "is left exactly as it
+// is, so the StealthWriter router keeps its current per-IP behaviour".
+//
+// That premise is now false. The lease lives in an HttpOnly cookie the page cannot read, so the
+// overlay calls the GATEWAY's same-origin /__genz/validate and /__genz/consume and the gateway
+// relays them server-side — from its ONE stable egress IP. Under the old keying every
+// StealthWriter client would share a single bucket: 400/15min for all validate polling, and
+// just 100/15min (apiLimiter) for ALL humanize/detect actions across every user. That is the
+// same shared-bucket failure that surfaced on Claude as a terminal "session ended" screen
+// (see the leaseKey comment in middleware/rateLimiter.js and tests/gatewayRateLimit.test.js).
+//
+// Both routes carry the lease as a Bearer token, so key on THAT — one bucket per session. It is
+// also correct for an OLD cached overlay still calling the backend directly during a rollout,
+// because the lease is present either way. Every ceiling is still enforced; only the key
+// changed. Everything else on this router keeps the per-IP apiLimiter it has always had.
+const LEASE_KEYED_PATHS = new Set(['/validate', '/consume', '/redeem-launch']);
 router.use((req, res, next) => {
-  if ((req.path || '') === '/redeem-launch') return next();
+  if (LEASE_KEYED_PATHS.has(req.path || '')) return next(); // limited per-lease on the route
   return apiLimiter(req, res, next);
 });
 
@@ -171,7 +186,7 @@ router.post('/redeem-launch', gatewayServiceLimiter, requireGatewayKey, async (r
 // utils/proxy/validationResponse.js): {valid, terminal, retryable, code, secondsRemaining,
 // expiresAt, correlationId}. The plan/usage payload below is unchanged — StealthWriter's
 // metering, limits and reset labels behave exactly as before.
-router.post('/validate', validateLimiter, async (req, res) => {
+router.post('/validate', leaseValidateLimiter, async (req, res) => {
   const startedAt = Date.now();
   try {
     const r = await resolveLease(req);
@@ -215,7 +230,11 @@ router.post('/validate', validateLimiter, async (req, res) => {
 });
 
 // ─── Consume (humanizer / detector) ─────────────────────────────────────────
-router.post('/consume', async (req, res) => {
+// Metering, unchanged — but now relayed by the gateway, so it is limited PER LEASE rather than
+// per IP. gatewayServiceLimiter is the right bucket: generous (1200/15min, far above what one
+// 30-minute lease can spend on real humanize/detect actions), lease-keyed, and its 429 is
+// explicitly retryable so a burst can never be read as an ended session or a lost credit.
+router.post('/consume', gatewayServiceLimiter, async (req, res) => {
   try {
     const r = await resolveLease(req);
     if (!r.ok) return res.status(r.status).json({ allowed: false, code: r.code });
