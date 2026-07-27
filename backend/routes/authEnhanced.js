@@ -451,8 +451,32 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
-// ─── POST /api/crm/auth/register ─────────────────────────────────────────────
-router.post('/register', registerLimiter, validate(schemas.register), async (req, res) => {
+// ─── POST /api/crm/auth/register — RETIRED ───────────────────────────────────
+// This route created a fully usable, ACTIVE account immediately and only sent the
+// verification email best-effort, so an unverified address yielded a working login — the
+// exact hole the pending-registration flow was built to close. It survived that rebuild
+// because the fix landed on POST /api/crm/public/register (routes/public.js) and nothing
+// retired the old path, leaving a second, unverified way in that simply nobody was watching.
+//
+// Verified before retiring: no caller anywhere in the repo — the SPA posts to
+// /public/register (frontend/src/pages/Join.js), the Chrome extension never registers, and
+// routes/auth.js (which carries a near-identical handler) is not mounted at all.
+//
+// 410 Gone, not 404: a 404 reads as "wrong URL" and invites a retry, while 410 states that
+// the endpoint existed and was deliberately withdrawn, and points at the replacement. The
+// handler below is kept, unreachable, so the retirement is a one-line revert if some
+// integration nobody documented turns up.
+router.post('/register', (req, res) => {
+  console.warn('[auth] retired POST /auth/register was called — pointing the caller at /public/register');
+  return res.status(410).json({
+    error: 'This endpoint has been retired. Register at /api/crm/public/register, which verifies the email address before creating the account.',
+    code: 'ENDPOINT_RETIRED',
+    replacement: '/api/crm/public/register',
+  });
+});
+
+// eslint-disable-next-line no-unused-vars -- retained, unreachable: see the note above.
+const _retiredRegisterHandler = async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
     const ip = getClientIp(req);
@@ -473,6 +497,7 @@ router.post('/register', registerLimiter, validate(schemas.register), async (req
     console.error('Registration error:', err);
     return res.status(500).json({ error: 'Registration failed' });
   }
-});
+};
+void _retiredRegisterHandler; // referenced so linters keep the retained handler intact
 
 module.exports = router;

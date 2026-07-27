@@ -377,42 +377,53 @@ router.post('/:clientId/remind', async (req, res) => {
     // client; the recent-send check then makes the second one a no-op instead of
     // a second email. "Reminder sent" is still only recorded on acceptance.
     const lockKey = `renewal-email:${String(client._id)}`;
-    const outcome = await withLock(lockKey, async () => {
-      const recent = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
-      if (recent) return { deduped: true, sentAt: recent };
 
-      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer });
-      if (!r || r.error || r.skipped) {
-        const code = (r && r.code) || EMAIL_CODES.UNKNOWN;
-        // Provider wording stays in the server log; the admin gets a safe, useful line.
-        console.error(`[renewal-email] stage=failed cid=${cid} code=${code} detail=${(r && r.error) || 'no response'}`);
-        return { failed: true, code, adminMessage: adminMessageFor(code), domainNotVerified: !!(r && r.domainNotVerified) };
-      }
-      console.log(`[renewal-email] stage=accepted cid=${cid} msgId=${r.messageId || '-'}`);
-      await record({ providerMessageId: r.messageId || null });
-      console.log(`[renewal-email] stage=recorded cid=${cid}`);
-      return { sent: true, messageId: r.messageId || null };
-    });
-
-    if (outcome.deduped) {
+    // The dedupe READ is cheap and must still gate the response, so it stays inline —
+    // telling the admin "already sent a minute ago" is a real answer they act on.
+    const recent = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
+    if (recent) {
       return res.json({
-        success: true, channel: 'email', deduped: true, sentAt: outcome.sentAt,
+        success: true, channel: 'email', deduped: true, sentAt: recent,
         toolCount: tools.length, correlationId: cid,
         message: 'A renewal email was just sent to this client — not sending a duplicate.',
       });
     }
-    if (outcome.failed) {
-      // 502: we reached the handler fine, the PROVIDER refused. Structured so the
-      // UI can show something true instead of a generic fallback.
-      return res.status(502).json({
-        success: false, code: outcome.code, error: outcome.adminMessage,
-        domainNotVerified: outcome.domainNotVerified, correlationId: cid,
-      });
-    }
-    res.json({
-      success: true, channel: 'email', sentAt: new Date(), toolCount: tools.length,
-      providerMessageId: outcome.messageId, correlationId: cid,
+
+    // ── Answer FIRST, deliver after (see utils/deferredSend.js) ──────────────────
+    // This awaited the provider and returned a structured 502 on refusal. On this host the
+    // request is killed at ~2s, so the admin never saw that 502 — they got LiteSpeed's
+    // CORS-less 503, which the UI renders as the generic "Could not send the email." toast.
+    // That toast is the reported bug; it was never a provider error at all.
+    //
+    // The lock and the dedupe record still do their job inside the deferred task, so rapid
+    // double-clicks still collapse to ONE email, and "reminder sent" is STILL only recorded
+    // on provider acceptance — so a failed send leaves the history untouched and the admin
+    // can simply click again (the 60s dedupe window never opens on a failure).
+    console.log(`[renewal-email] stage=queued cid=${cid}`);
+    res.status(202).json({
+      success: true, channel: 'email', queued: true, toolCount: tools.length,
+      correlationId: cid,
+      message: 'Sending the renewal email now. Refresh in a moment — "Last reminded" updates once the provider accepts it.',
     });
+
+    sendAfterResponse(res, `renewal-email:${cid}`, () => withLock(lockKey, async () => {
+      // Re-check inside the lock: a concurrent click may have recorded a send since.
+      const dup = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
+      if (dup) { console.log(`[renewal-email] stage=deduped cid=${cid}`); return; }
+
+      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer });
+      if (!r || r.error || r.skipped) {
+        const code = (r && r.code) || EMAIL_CODES.UNKNOWN;
+        // Provider wording stays in the server log — the admin sees it via the unchanged
+        // "Last reminded" history simply not advancing.
+        console.error(`[renewal-email] stage=failed cid=${cid} code=${code} admin="${adminMessageFor(code)}" detail=${(r && r.error) || 'no response'} note=not-recorded-admin-can-retry`);
+        return;
+      }
+      console.log(`[renewal-email] stage=accepted cid=${cid} msgId=${r.messageId || '-'}`);
+      await record({ providerMessageId: r.messageId || null });
+      console.log(`[renewal-email] stage=recorded cid=${cid}`);
+    }));
+    return;
   } catch (error) {
     console.error(`[renewal-email] stage=exception cid=${cid} name=${error && error.name} msg=${error && error.message}`);
     console.error(error && error.stack ? error.stack : error);

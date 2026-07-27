@@ -124,28 +124,40 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
       });
     }
 
-    // Send BEFORE reporting success. If this fails we report failure and no account
-    // exists — the pending record stays 'active' so the very next attempt just
-    // re-issues a code (a failed send never consumes the cooldown or send budget).
+    // ── Answer FIRST, deliver after (see utils/deferredSend.js for the measurements) ──
+    // This used to await the provider and report a real failure. It is a better contract on
+    // paper, but on this host the request was killed at ~2s and the caller got an opaque,
+    // CORS-less 503 instead of that failure — nobody could sign up at all. Everything that
+    // MATTERS is already durable at this point: the pending row and its OTP are written, so
+    // the code in the user's inbox will verify whenever it arrives.
+    //
+    // markSignupSent stays INSIDE the deferred task, exactly as before, so the cooldown and
+    // send budget are still only consumed on provider acceptance. That is what keeps the
+    // "Resend code" button usable immediately when a delivery fails — which is now the
+    // user's recovery path, so it must not be blocked by a send that never happened.
     const te = Date.now();
-    const r = await sendVerificationEmail(email, issued.code);
-    if (r.error || r.skipped) {
-      console.error(`[signup] stage=email result=failed rid=${req.requestId || ''} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te}`);
-      return res.status(502).json({
-        error: 'We could not send your verification code. Please check the address and try again.',
-        code: r.code || 'EMAIL_SEND_FAILED',
-      });
-    }
-    await EmailVerification.markSignupSent(email);
-    console.log(`[signup] stage=email result=sent rid=${req.requestId || ''} email=${maskE(email)} msgId=${r.messageId || '-'} emailMs=${Date.now() - te} totalMs=${Date.now() - t0}`);
+    const rid = req.requestId || '';
 
     // 202 Accepted: the registration is pending verification, NOT created.
-    return res.status(202).json({
+    // `emailVerificationRequired` is what the deployed frontend keys on — do not rename it.
+    res.status(202).json({
       success: true,
       emailVerificationRequired: true,
       code: 'VERIFICATION_SENT',
-      message: 'Check your email for a 6-digit verification code to finish creating your account.',
+      // Honest wording: at this instant the code is on its way, not confirmed delivered.
+      message: "We're sending a 6-digit verification code to your email. If it hasn't arrived in a minute, tap Resend.",
     });
+
+    sendAfterResponse(res, 'signup-verification', async () => {
+      const r = await sendVerificationEmail(email, issued.code);
+      if (r.error || r.skipped) {
+        console.error(`[signup] stage=email result=failed rid=${rid} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te} note=cooldown-not-consumed-user-can-resend`);
+        return;
+      }
+      await EmailVerification.markSignupSent(email);
+      console.log(`[signup] stage=email result=sent rid=${rid} email=${maskE(email)} msgId=${r.messageId || '-'} emailMs=${Date.now() - te} totalMs=${Date.now() - t0}`);
+    });
+    return;
   } catch (error) {
     // [signup-diag] Capture the EXACT failure point + timing + error so a generic
     // "Server is busy" / "Registration failed" is never a mystery again.

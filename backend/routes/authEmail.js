@@ -22,6 +22,7 @@ const { normalizeAuthInputs } = require('../middleware/normalize');
 const { authLimiter } = require('../middleware/rateLimiter');
 const { normalizeEmail, emailMatch } = require('../utils/signupPolicy');
 const { completeSignup } = require('../utils/completeSignup');
+const { sendAfterResponse } = require('../utils/deferredSend');
 const {
   isEmailEnabled,
   sendVerificationEmail,
@@ -132,23 +133,36 @@ router.post('/resend-verification', authLimiter, normalizeAuthInputs, async (req
       if (issued.sendsExhausted) {
         return res.status(429).json({ error: 'Too many codes requested. Please try again later.', code: 'RESEND_LIMIT' });
       }
-      const r = await sendVerificationEmail(email, issued.code);
-      if (r.error || r.skipped) {
-        return res.status(502).json({
-          error: 'We could not send your code right now. Please try again in a moment.',
-          code: r.code || 'EMAIL_SEND_FAILED',
-        });
-      }
-      await EmailVerification.markSignupSent(email);
-      await ActivityLog.log('SYSTEM', null, 'EMAIL_VERIFICATION_RESENT', { email, ip: getClientIp(req) });
-      return res.json({ success: true, message: 'A new verification code is on its way.' });
+      // Answer FIRST, deliver after — same reason as /public/register, and doubly important
+      // here: this endpoint IS the recovery path when a signup send fails, so it must not be
+      // capable of failing the same way. markSignupSent stays in the deferred task so a
+      // failed resend does not consume the cooldown and the user can simply tap it again.
+      const ip = getClientIp(req);
+      res.json({ success: true, message: 'A new verification code is on its way.' });
+      sendAfterResponse(res, 'resend-verification', async () => {
+        const r = await sendVerificationEmail(email, issued.code);
+        if (r.error || r.skipped) {
+          console.error(`[resend] result=failed code=${r.code || 'UNKNOWN'} note=cooldown-not-consumed`);
+          return;
+        }
+        await EmailVerification.markSignupSent(email);
+        await ActivityLog.log('SYSTEM', null, 'EMAIL_VERIFICATION_RESENT', { email, ip });
+      });
+      return;
     }
 
     const user = await User.findOne({ email: emailMatch(email) });
     if (user && !user.emailVerified) {
       const { code } = await EmailVerification.issueOtp({ userId: user._id, email });
-      await sendVerificationEmail(email, code);
-      await ActivityLog.log('SYSTEM', null, 'EMAIL_VERIFICATION_RESENT', { email, ip: getClientIp(req) });
+      const ip = getClientIp(req);
+      // Response is already generic by design (it must not reveal whether the address
+      // exists), so deferring the send changes nothing the caller can observe.
+      res.json({ success: true, message: 'If your account needs verification, a new code is on its way.' });
+      sendAfterResponse(res, 'resend-verification-legacy', async () => {
+        await sendVerificationEmail(email, code);
+        await ActivityLog.log('SYSTEM', null, 'EMAIL_VERIFICATION_RESENT', { email, ip });
+      });
+      return;
     }
     return res.json({ success: true, message: 'If your account needs verification, a new code is on its way.' });
   } catch (err) {
