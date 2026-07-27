@@ -43,8 +43,38 @@
     return MSG.unavailable;
   }
 
-  var state = { secondsRemaining: 0, terminal: false, collapsed: false, friendlyShown: false };
-  var el = {};
+  // Shown INSTEAD of a terminal error while validation is failing for infrastructure
+  // reasons (network, timeout, 429, 5xx, malformed body). The session keeps running.
+  var MSG_RETRYING = 'Connection interrupted — retrying…';
+
+  // Confirmed authorization denials. ONLY these end a session. Mirrors the closed list in
+  // backend/utils/proxy/validationResponse.js — anything else is transient by definition.
+  var TERMINAL_CODES = {
+    lease_expired: 1, lease_revoked: 1, lease_invalid: 1, lease_missing: 1,
+    client_disabled: 1, client_not_found: 1, plan_expired: 1,
+    account_blocked: 1, account_no_session: 1
+  };
+
+  // How long a session may coast on the last SUCCESSFUL validation while the backend is
+  // unreachable. Bounded: an expired or revoked lease can never be extended by it, because
+  // the countdown below is driven by the server-issued absolute expiry, which keeps
+  // running during the outage and ends the session on time regardless.
+  var GRACE_MS = (typeof CFG.validateGraceMs === 'number' ? CFG.validateGraceMs : 120000);
+
+  var state = {
+    secondsRemaining: 0,
+    expiresAtMs: 0,        // absolute server-issued deadline; 0 = not yet known
+    skewMs: 0,             // serverTime - clientTime, so a wrong device clock cannot freeze or extend the countdown
+    terminal: false,
+    collapsed: false,
+    friendlyShown: false,
+    degraded: false,       // a retryable failure is currently being shown
+    failures: 0,           // consecutive retryable failures (drives backoff)
+    lastGoodAt: 0,
+    inFlight: false,       // guards against overlapping validations corrupting state
+    retryTimer: null
+  };
+    var el = {};
   function fmtTime(s) { if (s < 0) s = 0; var m = Math.floor(s / 60), x = s % 60; return m + ':' + (x < 10 ? '0' : '') + x; }
 
   // ── Floating widget — brand + tool name + session + support ─────────────────
@@ -72,24 +102,110 @@
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
   function toggleCollapse() { state.collapsed = !state.collapsed; el.widget.classList.toggle('genz-sw-collapsed', state.collapsed); el.min.textContent = state.collapsed ? '+' : '–'; }
-  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); }
+  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); el.widget.classList.toggle('genz-sw-degraded', !!state.degraded && !state.terminal); }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
   function clearMessage() { if (el.msg) { el.msg.textContent = ''; el.msg.style.display = 'none'; } }
   function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }
   function toast(text) { var t = document.createElement('div'); t.className = 'genz-sw-toast'; t.textContent = text; document.documentElement.appendChild(t); setTimeout(function () { t.classList.add('genz-sw-toast-out'); }, 2800); setTimeout(function () { t.remove(); }, 3400); }
 
-  function apiCall(endpoint, payload) {
-    return fetch(API + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + (LEASE || '') }, body: JSON.stringify(payload || {}) })
-      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j }; }); });
+  // Safe client diagnostics — console only, and ONLY tool/route/status/code/latency style
+  // fields. Never the lease token, cookies, account session or any credential.
+  function log(evt, fields) {
+    try {
+      var safe = { evt: evt, tool: CFG.tool || null };
+      for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) safe[k] = fields[k];
+      if (window.console && console.debug) console.debug('[genz]', JSON.stringify(safe));
+    } catch (_) {}
   }
+
+  function apiCall(endpoint, payload) {
+    var startedAt = Date.now();
+    return fetch(API + endpoint, { method: 'POST', headers: { 'content-type': 'application/json', 'authorization': 'Bearer ' + (LEASE || '') }, body: JSON.stringify(payload || {}) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { return { status: r.status, body: j, latencyMs: Date.now() - startedAt }; }); });
+  }
+  // ── Validation: permanent denial vs. temporary infrastructure failure ───────
+  // A non-200 alone means nothing. Only a CONFIRMED code from the list above ends the
+  // session; everything else (network error, timeout, 429, 5xx, malformed JSON) keeps the
+  // session alive and retries with bounded exponential backoff + jitter.
+  function isTerminalResponse(r) {
+    if (!r || !r.body) return false;
+    if (r.body.terminal === true) return true;      // server said so explicitly
+    if (r.body.retryable === true) return false;    // …or said the opposite
+    return !!TERMINAL_CODES[r.body.code];           // legacy backend: classify by code
+  }
+
+  // Absolute deadline wins over any local counter, so the countdown can never freeze on a
+  // stale value and never drifts. serverTime corrects a wrong device clock.
+  function adoptExpiry(body) {
+    var now = Date.now();
+    if (body && body.serverTime) {
+      var st = Date.parse(body.serverTime);
+      if (!isNaN(st)) state.skewMs = st - now;
+    }
+    if (body && body.expiresAt) {
+      var exp = Date.parse(body.expiresAt);
+      if (!isNaN(exp)) { state.expiresAtMs = exp; return; }
+    }
+    // Older backend without expiresAt — derive an absolute deadline from the relative value.
+    if (body && typeof body.secondsRemaining === 'number') {
+      state.expiresAtMs = now + state.skewMs + (body.secondsRemaining * 1000);
+    }
+  }
+  function computeRemaining() {
+    if (!state.expiresAtMs) return state.secondsRemaining;
+    return Math.max(0, Math.round((state.expiresAtMs - (Date.now() + state.skewMs)) / 1000));
+  }
+
+  function onRetryableFailure(why) {
+    state.failures += 1;
+    // Within the grace period a brief blip stays silent; past it, show the compact warning.
+    // Never terminal, so tick() keeps counting and validation keeps retrying.
+    if (!state.lastGoodAt || (Date.now() - state.lastGoodAt) > GRACE_MS) {
+      state.degraded = true;
+      showMessage(MSG_RETRYING, false);
+    }
+    log('validate_retryable', { reason: why, failures: state.failures });
+    scheduleRetry();
+  }
+  // Exponential backoff with jitter, capped — 2s, 4s, 8s … 30s max.
+  function scheduleRetry() {
+    if (state.terminal || state.retryTimer) return;
+    var base = Math.min(30000, 2000 * Math.pow(2, Math.min(state.failures - 1, 4)));
+    var delay = base * (0.7 + Math.random() * 0.6); // ±30% jitter avoids synchronized retry storms
+    state.retryTimer = setTimeout(function () { state.retryTimer = null; validate(); }, delay);
+  }
+
   function validate() {
     if (state.terminal) return Promise.resolve();
+    if (state.inFlight) return Promise.resolve();   // concurrent calls must not corrupt state
+    state.inFlight = true;
     return apiCall('/validate', {}).then(function (r) {
-      if (r.status === 200 && r.body && r.body.valid) { state.secondsRemaining = r.body.secondsRemaining || 0; clearMessage(); render(); }
-      else showMessage(friendly(r.body && r.body.code), true);
-    }).catch(function () {});
+      state.inFlight = false;
+      if (r.status === 200 && r.body && r.body.valid) {
+        adoptExpiry(r.body);
+        state.secondsRemaining = computeRemaining();
+        state.failures = 0; state.lastGoodAt = Date.now();
+        if (state.degraded) { state.degraded = false; }  // auto-clear the warning on recovery
+        clearMessage(); render();
+        return;
+      }
+      if (isTerminalResponse(r)) {                   // confirmed denial — stop, as before
+        log('validate_terminal', { code: (r.body && r.body.code) || null, status: r.status });
+        showMessage(friendly(r.body && r.body.code), true);
+        return;
+      }
+      onRetryableFailure('status_' + r.status);      // 429 / 5xx / malformed body / unknown code
+    }).catch(function (e) {
+      state.inFlight = false;
+      onRetryableFailure('network');                 // fetch rejected: offline, DNS, TLS, CORS
+    });
   }
-  function tick() { if (state.terminal) return; state.secondsRemaining -= 1; if (state.secondsRemaining <= 0) validate(); render(); }
+  function tick() {
+    if (state.terminal) return;
+    state.secondsRemaining = state.expiresAtMs ? computeRemaining() : Math.max(0, state.secondsRemaining - 1);
+    if (state.secondsRemaining <= 0) validate();
+    render();
+  }
 
   // ════════════════════════════════════════════════════════════════════════════
   // EXTRA UI cleanup (backup to the server-side shield): hide account / plan /
