@@ -6,6 +6,10 @@ const cookieParser = require('cookie-parser');
 const dotenv = require('dotenv');
 const path = require('path');
 const bcrypt = require('bcryptjs');
+// Read-only flag helpers, used by /api/crm/health to report which launch configuration is
+// actually serving. Pure functions over env — requiring them here touches no DB and no route.
+const launchCode = require('./utils/launchCode');
+const csrfMw = require('./middleware/csrf');
 
 // Load environment variables FIRST
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -381,6 +385,21 @@ app.get('/api/crm/health', async (req, res) => {
       database: dbStatus.database
     },
     environment: process.env.NODE_ENV || 'development',
+    // ── Launch-flow config state (booleans/enum only — never a secret) ────────
+    // WHY THIS IS HERE: the one-time POST launch bootstrap ships DARK and is turned on by
+    // env, and the backend auto-deploys on a push to main ahead of the frontend and the
+    // gateways. Without this, there is no way to tell from outside WHICH configuration is
+    // actually serving — and that blind spot is exactly what let a mis-ordered rollout reach
+    // production unnoticed (see LAUNCH_BOOTSTRAP.md §9). This reports our own feature-flag
+    // state, not anything about a user, account or credential — the same class of
+    // deploy-verification signal the gateways already expose at /__genz/health.
+    launch: {
+      flow: launchCode.globalFlow(),          // 'url' (dark, default) | 'post'
+      postTools: [...launchCode.postToolSet()],
+      stealthPost: launchCode.postFlowEnabled('stealth'),
+      csrfEnforced: csrfMw.enforcing(),
+      codeTtlSeconds: launchCode.ttlSeconds(),
+    },
     timestamp: new Date().toISOString()
   });
 });
