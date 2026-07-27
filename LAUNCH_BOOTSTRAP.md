@@ -121,31 +121,49 @@ naive design and pass against this one (verified).
 
 ## 5. Flags
 
+**The feature ships DARK.** With no env set, the backend behaves exactly as it did before
+this change: `/open` signs a JWT and returns `{url}`, and CSRF validates + logs but does not
+reject. Nothing switches on until you set `LAUNCH_FLOW=post`.
+
+This is not caution for its own sake — see §9. The three surfaces this change spans (backend,
+static frontend, two gateway apps) do **not** deploy atomically, and the backend deploys
+*first* because it auto-deploys on a push to `main`. Defaulting to on broke production.
+
 | Flag | Where | Default | Effect |
 |---|---|---|---|
-| `LAUNCH_FLOW` | backend | `post` | `url` = global rollback to the old flow, all modules |
-| `LAUNCH_FLOW_TOOLS` | backend | `claude` | Which proxy tools use the POST flow |
-| `STEALTH_LAUNCH_FLOW` | backend | `post` | `url` = roll StealthWriter back alone |
+| `LAUNCH_FLOW` | backend | `url` (**off**) | `post` = master switch ON |
+| `LAUNCH_FLOW_TOOLS` | backend | `claude` | Which proxy tools use the POST flow (under the master switch) |
+| `STEALTH_LAUNCH_FLOW` | backend | `post` | `url` = roll StealthWriter back alone (under the master switch) |
 | `LAUNCH_CODE_TTL_SECONDS` | backend | `45` | Clamped to 30–60 |
-| `LAUNCH_CSRF_ENFORCE` | backend | `1` | `0` = validate and log, but do not reject |
+| `LAUNCH_CSRF_ENFORCE` | backend | `0` (**off**) | `1` = reject. While off it still logs every request it *would* have blocked |
 | `ALLOW_URL_LEASE` | both gateways | `1` | `0` = refuse `/gateway?lease=` entirely |
 
 ---
 
 ## 6. Deployment order (matters)
 
-1. **Frontend first.** A new frontend against an old backend gets a 404 from
-   `/launch-token`, sends no CSRF header, receives `{url}` and calls `window.open` — i.e. the
-   old flow, working. The reverse order would 403 every launch.
-2. **Backend** (`deploy-hostinger.sh`). `ensureTables()` creates `launch_codes` at boot
-   (`CREATE TABLE IF NOT EXISTS`).
-3. **Gateways** (`deploy-claude-gateway.sh`, `deploy-stealth-gateway.sh`), with
-   `ALLOW_URL_LEASE=1`.
-4. Verify in production (see §7).
-5. **Only then** set `SetEnv ALLOW_URL_LEASE 0` in both gateways' `.htaccess` and restart.
-   That is the moment the lease genuinely stops being URL-reachable.
+The backend **auto-deploys on a push to `main`** (Hostinger git integration — there is no
+backend GitHub Action). It therefore always goes live FIRST, before the static frontend and
+before either gateway. That is why the feature ships dark: the code can land in any order, but
+nothing changes behaviour until the flags are flipped.
 
----
+1. **Push to `main`.** Backend auto-deploys. Behaviour is unchanged — flags are off.
+2. **Frontend.** The `deploy-frontend` Action fires on a push touching `frontend/**`; if its
+   `SFTP_PASSWORD` secret is stale, run `SFTP_PASS='…' bash deploy-frontend-only.sh`.
+   Verify the live bundle hash matches `frontend/build/index.html` on **both** roots.
+3. **Gateways.** `SFTP_PASS='…' bash deploy-claude-gateway.sh` and
+   `SFTP_PASS='…' bash deploy-stealth-gateway.sh`, with `ALLOW_URL_LEASE=1`.
+   Verify: `GET https://claude1…/launch` and `https://stealth1…/launch` return **405**
+   (POST-only). While they still return 403, the gateway is old.
+4. **Only now, turn it on.** In the backend app's `.htaccess`:
+   `SetEnv LAUNCH_FLOW post` and `SetEnv LAUNCH_CSRF_ENFORCE 1`, then bump
+   `nodejs/tmp/restart.txt`. Watch `nodejs/console.log` for `[csrf] would-block` before
+   flipping enforcement — it should be silent for legitimate traffic.
+5. **Finally**, once launches are confirmed working, `SetEnv ALLOW_URL_LEASE 0` on both
+   gateways and restart. That is the moment the lease genuinely stops being URL-reachable.
+
+`ensureTables()` creates `launch_codes` at boot (`CREATE TABLE IF NOT EXISTS`), so step 1
+needs no migration.
 
 ## 7. Rollback
 
@@ -177,3 +195,31 @@ identity handling; downloads, uploads and the working areas; and every other pro
 
 The lease **row** remains the sole authority for revocation and expiry, and it is re-read at
 redemption — so an admin revoke between the click and the landing still wins.
+
+---
+
+## 9. Post-mortem: the dark-ship default
+
+The first version of this change defaulted `LAUNCH_FLOW` to `post` and `LAUNCH_CSRF_ENFORCE`
+to `1`, with a documented "deploy the frontend first" instruction.
+
+That instruction could not be followed. The backend auto-deploys on a push to `main`, so it
+went live within about two minutes of the commit — ahead of the static frontend and both
+gateways. For that window the production system was: a backend that required an
+`X-CSRF-Token` header and returned `{launch:{code}}`, talking to a frontend that sent no such
+header and only understood `{url}`, pointing at gateways with no `/launch` endpoint. Every
+Claude and StealthWriter launch failed.
+
+Detected by auditing the live endpoints after the push: `/api/crm/launch-token` answered
+`401 Authentication required` where a genuinely absent route answers
+`404 Route not found`, and both `/redeem-launch` endpoints answered `403 forbidden` — all
+three proving the new code was already serving.
+
+Fixed by making both flags default off, so the deployed code is inert until every surface is
+in place. Two tests now pin that (`the POST flow SHIPS DARK`, `CSRF enforcement SHIPS DARK`)
+so it cannot regress.
+
+**The general rule:** a change spanning deploy surfaces that cannot ship atomically must
+default to the old behaviour and be enabled by configuration afterwards. A documented deploy
+order is not a substitute — it is only advice, and it loses to an automation that deploys one
+surface for you.

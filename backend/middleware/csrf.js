@@ -24,10 +24,18 @@
  * the origin allowlist rejects). The cookie is HttpOnly, so page script on another origin
  * cannot lift it either.
  *
- * ROLLOUT NOTE: deploy the FRONTEND FIRST. A new frontend against an old backend just gets
- * a 404 from the token endpoint, sends no header, and the old backend does not care. The
- * reverse order would 403 every launch. `LAUNCH_CSRF_ENFORCE=0` is the emergency release
- * valve — it keeps validating and logging but stops rejecting.
+ * SHIPS DARK — `LAUNCH_CSRF_ENFORCE=1` turns rejection on; the default validates and logs but
+ * does not reject.
+ *
+ * WHY (learned the hard way, 2026-07-27): the backend auto-deploys on a push to main, while
+ * the static frontend deploys separately. Defaulting to enforce meant the new backend started
+ * demanding a header that the still-old frontend had no way to send, and every launch 403'd
+ * until the frontend caught up. Enforcement is only safe once the frontend that fetches the
+ * token is actually being served, so it is an explicit env flip, not a default.
+ *
+ * TURN IT ON: after the new frontend is live, `SetEnv LAUNCH_CSRF_ENFORCE 1` + restart. Until
+ * then the middleware still runs and logs every request it WOULD have blocked, so the flip can
+ * be made with evidence rather than hope.
  */
 const crypto = require('crypto');
 
@@ -50,7 +58,7 @@ function cookieOpts() {
 }
 
 function enforcing() {
-  return String(process.env.LAUNCH_CSRF_ENFORCE || '1') !== '0';
+  return String(process.env.LAUNCH_CSRF_ENFORCE || '0') === '1';
 }
 
 function equal(a, b) {
@@ -87,7 +95,9 @@ function requireCsrf(req, res, next) {
   if (!reason) return next();
 
   if (!enforcing()) {
-    try { console.warn('[csrf] would-block (LAUNCH_CSRF_ENFORCE=0):', reason, req.method, req.path); } catch (_) {}
+    // Dark mode: log what enforcement WOULD have rejected, so the operator can flip
+    // LAUNCH_CSRF_ENFORCE=1 once these stop appearing for legitimate traffic.
+    try { console.warn('[csrf] would-block (LAUNCH_CSRF_ENFORCE not 1):', reason, req.method, req.path); } catch (_) {}
     return next();
   }
   // 403 with a machine code the SPA recognises: it refetches a token and retries once, so a

@@ -222,25 +222,42 @@ test('sweepExpired removes only aged-out codes', async () => {
 
 // ── Rollout flags ────────────────────────────────────────────────────────────
 
-test('feature flags select the POST flow per module/tool, with a global rollback switch', () => {
+test('the POST flow SHIPS DARK: off unless LAUNCH_FLOW=post is set explicitly', () => {
+  // REGRESSION GUARD. This defaulted to `post` and caused a live incident: the backend
+  // auto-deploys on a push to main, so it went live minutes ahead of the static frontend and
+  // the two gateway apps. The old frontend could not send a CSRF header or read the `launch`
+  // response, so every Claude/StealthWriter launch broke until the other surfaces caught up.
+  // A feature spanning deploy surfaces that cannot ship atomically must default OFF.
   const saved = { f: process.env.LAUNCH_FLOW, t: process.env.LAUNCH_FLOW_TOOLS, s: process.env.STEALTH_LAUNCH_FLOW };
   try {
     delete process.env.LAUNCH_FLOW; delete process.env.LAUNCH_FLOW_TOOLS; delete process.env.STEALTH_LAUNCH_FLOW;
 
-    // Defaults: Claude + StealthWriter on the POST flow; every other proxy tool untouched.
-    assert.equal(lc.postFlowEnabled('proxy', 'claude'), true);
-    assert.equal(lc.postFlowEnabled('stealth'), true);
+    // Default: EVERYTHING stays on the original URL flow.
+    assert.equal(lc.postFlowEnabled('proxy', 'claude'), false, 'Claude must default to the URL flow');
+    assert.equal(lc.postFlowEnabled('stealth'), false, 'StealthWriter must default to the URL flow');
     for (const other of ['hix', 'bypassgpt', 'grok', 'chatgpt', 'ryne', 'writehuman']) {
       assert.equal(lc.postFlowEnabled('proxy', other), false, `${other} must keep the URL flow`);
     }
+    // Even a per-module opt-in cannot switch it on while the master switch is off.
+    process.env.STEALTH_LAUNCH_FLOW = 'post';
+    assert.equal(lc.postFlowEnabled('stealth'), false, 'the master switch gates every module');
+    delete process.env.STEALTH_LAUNCH_FLOW;
 
-    // Global rollback turns everything back to the URL flow in one env change.
+    // Turned ON explicitly: Claude + StealthWriter, and nothing else.
+    process.env.LAUNCH_FLOW = 'post';
+    assert.equal(lc.postFlowEnabled('proxy', 'claude'), true);
+    assert.equal(lc.postFlowEnabled('stealth'), true);
+    for (const other of ['hix', 'bypassgpt', 'grok', 'chatgpt', 'ryne', 'writehuman']) {
+      assert.equal(lc.postFlowEnabled('proxy', other), false, `${other} must still keep the URL flow`);
+    }
+
+    // Global rollback returns everything to the URL flow in one env change.
     process.env.LAUNCH_FLOW = 'url';
     assert.equal(lc.postFlowEnabled('proxy', 'claude'), false);
     assert.equal(lc.postFlowEnabled('stealth'), false);
-    delete process.env.LAUNCH_FLOW;
 
-    // Per-module rollback.
+    // Per-module rollback, with the master switch on.
+    process.env.LAUNCH_FLOW = 'post';
     process.env.STEALTH_LAUNCH_FLOW = 'url';
     assert.equal(lc.postFlowEnabled('stealth'), false);
     assert.equal(lc.postFlowEnabled('proxy', 'claude'), true, 'rolling StealthWriter back must not affect Claude');
@@ -261,6 +278,9 @@ test('feature flags select the POST flow per module/tool, with a global rollback
 
 test('requireCsrf rejects a missing, absent-cookie or mismatched token and accepts a match', () => {
   const csrf = require('../middleware/csrf');
+  const saved = process.env.LAUNCH_CSRF_ENFORCE;
+  process.env.LAUNCH_CSRF_ENFORCE = '1';   // enforcement is opt-in; see the dark-ship test below
+  const restore = () => { if (saved === undefined) delete process.env.LAUNCH_CSRF_ENFORCE; else process.env.LAUNCH_CSRF_ENFORCE = saved; };
   const run = (headers, cookies) => {
     let status = null, body = null, nexted = false;
     const res = { status(s) { status = s; return this; }, json(b) { body = b; return this; } };
@@ -269,12 +289,14 @@ test('requireCsrf rejects a missing, absent-cookie or mismatched token and accep
   };
   const NAME = csrf.COOKIE_NAME;
 
-  assert.equal(run({}, {}).status, 403, 'no header → blocked');
-  assert.equal(run({}, {}).body.code, 'csrf_invalid');
-  assert.equal(run({ 'x-csrf-token': 'abc' }, {}).status, 403, 'header but no cookie → blocked');
-  assert.equal(run({ 'x-csrf-token': 'abc' }, { [NAME]: 'different' }).status, 403, 'mismatch → blocked');
-  // A cross-site form POST is exactly the "no header" case above — it cannot set one.
-  assert.equal(run({ 'x-csrf-token': 'abc123' }, { [NAME]: 'abc123' }).nexted, true, 'matching pair → allowed');
+  try {
+    assert.equal(run({}, {}).status, 403, 'no header → blocked');
+    assert.equal(run({}, {}).body.code, 'csrf_invalid');
+    assert.equal(run({ 'x-csrf-token': 'abc' }, {}).status, 403, 'header but no cookie → blocked');
+    assert.equal(run({ 'x-csrf-token': 'abc' }, { [NAME]: 'different' }).status, 403, 'mismatch → blocked');
+    // A cross-site form POST is exactly the "no header" case above — it cannot set one.
+    assert.equal(run({ 'x-csrf-token': 'abc123' }, { [NAME]: 'abc123' }).nexted, true, 'matching pair → allowed');
+  } finally { restore(); }
 });
 
 // ── Redemption endpoint: authorization is RE-CHECKED, not trusted from click time ──
@@ -387,16 +409,33 @@ test('POST /redeem-launch re-validates the lease and client before signing anyth
   }
 });
 
-test('LAUNCH_CSRF_ENFORCE=0 downgrades the CSRF gate to warn-only (documented rollback)', () => {
+test('CSRF enforcement SHIPS DARK: validates and logs, but only rejects when explicitly enabled', () => {
+  // Same regression guard as the launch-flow test above, and for the same incident.
+  // Enforcement defaulting to ON meant the auto-deployed backend started demanding a header
+  // the still-old frontend had no way to send, 403-ing every launch. It must be an explicit
+  // env flip made AFTER the frontend that fetches the token is live.
   const csrf = require('../middleware/csrf');
   const saved = process.env.LAUNCH_CSRF_ENFORCE;
-  const warn = console.warn; console.warn = () => {};
+  const warn = console.warn; const seen = []; console.warn = (...a) => seen.push(a.join(' '));
+  const attempt = () => {
+    let nexted = false, status = null;
+    csrf.requireCsrf({ headers: {}, cookies: {}, method: 'POST', path: '/open' },
+      { status(s) { status = s; return this; }, json() { return this; } },
+      () => { nexted = true; });
+    return { nexted, status };
+  };
   try {
+    delete process.env.LAUNCH_CSRF_ENFORCE;
+    assert.equal(csrf.enforcing(), false, 'default is dark');
+    assert.equal(attempt().nexted, true, 'a header-less request passes, so an old frontend keeps working');
+    assert.ok(seen.some(l => l.includes('would-block')), 'but it is LOGGED, so the flip can be made with evidence');
+
     process.env.LAUNCH_CSRF_ENFORCE = '0';
-    let nexted = false;
-    csrf.requireCsrf({ headers: {}, cookies: {}, method: 'POST', path: '/open' }, { status() { return this; }, json() { return this; } }, () => { nexted = true; });
-    assert.equal(nexted, true, 'still passes through, so a mis-ordered deploy cannot lock every client out');
-    assert.equal(csrf.enforcing(), false);
+    assert.equal(csrf.enforcing(), false, 'explicit 0 is also dark');
+
+    process.env.LAUNCH_CSRF_ENFORCE = '1';
+    assert.equal(csrf.enforcing(), true);
+    assert.equal(attempt().status, 403, 'and only then does it reject');
   } finally {
     console.warn = warn;
     if (saved === undefined) delete process.env.LAUNCH_CSRF_ENFORCE; else process.env.LAUNCH_CSRF_ENFORCE = saved;

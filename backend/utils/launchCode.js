@@ -81,20 +81,27 @@ function ref(code) {
 }
 
 // ── Rollout / rollback flags ────────────────────────────────────────────────────────────
-// LAUNCH_FLOW=url is the GLOBAL kill switch: it restores the original `?lease=` URL flow for
-// every module in one env change, with no redeploy. Per-module switches sit underneath it so
-// one tool can be rolled back without touching the other.
+// SHIPS DARK. The default is the ORIGINAL `?lease=` URL flow, and the POST bootstrap is
+// switched on with `LAUNCH_FLOW=post` once the frontend and both gateways are live.
 //
-//   LAUNCH_FLOW          'post' (default) | 'url'   — global
+// WHY (learned the hard way, 2026-07-27): this change spans THREE deploy surfaces that do not
+// deploy atomically — the backend (auto-deploys on a push to main), the static frontend, and
+// the two gateway apps. Defaulting to `post` meant the backend went live minutes after the
+// push while the old frontend was still being served: the old frontend sends no CSRF header
+// and does not understand the `launch` response, so every Claude/StealthWriter launch broke
+// until the other two surfaces caught up. A feature whose surfaces cannot deploy together must
+// default OFF and be turned on by env afterwards. Never re-default this to 'post'.
+//
+//   LAUNCH_FLOW          'url' (default) | 'post'   — global master switch
 //   LAUNCH_FLOW_TOOLS    comma list of proxy tools on the POST flow (default: claude)
-//   STEALTH_LAUNCH_FLOW  'post' (default) | 'url'   — StealthWriter module
+//   STEALTH_LAUNCH_FLOW  'post' (default) | 'url'   — StealthWriter, UNDER the master switch
 //
 // Every proxy tool NOT named in LAUNCH_FLOW_TOOLS keeps the exact URL flow it has today —
 // that is what keeps HIX / BypassGPT / Grok / ChatGPT / Ryne / WriteHuman untouched.
 const DEFAULT_POST_TOOLS = 'claude';
 
 function globalFlow() {
-  return String(process.env.LAUNCH_FLOW || 'post').trim().toLowerCase() === 'url' ? 'url' : 'post';
+  return String(process.env.LAUNCH_FLOW || 'url').trim().toLowerCase() === 'post' ? 'post' : 'url';
 }
 
 function postToolSet() {
