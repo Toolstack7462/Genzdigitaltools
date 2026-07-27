@@ -17,6 +17,27 @@ const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 // One-shot guard so a clamped EMAIL_TIMEOUT_MS is reported once at first send, not per email.
 let warnedTimeoutClamp = false;
 
+// See the long note at the call site for why there is a ceiling at all. Module scope so
+// /api/crm/health can report the EFFECTIVE value — without that, a stale EMAIL_TIMEOUT_MS in
+// the server env or a deploy that has not landed is invisible from outside while signup fails.
+const EMAIL_TIMEOUT_CEILING_MS = 3000;
+const EMAIL_TIMEOUT_DEFAULT_MS = 2500;
+function resolveTimeoutMs() {
+  const requested = Number(process.env.EMAIL_TIMEOUT_MS) || EMAIL_TIMEOUT_DEFAULT_MS;
+  return { requested, effective: Math.max(500, Math.min(EMAIL_TIMEOUT_CEILING_MS, requested)) };
+}
+/** Secret-free view of the mailer's effective configuration, for /api/crm/health. */
+function diagnostics() {
+  const t = resolveTimeoutMs();
+  return {
+    enabled: isEmailEnabled(),
+    effectiveTimeoutMs: t.effective,
+    envTimeoutMs: process.env.EMAIL_TIMEOUT_MS ? t.requested : null,
+    ceilingMs: EMAIL_TIMEOUT_CEILING_MS,
+    clamped: t.requested > EMAIL_TIMEOUT_CEILING_MS,
+  };
+}
+
 // Public brand assets used inside emails.
 const SITE_URL = 'https://genzdigitalstore.com';
 const LOGO_URL = `${SITE_URL}/logo-genz-digital-store.png`;
@@ -142,9 +163,7 @@ async function sendEmail({ to, subject, html, text }) {
   // never produce a structured error, so it is strictly worse than useless. It exists so a
   // stale EMAIL_TIMEOUT_MS left in the server env (this box has carried one before) cannot
   // silently reintroduce the failure this constant is here to prevent.
-  const EMAIL_TIMEOUT_CEILING_MS = 3000;
-  const requested = Number(process.env.EMAIL_TIMEOUT_MS) || 2500;
-  const timeoutMs = Math.max(500, Math.min(EMAIL_TIMEOUT_CEILING_MS, requested));
+  const { requested, effective: timeoutMs } = resolveTimeoutMs();
   if (requested > EMAIL_TIMEOUT_CEILING_MS && !warnedTimeoutClamp) {
     warnedTimeoutClamp = true;
     console.warn(`[email] EMAIL_TIMEOUT_MS=${requested}ms exceeds the ${EMAIL_TIMEOUT_CEILING_MS}ms ceiling and was clamped — a longer cap cannot beat the worker-kill window, so it would surface as an opaque 503 instead of a structured error.`);
@@ -427,6 +446,8 @@ module.exports = {
   classifyStatus,
   adminMessageFor,
   isEmailEnabled,
+  diagnostics,
+  resolveTimeoutMs,
   sendEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,

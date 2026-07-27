@@ -10,6 +10,7 @@ const bcrypt = require('bcryptjs');
 // actually serving. Pure functions over env — requiring them here touches no DB and no route.
 const launchCode = require('./utils/launchCode');
 const csrfMw = require('./middleware/csrf');
+const emailCfg = require('./utils/email');
 
 // Load environment variables FIRST
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -393,6 +394,12 @@ app.get('/api/crm/health', async (req, res) => {
     // production unnoticed (see LAUNCH_BOOTSTRAP.md §9). This reports our own feature-flag
     // state, not anything about a user, account or credential — the same class of
     // deploy-verification signal the gateways already expose at /__genz/health.
+    // Effective outbound-email configuration. Booleans/numbers only — never the API key or
+    // the from-address. Exists for the same reason as the launch block: without it there is no
+    // way to tell from outside WHICH email timeout is actually serving, so a stale
+    // EMAIL_TIMEOUT_MS in the server env or an un-landed deploy is invisible while signup
+    // fails. `effectiveTimeoutMs` is what the mailer will really use after clamping.
+    email: emailCfg.diagnostics(),
     launch: {
       flow: launchCode.globalFlow(),          // 'url' (dark, default) | 'post'
       postTools: [...launchCode.postToolSet()],
