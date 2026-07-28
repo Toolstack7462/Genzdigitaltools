@@ -17,7 +17,11 @@ const path = require('path');
 const vm = require('vm');
 
 const REPO = path.resolve(__dirname, '../..');
-const GATEWAYS = ['proxy-gateway', 'stealth-gateway', 'claude-gateway', 'hix-gateway', 'bypassgpt-gateway', 'grok-gateway', 'writehuman-v2'];
+// chatgpt-gateway was absent from this list for as long as it was absent from the repo — it
+// was deployed from an untracked directory, so nothing loaded its overlay and nothing noticed
+// it had never received the terminal-vs-retryable fix. It is listed here now precisely so that
+// gap cannot reopen: this suite reads the REAL shipped overlay.js from every gateway.
+const GATEWAYS = ['proxy-gateway', 'stealth-gateway', 'claude-gateway', 'hix-gateway', 'bypassgpt-gateway', 'grok-gateway', 'writehuman-v2', 'chatgpt-gateway'];
 
 // ── Minimal DOM good enough for the widget ──────────────────────────────────
 function makeEl(tag) {
