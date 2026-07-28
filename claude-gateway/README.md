@@ -163,7 +163,9 @@ Behaviour (see `lib/effortPrefs.js` for the unit-tested policy):
 Admin-configurable via this gateway's env (SetEnv), like the other overlay prefs:
 
 ```
-SetEnv CLAUDE_DEFAULT_EFFORT medium      # low | medium | high | extra | max  (default & fallback: medium)
+SetEnv CLAUDE_DEFAULT_EFFORT medium      # low | medium ONLY (see the effort allowlist below).
+                                         # Anything else — including a leftover 'high'/'max' from an
+                                         # earlier config — is CLAMPED to medium rather than honoured.
 SetEnv CLAUDE_THINKING_DEFAULT 0         # extended-thinking default: OFF by default (lower usage); 1/on auto-enables it
 # Optional: pin the exact effort control if the heuristic can't find it on the live DOM
 # SetEnv CLAUDE_EFFORT_TRIGGER_SEL <CSS selector for the effort button>
@@ -527,13 +529,65 @@ or garbled value blocks rather than silently permitting. Reversible with a one-l
 change and no deploy. When On, every code path short-circuits and the proxy behaves exactly as
 it did before this feature existed (asserted by test).
 
-Optional: `SetEnv CLAUDE_FALLBACK_MODEL claude-sonnet-5` overrides the fallback. A fallback
-that itself names Fable 5 is refused and falls back to Opus 4.8.
+Optional: `SetEnv CLAUDE_FALLBACK_MODEL claude-opus-5` overrides the fallback. A fallback
+that itself names Fable 5 is refused and falls back to the default below.
 
-**Fallback profile** — Model `claude-opus-4-8`, Effort **Medium**, Thinking **Off**. Effort and
-thinking are *not* new settings: `CLAUDE_DEFAULT_EFFORT` already defaults to `medium` and
-`CLAUDE_THINKING_DEFAULT` already defaults to off, which is exactly the required profile. They
-stay independently configurable.
+**Fallback profile** — Model `claude-sonnet-5`, Effort **Medium**, Thinking **Off** — i.e. the same
+Sonnet + Medium pairing a fresh conversation starts on, so a conversation moved off Fable 5 is never
+silently promoted to a more expensive tier. `CLAUDE_DEFAULT_EFFORT` defaults to `medium` and
+`CLAUDE_THINKING_DEFAULT` defaults to off. All three stay independently configurable.
+
+### Effort allowlist — only Low and Medium
+
+Only **Low** and **Medium** may be used. High / Extra / Extra High / Very High / Max / Maximum /
+Highest / Ultra are removed from the picker and rewritten to Medium. Same three-layer shape as the
+model block, and for the same reason — the picker is claude.ai's own React state, so the UI layer
+stops an honest click and nothing else:
+
+| Layer | File | Purpose |
+|---|---|---|
+| Policy | `lib/effortPolicy.js` | Pure, unit-tested decision logic. Canonicalises every spelling. |
+| **Enforcement** | `server.js` (request side) | **The security control.** Rewrites the body on the way upstream, where nothing in the browser can bypass it. |
+| Presentation | `server.js` (response side) + `public/overlay.js` | Removes the entries from the picker and migrates a stale saved preference. |
+
+- A conversation saved at a blocked level (e.g. *Opus Extra*) **reopens as *Opus Medium***.
+- An upstream metadata refresh **cannot restore** the hidden options — the response filter runs on
+  every such response.
+- **Models are unaffected**: Opus and Haiku stay fully selectable; only their *effort* is capped.
+- **Fails open on the unrecognised.** An effort vocabulary we cannot canonicalise is forwarded
+  untouched — breaking a chat to enforce a preference is never the right trade.
+- The overlay **removes** the menu entries from the DOM (never CSS-hides them): a `display:none`
+  option is still focusable and clickable, which would let a user select a level the gateway then
+  silently rewrites — seeing one thing and getting another.
+- Reversible: `SetEnv CLAUDE_ALLOW_ALL_EFFORTS 1` restores the previous behaviour exactly. It is
+  effort-only — Fable 5 stays blocked regardless.
+
+### Streamed responses — REGRESSION-SENSITIVE
+
+The gateway keeps **two separate upstream budgets**. Do not collapse them back into one.
+
+| Budget | Env | Default | Meaning |
+|---|---|---|---|
+| Pre-response | `UPSTREAM_TIMEOUT_MS` | 30 s | How long Claude may take to **start** responding. |
+| Stream idle | `CLAUDE_STREAM_IDLE_TIMEOUT_MS` | 5 min (floor 60 s) | How long it may pause **between chunks**, reset on every chunk. |
+
+A single `upstream.setTimeout(30s)` was previously used for both. That call maps onto
+`socket.setTimeout` — an **idle timer armed for the whole life of the socket, including while the
+answer is streaming**. Claude legitimately goes quiet for longer than 30 s during extended thinking,
+a tool call or file generation, so the socket was destroyed mid-answer and the teardown path called
+a bare `res.end()`. That is a **clean EOF in the middle of an SSE stream**: no terminating event, no
+error, indistinguishable from a finished answer — which is exactly *"Claude's response was
+interrupted"*, a spinner that never resolves, and a file stuck on *"Creating file"*.
+
+Now: the pre-response budget is **disarmed** the moment upstream headers arrive, the idle budget
+**resets on every chunk** (so a long answer is bounded by *silence*, never by total duration), a
+broken stream is **terminated with an explicit retryable `event: error` frame** so the client stops
+its spinner and shows one accurate message while keeping partial content, and a client that
+disconnects **tears the upstream leg down** instead of leaving it streaming into a dead response.
+The idle budget has a hard 60 s floor so the defect cannot be reintroduced through configuration.
+
+Covered by `lib/streamGuard.test.js` and `test/streamResilience.test.js` (4 of whose 5 tests fail
+against the pre-fix build — one by hanging, which *is* the stuck spinner).
 
 ### How the block works — three layers, only one of which is a security control
 

@@ -8,7 +8,11 @@
  * unit-testable without a browser. No secrets, no I/O, no network.
  *
  * Behaviour encoded:
- *   - Target effort defaults to "medium" (admin-configurable to low/medium/high/extra/max).
+ *   - Target effort defaults to "medium" and is CLAMPED to the allowlist (low | medium). See
+ *     lib/effortPolicy.js — that module owns the policy; this one owns the UI timing. A stale
+ *     CLAUDE_DEFAULT_EFFORT=high in a .htaccess therefore resolves to medium instead of silently
+ *     re-enabling a level the gateway blocks on the way upstream (which would leave the picker and
+ *     the enforced value disagreeing).
  *   - Apply ONCE per fresh session / new conversation, only after the UI is ready.
  *   - Detect the current effort first; never click when it already matches the target.
  *   - Never override a manual change during the active conversation (once handled, stay handled).
@@ -19,8 +23,14 @@
  *     when an admin turns it on, and never forced off (users may enable it manually).
  */
 
+// The vocabulary this module can RECOGNISE. Wider than what is PERMITTED on purpose: to detect
+// that a control currently reads "Extra High" — and to find that option in a menu so it can be
+// removed — we must still be able to parse it. Recognising is not permitting.
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'extra', 'max'];
 const DEFAULT_EFFORT = 'medium';
+// The single source of truth for what may actually be selected lives in effortPolicy.
+const effortPolicy = require('./effortPolicy');
+const ALLOWED_EFFORTS = effortPolicy.ALLOWED_EFFORTS;
 
 // Canonicalise common label variants to the five levels.
 const ALIASES = {
@@ -39,10 +49,20 @@ function toLevel(v) {
   return ALIASES[s] || null;
 }
 
-// Normalise a configured value to a canonical level, falling back to `fallback` (default medium).
+// Normalise a configured value to a canonical PERMITTED level.
+// Anything blocked (high/extra/max) or unrecognised collapses to the fallback, and the fallback
+// itself is held to the allowlist — so there is no input to this function that can yield a level
+// the gateway would refuse upstream.
 function normalizeEffort(v, fallback) {
-  return toLevel(v) || (EFFORT_LEVELS.includes(fallback) ? fallback : DEFAULT_EFFORT);
+  const lvl = toLevel(v);
+  if (lvl && ALLOWED_EFFORTS.includes(lvl)) return lvl;
+  const fb = toLevel(fallback);
+  return (fb && ALLOWED_EFFORTS.includes(fb)) ? fb : DEFAULT_EFFORT;
 }
+// Is this level one a client may actually select?
+function isAllowedLevel(v) { const l = toLevel(v); return !!l && ALLOWED_EFFORTS.includes(l); }
+// Is this a level we recognise but must remove from the UI?
+function isBlockedLevel(v) { const l = toLevel(v); return !!l && !ALLOWED_EFFORTS.includes(l); }
 
 // Extract an effort level mentioned inside a label / aria-text (e.g. "Effort: Medium",
 // "High effort", "Extra high"). Longer phrases are matched first so "extra high" beats "high".
@@ -120,7 +140,7 @@ function decideThinking(state) {
 }
 
 module.exports = {
-  EFFORT_LEVELS, DEFAULT_EFFORT,
-  toLevel, normalizeEffort, parseEffortFromText, sameEffort, parseThinkingDefault,
+  EFFORT_LEVELS, DEFAULT_EFFORT, ALLOWED_EFFORTS,
+  toLevel, normalizeEffort, isAllowedLevel, isBlockedLevel, parseEffortFromText, sameEffort, parseThinkingDefault,
   conversationKey, nextConversationState, decideEffort, decideThinking,
 };

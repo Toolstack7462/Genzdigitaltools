@@ -10,7 +10,7 @@
  *
  * Fix A: a mobile XHR/API challenge returns a benign, NON-navigating 503 JSON so the SPA retries in
  *         place instead of navigating to challenge_redirect.
- * Fix B: a stray mobile NAV to /api/challenge_redirect is bounced (302) back to the app, never
+ * Fix B: a stray mobile NAV to /api/challenge_redirect is CANCELLED (204) so the running app stays
  *         retried or surfaced, so the loop's tail cannot form.
  *
  * BOTH are gated on isMobileClient(req). This file asserts they fire on mobile AND that DESKTOP is
@@ -119,15 +119,21 @@ test('Fix A — mobile XHR challenge returns a non-navigating 503 JSON, not the 
   assert.strictEqual(r.headers['cache-control'], 'no-store', 'never cached');
 });
 
-// ── Fix B: mobile nav to challenge_redirect → bounced back to the app, no retry, no notice ──
-test('Fix B — mobile nav to /api/challenge_redirect is bounced (302) to the app, not retried', async () => {
+// ── Fix B: mobile nav to challenge_redirect → the navigation is CANCELLED, not redirected ──
+// This assertion CHANGED deliberately. It used to require a 302 to DEFAULT_PATH, which encoded the
+// defect: a 302 is still a full-page navigation, so it tore down the working Claude page, and when
+// that fresh navigation was itself challenged it spent the nav retries and landed on the "asked us
+// to verify the connection" notice ~10s after a successful load — the reported mobile symptom.
+// A 204 aborts the navigation instead, leaving the running app exactly as it was.
+test('Fix B — mobile nav to /api/challenge_redirect cancels the navigation (204), leaving the app up', async () => {
   const sess = await openSession();
   const before = crHits;
   const t0 = Date.now();
   const r = await get('/api/challenge_redirect', Object.assign({ cookie: sess }, MOBILE, NAV));
   const dt = Date.now() - t0;
-  assert.strictEqual(r.status, 302, 'bounced back, not retried into a notice');
-  assert.strictEqual(r.headers['location'], '/new', 'straight to the app default path');
+  assert.strictEqual(r.status, 204, 'navigation cancelled, not retried into a notice');
+  assert.ok(!r.headers['location'], 'NO redirect: a working page must not be navigated anywhere');
+  assert.ok(!/verify the connection|Verifying you are human/i.test(r.body || ''), 'never the verification page');
   assert.strictEqual(crHits - before, 1, 'exactly ONE upstream hit — the retry loop never ran');
   assert.ok(dt < 400, 'returns immediately (no 2×retry wait): ' + dt + 'ms');
 });
@@ -137,13 +143,13 @@ test('DESKTOP UNCHANGED — an XHR challenge is NOT shielded (raw passthrough, n
   const sess = await openSession();
   const r = await get('/api/cf', Object.assign({ cookie: sess }, DESKTOP, XHR));
   assert.notStrictEqual(r.status, 503, 'desktop must NOT get the mobile 503 shield');
-  assert.ok(!/cf_verification/.test(r.body), 'desktop never sees the mobile shield body');
+  assert.ok(!/cloudflare_challenge/.test(r.body), 'desktop never sees the mobile shield body');
 });
 
-test('DESKTOP UNCHANGED — challenge_redirect still uses the existing retry→notice path, not the 302 break', async () => {
+test('DESKTOP UNCHANGED — challenge_redirect still uses the existing retry→notice path, not the 204 break', async () => {
   const sess = await openSession();
   const r = await get('/api/challenge_redirect', Object.assign({ cookie: sess }, DESKTOP, NAV));
-  assert.notStrictEqual(r.status, 302, 'desktop must NOT get the mobile 302 bounce');
+  assert.notStrictEqual(r.status, 204, 'desktop must NOT get the mobile navigation cancel');
   assert.strictEqual(r.status, 503, 'desktop keeps the existing recoverable notice');
   assert.match(r.body, /try again/i, 'the existing desktop notice is unchanged');
 });

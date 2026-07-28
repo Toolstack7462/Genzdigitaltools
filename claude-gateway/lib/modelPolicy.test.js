@@ -90,9 +90,13 @@ test('SECURITY: no input can make the policy EMIT a Fable 5 id', () => {
 });
 
 test('SECURITY: a misconfigured fallback pointing at Fable 5 is refused', () => {
-  assert.strictEqual(mp.normalizeFallback('claude-fable-5'), 'claude-opus-4-8');
-  assert.strictEqual(mp.normalizeFallback(''), 'claude-opus-4-8');
-  assert.strictEqual(mp.normalizeFallback(null), 'claude-opus-4-8');
+  // Asserted against the module's own constant, not a literal: the DEFAULT is a policy decision
+  // (Sonnet, to match the required Sonnet+Medium default pairing) and may be retuned, whereas the
+  // invariant under test — a fallback naming the blocked family is always refused — must not be.
+  assert.strictEqual(mp.normalizeFallback('claude-fable-5'), mp.DEFAULT_FALLBACK_MODEL);
+  assert.strictEqual(mp.normalizeFallback(''), mp.DEFAULT_FALLBACK_MODEL);
+  assert.strictEqual(mp.normalizeFallback(null), mp.DEFAULT_FALLBACK_MODEL);
+  assert.ok(!/fable/i.test(mp.DEFAULT_FALLBACK_MODEL), 'the default fallback itself is never a blocked id');
   assert.strictEqual(mp.normalizeFallback('claude-sonnet-5'), 'claude-sonnet-5', 'a valid override still works');
 });
 

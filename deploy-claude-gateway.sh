@@ -35,13 +35,20 @@ ssh-keyscan -t rsa -p "${SFTP_PORT}" "${SFTP_HOST}" >> ~/.ssh/known_hosts 2>/dev
 
 # Runtime files only — NOT .env, node_modules, docs, or the .example template.
 # EVERY lib/*.js that server.js require()s MUST ship or the gateway boots into
-# "Cannot find module './lib/<name>'": lib/quotaTap.js (token-quota tap),
-# lib/effortPrefs.js (default-effort preference) and lib/modelPolicy.js (the Fable 5
-# model allowlist). The .test.js files are NOT shipped.
+# "Cannot find module './lib/<name>'" and the whole Claude tool goes down:
+#   lib/quotaTap.js     — token-quota tap
+#   lib/effortPrefs.js  — default-effort preference (requires lib/effortPolicy.js)
+#   lib/modelPolicy.js  — the Fable 5 model allowlist
+#   lib/effortPolicy.js — the low|medium effort allowlist
+#   lib/streamGuard.js  — the streamed-response budgets + terminating error frame
+# The .test.js files are NOT shipped.
+# ⚠ ADDING A NEW lib/ MODULE? Add it HERE in the same commit. This list is the one thing that
+#   local tests cannot catch: everything passes locally and Passenger dies on boot.
 FILES=(
   server.js package.json
   public/overlay.js public/overlay.css
   lib/quotaTap.js lib/effortPrefs.js lib/modelPolicy.js
+  lib/effortPolicy.js lib/streamGuard.js
 )
 
 echo "==> Deploying Claude gateway  ->  ${SFTP_USER}@${SFTP_HOST}:${SERVER_DIR}  (vhost ${VHOST})"

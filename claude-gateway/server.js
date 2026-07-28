@@ -97,10 +97,28 @@ const modelPolicy = require('./lib/modelPolicy');
 const CLAUDE_ALLOW_FABLE5 = modelPolicy.parseAllowSetting(process.env.CLAUDE_ALLOW_FABLE5);
 const CLAUDE_FALLBACK_MODEL = modelPolicy.normalizeFallback(process.env.CLAUDE_FALLBACK_MODEL);
 const CLAUDE_EFFORT_TRIGGER_SEL = String(process.env.CLAUDE_EFFORT_TRIGGER_SEL || '').trim();
+// ── Effort allowlist (claude-only) ───────────────────────────────────────────
+// Only Low and Medium may be used. Enforced on the way upstream (unbypassable) and mirrored into
+// the picker on the way back. CLAUDE_ALLOW_ALL_EFFORTS=1 is a reversible kill-switch that restores
+// the previous behaviour exactly, with no other code path involved.
+const effortPolicy = require('./lib/effortPolicy');
+const CLAUDE_ALLOW_ALL_EFFORTS = effortPolicy.parseAllowSetting(process.env.CLAUDE_ALLOW_ALL_EFFORTS);
+const CLAUDE_DEFAULT_MODEL = effortPolicy.normalizeDefaultModel(process.env.CLAUDE_DEFAULT_MODEL);
 const LEASE_COOKIE = 'pg_lease';
-// Max time to wait for the upstream tool to respond before failing over to a friendly
-// retry page (prevents indefinite hanging / blank loading). Override via UPSTREAM_TIMEOUT_MS.
-const UPSTREAM_TIMEOUT_MS = parseInt(process.env.UPSTREAM_TIMEOUT_MS, 10) || 30000;
+// ── Two SEPARATE upstream budgets ────────────────────────────────────────────
+// REGRESSION-SENSITIVE. These must never be collapsed back into one socket timer.
+//   headersMs — how long the upstream may take to START responding. A page that never answers
+//               must fail over to a friendly retry page rather than hang.
+//   idleMs    — how long it may pause BETWEEN chunks once it HAS started, reset on every chunk.
+// The old code used a single `upstream.setTimeout(30s)`, which maps onto `socket.setTimeout` and
+// therefore stayed armed DURING the streamed answer. Claude legitimately goes quiet for longer
+// than 30s while thinking, running a tool or writing a file, so the socket was destroyed
+// mid-answer and the client got a clean EOF with no terminating SSE event — "Claude's response was
+// interrupted", a spinner that never resolves, and files stuck on "Creating file".
+const streamGuard = require('./lib/streamGuard');
+const UPSTREAM_BUDGETS = streamGuard.resolveBudgets(process.env, 30000);
+const UPSTREAM_TIMEOUT_MS = UPSTREAM_BUDGETS.headersMs;
+const STREAM_IDLE_TIMEOUT_MS = UPSTREAM_BUDGETS.idleMs;
 // Pinned upstream browser identity. Kept IDENTICAL for capture + client proxying so a
 // Cloudflare cf_clearance cookie (bound to its minting UA) stays valid, and matched to
 // the backend verifier's UA (utils/proxy/verify.js) so an account that Verifies
@@ -1429,7 +1447,13 @@ function injectOverlay(html, capture, accountLabel, allowFable5Eff) {
     // just let the overlay hide the entry and explain why. No secret, no account data.
     // Effective setting: admin panel when known, else the env fallback. Both default to blocked.
     allowFable5: (typeof allowFable5Eff === 'boolean') ? allowFable5Eff : CLAUDE_ALLOW_FABLE5,
-    blockedModelMsg: modelPolicy.BLOCKED_MESSAGE });
+    blockedModelMsg: modelPolicy.BLOCKED_MESSAGE,
+    // Effort allowlist, for the UI layer only — the block itself is enforced server-side on the
+    // way upstream. These let the overlay remove the entries from the picker, migrate a stale
+    // saved preference, and explain why. No secret, no account data.
+    allowedEfforts: CLAUDE_ALLOW_ALL_EFFORTS ? null : effortPolicy.ALLOWED_EFFORTS,
+    blockedEffortMsg: effortPolicy.BLOCKED_MESSAGE,
+    defaultModel: CLAUDE_DEFAULT_MODEL });
   const critical = capture ? '' : `<style id="genz-critical-hide">${buildCriticalCss()}</style>`;
   const tags =
     critical +
@@ -1725,17 +1749,50 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       } catch (_) { /* policy failure must never break the proxy */ }
     }
 
+    // ── Effort allowlist enforcement (claude-only, request side) ─────────────
+    // Same reasoning as the model block above, and for the same reason it lives here: the picker
+    // is claude.ai's own React state, so removing High/Extra/Max from the menu stops an honest
+    // click and nothing else. A replayed body, a conversation already pinned to a higher level, or
+    // a direct call to the completion endpoint all still ask for it. Rewriting on the way upstream
+    // is the one place that cannot be bypassed from the browser — and it is also what makes a
+    // saved "Opus Extra" conversation come back as "Opus Medium" on its very next request.
+    // Fails OPEN on anything unrecognised: an effort vocabulary we cannot canonicalise is left
+    // exactly as it is, because breaking a chat to enforce a preference is never the right trade.
+    let effortSwitchedFrom = null;
+    if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_ALL_EFFORTS && !ctx.capture && !ctx.asset && bodyBuf.length) {
+      try {
+        const eff = effortPolicy.applyToRequestBody(bodyBuf, { allowed: false });
+        if (eff.changed) {
+          bodyBuf = eff.body;
+          effortSwitchedFrom = eff.from;
+          safeLog('effort_blocked', {
+            request_path: reqPathOnly,
+            from_effort: eff.from,                       // a level name, not a secret
+            to_effort: effortPolicy.DEFAULT_EFFORT,
+            lease_id: ctx.jti || null,
+          });
+        }
+      } catch (_) { /* policy failure must never break the proxy */ }
+    }
+
     // How many times this navigation has already been re-sent after a Cloudflare challenge.
     // Lives OUTSIDE runDispatch so a retry can re-enter it with the same buffered body.
     let cfNavRetries = 0;
+    // Which dispatch attempt is CURRENT. A Cloudflare retry abandons the previous upstream
+    // response and starts a new one; the abandoned response's stream guards must not be able to
+    // fail the (still healthy) request that replaced it. Every guard captures the generation it
+    // belongs to and goes silent once it is no longer the live attempt.
+    let dispatchGen = 0;
     const runDispatch = () => {
+    const myGen = ++dispatchGen;
     const headers = buildUpstreamHeaders(req, upURL, session, minimal);
     // The rewrite above changes the body length, so the upstream must be told the new size or
     // it will hang waiting for bytes that never arrive (or truncate the JSON). If the client
     // sent the body CHUNKED there is no content-length to correct, and adding one while
     // `transfer-encoding: chunked` is still present is a framing conflict that a strict server
     // answers with 400 - so drop the chunked header whenever we set an explicit length.
-    if (modelSwitchedFrom !== null) {
+    // BOTH policies (model and effort) can change the length, so both are checked here.
+    if (modelSwitchedFrom !== null || effortSwitchedFrom !== null) {
       delete headers['transfer-encoding'];
       headers['content-length'] = Buffer.byteLength(bodyBuf);
     }
@@ -1758,6 +1815,66 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     const allowFable5Eff = allowFable5;
     const upstream = upLib.request(`${upURL.origin}${effUpPath}`, { method: req.method, headers, agent: agentFor(upURL.origin) }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
+
+      // ┌─ REGRESSION-SENSITIVE: the lifetime of a STREAMED response ────────────────────────────
+      // │  The upstream has now STARTED responding, so the pre-response budget has done its job.
+      // │  Disarm it: `upstream.setTimeout` is `socket.setTimeout`, an IDLE timer that otherwise
+      // │  stays armed for the rest of the socket's life — including while the answer streams. A
+      // │  quiet stretch longer than that budget (extended thinking, a tool call, writing a file)
+      // │  destroyed the socket mid-answer, and the teardown path saw headers already sent and
+      // │  called a bare `res.end()`. That hands the browser a CLEAN EOF in the middle of an SSE
+      // │  stream — no terminating event, no error — which is indistinguishable from a finished
+      // │  answer. That is the "response was interrupted" / stuck spinner / stuck "Creating file".
+      // │
+      // │  In its place: an idle budget that RESETS ON EVERY CHUNK, so a long answer is bounded by
+      // │  SILENCE and never by total duration, plus a real failure path that terminates the
+      // │  stream honestly. Do not merge these two budgets back together.
+      const isSse = streamGuard.isEventStream(ct);
+      try { upstream.setTimeout(0); } catch (_) {}
+      let idleTimer = null, streamSettled = false;
+      const clearIdle = () => { if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; } };
+      const settle = () => { streamSettled = true; clearIdle(); };
+      const isCurrent = () => myGen === dispatchGen;
+      const armIdle = () => {
+        if (streamSettled) return;
+        clearIdle();
+        idleTimer = setTimeout(() => { idleTimer = null; onStreamBroken(streamGuard.CODES.STREAM_IDLE_TIMEOUT); }, STREAM_IDLE_TIMEOUT_MS);
+      };
+      // Ends a response whose headers are ALREADY on the wire. An SSE stream gets a terminating
+      // error frame so the client stops its spinner and shows exactly ONE accurate message, and
+      // keeps whatever it had already rendered. Before headers, the ordinary failure path still
+      // owns the response (friendly retry page for a navigation, plain error for a fetch).
+      function onStreamBroken(code) {
+        if (streamSettled || !isCurrent()) return;
+        settle();
+        safeLog('stream_failed', {
+          cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
+          error_code: code, is_sse: isSse, headers_sent: !!res.headersSent,
+          device: deviceLabel(req), lease_id: ctx.jti || null,
+          latency_ms: ctx.t0 ? (Date.now() - ctx.t0) : null,
+        });
+        try { uRes.destroy(); } catch (_) {}
+        try { upstream.destroy(); } catch (_) {}
+        if (!res.headersSent) { try { onUpstreamFail(); } catch (_) {} return; }
+        try { if (isSse) res.write(streamGuard.sseErrorFrame(code)); } catch (_) {}
+        try { res.end(); } catch (_) {}
+      }
+      uRes.on('error', (e) => onStreamBroken(streamGuard.classifyStreamError(e)));
+      uRes.on('aborted', () => onStreamBroken(streamGuard.CODES.GATEWAY_RESTARTED));
+      uRes.on('data', armIdle);
+      uRes.on('end', settle);
+      uRes.on('close', settle);
+      // The browser going away must tear the upstream leg down at once. Without this a
+      // backgrounded mobile tab leaves claude.ai streaming into a dead response, holding a
+      // keep-alive pool slot until the idle budget expires — which starves later requests and
+      // looks, from the client side, like the gateway hanging.
+      res.on('close', () => {
+        const finished = res.writableEnded;
+        settle();
+        if (!finished && isCurrent()) { try { uRes.destroy(); } catch (_) {} try { upstream.destroy(); } catch (_) {} }
+      });
+      armIdle();
+      // └─ end stream lifetime guards ───────────────────────────────────────────────────────────
       // A file DOWNLOAD is content, not a page — it must reach the browser byte-for-byte.
       // Binary types (PDF/DOCX/XLSX/PPTX/images/ZIP) were already safe because they are
       // piped untouched, but a download whose type happens to be text-ish was not:
@@ -1860,7 +1977,20 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,
           device: deviceLabel(req), device_signal: deviceOf(req).signal, lease_id: ctx.jti || null,
         });
-        res.writeHead(302, { location: DEFAULT_PATH, 'cache-control': 'no-store' });
+        // 204, NOT a redirect. A 302 here was still a full-page navigation: it tore down the
+        // working Claude page, and if that fresh navigation was itself challenged (likely — the
+        // challenge rate on this egress IP is what started the whole sequence) it spent the nav
+        // retries and landed on the "asked us to verify the connection" notice roughly ten
+        // seconds after a successful load. That is the reported mobile symptom, and the loop
+        // breaker was feeding it.
+        //
+        // A 204 to a top-level navigation is defined to ABORT that navigation: the browser stays
+        // exactly where it is. The app keeps running, the conversation and scroll position are
+        // untouched, no reload happens, and the background fetch that triggered this simply
+        // retries in place (Fix A already gives those a retryable JSON error). Nothing about the
+        // challenge is solved, bypassed or automated — we decline to navigate the user into a
+        // page that cannot clear through a reverse proxy.
+        res.writeHead(204, { 'cache-control': 'no-store' });
         return res.end();
       }
       // └─ end Fix B ────────────────────────────────────────────────────────────────────────────
@@ -1936,7 +2066,7 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           lease_id: ctx.jti || null,
         });
         res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        return res.end('{"error":"cf_verification","retryable":true}');
+        return res.end(streamGuard.jsonErrorBody(streamGuard.CODES.CLOUDFLARE_CHALLENGE));
       }
       // └─ end Fix A ────────────────────────────────────────────────────────────────────────────
       // `device` lets us correlate a mobile-vs-desktop challenge outcome by lease id
@@ -2032,6 +2162,19 @@ function proxy(req, res, isHtmlNav, session, ctx) {
               if (pol.changed) { body = pol.text; safeLog('model_filtered', { request_path: reqPathOnly }); }
             } catch (_) { /* filtering failure must never break the app */ }
           }
+          // ── Effort allowlist (response side) — this is the picker removal ──
+          // The selectable effort levels come down as JSON, so dropping the blocked entries here
+          // is what makes High/Extra/Max absent from the client-facing picker without patching
+          // claude.ai's bundle — and, because it runs on EVERY such response, an upstream metadata
+          // refresh cannot quietly restore them later in the session. A scalar still naming a
+          // blocked level is rewritten to Medium, so a conversation saved at a higher level
+          // REOPENS as Medium instead of showing a level it is no longer allowed to use.
+          if (TOOL_KEY === 'claude' && !CLAUDE_ALLOW_ALL_EFFORTS && !ctx.asset && !isCaptchaReq) {
+            try {
+              const eff = effortPolicy.applyToResponseBody(body, { allowed: false });
+              if (eff.changed) { body = eff.text; safeLog('effort_filtered', { request_path: reqPathOnly, options_removed: !!eff.optionsRemoved }); }
+            } catch (_) { /* filtering failure must never break the app */ }
+          }
           const rw = rewriteUpstreamUrls(body); body = rw.text;
           if (sanitizeJson) outHeaders['cache-control'] = 'no-store';
           logIt(rw.applied);
@@ -2078,9 +2221,16 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           msg: `We couldn't reach ${TOOL_NAME}. This is usually temporary — please try again in a moment.`,
         });
       }
-      res.writeHead(502, { 'content-type': 'text/plain', 'cache-control': 'no-store' });
-      res.end('Upstream error');
+      // A BACKGROUND request gets a structured, machine-readable body — never an HTML document.
+      // Handing an error PAGE to a fetch is what makes Claude's app treat a transient blip as a
+      // reason to navigate the whole tab, which is how a working page ends up on an error screen.
+      // `retryable` says plainly that the caller may try again; nothing here ends a session.
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(streamGuard.jsonErrorBody(streamGuard.CODES.UPSTREAM_UNAVAILABLE));
     };
+    // PRE-RESPONSE budget ONLY. The response callback disarms this the moment upstream headers
+    // arrive and hands over to the chunk-resetting idle budget — see the stream lifetime guards.
+    // Leaving it armed is what used to cut long answers off mid-stream.
     upstream.setTimeout(UPSTREAM_TIMEOUT_MS, () => { try { upstream.destroy(new Error('upstream_timeout')); } catch (_) {} });
     upstream.on('error', onUpstreamFail);
     upstream.end(bodyBuf);

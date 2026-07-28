@@ -9,16 +9,40 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const e = require('./effortPrefs');
 
-test('normalizeEffort: canonical levels, aliases, and fallback to medium', () => {
+// UPDATED DELIBERATELY: this test used to assert that max/extra survive normalisation, which is
+// exactly the behaviour the effort allowlist removes. Only Low and Medium may be selected now, so
+// normalizeEffort CLAMPS: every blocked or unrecognised level collapses to medium, and even an
+// explicit fallback naming a blocked level is refused. Recognising "extra high" is still required
+// (that is how the overlay finds the option in order to remove it) and is covered by
+// parseEffortFromText below — recognising is not permitting.
+test('normalizeEffort: clamps to the allowlist (low | medium), everything else becomes medium', () => {
   assert.equal(e.normalizeEffort('low'), 'low');
   assert.equal(e.normalizeEffort('Medium'), 'medium');
-  assert.equal(e.normalizeEffort('max'), 'max');
-  assert.equal(e.normalizeEffort('maximum'), 'max');
-  assert.equal(e.normalizeEffort('extra high'), 'extra');
   assert.equal(e.normalizeEffort('standard'), 'medium'); // alias
   assert.equal(e.normalizeEffort('garbage'), 'medium');  // fallback
   assert.equal(e.normalizeEffort(null), 'medium');
-  assert.equal(e.normalizeEffort('garbage', 'high'), 'high'); // explicit fallback honoured
+  // The blocked levels, in every spelling the picker has used.
+  assert.equal(e.normalizeEffort('high'), 'medium');
+  assert.equal(e.normalizeEffort('max'), 'medium');
+  assert.equal(e.normalizeEffort('maximum'), 'medium');
+  assert.equal(e.normalizeEffort('extra high'), 'medium');
+  assert.equal(e.normalizeEffort('very high'), 'medium');
+  // A stale admin fallback cannot re-open the door either.
+  assert.equal(e.normalizeEffort('garbage', 'high'), 'medium');
+  assert.equal(e.normalizeEffort('garbage', 'low'), 'low', 'a PERMITTED explicit fallback is still honoured');
+  assert.deepEqual(e.ALLOWED_EFFORTS, ['low', 'medium']);
+});
+
+test('isAllowedLevel / isBlockedLevel classify without permitting', () => {
+  assert.equal(e.isAllowedLevel('Low'), true);
+  assert.equal(e.isAllowedLevel('medium'), true);
+  assert.equal(e.isAllowedLevel('high'), false);
+  // Still RECOGNISED, so the overlay can find and remove these menu entries.
+  assert.equal(e.isBlockedLevel('high'), true);
+  assert.equal(e.isBlockedLevel('extra high'), true);
+  assert.equal(e.isBlockedLevel('maximum'), true);
+  assert.equal(e.isBlockedLevel('medium'), false);
+  assert.equal(e.isBlockedLevel('not-an-effort'), false, 'unrecognised is not "blocked" — it is left alone');
 });
 
 test('parseEffortFromText: extracts a level; "extra high" beats "high"; null when none', () => {
@@ -46,10 +70,26 @@ test('session load: not-ready waits; ready + different current applies; matching
   assert.equal(e.decideEffort({ ...base, ready: true, controlFound: true, current: 'medium' }).action, 'skip');
 });
 
-test('applies the ADMIN-configured target (e.g. High), not always medium', () => {
-  const d = e.decideEffort({ ready: true, controlFound: true, current: 'low', target: 'high', conversationKey: 'new', handledFor: null });
+// UPDATED DELIBERATELY: the admin target is still honoured, but only WITHIN the allowlist. An
+// admin (or a stale .htaccess) asking for High must not produce a High target, because the gateway
+// blocks High on the way upstream — the picker and the enforced value would then disagree, which
+// is precisely the confusing state this policy exists to prevent.
+test('applies the ADMIN-configured target within the allowlist, and clamps one outside it', () => {
+  const allowed = e.decideEffort({ ready: true, controlFound: true, current: 'medium', target: 'low', conversationKey: 'new', handledFor: null });
+  assert.equal(allowed.action, 'apply');
+  assert.equal(allowed.target, 'low', 'a permitted admin target is honoured');
+
+  const blocked = e.decideEffort({ ready: true, controlFound: true, current: 'low', target: 'high', conversationKey: 'new', handledFor: null });
+  assert.equal(blocked.target, 'medium', 'a blocked admin target clamps to medium');
+  assert.equal(blocked.action, 'apply', 'and is still applied, moving the control off "low" to the default');
+});
+
+// A conversation SAVED at a blocked level must come back at medium — the "Opus Extra reopens as
+// Opus Medium" requirement, decided here and enforced server-side in effortPolicy.
+test('a conversation currently pinned to a blocked level is moved to medium', () => {
+  const d = e.decideEffort({ ready: true, controlFound: true, current: 'extra', target: 'medium', conversationKey: 'chat:saved', handledFor: null });
   assert.equal(d.action, 'apply');
-  assert.equal(d.target, 'high');
+  assert.equal(d.target, 'medium');
 });
 
 // ── Apply once; never override a manual change ──────────────────────────────

@@ -28,8 +28,15 @@
 /** The client-visible reason, shown verbatim in the UI. */
 const BLOCKED_MESSAGE = 'Fable 5 is disabled by your administrator.';
 
-/** Fallback applied when a blocked model is requested. Effort/thinking live in effortPrefs. */
-const DEFAULT_FALLBACK_MODEL = 'claude-opus-4-8';
+/**
+ * Fallback applied when a blocked model is requested. Effort/thinking live in effortPrefs.
+ *
+ * Sonnet, because Sonnet + Medium is the required default pairing: a conversation moved off Fable
+ * lands on the same model a fresh conversation would start on, rather than silently promoting the
+ * client to a more expensive tier. Overridable via CLAUDE_FALLBACK_MODEL for the day claude.ai
+ * renames its ids; normalizeFallback still refuses any override naming the blocked family.
+ */
+const DEFAULT_FALLBACK_MODEL = 'claude-sonnet-5';
 
 /**
  * Matches the Fable 5 family across the id spellings claude.ai has used or may use:

@@ -131,7 +131,8 @@ test('OFF (default): Fable 5 never reaches upstream, on desktop or mobile', asyn
       assert.strictEqual(received.length, 3, label + ': all three reached upstream');
       for (const got of received) {
         assert.ok(!JSON.stringify(got).match(/fable/i), label + ': upstream must never see a fable id, got ' + JSON.stringify(got));
-        if (got.model) assert.strictEqual(got.model, 'claude-opus-4-8', label + ': switched to the fallback');
+        // The gateway's own default, read from the policy module rather than duplicated here.
+        if (got.model) assert.strictEqual(got.model, require('../lib/modelPolicy').DEFAULT_FALLBACK_MODEL, label + ': switched to the fallback');
       }
       assert.strictEqual(received[1].auto_model_selection, false, label + ': automatic model switching forced off');
       assert.strictEqual(received[2].conversation_uuid, 'c1', label + ': the conversation is preserved, not dropped');

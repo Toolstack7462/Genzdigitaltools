@@ -705,7 +705,7 @@
     var s = document.createElement('style'); s.id = 'genz-sw-hide'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
-  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); pinClaudeAccount(); } catch (e) {} }
+  function runHiding() { try { sweep(document); enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); pinClaudeAccount(); pruneEffortMenu(); } catch (e) {} }
 
   // PERF: process only added subtrees on mutations (debounced); reserve the full pass for first
   // paint, SPA route change and a low-frequency safety tick. The maintenance helpers
@@ -719,6 +719,9 @@
       if (fullPending) { fullPending = false; pending.length = 0; sweep(document); }
       else { var b = pending; pending = []; for (var i = 0; i < b.length; i++) sweep(b[i]); }
       enforceBranding(); checkCaptcha(); hideChatgptAccount(); relabelClaudeAccount(); pinClaudeAccount();
+      // Mutation-driven, so a menu that has just rendered loses its blocked entries within the
+      // 150ms debounce — before the user can realistically read or click one.
+      pruneEffortMenu();
     } catch (e) {}
   }
   function schedule() { if (!flushTimer) flushTimer = setTimeout(flush, 150); }
@@ -884,7 +887,23 @@
   function effConvKey(p) { p = String(p || '').replace(/[#?].*$/, '').replace(/\/+$/, '') || '/'; var m; if ((m = p.match(/\/chat\/([\w-]+)/i))) return 'chat:' + m[1]; if ((m = p.match(/\/project\/([\w-]+)/i))) return 'project:' + m[1]; if (/\/new$/i.test(p) || p === '/' || p === '') return 'new'; return 'path:' + p; }
   function effNextConv(prev, p) { var key = effConvKey(p); if (prev == null) return { key: key, fresh: true, inherit: false }; if (key === prev) return { key: key, fresh: false, inherit: false }; if (prev === 'new' && key.indexOf('chat:') === 0) return { key: key, fresh: false, inherit: true }; if (key === 'new') return { key: key, fresh: true, inherit: false }; return { key: key, fresh: false, inherit: false }; }
 
-  var EFFORT_TARGET = effNorm(CFG.defaultEffort, 'medium');
+  // ── Effort allowlist (UI layer) ─────────────────────────────────────────────
+  // The BLOCK itself is enforced server-side, on the way upstream, where it cannot be bypassed.
+  // Everything here is the honest presentation of that block: the levels the gateway will refuse
+  // must not sit in the picker looking selectable. Entries are REMOVED FROM THE DOM, never merely
+  // hidden with CSS — a display:none option is still focusable, still clickable by a keyboard user
+  // or a script, and would silently send a request the gateway then rewrites, so the user would
+  // see one thing and get another.
+  // `null` from the server means the reversible kill-switch is on → behave exactly as before.
+  var ALLOWED_EFFORTS = Array.isArray(CFG.allowedEfforts) ? CFG.allowedEfforts.slice() : null;
+  var EFFORT_ENFORCED = !!(ALLOWED_EFFORTS && ALLOWED_EFFORTS.length);
+  function effAllowed(v) { var l = effLevel(v); return !EFFORT_ENFORCED || (!!l && ALLOWED_EFFORTS.indexOf(l) >= 0); }
+  // Recognised BUT not permitted. An unrecognised string is deliberately NOT "blocked": we leave
+  // anything we cannot identify completely alone rather than risk removing an unrelated control.
+  function effBlocked(v) { var l = effLevel(v); return EFFORT_ENFORCED && !!l && ALLOWED_EFFORTS.indexOf(l) < 0; }
+  function effClamp(v) { var l = effLevel(v); return (l && effAllowed(l)) ? l : 'medium'; }
+
+  var EFFORT_TARGET = effClamp(effNorm(CFG.defaultEffort, 'medium'));
   var THINKING_DEFAULT = CFG.thinkingDefault === true;
   var EFFORT_SEL = CFG.effortTriggerSel || '';
   var effSt = { convKey: null, handledFor: null, thinkHandledFor: null, attempts: 0, warned: false };
@@ -919,6 +938,9 @@
           // click a stray element elsewhere in the page that happens to contain an effort word).
           var menu = document.querySelector('[role="menu"],[role="listbox"],[data-radix-menu-content]');
           if (!menu) { effWarn('effort menu did not open (UI changed) — leaving effort unchanged'); return; }
+          // Prune before selecting, so the menu we opened programmatically is never briefly
+          // rendered with levels this account cannot use.
+          pruneEffortMenu();
           var items = menu.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="option"],button,li');
           var picked = null;
           for (var i = 0; i < items.length; i++) { var t = ((items[i].getAttribute && (items[i].getAttribute('aria-label') || '')) + ' ' + (items[i].textContent || '')); if (effSame(effParse(t), target)) { picked = items[i]; break; } }
@@ -947,6 +969,7 @@
 
   function effortTick() {
     if (!CLAUDE) return;
+    pruneEffortMenu();   // 1s safety net behind the mutation-driven sweep
     // Track the conversation; reset (or carry) the handled flags on a change.
     var st = effNextConv(effSt.convKey, location.pathname);
     if (st.key !== effSt.convKey) {
@@ -980,6 +1003,129 @@
     }
   }
 
+  // ── Remove the blocked effort levels from Claude's own picker ────────────────
+  // DOM REMOVAL, not CSS hiding: a display:none option is still focusable, still clickable from a
+  // keyboard or a script, and selecting it would send a request the gateway rewrites — the user
+  // would see one thing and get another. Taking the node out is the only honest presentation of a
+  // server-side block.
+  function effItemText(n) {
+    try { return ((n.getAttribute && (n.getAttribute('aria-label') || '')) + ' ' + (n.textContent || '')); } catch (e) { return ''; }
+  }
+  function effMenuItems(menu) {
+    try { return Array.prototype.slice.call(menu.querySelectorAll('[role="menuitem"],[role="menuitemradio"],[role="option"],li,button')); } catch (e) { return []; }
+  }
+  // Only touch a menu we are CONFIDENT is the effort picker. A menu that merely contains the word
+  // "high" somewhere must never lose entries, so we require either an explicit "effort" label or
+  // at least two items that each parse to an effort level. Unsure → do nothing.
+  function looksLikeEffortMenu(menu, items) {
+    try {
+      if (/effort/i.test(menu.textContent || '')) return true;
+      var n = 0;
+      for (var i = 0; i < items.length; i++) if (effParse(effItemText(items[i]))) n++;
+      return n >= 2;
+    } catch (e) { return false; }
+  }
+  function pruneEffortMenu() {
+    if (!CLAUDE || !EFFORT_ENFORCED) return;
+    try {
+      var menus = document.querySelectorAll('[role="menu"],[role="listbox"],[data-radix-menu-content]');
+      for (var m = 0; m < menus.length; m++) {
+        var menu = menus[m];
+        if (menu.closest && menu.closest('#genz-sw-widget,#genz-quota-banner,#genz-ws-row')) continue;
+        var items = effMenuItems(menu);
+        if (!items.length || !looksLikeEffortMenu(menu, items)) continue;
+        for (var i = 0; i < items.length; i++) {
+          var it = items[i];
+          if (!it || !it.parentNode) continue;
+          // Never remove a container that holds a level we DO allow (a wrapper around the whole
+          // list would otherwise take Low and Medium with it).
+          if (!effBlocked(effParse(effItemText(it)))) continue;
+          if (it.querySelector && it.querySelector('[role="menuitem"],[role="menuitemradio"],[role="option"]')) continue;
+          try { it.remove(); } catch (e) {}
+        }
+      }
+    } catch (e) {}
+  }
+  // Defence in depth: if a blocked entry is ever rendered and clicked before a sweep removes it,
+  // stop the click here too. The server-side rewrite already makes the selection ineffective; this
+  // just avoids the UI briefly showing a level the account cannot actually use.
+  document.addEventListener('click', function (e) {
+    if (!CLAUDE || !EFFORT_ENFORCED) return;
+    try {
+      var t = e.target && e.target.closest && e.target.closest('[role="menuitem"],[role="menuitemradio"],[role="option"]');
+      if (!t || (t.closest && t.closest('#genz-sw-widget,#genz-quota-banner,#genz-ws-row'))) return;
+      var menu = t.closest('[role="menu"],[role="listbox"],[data-radix-menu-content]');
+      if (!menu || !looksLikeEffortMenu(menu, effMenuItems(menu))) return;
+      if (!effBlocked(effParse(effItemText(t)))) return;
+      e.preventDefault(); e.stopPropagation();
+      try { t.remove(); } catch (_) {}
+      toast(CFG.blockedEffortMsg || 'Only Low and Medium effort are available on this account.');
+    } catch (_) {}
+  }, true);
+
+  // ── Migrate a stale saved effort preference to Medium ────────────────────────
+  // A preference saved before this policy (e.g. "Extra") would otherwise be re-sent on every load.
+  // Runs ONCE per page, and is deliberately conservative: a value is rewritten only when it is a
+  // level we RECOGNISE and BLOCK — either the whole value, or an effort-named field inside a JSON
+  // blob. Anything we cannot identify is left untouched, because this is claude.ai's own storage
+  // on the gateway origin and corrupting a key we do not understand would break the app.
+  //
+  // IndexedDB is intentionally NOT rewritten. A blind schema-less rewrite of Claude's local
+  // database risks corrupting live conversation state, and it is unnecessary: the gateway
+  // normalises every effort value on the way OUT (request) and on the way IN (response), so a
+  // stale value held anywhere on the client can never take effect upstream.
+  var EFF_STORE_KEY_RE = /(effort|paprika|thinking[_\-]?level|reasoning[_\-]?mode)/i;
+  function migrateEffortValue(raw) {
+    if (raw == null) return null;
+    var s = String(raw);
+    if (effBlocked(s.trim())) return 'medium';               // the whole value is a blocked level
+    if (s.indexOf('{') < 0 && s.indexOf('[') < 0) return null;
+    var parsed; try { parsed = JSON.parse(s); } catch (e) { return null; }
+    var changed = false;
+    (function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (var i = 0; i < node.length; i++) walk(node[i]); return; }
+      for (var k in node) {
+        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+        var v = node[k];
+        if (typeof v === 'string' && EFF_STORE_KEY_RE.test(k) && effBlocked(v)) { node[k] = 'medium'; changed = true; }
+        else walk(v);
+      }
+    })(parsed);
+    if (!changed) return null;
+    try { return JSON.stringify(parsed); } catch (e) { return null; }
+  }
+  function migrateStoredEfforts() {
+    if (!CLAUDE || !EFFORT_ENFORCED) return;
+    var n = 0;
+    ['localStorage', 'sessionStorage'].forEach(function (which) {
+      try {
+        var store = window[which];
+        if (!store) return;
+        for (var i = 0; i < store.length; i++) {
+          var k = store.key(i);
+          if (!k || !EFF_STORE_KEY_RE.test(k)) continue;
+          var next = migrateEffortValue(store.getItem(k));
+          if (next != null) { store.setItem(k, next); n++; }
+        }
+      } catch (e) {}
+    });
+    try {
+      var parts = String(document.cookie || '').split(';');
+      for (var i = 0; i < parts.length; i++) {
+        var eq = parts[i].indexOf('=');
+        if (eq < 0) continue;
+        var name = parts[i].slice(0, eq).trim();
+        if (!name || !EFF_STORE_KEY_RE.test(name)) continue;
+        var val = decodeURIComponent(parts[i].slice(eq + 1).trim());
+        if (!effBlocked(val)) continue;
+        document.cookie = name + '=medium; Path=/; SameSite=Lax';
+        n++;
+      }
+    } catch (e) {}
+    if (n) { try { console.info('[Gen Z] Normalised ' + n + ' saved effort preference(s) to Medium.'); } catch (e) {} }
+  }
+
   function start() {
     // Claude uses the opaque HttpOnly __Host-claude_session cookie (unreadable by JS), so there is
     // no pg_lease to read here — proceed and let /__genz/validate confirm the session server-side.
@@ -990,6 +1136,8 @@
     injectHideStyle();
     runHiding();
     if (CLAUDE) {
+      // Before anything reads a saved preference: normalise any stale blocked level to Medium.
+      try { migrateStoredEfforts(); } catch (e) {}
       buildClaudeWorkspaces(); setTimeout(buildClaudeWorkspaces, 3000);
       fetchUsage(); setInterval(fetchUsage, 30000);
       // Auto-select the default effort on this fresh session, then keep watching for new
