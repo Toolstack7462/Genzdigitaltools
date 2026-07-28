@@ -6,7 +6,7 @@ import {
   KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search, Pin
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
-import { withCsrfRetry, openFromLaunchResponse } from '../../services/launchService';
+import { withCsrfRetry, openFromLaunchResponse, openLaunchWindow, closeLaunchWindow } from '../../services/launchService';
 import { cachedGet } from '../../services/apiCache';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
@@ -168,13 +168,17 @@ const AdminStealthWriter = () => {
   };
 
   const refreshThroughProxy = async (a) => {
+    // Reserved during the click — after the await a new tab is popup-blocked (see launchService).
+    const win = openLaunchWindow();
     try {
       // Same one-time POST bootstrap as a client launch — the capture lease never touches a URL.
       const res = await withCsrfRetry((headers) => stealthAdmin.captureLease(a.id, headers));
-      if (openFromLaunchResponse(res.data)) {
+      if (openFromLaunchResponse(res.data, win)) {
         showSuccess(`Capture tab opened for "${a.label}". Log in, then click "Save session to vault".`);
+      } else {
+        showError('Capture did not return a launch — please try again.');
       }
-    } catch (e) { showError(e.response?.data?.error || 'Failed to start capture'); }
+    } catch (e) { closeLaunchWindow(win); showError(e.response?.data?.error || 'Failed to start capture'); }
   };
 
   return (

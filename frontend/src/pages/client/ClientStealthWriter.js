@@ -5,7 +5,7 @@ import {
   Gauge, ScanSearch, Loader2, RefreshCw, Lock
 } from 'lucide-react';
 import { stealthClient } from '../../services/stealthService';
-import { withCsrfRetry, openFromLaunchResponse } from '../../services/launchService';
+import { withCsrfRetry, openFromLaunchResponse, openLaunchWindow, closeLaunchWindow } from '../../services/launchService';
 import { useToast } from '../../components/Toast';
 
 const fmtLimit = (used, remaining, limit) => {
@@ -62,15 +62,21 @@ const ClientStealthWriter = () => {
   useEffect(() => { load(); }, [load]);
 
   const handleOpen = async () => {
+    // Reserve the tab while the click's user gesture is still active. Opening it after the await
+    // is silently popup-blocked, which makes the button look dead — see launchService.
+    const win = openLaunchWindow();
     try {
       setOpening(true);
       // One-time POST launch code (nothing in the URL), or a legacy gateway URL on the
       // rollback flow — openFromLaunchResponse handles both.
       const res = await withCsrfRetry((headers) => stealthClient.open(headers));
-      if (openFromLaunchResponse(res.data)) {
+      if (openFromLaunchResponse(res.data, win)) {
         load(); // refresh remaining/lease info
+      } else {
+        showError('Unable to open StealthWriter — please try again.');
       }
     } catch (e) {
+      closeLaunchWindow(win);
       showError(e.response?.data?.error || 'Unable to open StealthWriter');
     } finally {
       setOpening(false);
