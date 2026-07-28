@@ -70,30 +70,83 @@ export async function withCsrfRetry(request) {
   }
 }
 
+// ── The popup-blocker problem, and why the tab is opened BEFORE the request ──
+// Browsers only allow a new tab to be opened while a user gesture is still "active". Fetching the
+// launch code is an async round-trip, so by the time the response arrives the gesture is spent and
+// `form.submit()` with target="_blank" — or `window.open` — is silently blocked. The click appears
+// to do nothing, which is exactly what a client experiences as a dead Access button.
+//
+// So the tab is opened SYNCHRONOUSLY inside the click handler, before any await, and the launch is
+// then delivered into that already-open tab. A form whose target names an EXISTING window navigates
+// that window instead of trying to pop a new one, so no popup blocker is involved.
+const LAUNCH_WINDOW_NAME = 'genzToolLaunch';
+
+/**
+ * Reserve the tool tab. MUST be called synchronously from the click handler, before any `await`.
+ * Returns the window handle, or null when the browser blocked it outright (in which case the
+ * caller should tell the user to allow popups rather than fail silently).
+ */
+export function openLaunchWindow() {
+  let win = null;
+  try {
+    win = window.open('', LAUNCH_WINDOW_NAME);
+  } catch (_) { win = null; }
+  if (!win) return null;
+  try {
+    // Sever the opener link while the tab is still same-origin (about:blank). The tool tab must
+    // never hold a handle on the dashboard — that is what `noopener` bought us before, and it must
+    // survive the switch to a pre-opened window.
+    win.opener = null;
+    // A blank tab looks broken. One line of placeholder, replaced the moment the launch lands.
+    win.document.write(
+      '<!doctype html><meta charset="utf-8"><title>Opening…</title>' +
+      '<body style="margin:0;display:flex;align-items:center;justify-content:center;' +
+      'height:100vh;font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
+      'color:#64748b;background:#f8fafc">Opening your tool…</body>'
+    );
+    win.document.close();
+  } catch (_) { /* cosmetic only — never fail a launch over the placeholder */ }
+  return win;
+}
+
+/** Close a reserved tab when the launch never happened, so no stray blank tab is left behind. */
+export function closeLaunchWindow(win) {
+  try { if (win && !win.closed) win.close(); } catch (_) {}
+}
+
 /**
  * Open a tool from a backend open/capture response.
  *
  * Accepts BOTH shapes so a frontend build is never coupled to a particular backend rollout
  * state (and so the `LAUNCH_FLOW=url` rollback needs no frontend redeploy):
  *   • { launch: { url, code, field, method } } → hidden form POST  (current)
- *   • { url }                                  → window.open       (legacy / rollback)
+ *   • { url }                                  → navigation        (legacy / rollback)
  *
+ * @param {object} data     the backend response body
+ * @param {Window} [win]    a tab reserved by openLaunchWindow() during the click. Optional: when
+ *                          omitted the previous behaviour is used unchanged, so existing callers
+ *                          keep working exactly as before.
  * @returns {boolean} whether a launch was actually started
  */
-export function openFromLaunchResponse(data) {
-  if (!data) return false;
+export function openFromLaunchResponse(data, win) {
+  if (!data) { closeLaunchWindow(win); return false; }
 
   const launch = data.launch;
   if (launch && launch.url && launch.code) {
-    submitLaunchForm(launch);
+    submitLaunchForm(launch, win);
     return true;
   }
 
-  // Legacy URL flow — unchanged behaviour, including the noopener hardening.
+  // Legacy URL flow.
   if (data.url) {
+    if (win && !win.closed) {
+      // `replace` so the placeholder does not become a history entry the user can go "back" to.
+      try { win.location.replace(data.url); return true; } catch (_) { /* fall through */ }
+    }
     window.open(data.url, '_blank', 'noopener');
     return true;
   }
+  closeLaunchWindow(win);
   return false;
 }
 
@@ -108,11 +161,14 @@ export function openFromLaunchResponse(data) {
  *    code never lingers in the DOM for an extension or a later script to read.
  *  • No `action` query string, ever: that is the whole point of this module.
  */
-function submitLaunchForm(launch) {
+function submitLaunchForm(launch, win) {
   const form = document.createElement('form');
   form.method = (launch.method || 'POST').toUpperCase() === 'GET' ? 'POST' : 'POST'; // never GET
   form.action = launch.url;
-  form.target = '_blank';
+  // Target the tab reserved during the click when we have one. Naming an EXISTING window makes
+  // this a navigation of that window rather than a popup, so the blocker is never involved. Only
+  // when no tab was reserved do we fall back to '_blank', which is the path that can be blocked.
+  form.target = (win && !win.closed) ? LAUNCH_WINDOW_NAME : '_blank';
   form.rel = 'noopener';
   form.style.display = 'none';
   // Default encoding (application/x-www-form-urlencoded) keeps this a simple request, so the
@@ -134,4 +190,7 @@ function submitLaunchForm(launch) {
   }
 }
 
-export default { getCsrfToken, launchHeaders, withCsrfRetry, openFromLaunchResponse };
+export default {
+  getCsrfToken, launchHeaders, withCsrfRetry,
+  openLaunchWindow, closeLaunchWindow, openFromLaunchResponse,
+};

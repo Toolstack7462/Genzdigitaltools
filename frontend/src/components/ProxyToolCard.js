@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Zap, ShieldCheck, ExternalLink, Lock, AlertTriangle, Loader2, User } from 'lucide-react';
 import { proxyToolsClient } from '../services/proxyToolsService';
-import { withCsrfRetry, openFromLaunchResponse } from '../services/launchService';
+import { withCsrfRetry, openFromLaunchResponse, openLaunchWindow, closeLaunchWindow } from '../services/launchService';
 import { useToast } from './Toast';
 
 /**
@@ -67,14 +67,22 @@ const ProxyToolCard = ({ tool }) => {
   const statusColor = expired ? 'bg-red-100 text-red-700' : (active ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700');
 
   const handleOpen = async () => {
+    // Reserve the tab FIRST, while the click's user gesture is still active. Fetching the launch
+    // code is an async round-trip, and by the time it returns the browser no longer considers a
+    // new tab user-initiated — so opening it afterwards is silently popup-blocked and the button
+    // appears to do nothing. Everything below just navigates this already-open tab.
+    const win = openLaunchWindow();
     try {
       setOpening(true);
       // The response carries either a one-time launch code (POST bootstrap — nothing lands in
       // a URL) or, on the rollback flow, a legacy gateway URL. openFromLaunchResponse handles
       // both, so this build works against either backend state.
       const res = await withCsrfRetry((headers) => proxyToolsClient.open(tool.tool, headers));
-      openFromLaunchResponse(res.data);
+      if (!openFromLaunchResponse(res.data, win)) {
+        showError(`Unable to open ${tool.name} — please try again.`);
+      }
     } catch (e) {
+      closeLaunchWindow(win);   // never strand an "Opening…" tab on a failed launch
       showError(e.response?.data?.error || `Unable to open ${tool.name}`);
     } finally {
       setOpening(false);

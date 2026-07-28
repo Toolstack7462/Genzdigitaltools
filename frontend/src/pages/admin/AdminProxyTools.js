@@ -5,7 +5,7 @@ import {
   Star, ShieldCheck, ShieldOff, Globe, List, CheckCircle2, Search
 } from 'lucide-react';
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
-import { withCsrfRetry, openFromLaunchResponse } from '../../services/launchService';
+import { withCsrfRetry, openFromLaunchResponse, openLaunchWindow, closeLaunchWindow } from '../../services/launchService';
 import { makeLatestGuard } from '../../utils/latestOnly';
 import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
@@ -225,7 +225,15 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   const setStatus = async (id, status) => { try { await proxyToolsAdmin.setAccountStatus(tool, id, status); load(); } catch (e) { showError('Failed to set status'); } };
   // A capture lease is the most privileged lease there is (it can write the account vault), so
   // it goes through the same one-time POST bootstrap as a client launch — never a URL.
-  const captureLease = async (id) => { try { const r = await withCsrfRetry((headers) => proxyToolsAdmin.captureLease(tool, id, headers)); openFromLaunchResponse(r.data); } catch (e) { showError('Failed to start capture'); } };
+  // The tab is reserved BEFORE the await: after an async round-trip the click's user gesture has
+  // expired and opening a tab is silently popup-blocked, which looks exactly like a dead button.
+  const captureLease = async (id) => {
+    const win = openLaunchWindow();
+    try {
+      const r = await withCsrfRetry((headers) => proxyToolsAdmin.captureLease(tool, id, headers));
+      if (!openFromLaunchResponse(r.data, win)) showError('Capture did not return a launch — please try again.');
+    } catch (e) { closeLaunchWindow(win); showError('Failed to start capture'); }
+  };
   const revokeAccountLeases = async (id) => { if (!window.confirm('Revoke all active sessions using this account?')) return; try { const r = await proxyToolsAdmin.revokeAccountLeases(tool, id); showSuccess(`Revoked ${r.data?.revoked || 0}`); load(); } catch (e) { showError('Failed'); } };
   const refreshSessions = async () => { if (!window.confirm(`Clear ALL open ${currentName} sessions? The next launch will use the latest saved cookies.`)) return; try { const r = await proxyToolsAdmin.refreshSessions(tool); showSuccess(`Cleared ${r.data?.revoked || 0} open session(s). Next launch uses the latest cookies.`); load(); } catch (e) { showError('Failed to refresh sessions'); } };
   const deleteAccount = async (id) => { if (!window.confirm('Delete this account? Cookies are wiped and its sessions revoked.')) return; try { await proxyToolsAdmin.deleteAccount(tool, id); showSuccess('Account deleted'); load(); } catch (e) { showError('Failed'); } };
