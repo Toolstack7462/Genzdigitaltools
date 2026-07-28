@@ -23,7 +23,7 @@
  *     socket goes away regardless of whether the gateway destroys the upstream leg, so this
  *     assertion cannot distinguish the two. The teardown it guards is still worth keeping.
  *
- * Ports 18910/18911 (each gateway test file owns its own — a shared port silently breaks the OTHER
+ * Ports 18950/18951 (each gateway test file owns its own — a shared port silently breaks the OTHER
  * file's assertions, not yours).
  */
 const test = require('node:test');
@@ -34,7 +34,7 @@ const path = require('path');
 const { spawn } = require('node:child_process');
 
 const GW = path.join(__dirname, '..');
-const PORT = 18910;
+const PORT = 18950;
 const SECRET = 's'.repeat(48);
 const DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 

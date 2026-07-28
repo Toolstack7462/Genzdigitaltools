@@ -217,12 +217,31 @@ function deviceLabel(req) { return deviceOf(req).mobile ? 'mobile' : 'desktop'; 
 // browser, and it can only clear if the HTTP request agrees with what that browser reports. A
 // phone sending a desktop UA can never clear its own challenge.
 //
-// So the honest per-device identity is the DEFAULT again (this reverts 75341b4's direction).
-// It is also what keeps clearances per-device: nothing about one client's verification is
-// reused for another. `CLAUDE_MOBILE_UPSTREAM=vault` restores the pinned-desktop behaviour if a
-// future capture ever puts a genuinely valid clearance in the vault. DESKTOP IS UNAFFECTED by
-// this constant in either mode — it has always sent, and still sends, the pinned identity.
-const MOBILE_RIDES_VAULT = String(process.env.CLAUDE_MOBILE_UPSTREAM || 'own').toLowerCase() === 'vault';
+// ★ SETTLED 2026-07-29 — the default is 'vault' (mobile presents the SAME pinned upstream identity
+// as desktop). The 'own' experiment is retained only as a kill-switch. Reasons, in order of weight:
+//
+//   1. 'own' mode makes a phone DEPEND ON A CLEARANCE IT CANNOT OBTAIN. Mobile sends its own UA and
+//      stripCfCookies drops the vault's CF cookies, so the only clearance it can use is one its own
+//      browser solved on this origin — and a Cloudflare interactive/managed challenge cannot clear
+//      same-origin through a reverse proxy (live-proved: /api/challenge_redirect 54/54 → 403, never
+//      once cleared). So 'own' leaves mobile with NO usable clearance by construction.
+//   2. It also makes the upstream identity UNSTABLE and device-derived: every phone model presents a
+//      different UA + hint set to Cloudflare from one shared datacenter egress IP, which is a worse
+//      bot signal than one consistent, known browser identity.
+//   3. Riding the vault does NOT copy a clearance between devices or accounts: there is exactly one
+//      authorised vault bundle per Claude account, captured through this gateway from this egress.
+//      Nothing a device solved is ever reused for a different device or client.
+//
+// HONEST LIMIT: the vault bundle currently carries NO cf_clearance at all (live: cf_vault_clearance
+// false on every sampled request). Vault mode therefore gives mobile a STABLE, desktop-identical
+// identity — which is what removes the mobile-only penalty — but it cannot manufacture a clearance
+// that was never captured. Making Claude reliably challenge-free still requires an operator to
+// re-add the account with "Capture via proxy", which mints a clearance for THIS egress IP under
+// THIS pinned UA. No gateway logic substitutes for that, and none here pretends to.
+//
+// DESKTOP IS UNAFFECTED by this constant in either mode — it has always sent, and still sends, the
+// pinned identity. `CLAUDE_MOBILE_UPSTREAM=own` restores the previous per-device behaviour.
+const MOBILE_RIDES_VAULT = String(process.env.CLAUDE_MOBILE_UPSTREAM || 'vault').toLowerCase() !== 'own';
 // Returns { ua, ch } to send upstream. Desktop, and mobile in the default 'vault' mode → the pinned
 // desktop identity (which is what the vault clearance is bound to). Mobile in 'own' mode → the
 // client's own UA + whatever client-hints it actually sent (kept only as a reversible kill-switch).
@@ -546,7 +565,11 @@ function claudeMobileInvariants() {
     { key: 'cfChallengeMode', value: CF_CHALLENGE_MODE, ok: CF_CHALLENGE_MODE === 'passthrough' },
     // A phone must present its OWN identity upstream, so the challenge its own browser is asked to
     // solve can actually clear. Reversed 2026-07-22 — see MOBILE_RIDES_VAULT.
-    { key: 'mobileHonestIdentity', value: !MOBILE_RIDES_VAULT, ok: MOBILE_RIDES_VAULT === false },
+    // Mobile must present the SAME pinned upstream identity as desktop and reuse the authorised
+    // vault bundle. Off ('own') strips the vault's CF cookies and sends a device-derived UA, which
+    // leaves a phone depending on a clearance it cannot obtain through a reverse proxy — the
+    // recurring mobile-only fault. See MOBILE_RIDES_VAULT for the full reasoning.
+    { key: 'mobileRidesVaultClearance', value: MOBILE_RIDES_VAULT, ok: MOBILE_RIDES_VAULT === true },
     { key: 'durableSessionStore', value: SESSION_STORE_WRITABLE, ok: SESSION_STORE_WRITABLE === true },
   ];
 }

@@ -14,7 +14,7 @@
  *   • that Fable 5 remains blocked (the pre-existing policy is not weakened)
  *   • that the reversible kill-switch restores the previous behaviour exactly
  *
- * Port 18915 (each gateway test file owns its own — a shared port silently breaks the OTHER
+ * Port 18960 (each gateway test file owns its own — a shared port silently breaks the OTHER
  * file's assertions, not yours).
  */
 const test = require('node:test');
@@ -122,7 +122,7 @@ test.after(() => { try { upstream.close(); } catch (_) {} try { backend.close();
 
 // ── ENFORCED (default) ──────────────────────────────────────────────────────
 test('ENFORCED: every blocked effort is rewritten to medium before it reaches Claude', async () => {
-  const port = 18915, gw = boot(port, false);
+  const port = 18960, gw = boot(port, false);
   try {
     await waitUp(port);
     for (const ua of [DESKTOP, MOBILE]) {
@@ -142,7 +142,7 @@ test('ENFORCED: every blocked effort is rewritten to medium before it reaches Cl
 });
 
 test('ENFORCED: Low and Medium are accepted and passed through unchanged', async () => {
-  const port = 18916, gw = boot(port, false);
+  const port = 18961, gw = boot(port, false);
   try {
     await waitUp(port);
     const cookie = await session(port);
@@ -155,7 +155,7 @@ test('ENFORCED: Low and Medium are accepted and passed through unchanged', async
 });
 
 test('ENFORCED: the blocked levels are absent from the list the BROWSER receives', async () => {
-  const port = 18917, gw = boot(port, false);
+  const port = 18962, gw = boot(port, false);
   try {
     await waitUp(port);
     const cookie = await session(port);
@@ -178,7 +178,7 @@ test('ENFORCED: the blocked levels are absent from the list the BROWSER receives
 });
 
 test('ENFORCED: Opus and Haiku stay usable — only the EFFORT is capped', async () => {
-  const port = 18918, gw = boot(port, false);
+  const port = 18963, gw = boot(port, false);
   try {
     await waitUp(port);
     const cookie = await session(port);
@@ -193,7 +193,7 @@ test('ENFORCED: Opus and Haiku stay usable — only the EFFORT is capped', async
 });
 
 test('ENFORCED: the overlay is told the allowlist and the exact message', async () => {
-  const port = 18919, gw = boot(port, false);
+  const port = 18964, gw = boot(port, false);
   try {
     await waitUp(port);
     const cookie = await session(port);
@@ -212,7 +212,7 @@ test('ENFORCED: the overlay is told the allowlist and the exact message', async 
 test('ENFORCED: an unrecognised effort vocabulary is left ALONE, never broken', async () => {
   // Rewriting a value we cannot identify could produce a request claude.ai rejects — breaking chat
   // to enforce a preference. Fail-open is the deliberate, correct trade.
-  const port = 18920, gw = boot(port, false);
+  const port = 18965, gw = boot(port, false);
   try {
     await waitUp(port);
     const cookie = await session(port);
@@ -224,7 +224,7 @@ test('ENFORCED: an unrecognised effort vocabulary is left ALONE, never broken', 
 });
 
 test('ENFORCED: a stale default in the environment cannot re-open a blocked level', async () => {
-  const port = 18921;
+  const port = 18966;
   const gw = spawn(process.execPath, ['server.js'], {
     cwd: GW, stdio: ['ignore', 'pipe', 'pipe'],
     env: Object.assign({}, process.env, {
@@ -249,7 +249,7 @@ test('ENFORCED: a stale default in the environment cannot re-open a blocked leve
 
 // ── KILL-SWITCH: the previous behaviour, restored exactly ───────────────────
 test('KILL-SWITCH: CLAUDE_ALLOW_ALL_EFFORTS=1 restores the original behaviour', async () => {
-  const port = 18922, gw = boot(port, true);
+  const port = 18967, gw = boot(port, true);
   try {
     await waitUp(port);
     const cookie = await session(port);

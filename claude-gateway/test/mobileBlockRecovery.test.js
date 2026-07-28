@@ -171,7 +171,7 @@ test('REGRESSION (Cloudflare fix intact): mobile keeps its own honest identity',
   try {
     await waitHealth(PORT);
     const h = JSON.parse((await reqTo(PORT, 'GET', '/__genz/health')).body);
-    assert.strictEqual(h.claudeMobile.mobileHonestIdentity, true, 'the CF-loop fix must remain on');
+    assert.strictEqual(h.claudeMobile.mobileRidesVaultClearance, true, 'the CF-loop fix must remain on');
     assert.strictEqual(h.claudeMobile.mobileReady, true);
   } finally { gw.kill(); }
 });
