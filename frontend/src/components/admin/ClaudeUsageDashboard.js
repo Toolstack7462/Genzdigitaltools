@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Save, ChevronDown, ChevronRight, AlertTriangle, Loader2 } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { RefreshCw, Save, ChevronDown, ChevronRight, AlertTriangle, Loader2, Search, X } from 'lucide-react';
 import { proxyToolsAdmin } from '../../services/proxyToolsService';
 import { useToast } from '../Toast';
 
@@ -54,6 +54,10 @@ const Tag = ({ ok, children }) => (
   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${ok ? 'bg-slate-100 text-slate-500' : 'bg-red-100 text-red-700'}`}>{children}</span>
 );
 
+// How long to wait after the last keystroke before asking the server. Long enough that ordinary
+// typing produces ONE request, short enough to still feel immediate.
+const SEARCH_DEBOUNCE_MS = 400;
+
 const ClaudeUsageDashboard = () => {
   const { showSuccess, showError } = useToast();
   const [rows, setRows] = useState([]);
@@ -68,16 +72,42 @@ const ClaudeUsageDashboard = () => {
   // it can never disturb the limits, and vice versa. Defaults to false (blocked) until loaded.
   const [allowFable5, setAllowFable5] = useState(false);
   const [savingF, setSavingF] = useState(false);
+  // ── Search + pagination (both server-side) ────────────────────────────────
+  // `search` is what the user is typing; `query` is the debounced value actually sent. Keeping
+  // them separate is what makes the field feel instant while issuing one request per pause.
+  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState({ total: 0, totalPages: 1, pageSize: 25 });
+  // Monotonic request id. Debouncing reduces requests but cannot ORDER them: a slow early response
+  // can still land after a fast later one and overwrite the newer results. Only the response whose
+  // id is still the latest is allowed to touch state.
+  const reqIdRef = useRef(0);
 
-  const load = useCallback(async () => {
+  const loadRows = useCallback(async (q, p, { spinner = true } = {}) => {
+    const id = ++reqIdRef.current;
     try {
-      setLoading(true);
-      const [d, g] = await Promise.all([
-        proxyToolsAdmin.usageDashboard('claude'),
-        proxyToolsAdmin.getGlobalConfig('claude'),
-      ]);
+      if (spinner) setLoading(true);
+      const d = await proxyToolsAdmin.usageDashboard('claude', { q, page: p });
+      if (id !== reqIdRef.current) return;            // a newer search has already been issued
       setRows(d.data?.rows || []);
       setGenAt(d.data?.generatedAt || null);
+      setPageInfo({
+        total: d.data?.total ?? 0,
+        totalPages: Math.max(1, d.data?.totalPages ?? 1),
+        pageSize: d.data?.pageSize ?? 25,
+      });
+      // The server clamps a page that no longer exists; mirror it so the pager cannot get stuck.
+      if (d.data?.page && d.data.page !== p) setPage(d.data.page);
+    } catch (e) {
+      if (id !== reqIdRef.current) return;
+      showError(e.response?.data?.error || 'Failed to load usage dashboard');
+    } finally { if (id === reqIdRef.current && spinner) setLoading(false); }
+  }, [showError]);
+
+  const loadGlobals = useCallback(async () => {
+    try {
+      const g = await proxyToolsAdmin.getGlobalConfig('claude');
       const eff = g.data?.global?.effective || {};
       const ov = g.data?.global?.overrides || {};
       setGlobals({ effective: eff, overrides: ov });
@@ -85,11 +115,29 @@ const ClaudeUsageDashboard = () => {
       // Pre-fill the editor with the current OVERRIDE values only (blank = inherit).
       setGForm(Object.fromEntries(GLOBAL_FIELDS.map(([k]) => [k, ov[k] != null ? String(ov[k]) : ''])));
     } catch (e) {
-      showError(e.response?.data?.error || 'Failed to load usage dashboard');
-    } finally { setLoading(false); }
+      showError(e.response?.data?.error || 'Failed to load global limits');
+    }
   }, [showError]);
 
-  useEffect(() => { load(); }, [load]);
+  // Refresh button / post-save: re-read both, keeping the current search and page.
+  const load = useCallback(() => {
+    loadGlobals();
+    loadRows(query, page);
+  }, [loadGlobals, loadRows, query, page]);
+
+  useEffect(() => { loadGlobals(); }, [loadGlobals]);
+
+  // Debounce the typed term, and reset to page 1 in the SAME update — page 3 of the old result set
+  // is meaningless against a new one. Batching the two together means one re-render and therefore
+  // one request, instead of firing for the old page and again for page 1.
+  useEffect(() => {
+    const t = setTimeout(() => { setQuery(search.trim()); setPage(1); }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  useEffect(() => { loadRows(query, page); }, [loadRows, query, page]);
+
+  const clearSearch = () => { setSearch(''); setQuery(''); setPage(1); };
 
   const saveGlobals = async () => {
     try {
@@ -186,11 +234,60 @@ const ClaudeUsageDashboard = () => {
         </div>
       </div>
 
+      {/* Client search — server-side over name, email and assigned account. Stacks full-width on
+          mobile and sits inline from `sm` up, so the table below keeps its own horizontal scroll. */}
+      <div className="ds-card rounded-xl p-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-genz-muted pointer-events-none" size={15} />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by client name, email or account…"
+              aria-label="Search Claude usage by client name, email or account"
+              className="w-full pl-9 pr-9 py-2 text-sm bg-genz-bg border border-genz-border rounded-lg text-genz-navy placeholder:text-genz-muted focus:outline-none focus:border-genz-teal focus:ring-2 focus:ring-genz-teal/20 transition-all"
+              data-testid="usage-search-input"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={clearSearch}
+                aria-label="Clear search"
+                title="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-md text-genz-muted hover:text-genz-navy hover:bg-genz-border/40 transition-colors"
+                data-testid="usage-search-clear"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          {/* Hidden until the first result lands, so it never flashes a misleading "0 clients". */}
+          <p className="text-[11px] text-genz-muted sm:whitespace-nowrap" aria-live="polite">
+            {loading ? '' : query
+              ? `${n(pageInfo.total)} ${pageInfo.total === 1 ? 'match' : 'matches'} for “${query}”`
+              : `${n(pageInfo.total)} ${pageInfo.total === 1 ? 'client' : 'clients'}`}
+          </p>
+        </div>
+      </div>
+
       {/* Per-client usage table */}
       {loading ? (
         <div className="ds-card rounded-xl p-10 text-center text-genz-muted"><Loader2 size={22} className="mx-auto mb-2 animate-spin" />Loading usage…</div>
       ) : rows.length === 0 ? (
-        <div className="ds-card rounded-xl p-10 text-center text-genz-muted">No Claude clients yet.</div>
+        // The empty state must say which of the two situations this is, otherwise a search that
+        // matches nothing reads as "you have no clients".
+        <div className="ds-card rounded-xl p-10 text-center text-genz-muted">
+          {query ? (
+            <>
+              <p className="text-sm">No Claude clients match “<span className="font-semibold text-genz-navy">{query}</span>”.</p>
+              <p className="text-[11px] mt-1">Searches client name, email and assigned account.</p>
+              <button onClick={clearSearch} className="mt-3 inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-genz-border bg-genz-bg text-[12.5px] font-medium text-genz-navy hover:border-genz-teal/50">
+                <X size={13} /> Clear search
+              </button>
+            </>
+          ) : 'No Claude clients yet.'}
+        </div>
       ) : (
         <div className="ds-card rounded-xl overflow-x-auto">
           <table className="ds-table min-w-[880px]">
@@ -206,6 +303,28 @@ const ClaudeUsageDashboard = () => {
           </table>
         </div>
       )}
+
+      {/* Pager — hidden when everything fits on one page, exactly like the other admin tables. */}
+      {!loading && pageInfo.totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page <= 1}
+            className="px-3 py-1.5 text-[12.5px] font-medium rounded-lg border border-genz-border bg-genz-bg text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors"
+          >
+            Previous
+          </button>
+          <span className="text-[12px] text-genz-muted whitespace-nowrap">Page {page} of {pageInfo.totalPages}</span>
+          <button
+            onClick={() => setPage(p => Math.min(pageInfo.totalPages, p + 1))}
+            disabled={page >= pageInfo.totalPages}
+            className="px-3 py-1.5 text-[12.5px] font-medium rounded-lg border border-genz-border bg-genz-bg text-genz-navy disabled:opacity-50 disabled:cursor-not-allowed hover:border-genz-teal/50 transition-colors"
+          >
+            Next
+          </button>
+        </div>
+      )}
+
       <p className="text-[11px] text-genz-muted">Estimated local token usage — a proxy-side estimate, not Anthropic's official token counts.{genAt ? ` Updated ${fmtAt(genAt)}.` : ''}</p>
     </div>
   );

@@ -39,7 +39,17 @@ export const proxyToolsAdmin = {
   quotaConfig: (tool) => api.get(`/admin/proxy-tools/${tool}/quota-config`),
   clientQuota: (tool, id) => api.get(`/admin/proxy-tools/${tool}/clients/${id}/quota`),
   // Claude usage management (claude-only): dashboard, per-client history, editable globals.
-  usageDashboard: (tool) => api.get(`/admin/proxy-tools/${tool}/usage-dashboard`),
+  // `q` searches client name / email / assigned account label (server-side, case-insensitive,
+  // partial). Paginated server-side so the full client list is never sent to the browser.
+  // Signature stays backwards-compatible: usageDashboard('claude') behaves as before, page 1.
+  usageDashboard: (tool, { q = '', page = 1, limit } = {}) => {
+    const p = new URLSearchParams();
+    if (q) p.set('q', q);
+    if (page && page > 1) p.set('page', String(page));
+    if (limit) p.set('limit', String(limit));
+    const qs = p.toString();
+    return api.get(`/admin/proxy-tools/${tool}/usage-dashboard${qs ? `?${qs}` : ''}`);
+  },
   usageHistory: (tool, id, limit = 25) => api.get(`/admin/proxy-tools/${tool}/clients/${id}/usage-history?limit=${limit}`),
   getGlobalConfig: (tool) => api.get(`/admin/proxy-tools/${tool}/global-config`),
   setGlobalConfig: (tool, body) => api.put(`/admin/proxy-tools/${tool}/global-config`, body),

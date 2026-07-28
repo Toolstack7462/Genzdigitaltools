@@ -74,6 +74,11 @@ async function displayAccountFor(pc, accounts) {
 // reflects exactly which account clients will get (default auto_failover).
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 
+// Search + pagination for the Claude usage dashboard (pure; unit-tested separately). Default page
+// size is modest so the browser never receives the whole client list; the caller may override with
+// ?limit=, hard-capped server-side.
+const usageSearch = require('../../utils/proxy/usageSearch');
+
 router.use(requireAuth);
 router.use(requireAdmin);
 
@@ -255,29 +260,53 @@ router.put('/:tool/global-config', validate(schemas.globalConfig), async (req, r
   }
 });
 
-// ─── Usage dashboard — every Claude client's live estimated usage (claude-only) ─
-// One efficient pass: fetch each account's ledger rows once, then compute every client's
-// five-hour + weekly used/remaining/limit-reached from the cached rows. Never exposes cookies,
-// sessions or identity — only labels, integer token estimates and reset times.
+// ─── Usage dashboard — Claude clients' live estimated usage (claude-only) ──────
+// SEARCHABLE + PAGINATED, both server-side. One efficient pass per page: fetch the ledger rows of
+// the accounts on that page once, then compute each client's five-hour + weekly
+// used/remaining/limit-reached from the cached rows. Never exposes cookies, sessions or identity —
+// only labels, integer token estimates and reset times.
 router.get('/:tool/usage-dashboard', async (req, res) => {
   try {
-    if (req.proxyTool !== 'claude') return res.json({ success: true, rows: [], generatedAt: new Date() });
+    if (req.proxyTool !== 'claude') return res.json({ success: true, rows: [], total: 0, page: 1, pageSize: 0, totalPages: 0, q: '', generatedAt: new Date() });
     await claudeSettings.ensureLoaded();
+    // Search + pagination. `q` matches the client NAME, EMAIL or assigned ACCOUNT LABEL,
+    // case-insensitively and on a partial string. Both are resolved server-side so the browser
+    // never receives the full client list.
+    const q = usageSearch.normalizeQuery(req.query.q);
     const [clients, accounts] = await Promise.all([
       ProxyClient.find({ tool: 'claude' }),
       ProxyAccount.find({ tool: 'claude' }),
     ]);
-    // Cache each account's ledger rows once (few accounts).
+    // Resolve each client's identity + display account FIRST. The search spans all three fields,
+    // and the account is a resolved value (active lease → selection) rather than a stored column,
+    // so the match cannot be pushed into the ProxyClient query — it has to be decided here,
+    // before the page is cut. Only the cheap lookups run for every client; the expensive ledger
+    // read and usage maths below run for the CURRENT PAGE ONLY.
+    const entries = [];
+    for (const pc of clients) {
+      const account = await displayAccountFor(pc, accounts);
+      const user = await User.findById(pc.userId).select('fullName email status');
+      entries.push({ pc, account, user });
+    }
+    // Filter → deterministic sort → slice. All three live in utils/proxy/usageSearch.js so they
+    // are unit-tested without a database; see that file for why selection cannot be a DB query.
+    const {
+      entries: pageEntries, total, page: safePage, pageSize, totalPages,
+    } = usageSearch.selectPage(entries, { q, page: req.query.page, pageSize: req.query.limit });
+
+    // Cache the ledger rows for the accounts ON THIS PAGE only. `accountUsed` is an account-wide
+    // total, so each needed account is still read in full — just never for accounts nobody on this
+    // page is served by.
     const Usage = require('../../models/proxy/ClaudeUsage');
+    const needed = new Set(pageEntries.map((e) => e.account && String(e.account._id)).filter(Boolean));
     const rowsByAccount = {};
     for (const a of accounts) {
+      if (!needed.has(String(a._id))) continue;
       try { rowsByAccount[String(a._id)] = await Usage.find({ accountId: String(a._id) }); }
       catch (_) { rowsByAccount[String(a._id)] = null; } // null → not synced
     }
     const rows = [];
-    for (const pc of clients) {
-      const account = await displayAccountFor(pc, accounts);
-      const user = await User.findById(pc.userId).select('fullName email status');
+    for (const { pc, account, user } of pageEntries) {
       const acctRows = account ? rowsByAccount[String(account._id)] : [];
       const synced = acctRows != null;
       const keys = claudeUsage.cycleKeysFor(account, undefined);
@@ -329,7 +358,12 @@ router.get('/:tool/usage-dashboard', async (req, res) => {
         label: claudeQuota.USAGE_LABEL,
       });
     }
-    return res.json({ success: true, rows, generatedAt: new Date(), label: claudeQuota.USAGE_LABEL });
+    // `total` is the count of clients MATCHING the search, which is what the pager and the empty
+    // state need. `q` is echoed back so a late response can be identified and discarded.
+    return res.json({
+      success: true, rows, total, page: safePage, pageSize, totalPages, q,
+      generatedAt: new Date(), label: claudeQuota.USAGE_LABEL,
+    });
   } catch (err) {
     console.error('Proxy usage-dashboard error:', err.message);
     return res.status(500).json({ error: 'Failed to load usage dashboard' });

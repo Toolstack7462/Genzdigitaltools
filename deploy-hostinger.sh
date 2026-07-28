@@ -129,6 +129,8 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/utils/proxy/applySession.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/utils/proxy/verifyAndApply.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
   -T backend/utils/proxy/healthAlerts.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/healthAlerts.js" \
+  -T backend/utils/proxy/usageSearch.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/usageSearch.js" \
+  -T backend/utils/proxy/validationResponse.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/validationResponse.js" \
   -T backend/models/proxy/ProxyClient.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyClient.js" \
   -T backend/models/proxy/ProxyLease.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyLease.js" \
   -T backend/models/proxy/ProxyAccount.js        "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ProxyAccount.js" \
