@@ -1,0 +1,7 @@
+# Secrets and runtime state live only on the server.
+.env
+node_modules/
+tmp/
+*.log
+# Server-side hand-edit history — deliberately NOT tracked; see README provenance.
+server.js.bak-*
