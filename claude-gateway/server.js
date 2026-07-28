@@ -951,8 +951,23 @@ function redactFields(f) {
   }
   return out;
 }
+// Every line is stamped with an ISO-8601 UTC timestamp, as a PREFIX.
+//
+// WHY A PREFIX AND NOT A JSON FIELD: the prefix makes a time window greppable directly on the
+// server — `grep '2026-07-28T22:3' console.log` — without parsing, which is what you actually do
+// at 2am. It also stamps events whose payload is empty or unparseable. The `[proxy-gw:<tool>]`
+// marker and the JSON payload after it are byte-identical to before, so every existing grep and
+// every field-extracting regex keeps working.
+//
+// This exists because a mobile fault could not be told apart from a stale one: the log recorded
+// WHAT happened but never WHEN, so a user's report could not be correlated with a deploy. UTC on
+// purpose — the server runs UTC and the backend log is already ISO-8601 UTC, so the two can be
+// read side by side.
+function logStamp() {
+  try { return new Date().toISOString(); } catch (_) { return '-'; }
+}
 function safeLog(event, fields) {
-  try { console.log(`[proxy-gw:${TOOL_KEY || '?'}] ${event} ${JSON.stringify(redactFields(fields))}`); } catch (_) {}
+  try { console.log(`${logStamp()} [proxy-gw:${TOOL_KEY || '?'}] ${event} ${JSON.stringify(redactFields(fields))}`); } catch (_) {}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2843,7 +2858,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`${TOOL_NAME} proxy gateway listening on :${PORT}`);
+  // Stamped like every safeLog line: a worker's start time is the reference point for deciding
+  // whether a reported fault happened before or after a deploy.
+  console.log(`${logStamp()} ${TOOL_NAME} proxy gateway listening on :${PORT} (instance ${INSTANCE_ID})`);
   console.log(`  tool      -> ${TOOL_KEY}`);
   console.log(`  proxying  -> ${TARGET_ORIGIN}`);
   console.log(`  api base  -> ${API_BASE}`);
