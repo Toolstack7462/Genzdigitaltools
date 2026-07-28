@@ -56,10 +56,28 @@ async function verifyAndApply(account, tool, opts = {}) {
   if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
   else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
   else if (v.result === 'working') { account.session_status = 'working'; if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active'; }
-  else if (v.result === 'unsupported') { account.status = 'blocked'; account.session_status = 'cookies_invalid'; }
-  // 'unknown' (transient network / read-only aged token): never downgrade a live session; only
-  // lift a previously-expired one back to pending so it re-checks. Leaves working as working.
-  else if (v.result === 'unknown') { if (account.session_status === 'session_expired') account.session_status = 'pending_verification'; }
+  // INCONCLUSIVE results — 'unknown' (transient network / read-only aged token) and
+  // 'unsupported' (an anti-bot challenge our datacenter IP cannot legitimately pass). Neither
+  // is evidence about the COOKIES, so neither may downgrade a live session; both only lift a
+  // previously-expired account back to pending so it re-checks. Leaves working as working.
+  //
+  // 'unsupported' used to mean `status='blocked'` + `session_status='cookies_invalid'`, which
+  // was wrong in both halves: verify.js returns it purely on `cf-mitigated: challenge` or a
+  // 403+Cloudflare+HTML response, i.e. a statement about OUR REACHABILITY, never about the
+  // stored cookies. accountSelect skips blocked accounts, so an admin pressing "Verify" on a
+  // healthy account silently removed the tool from every client. Measured from this host on
+  // 2026-07-28, hix and bypassgpt both answer 403/challenge to a datacenter IP, so that was
+  // the NORMAL outcome for them, not an edge case. Claude and ChatGPT escaped it only via
+  // bespoke API verifiers written to never emit 'unsupported' at all — see the header comments
+  // in claudeVerify.js and chatgptVerify.js, which already call the old behaviour wrong. This
+  // fixes the mapping itself, so hix / bypassgpt / grok / ryne are covered too.
+  //
+  // The verdict is still RECORDED in account.verification above, so the operator keeps the
+  // signal and can act on it; only the destructive status change is gone. Confirmed failures
+  // (a sign-in redirect, a missing session cookie) still downgrade exactly as before.
+  else if (v.result === 'unknown' || v.result === 'unsupported') {
+    if (account.session_status === 'session_expired') account.session_status = 'pending_verification';
+  }
 
   // forceLive success ROTATED the tokens -> persist them so the account stays live. readOnly never
   // sets refreshedSession, so this is a no-op for live-agent tools (no rotation, no competition).
