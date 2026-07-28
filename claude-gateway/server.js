@@ -2873,7 +2873,11 @@ server.listen(PORT, () => {
       for (const i of bad) console.warn(`      ${i.key} = ${JSON.stringify(i.value)} (expected the mobile-safe value)`);
       console.warn('      See /__genz/health .claudeMobile and claude-gateway/README.md before granting mobile clients.');
     } else {
-      console.log('  mobile    -> OK (cf passthrough + honest per-device identity + durable session store)');
+      // Describe the mode that is ACTUALLY active. This line used to say "honest per-device
+      // identity" unconditionally, which stayed on the screen after the default flipped to vault —
+      // a boot banner that misreports the live mode is worse than none, given how many rounds of
+      // mobile debugging have turned on exactly this question.
+      console.log(`  mobile    -> OK (cf passthrough + ${MOBILE_RIDES_VAULT ? 'pinned identity + vault clearance (same as desktop)' : 'per-device identity [own kill-switch]'} + durable session store)`);
     }
   }
 });
