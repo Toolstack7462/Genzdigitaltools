@@ -71,7 +71,7 @@ const ProxyToolCard = ({ tool }) => {
     // code is an async round-trip, and by the time it returns the browser no longer considers a
     // new tab user-initiated — so opening it afterwards is silently popup-blocked and the button
     // appears to do nothing. Everything below just navigates this already-open tab.
-    const win = openLaunchWindow();
+    const win = openLaunchWindow(tool.name);
     try {
       setOpening(true);
       // The response carries either a one-time launch code (POST bootstrap — nothing lands in

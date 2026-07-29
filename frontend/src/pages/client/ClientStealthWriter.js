@@ -64,7 +64,7 @@ const ClientStealthWriter = () => {
   const handleOpen = async () => {
     // Reserve the tab while the click's user gesture is still active. Opening it after the await
     // is silently popup-blocked, which makes the button look dead — see launchService.
-    const win = openLaunchWindow();
+    const win = openLaunchWindow('StealthWriter');
     try {
       setOpening(true);
       // One-time POST launch code (nothing in the URL), or a legacy gateway URL on the

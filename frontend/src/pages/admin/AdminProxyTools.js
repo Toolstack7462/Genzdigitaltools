@@ -228,7 +228,7 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   // The tab is reserved BEFORE the await: after an async round-trip the click's user gesture has
   // expired and opening a tab is silently popup-blocked, which looks exactly like a dead button.
   const captureLease = async (id) => {
-    const win = openLaunchWindow();
+    const win = openLaunchWindow('the capture session');
     try {
       const r = await withCsrfRetry((headers) => proxyToolsAdmin.captureLease(tool, id, headers));
       if (!openFromLaunchResponse(r.data, win)) showError('Capture did not return a launch — please try again.');

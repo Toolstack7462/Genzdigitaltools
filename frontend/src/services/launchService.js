@@ -81,12 +81,61 @@ export async function withCsrfRetry(request) {
 // that window instead of trying to pop a new one, so no popup blocker is involved.
 const LAUNCH_WINDOW_NAME = 'genzToolLaunch';
 
+/** Minimal HTML escape — the tool name is shown as text in the reserved tab. */
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
+}
+
+/**
+ * The holding page shown in the reserved tab until the tool loads.
+ *
+ * A reserved tab is unavoidably visible for as long as the launch takes — fetching the one-time
+ * code, redeeming it server-to-server, then the gateway's own upstream fetch. Leaving that as
+ * `about:blank` (or a bare line of grey text) reads as a broken white page, which is exactly the
+ * complaint this replaces. It is branded, dark, and says which tool is opening, so the wait looks
+ * deliberate instead of broken.
+ *
+ * Entirely self-contained: no external CSS, font, image or script — the tab starts as about:blank
+ * and a blocked or slow asset would recreate the very blank page this exists to prevent.
+ */
+function holdingPage(toolName) {
+  const label = esc(toolName || 'your tool');
+  return '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Opening ' + label + '…</title><style>' +
+    '*{box-sizing:border-box}html,body{height:100%}' +
+    'body{margin:0;display:flex;align-items:center;justify-content:center;padding:24px;' +
+    'font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;' +
+    'color:#eaf2fb;background:#061528;background:radial-gradient(1200px 600px at 50% -10%,#0a2440 0%,#061528 60%)}' +
+    '.w{text-align:center;max-width:340px}' +
+    '.r{width:44px;height:44px;margin:0 auto 20px;border-radius:50%;' +
+    'border:3px solid rgba(255,255,255,.14);border-top-color:#06b6d4;animation:s .9s linear infinite}' +
+    '@keyframes s{to{transform:rotate(360deg)}}' +
+    'h1{margin:0 0 8px;font-size:17px;font-weight:600;letter-spacing:.1px}' +
+    'p{margin:0;font-size:13px;line-height:1.5;color:#9fb6cf}' +
+    '.b{margin-top:26px;font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:#5b7a99}' +
+    '#slow{display:none;margin-top:16px;font-size:12.5px;color:#f6c177}' +
+    '@media (prefers-reduced-motion:reduce){.r{animation:none;border-top-color:rgba(255,255,255,.5)}}' +
+    '</style></head><body><div class="w">' +
+    '<div class="r"></div>' +
+    '<h1>Opening ' + label + '</h1>' +
+    '<p>Setting up your secure session. This only takes a moment.</p>' +
+    '<p id="slow">Taking longer than usual. You can close this tab and try again.</p>' +
+    '<div class="b">Gen Z Digital Store</div>' +
+    '</div><script>setTimeout(function(){var e=document.getElementById("slow");if(e)e.style.display="block";},20000)<\/script>' +
+    '</body></html>';
+}
+
 /**
  * Reserve the tool tab. MUST be called synchronously from the click handler, before any `await`.
  * Returns the window handle, or null when the browser blocked it outright (in which case the
  * caller should tell the user to allow popups rather than fail silently).
+ *
+ * @param {string} [toolName] shown on the holding page, e.g. "Claude AI"
  */
-export function openLaunchWindow() {
+export function openLaunchWindow(toolName) {
   let win = null;
   try {
     win = window.open('', LAUNCH_WINDOW_NAME);
@@ -97,15 +146,9 @@ export function openLaunchWindow() {
     // never hold a handle on the dashboard — that is what `noopener` bought us before, and it must
     // survive the switch to a pre-opened window.
     win.opener = null;
-    // A blank tab looks broken. One line of placeholder, replaced the moment the launch lands.
-    win.document.write(
-      '<!doctype html><meta charset="utf-8"><title>Opening…</title>' +
-      '<body style="margin:0;display:flex;align-items:center;justify-content:center;' +
-      'height:100vh;font:15px system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
-      'color:#64748b;background:#f8fafc">Opening your tool…</body>'
-    );
+    win.document.write(holdingPage(toolName));
     win.document.close();
-  } catch (_) { /* cosmetic only — never fail a launch over the placeholder */ }
+  } catch (_) { /* cosmetic only — never fail a launch over the holding page */ }
   return win;
 }
 

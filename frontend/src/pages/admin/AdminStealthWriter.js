@@ -169,7 +169,7 @@ const AdminStealthWriter = () => {
 
   const refreshThroughProxy = async (a) => {
     // Reserved during the click — after the await a new tab is popup-blocked (see launchService).
-    const win = openLaunchWindow();
+    const win = openLaunchWindow('StealthWriter');
     try {
       // Same one-time POST bootstrap as a client launch — the capture lease never touches a URL.
       const res = await withCsrfRetry((headers) => stealthAdmin.captureLease(a.id, headers));
