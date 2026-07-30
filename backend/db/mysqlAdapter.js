@@ -38,6 +38,7 @@ const tableNames = {
   ExtensionRelease: 'extension_releases',
   DeviceProfile: 'device_profiles',
   EmailVerification: 'email_verifications',
+  EmailOutbox: 'email_outbox',
   Reminder: 'reminders',
   Announcement: 'announcements',
   ClientPresence: 'client_presence',

@@ -23,6 +23,7 @@ const { authLimiter } = require('../middleware/rateLimiter');
 const { normalizeEmail, emailMatch } = require('../utils/signupPolicy');
 const { completeSignup } = require('../utils/completeSignup');
 const { sendAfterResponse } = require('../utils/deferredSend');
+const { withOutbox, stats: outboxStats } = require('../utils/emailOutbox');
 const {
   isEmailEnabled,
   diagnostics: emailDiagnostics,
@@ -142,9 +143,12 @@ router.post('/resend-verification', authLimiter, normalizeAuthInputs, async (req
       const ip = getClientIp(req);
       res.json({ success: true, message: 'A new verification code is on its way.' });
       sendAfterResponse(res, 'resend-verification', async () => {
-        const r = await sendVerificationEmail(email, issued.code, { deferred: true });
+        const { result: r } = await withOutbox(
+          { type: 'signup_otp', recipient: email, refId: email },
+          () => sendVerificationEmail(email, issued.code, { deferred: true }),
+        );
         if (r.error || r.skipped) {
-          console.error(`[resend] result=failed code=${r.code || 'UNKNOWN'} note=cooldown-not-consumed`);
+          console.error(`[resend] result=failed code=${r.code || 'UNKNOWN'} note=cooldown-not-consumed outbox=pending-will-retry`);
           return;
         }
         await EmailVerification.markSignupSent(email);
@@ -251,6 +255,9 @@ router.get('/email-health', requireAuth, requireAdmin, async (req, res) => {
     });
   }
   const probe = await verifyProvider();
+  // Delivery backlog: the signal that tells you mail is silently piling up. `abandoned > 0`
+  // or a large `oldestPendingAgeMs` means real users are not receiving email right now.
+  const delivery = await outboxStats();
   // 200 when the provider is genuinely reachable AND the sending domain is usable;
   // 503 otherwise, so an uptime check can key on the status alone.
   return res.status(probe.ok ? 200 : 503).json({
@@ -264,6 +271,7 @@ router.get('/email-health', requireAuth, requireAdmin, async (req, res) => {
     domains: probe.domains || [],
     error: probe.ok ? null : (probe.adminMessage || 'The email provider check failed.'),
     config,
+    delivery,
   });
 });
 

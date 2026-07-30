@@ -28,6 +28,7 @@ const proxyTools = require('../../utils/proxy/tools');
 const crypto = require('crypto');
 const { withLock } = require('../../utils/keyedLock');
 const { sendAfterResponse } = require('../../utils/deferredSend');
+const { withOutbox } = require('../../utils/emailOutbox');
 
 const RECIPIENT_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // Two email reminders to the same client inside this window are treated as one
@@ -441,9 +442,16 @@ router.post('/:clientId/remind', async (req, res) => {
       const dup = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
       if (dup) { console.log(`[renewal-email] stage=deduped cid=${cid}`); return; }
 
-      // deferred: off the request path, so it gets the long budget rather than the 2.5s
-      // request cap that was silently truncating these sends.
-      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer, deferred: true });
+      // Recorded in the outbox BEFORE the provider is called. The payload carries only
+      // non-secret display data, which is all a retry needs to rebuild this message.
+      const { result: r } = await withOutbox(
+        {
+          type: 'renewal_reminder', recipient: client.email, refId: String(client._id),
+          correlationId: cid,
+          payload: { clientName: client.fullName, tools, offer },
+        },
+        () => sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer, deferred: true }),
+      );
       if (!r || r.error || r.skipped) {
         const code = (r && r.code) || EMAIL_CODES.UNKNOWN;
         console.error(`[renewal-email] stage=failed cid=${cid} code=${code} admin="${adminMessageFor(code)}" detail=${(r && r.error) || 'no response'} note=not-recorded-admin-can-retry`);

@@ -15,7 +15,16 @@ set -euo pipefail
 HOST=147.79.103.253
 PORT=65002
 USER=u171982351
-API_ROOT="/home/${USER}/domains/api.genzdigitalstore.com/nodejs"
+# ── WHERE THE BACKEND ACTUALLY RUNS ──────────────────────────────────────────
+# NOT `nodejs/`. Passenger serves `.builds/current/nodejs`, per the live
+# `public_html/.htaccess`:
+#     PassengerAppRoot /home/u171982351/domains/api.genzdigitalstore.com/.builds/current/nodejs
+# The top-level `nodejs/` directory still exists but is a STALE COPY that nothing reads —
+# verified 2026-07-30, when its utils/email.js was four days older than the code the API was
+# serving. Uploading there is a SILENT NO-OP: the deploy reports success, every file lands,
+# and production keeps running the old build. Override with DEPLOY_API_ROOT if the host's
+# release layout changes again.
+API_ROOT="${DEPLOY_API_ROOT:-/home/${USER}/domains/api.genzdigitalstore.com/.builds/current/nodejs}"
 MAIN_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html"
 APP_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html/app"
 BUILD_DIR="frontend/build"
@@ -91,6 +100,10 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
   -T backend/utils/email.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/email.js" \
+  -T backend/utils/emailOutbox.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/emailOutbox.js" \
+  -T backend/utils/emailOutboxSweeper.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/emailOutboxSweeper.js" \
+  -T backend/utils/deferredSend.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/deferredSend.js" \
+  -T backend/models/EmailOutbox.js               "sftp://${HOST}:${PORT}${API_ROOT}/models/EmailOutbox.js" \
   -T backend/models/EmailVerification.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/EmailVerification.js" \
   -T backend/routes/authEmail.js              "sftp://${HOST}:${PORT}${API_ROOT}/routes/authEmail.js" \
   -T backend/routes/public.js                 "sftp://${HOST}:${PORT}${API_ROOT}/routes/public.js" \

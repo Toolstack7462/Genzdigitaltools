@@ -12,7 +12,10 @@ set -uo pipefail
 HOST="${DEPLOY_HOST:-147.79.103.253}"
 PORT="${DEPLOY_PORT:-65002}"
 SUSER="${DEPLOY_USER:-u171982351}"
-API_ROOT="${DEPLOY_API_ROOT:-/home/${SUSER}/domains/api.genzdigitalstore.com/nodejs}"
+# Passenger serves `.builds/current/nodejs` (see PassengerAppRoot in the live
+# public_html/.htaccess). `nodejs/` is a stale copy nothing reads — uploading there is a
+# silent no-op that looks like a successful deploy. Verified 2026-07-30.
+API_ROOT="${DEPLOY_API_ROOT:-/home/${SUSER}/domains/api.genzdigitalstore.com/.builds/current/nodejs}"
 API_BASE="${DEPLOY_API_BASE:-https://api.genzdigitalstore.com}"
 
 [[ -z "${SFTP_PASS:-}" ]] && { echo "FATAL: SFTP_PASS is not set"; return 1 2>/dev/null || exit 1; }

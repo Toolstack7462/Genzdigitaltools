@@ -11,6 +11,7 @@ const bcrypt = require('bcryptjs');
 const launchCode = require('./utils/launchCode');
 const csrfMw = require('./middleware/csrf');
 const emailCfg = require('./utils/email');
+const emailSweeper = require('./utils/emailOutboxSweeper');
 
 // Load environment variables FIRST
 dotenv.config({ path: path.join(__dirname, '.env') });
@@ -224,6 +225,10 @@ async function ensureIndexes() {
   try {
     await mysqlAdapter.ensureTables();
     console.log('✅ MySQL/MariaDB tables ensured.');
+    // Only once the tables exist can the outbox be read. Starting it here (rather than at
+    // module load) means the sweeper can never race table creation on a cold boot.
+    try { emailSweeper.start(); }
+    catch (e) { console.warn('⚠️  Email outbox sweeper failed to start:', e.message); }
   } catch (err) {
     console.warn('⚠️  MySQL table/index warning:', err.message);
   }

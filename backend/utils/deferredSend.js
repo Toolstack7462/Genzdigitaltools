@@ -35,17 +35,38 @@
  * @param {string} label                       short tag for logs (never user data)
  * @param {() => Promise<any>} task            the send; must handle its own outcome logging
  */
+/**
+ * How long a deferred task may run before we declare it stuck. Generous: it only has to be
+ * longer than the mailer's own hard deadline, because anything slower than that is not
+ * "still working", it is lost.
+ */
+const WATCHDOG_MS = Number(process.env.DEFERRED_WATCHDOG_MS) || 90 * 1000;
+
 function sendAfterResponse(res, label, task) {
   let started = false;
   const run = () => {
     if (started) return;          // 'finish' and 'close' both fire — run exactly once
     started = true;
+
+    // WATCHDOG. On 2026-07-30 this task produced NO outcome line at all — neither the success
+    // nor the failure branch ran — because the provider call never settled. The send was lost
+    // in total silence, which is precisely why the outage went unnoticed for hours and looked
+    // identical to "nobody signed up". A floating promise that never settles logs nothing by
+    // definition, so the only way to see it is to time it from the outside.
+    let settled = false;
+    const watchdog = setTimeout(() => {
+      if (settled) return;
+      console.error(`[deferred-send] STUCK ${label} — no outcome after ${WATCHDOG_MS}ms. The task never settled; the email was NOT confirmed sent. If it was enqueued in the outbox it stays pending and will be retried.`);
+    }, WATCHDOG_MS);
+    if (typeof watchdog.unref === 'function') watchdog.unref();
+
     Promise.resolve()
       .then(task)
       .catch((err) => {
         // A throw here can never reach the client, so it must never be silent either.
         console.error(`[deferred-send] ${label} threw after response: ${err && err.message}`);
-      });
+      })
+      .finally(() => { settled = true; clearTimeout(watchdog); });
   };
 
   // Already flushed (e.g. a synchronous res.json above) — start now.

@@ -179,6 +179,72 @@ function adminMessageFor(code) {
 }
 
 /**
+ * Run an outbound provider call under a HARD wall-clock deadline.
+ *
+ * WHY A RACE AND NOT JUST AbortController (proven in production 2026-07-30).
+ * The mailer already armed `controller.abort()` on a timer. It was not enough. During the
+ * outage the deferred signup task produced NO log line at all — not the success line, not
+ * the failure line — across every attempt, while the process itself was healthy and logging
+ * ~869 other lines in the same window. The only shape that fits is a `fetch` promise that
+ * NEVER SETTLED: the abort signal was raised but the promise neither resolved nor rejected,
+ * so the awaiting code sat forever and the send vanished silently. Across 1.36 MB of history
+ * there is not a single EMAIL_TIMEOUT, while healthy sends log emailMs=173-497ms — so the
+ * cap was never the thing truncating mail; the hang was.
+ *
+ * `Promise.race` fixes that failure directly: settlement no longer depends on the underlying
+ * socket ever cooperating. The timer is an ordinary event-loop timer, and the event loop was
+ * demonstrably alive throughout, so this deadline WOULD have fired. The abort is still armed
+ * as well — it frees the socket when it works — but correctness no longer rests on it.
+ *
+ * The deadline is deliberately a little above the abort so a normal abort still wins and
+ * reports the more precise cause; the race only takes over when the abort is ignored.
+ */
+const HARD_DEADLINE_GRACE_MS = 750;
+
+function withHardDeadline(timeoutMs, deferred, task) {
+  const controller = new AbortController();
+  const abortTimer = setTimeout(() => {
+    try { controller.abort(); } catch (_) { /* noop */ }
+  }, timeoutMs);
+
+  let hardTimer;
+  const deadline = new Promise((resolve) => {
+    hardTimer = setTimeout(() => {
+      // The provider call is still outstanding and may yet complete. We deliberately do NOT
+      // report it as accepted — an unconfirmed send must never be reported as sent — and we
+      // do not block on it either. The caller gets a structured failure and a usable retry.
+      console.error(`[email] HARD DEADLINE hit after ${timeoutMs + HARD_DEADLINE_GRACE_MS}ms deferred=${deferred} — the provider call never settled; abandoning it. This is the silent-hang failure mode, now surfaced instead of lost.`);
+      resolve({
+        error: 'Email service did not respond',
+        code: EMAIL_CODES.TIMEOUT,
+        adminMessage: adminMessageFor(EMAIL_CODES.TIMEOUT),
+        hardDeadline: true,
+      });
+    }, timeoutMs + HARD_DEADLINE_GRACE_MS);
+  });
+
+  const attempt = (async () => {
+    try {
+      return await task(controller);
+    } catch (err) {
+      const aborted = err && err.name === 'AbortError';
+      const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.PROVIDER_UNAVAILABLE;
+      console.error(`[email] Failed to send email code=${code} deferred=${deferred}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
+      return {
+        error: aborted ? 'Email service timed out' : 'Failed to send email',
+        code,
+        adminMessage: adminMessageFor(code),
+      };
+    }
+  })();
+
+  return Promise.race([attempt, deadline]).finally(() => {
+    clearTimeout(abortTimer);
+    clearTimeout(hardTimer);
+  });
+}
+
+/**
  * Low-level send. Best-effort: returns { id, messageId } on success,
  * { skipped: true, code } when email is not configured, or
  * { error, code, adminMessage, status, domainNotVerified } on failure.
@@ -227,9 +293,7 @@ async function sendEmail({ to, subject, html, text, deferred = false }) {
     const varName = deferred ? 'EMAIL_DEFERRED_TIMEOUT_MS' : 'EMAIL_TIMEOUT_MS';
     console.warn(`[email] ${varName}=${requested}ms exceeds the ${ceiling}ms ceiling and was clamped.`);
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
+  return withHardDeadline(timeoutMs, deferred, async (controller) => {
     const resp = await fetch(RESEND_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -288,19 +352,7 @@ async function sendEmail({ to, subject, html, text, deferred = false }) {
     // messageId is the provider's own id for this send — the only reliable proof
     // of acceptance, and what we persist for correlation/audit.
     return { id: data.id, messageId: data.id || null };
-  } catch (err) {
-    const aborted = err && err.name === 'AbortError';
-    const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.PROVIDER_UNAVAILABLE;
-    console.error(`[email] Failed to send email code=${code} deferred=${deferred}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
-    return {
-      error: aborted ? 'Email service timed out' : 'Failed to send email',
-      code,
-      adminMessage: adminMessageFor(code),
-    };
-  } finally {
-    // Single clear point, covering the header wait AND the body read on every path.
-    clearTimeout(timer);
-  }
+  });
 }
 
 /**

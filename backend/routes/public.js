@@ -7,6 +7,7 @@ const User = require('../models/User');
 const EmailVerification = require('../models/EmailVerification');
 const { sendVerificationEmail, isEmailEnabled } = require('../utils/email');
 const { sendAfterResponse } = require('../utils/deferredSend');
+const { withOutbox } = require('../utils/emailOutbox');
 const { normalizeAuthInputs } = require('../middleware/normalize');
 const {
   normalizeEmail, emailMatch, isValidEmail, classifyExisting, RESEND_COOLDOWN_MS,
@@ -150,11 +151,15 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
     });
 
     sendAfterResponse(res, 'signup-verification', async () => {
-      // deferred: this send is already off the request path, so it takes the long budget.
-      // With the request budget it was aborted at 2.5s and the mail was lost silently.
-      const r = await sendVerificationEmail(email, issued.code, { deferred: true });
+      // Recorded in the outbox BEFORE the provider is called, so a send that never completes
+      // is retried by the sweeper instead of vanishing. The retry re-issues a fresh code
+      // rather than replaying this one — no OTP is ever stored outside its hashed record.
+      const { result: r } = await withOutbox(
+        { type: 'signup_otp', recipient: email, refId: email, correlationId: rid },
+        () => sendVerificationEmail(email, issued.code, { deferred: true }),
+      );
       if (r.error || r.skipped) {
-        console.error(`[signup] stage=email result=failed rid=${rid} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te} note=cooldown-not-consumed-user-can-resend`);
+        console.error(`[signup] stage=email result=failed rid=${rid} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te} note=cooldown-not-consumed-user-can-resend outbox=pending-will-retry`);
         return;
       }
       await EmailVerification.markSignupSent(email);
