@@ -141,6 +141,12 @@ const AdminRenewals = () => {
     try {
       const res = await api.post(`/admin/renewals/${c.clientId}/remind`, { channel: 'email', offer: getOffer(c), stage: c.suggestedStage });
       if (res.data?.deduped) showWarning(res.data.message || 'A renewal email was just sent to this client — not sending a duplicate.');
+      // A 202 means QUEUED, not delivered — the provider has not accepted it yet. Claiming
+      // "Renewal email sent" here is what made a total delivery outage look like success:
+      // the toast asserted delivery the server had never confirmed. Say what is actually
+      // true and point at the field that does confirm it ("Last reminded", which only
+      // advances on provider acceptance).
+      else if (res.data?.queued) showInfo(res.data.message || 'Sending the renewal email now — "Last reminded" updates once the provider accepts it.');
       else if (res.data?.success) showSuccess(`Renewal email sent to ${c.fullName || c.email}`);
       else if (res.data?.emailEnabled === false) showWarning('Email is not configured on the server. Use WhatsApp instead.');
       else showError(res.data?.error || 'Could not send the email.');
@@ -413,6 +419,11 @@ const AdminRenewals = () => {
               const followBusy = !!busy[`fu_${c.clientId}`];
               const lastAt = fu?.lastFollowupAt || c.lastReminder?.at;
               const lastChannel = fu?.lastChannel || c.lastReminder?.channel;
+              // A failed send is only "current" while it is the newest event for this client;
+              // once a later reminder succeeds it stops being actionable and must disappear.
+              const lastFailure = c.lastFailure
+                && (!c.lastReminder?.at || new Date(c.lastFailure.at) > new Date(c.lastReminder.at))
+                ? c.lastFailure : null;
               return (
               <Fragment key={c.clientId}>
               {showOldDivider && (
@@ -477,6 +488,13 @@ const AdminRenewals = () => {
                         Last reminder: {fmtExact(lastAt)}{lastChannel ? ` · ${lastChannel}` : ''} <span className="text-genz-muted/60">({fmtAgo(lastAt)})</span>
                         {fu?.lastStage && STAGE_META[fu.lastStage] ? ` · ${STAGE_META[fu.lastStage].label}` : ''}
                         {fu?.offer && fu.offer !== 'none' ? ` · ${offerLabel(fu.offer)} offered` : ''}
+                      </p>
+                    )}
+                    {lastFailure && (
+                      <p className="text-[11px] text-red-600 font-medium mt-1"
+                         title={`${lastFailure.message || 'The provider did not accept this email.'} (${lastFailure.code || 'unknown'})`}>
+                        Not delivered — last attempt failed {fmtAgo(lastFailure.at)}
+                        {lastFailure.code ? ` · ${lastFailure.code}` : ''}. Nothing was sent; retry.
                       </p>
                     )}
                     {isSnoozed && <p className="text-[11px] text-slate-500 mt-0.5">Snoozed until {new Date(fu.snoozeUntil).toLocaleDateString()}</p>}

@@ -14,27 +14,58 @@
  */
 
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
+const RESEND_DOMAINS_ENDPOINT = 'https://api.resend.com/domains';
 // One-shot guard so a clamped EMAIL_TIMEOUT_MS is reported once at first send, not per email.
 let warnedTimeoutClamp = false;
 
-// See the long note at the call site for why there is a ceiling at all. Module scope so
-// /api/crm/health can report the EFFECTIVE value — without that, a stale EMAIL_TIMEOUT_MS in
-// the server env or a deploy that has not landed is invisible from outside while signup fails.
+/**
+ * TWO TIMEOUT BUDGETS, because there are two genuinely different situations.
+ *
+ * REQUEST budget (2.5s, ceiling 3s). A send that an HTTP request is WAITING ON must fail
+ * inside the web server's worker-kill window, or LiteSpeed kills the worker and serves its
+ * own CORS-less 503 instead of our structured error. Measured kills: 3.1s, 5.2s, 5.4s. That
+ * is why this cap is aggressive and why it has a hard ceiling.
+ *
+ * DEFERRED budget (20s, ceiling 60s). Since sends were moved OFF the request path
+ * (utils/deferredSend.js), nothing is waiting on them — there is no worker to kill and no
+ * 503 to avoid. Applying the request cap to those sends is therefore not protection, it is
+ * pure truncation: a healthy send takes ~1.1s, but a merely SLOW one is aborted at 2.5s and
+ * the mail is silently lost while the caller has already been told "we're sending". The
+ * budget a deferred send needs is "long enough to actually finish", not "short enough to
+ * beat a deadline that no longer applies".
+ *
+ * Module scope so /api/crm/health can report BOTH effective values — without that, a stale
+ * env value or an un-landed deploy is invisible from outside while mail quietly fails.
+ */
 const EMAIL_TIMEOUT_CEILING_MS = 3000;
 const EMAIL_TIMEOUT_DEFAULT_MS = 2500;
-function resolveTimeoutMs() {
-  const requested = Number(process.env.EMAIL_TIMEOUT_MS) || EMAIL_TIMEOUT_DEFAULT_MS;
-  return { requested, effective: Math.max(500, Math.min(EMAIL_TIMEOUT_CEILING_MS, requested)) };
+const DEFERRED_TIMEOUT_CEILING_MS = 60000;
+const DEFERRED_TIMEOUT_DEFAULT_MS = 20000;
+
+function resolveTimeoutMs({ deferred = false } = {}) {
+  const envRaw = deferred ? process.env.EMAIL_DEFERRED_TIMEOUT_MS : process.env.EMAIL_TIMEOUT_MS;
+  const fallback = deferred ? DEFERRED_TIMEOUT_DEFAULT_MS : EMAIL_TIMEOUT_DEFAULT_MS;
+  const ceiling = deferred ? DEFERRED_TIMEOUT_CEILING_MS : EMAIL_TIMEOUT_CEILING_MS;
+  const requested = Number(envRaw) || fallback;
+  return { requested, effective: Math.max(500, Math.min(ceiling, requested)), ceiling, deferred };
 }
+
 /** Secret-free view of the mailer's effective configuration, for /api/crm/health. */
 function diagnostics() {
   const t = resolveTimeoutMs();
+  const d = resolveTimeoutMs({ deferred: true });
   return {
     enabled: isEmailEnabled(),
+    // Unchanged field names: existing deploy-verification greps key on these.
     effectiveTimeoutMs: t.effective,
     envTimeoutMs: process.env.EMAIL_TIMEOUT_MS ? t.requested : null,
     ceilingMs: EMAIL_TIMEOUT_CEILING_MS,
     clamped: t.requested > EMAIL_TIMEOUT_CEILING_MS,
+    // The budget that actually governs signup/renewal mail, which is sent off-request.
+    deferredTimeoutMs: d.effective,
+    deferredEnvTimeoutMs: process.env.EMAIL_DEFERRED_TIMEOUT_MS ? d.requested : null,
+    deferredCeilingMs: DEFERRED_TIMEOUT_CEILING_MS,
+    deferredClamped: d.requested > DEFERRED_TIMEOUT_CEILING_MS,
   };
 }
 
@@ -76,33 +107,54 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * so the codes remain meaningful if the provider is ever swapped.
  */
 const EMAIL_CODES = {
-  NOT_CONFIGURED: 'EMAIL_NOT_CONFIGURED',
+  CONFIG_MISSING: 'EMAIL_CONFIG_MISSING',
   INVALID_RECIPIENT: 'EMAIL_INVALID_RECIPIENT',
   TEMPLATE_ERROR: 'TEMPLATE_ERROR',
-  AUTH_FAILED: 'SMTP_AUTH_FAILED',
-  CONNECTION_FAILED: 'SMTP_CONNECTION_FAILED',
+  AUTH_FAILED: 'EMAIL_AUTH_FAILED',
+  DOMAIN_UNVERIFIED: 'EMAIL_DOMAIN_UNVERIFIED',
   REJECTED: 'EMAIL_REJECTED',
+  SUPPRESSED: 'EMAIL_SUPPRESSED',
   RATE_LIMITED: 'EMAIL_RATE_LIMITED',
   TIMEOUT: 'EMAIL_TIMEOUT',
+  PROVIDER_UNAVAILABLE: 'EMAIL_PROVIDER_UNAVAILABLE',
   UNKNOWN: 'EMAIL_SEND_FAILED',
 };
+// Back-compat aliases. Older call sites and log greps use these NAMES; they now resolve to
+// the more precise values above. Kept so a rename can never silently break a caller.
+EMAIL_CODES.NOT_CONFIGURED = EMAIL_CODES.CONFIG_MISSING;
+EMAIL_CODES.CONNECTION_FAILED = EMAIL_CODES.PROVIDER_UNAVAILABLE;
 
 /**
  * Map a provider HTTP status (+ its safe message) onto a stable code.
- * 401/403 = the key is wrong, revoked, or the sending domain is not verified —
- * an operator problem, not a recipient problem. 422/400 = this specific message
- * or recipient was refused. 429 = throttled. 5xx = provider outage.
+ *
+ * The distinctions here are the ones an operator ACTS on differently:
+ *   401                     → the key is wrong or revoked            (rotate the key)
+ *   403 + "not verified"    → the sending domain is not verified     (fix DNS at the provider)
+ *   403 other               → this message/recipient was refused
+ *   422/400 + suppression   → recipient is on the suppression list   (bounced/complained before)
+ *   422/400 other           → this specific message/recipient refused
+ *   429                     → throttled                              (back off)
+ *   5xx                     → provider outage                        (retry later)
+ *
+ * Collapsing the domain and suppression cases into the generic buckets — as this used to do —
+ * is what makes a delivery outage read as a vague "auth problem" and sends the next person
+ * debugging in the wrong direction.
  */
+const SUPPRESSION_RE = /suppress|suppression list|previously bounced|on the bounce list|complaint/i;
+const UNVERIFIED_RE = /not verified|verify (a |your )?domain|domain is not/i;
+
 function classifyStatus(status, detail = '') {
   if (status === 401) return EMAIL_CODES.AUTH_FAILED;
   if (status === 403) {
-    return /not verified|verify (a |your )?domain|domain is not/i.test(detail)
-      ? EMAIL_CODES.AUTH_FAILED
-      : EMAIL_CODES.REJECTED;
+    return UNVERIFIED_RE.test(detail) ? EMAIL_CODES.DOMAIN_UNVERIFIED : EMAIL_CODES.REJECTED;
   }
   if (status === 429) return EMAIL_CODES.RATE_LIMITED;
-  if (status === 422 || status === 400) return EMAIL_CODES.REJECTED;
-  if (status >= 500) return EMAIL_CODES.CONNECTION_FAILED;
+  if (status === 422 || status === 400) {
+    if (SUPPRESSION_RE.test(detail)) return EMAIL_CODES.SUPPRESSED;
+    if (UNVERIFIED_RE.test(detail)) return EMAIL_CODES.DOMAIN_UNVERIFIED;
+    return EMAIL_CODES.REJECTED;
+  }
+  if (status >= 500) return EMAIL_CODES.PROVIDER_UNAVAILABLE;
   return EMAIL_CODES.UNKNOWN;
 }
 
@@ -112,15 +164,17 @@ function classifyStatus(status, detail = '') {
  */
 function adminMessageFor(code) {
   switch (code) {
-    case EMAIL_CODES.NOT_CONFIGURED:   return 'Email is not configured on the server.';
-    case EMAIL_CODES.AUTH_FAILED:      return 'The email provider rejected our credentials or sending domain. Check the API key and domain verification.';
-    case EMAIL_CODES.CONNECTION_FAILED:return 'Could not reach the email provider. It may be down — try again shortly.';
-    case EMAIL_CODES.REJECTED:         return 'The email provider refused this message or recipient address.';
-    case EMAIL_CODES.RATE_LIMITED:     return 'The email provider is rate-limiting us. Wait a moment and retry.';
-    case EMAIL_CODES.TIMEOUT:          return 'The email provider did not respond in time. The message was not sent.';
-    case EMAIL_CODES.INVALID_RECIPIENT:return 'That recipient address is not a valid email address.';
-    case EMAIL_CODES.TEMPLATE_ERROR:   return 'The email could not be built (missing subject or body).';
-    default:                           return 'The email could not be sent. Please try again.';
+    case EMAIL_CODES.CONFIG_MISSING:       return 'Email is not configured on the server (RESEND_API_KEY / EMAIL_FROM).';
+    case EMAIL_CODES.AUTH_FAILED:          return 'The email provider rejected our API key. Rotate or re-issue RESEND_API_KEY.';
+    case EMAIL_CODES.DOMAIN_UNVERIFIED:    return 'The sending domain is not verified at the email provider. Re-check its DNS records.';
+    case EMAIL_CODES.PROVIDER_UNAVAILABLE: return 'Could not reach the email provider. It may be down, or outbound network access from this server is blocked.';
+    case EMAIL_CODES.REJECTED:             return 'The email provider refused this message or recipient address.';
+    case EMAIL_CODES.SUPPRESSED:           return 'This recipient is on the provider suppression list (an earlier message bounced or was marked spam). Remove them there before retrying.';
+    case EMAIL_CODES.RATE_LIMITED:         return 'The email provider is rate-limiting us. Wait a moment and retry.';
+    case EMAIL_CODES.TIMEOUT:              return 'The email provider did not respond in time. The message was not sent.';
+    case EMAIL_CODES.INVALID_RECIPIENT:    return 'That recipient address is not a valid email address.';
+    case EMAIL_CODES.TEMPLATE_ERROR:       return 'The email could not be built (missing subject or body).';
+    default:                               return 'The email could not be sent. Please try again.';
   }
 }
 
@@ -130,11 +184,11 @@ function adminMessageFor(code) {
  * { error, code, adminMessage, status, domainNotVerified } on failure.
  * Never throws.
  */
-async function sendEmail({ to, subject, html, text }) {
+async function sendEmail({ to, subject, html, text, deferred = false }) {
   const { apiKey, from } = getConfig();
   if (!apiKey || !from) {
     console.warn('[email] RESEND_API_KEY/EMAIL_FROM not configured — skipping email send.');
-    return { skipped: true, code: EMAIL_CODES.NOT_CONFIGURED, adminMessage: adminMessageFor(EMAIL_CODES.NOT_CONFIGURED) };
+    return { skipped: true, code: EMAIL_CODES.CONFIG_MISSING, adminMessage: adminMessageFor(EMAIL_CODES.CONFIG_MISSING) };
   }
   if (!to || !EMAIL_RE.test(String(to))) {
     return { error: 'Invalid recipient email address', code: EMAIL_CODES.INVALID_RECIPIENT, adminMessage: adminMessageFor(EMAIL_CODES.INVALID_RECIPIENT) };
@@ -163,10 +217,15 @@ async function sendEmail({ to, subject, html, text }) {
   // never produce a structured error, so it is strictly worse than useless. It exists so a
   // stale EMAIL_TIMEOUT_MS left in the server env (this box has carried one before) cannot
   // silently reintroduce the failure this constant is here to prevent.
-  const { requested, effective: timeoutMs } = resolveTimeoutMs();
-  if (requested > EMAIL_TIMEOUT_CEILING_MS && !warnedTimeoutClamp) {
+  //
+  // A DEFERRED send opts into the longer budget: it is already off the request path, so the
+  // worker-kill race described above does not apply to it and the short cap would only
+  // truncate a send nobody is waiting for. See resolveTimeoutMs().
+  const { requested, effective: timeoutMs, ceiling } = resolveTimeoutMs({ deferred });
+  if (requested > ceiling && !warnedTimeoutClamp) {
     warnedTimeoutClamp = true;
-    console.warn(`[email] EMAIL_TIMEOUT_MS=${requested}ms exceeds the ${EMAIL_TIMEOUT_CEILING_MS}ms ceiling and was clamped — a longer cap cannot beat the worker-kill window, so it would surface as an opaque 503 instead of a structured error.`);
+    const varName = deferred ? 'EMAIL_DEFERRED_TIMEOUT_MS' : 'EMAIL_TIMEOUT_MS';
+    console.warn(`[email] ${varName}=${requested}ms exceeds the ${ceiling}ms ceiling and was clamped.`);
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -231,8 +290,8 @@ async function sendEmail({ to, subject, html, text }) {
     return { id: data.id, messageId: data.id || null };
   } catch (err) {
     const aborted = err && err.name === 'AbortError';
-    const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.CONNECTION_FAILED;
-    console.error(`[email] Failed to send email code=${code}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
+    const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.PROVIDER_UNAVAILABLE;
+    console.error(`[email] Failed to send email code=${code} deferred=${deferred}:`, aborted ? `timed out after ${timeoutMs}ms` : err.message);
     return {
       error: aborted ? 'Email service timed out' : 'Failed to send email',
       code,
@@ -240,6 +299,84 @@ async function sendEmail({ to, subject, html, text }) {
     };
   } finally {
     // Single clear point, covering the header wait AND the body read on every path.
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * REAL provider check — does not send an email.
+ *
+ * WHY THIS EXISTS. `isEmailEnabled()` only proves two environment variables are non-empty. It
+ * cannot tell a working key from a revoked one, a verified sending domain from an unverified
+ * one, or a reachable provider from a server whose outbound network is blocked — and every one
+ * of those failures looks identical from outside: mail simply stops arriving while the app
+ * reports success. Diagnosing the last outage took hours of black-box probing that this one
+ * call answers directly.
+ *
+ * GET /domains is the cheapest authenticated endpoint that exercises the whole path (DNS →
+ * TCP → TLS → auth), costs no send quota, and returns the per-domain verification status.
+ *
+ * Returns { ok, code, status, latencyMs, domains:[{name,status,region}], adminMessage }.
+ * Never throws, never returns the API key, never returns an address.
+ */
+async function verifyProvider({ timeoutMs } = {}) {
+  const { apiKey, from } = getConfig();
+  const t0 = Date.now();
+  if (!apiKey || !from) {
+    return {
+      ok: false, code: EMAIL_CODES.CONFIG_MISSING, latencyMs: 0,
+      adminMessage: adminMessageFor(EMAIL_CODES.CONFIG_MISSING),
+      configured: { apiKey: Boolean(apiKey), from: Boolean(from) },
+    };
+  }
+  // This runs off any user's critical path (admin-triggered / health), so it uses the
+  // deferred budget: a check that times out at 2.5s cannot distinguish "slow" from "blocked",
+  // which is the exact distinction it exists to make.
+  const effective = timeoutMs || resolveTimeoutMs({ deferred: true }).effective;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effective);
+  try {
+    const resp = await fetch(RESEND_DOMAINS_ENDPOINT, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: controller.signal,
+    });
+    let body = {};
+    try { body = await resp.json(); } catch (_) { body = {}; }
+    const latencyMs = Date.now() - t0;
+
+    if (!resp.ok) {
+      const detail = [body.name, body.message].filter(Boolean).join(': ') || `HTTP ${resp.status}`;
+      const code = classifyStatus(resp.status, detail);
+      console.error(`[email] provider check FAILED code=${code} status=${resp.status}: ${detail}`);
+      return { ok: false, code, status: resp.status, latencyMs, adminMessage: adminMessageFor(code), detail };
+    }
+
+    // Safe metadata only: domain name + verification status, never keys or recipients.
+    const domains = (Array.isArray(body.data) ? body.data : []).map((d) => ({
+      name: d.name, status: d.status, region: d.region,
+    }));
+    // The from-address domain is the one that actually matters for delivery.
+    const fromDomain = String(from).includes('@')
+      ? String(from).split('@').pop().replace(/>.*$/, '').trim().toLowerCase()
+      : null;
+    const sending = domains.find((d) => String(d.name || '').toLowerCase() === fromDomain) || null;
+    const sendingVerified = sending ? sending.status === 'verified' : null;
+
+    if (sending && !sendingVerified) {
+      return {
+        ok: false, code: EMAIL_CODES.DOMAIN_UNVERIFIED, status: resp.status, latencyMs,
+        adminMessage: adminMessageFor(EMAIL_CODES.DOMAIN_UNVERIFIED),
+        domains, fromDomain, sendingVerified,
+      };
+    }
+    return { ok: true, status: resp.status, latencyMs, domains, fromDomain, sendingVerified };
+  } catch (err) {
+    const aborted = err && err.name === 'AbortError';
+    const code = aborted ? EMAIL_CODES.TIMEOUT : EMAIL_CODES.PROVIDER_UNAVAILABLE;
+    const latencyMs = Date.now() - t0;
+    console.error(`[email] provider check FAILED code=${code} after ${latencyMs}ms:`, aborted ? `timed out after ${effective}ms` : err.message);
+    return { ok: false, code, latencyMs, adminMessage: adminMessageFor(code) };
+  } finally {
     clearTimeout(timer);
   }
 }
@@ -310,7 +447,7 @@ function button(href, label) {
 
 // ─── Email types ────────────────────────────────────────────────────────────────
 
-async function sendVerificationEmail(to, code) {
+async function sendVerificationEmail(to, code, { deferred = false } = {}) {
   const inner = `
     <h1 class="h1" style="margin:0 0 10px;color:${INK};font-size:24px;font-weight:800">Verify your email</h1>
     <p style="margin:0 0 22px;color:${SLATE};font-size:15px;line-height:23px">Welcome to ${BRAND}! Use the code below to verify your email address and activate your account.</p>
@@ -320,7 +457,7 @@ async function sendVerificationEmail(to, code) {
     <p style="margin:0;color:${MUTED};font-size:13px;line-height:20px">This code expires in 10 minutes and can be used once.</p>
   `;
   const text = `Welcome to ${BRAND}! Your email verification code is ${code}. It expires in 10 minutes and can be used once. If you did not request this, you can ignore this email.`;
-  return sendEmail({ to, subject: `${BRAND} — your verification code`, html: emailShell('Your verification code', inner), text });
+  return sendEmail({ to, subject: `${BRAND} — your verification code`, html: emailShell('Your verification code', inner), text, deferred });
 }
 
 async function sendPasswordResetEmail(to, resetUrl) {
@@ -371,7 +508,7 @@ function offerClause(offer) {
   return '';
 }
 
-async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, offer = 'none' } = {}) {
+async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, offer = 'none', deferred = false } = {}) {
   const cta = renewUrl || SUPPORT_WHATSAPP;
   const anyExpired = tools.some(t => t.expired);
   const offerLine = offerClause(offer);
@@ -408,7 +545,7 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, 
   const offerText = offer === 'discount10' ? '\nOffer: a limited 10% renewal discount valid for the next 48 hours.'
     : offer === 'bonus2' ? '\nOffer: renew now and we will add 2 bonus days of access.' : '';
   const text = `Hi ${clientName || 'there'}, a renewal reminder from ${BRAND}:\n${textLines.join('\n')}${offerText}\nRenew / contact us: ${cta}`;
-  return sendEmail({ to, subject: `${BRAND} — renewal reminder`, html: emailShell('Renewal reminder', inner), text });
+  return sendEmail({ to, subject: `${BRAND} — renewal reminder`, html: emailShell('Renewal reminder', inner), text, deferred });
 }
 
 /**
@@ -448,6 +585,7 @@ module.exports = {
   isEmailEnabled,
   diagnostics,
   resolveTimeoutMs,
+  verifyProvider,
   sendEmail,
   sendVerificationEmail,
   sendPasswordResetEmail,

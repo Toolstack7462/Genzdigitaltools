@@ -56,11 +56,21 @@ console.log('✅ All required environment variables validated.');
 
 // Optional email (Resend) — verification & password-reset flows. Never required;
 // if unset, those emails are simply skipped. Vars: RESEND_API_KEY, EMAIL_FROM, FRONTEND_URL.
-console.log(
-  process.env.RESEND_API_KEY && process.env.EMAIL_FROM
-    ? '✅ Resend email configured (email verification & password reset enabled).'
-    : 'ℹ️  Resend not configured (RESEND_API_KEY/EMAIL_FROM) — verification & reset emails are disabled.'
-);
+//
+// Report the EFFECTIVE configuration, not just "is it set". A boot line saying "configured"
+// while the send budget was quietly clamped to 2.5s is how an outage stayed invisible: the
+// banner said healthy, and the sends died. Booleans and numbers only — never the key.
+{
+  const cfg = emailCfg.diagnostics();
+  if (!cfg.enabled) {
+    console.log('ℹ️  Resend not configured (RESEND_API_KEY/EMAIL_FROM) — verification & reset emails are disabled.');
+  } else {
+    console.log(`✅ Resend email configured — request budget ${cfg.effectiveTimeoutMs}ms, deferred budget ${cfg.deferredTimeoutMs}ms.`);
+    if (cfg.clamped) console.warn(`⚠️  EMAIL_TIMEOUT_MS was clamped to the ${cfg.ceilingMs}ms ceiling.`);
+    if (cfg.deferredClamped) console.warn(`⚠️  EMAIL_DEFERRED_TIMEOUT_MS was clamped to the ${cfg.deferredCeilingMs}ms ceiling.`);
+    if (!process.env.FRONTEND_URL) console.warn('⚠️  FRONTEND_URL is not set — password-reset links in emails will be relative and unusable.');
+  }
+}
 
 const app = express();
 

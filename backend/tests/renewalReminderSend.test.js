@@ -50,18 +50,23 @@ test('11. a successful send returns the provider message id (proof of acceptance
 });
 
 // ── 12. SMTP/provider authentication failure ────────────────────────────────
-test('12. a 401 from the provider is SMTP_AUTH_FAILED with an actionable message', async () => {
+test('12. a 401 from the provider is EMAIL_AUTH_FAILED with an actionable message', async () => {
   globalThis.fetch = async () => jsonResponse(401, { name: 'validation_error', message: 'API key is invalid' });
   const r = await send();
   assert.equal(r.code, EMAIL_CODES.AUTH_FAILED);
-  assert.equal(r.code, 'SMTP_AUTH_FAILED');
-  assert.match(r.adminMessage, /credentials or sending domain/i);
+  assert.equal(r.code, 'EMAIL_AUTH_FAILED');
+  assert.match(r.adminMessage, /API key/i);
 });
 
-test('12b. an unverified sending domain (403) is also an auth/config fault', async () => {
+test('12b. an unverified sending domain (403) gets its OWN code, not the auth one', async () => {
+  // These used to share SMTP_AUTH_FAILED. They are different operator actions — rotate a key
+  // vs fix DNS at the provider — and merging them is what sent the last outage's debugging
+  // toward the credentials when the credentials were fine.
   globalThis.fetch = async () => jsonResponse(403, { message: 'The genzdigitalstore.com domain is not verified' });
   const r = await send();
-  assert.equal(r.code, EMAIL_CODES.AUTH_FAILED);
+  assert.equal(r.code, EMAIL_CODES.DOMAIN_UNVERIFIED);
+  assert.notEqual(r.code, EMAIL_CODES.AUTH_FAILED, 'a DNS problem must not read as a bad key');
+  assert.match(r.adminMessage, /domain/i, 'and the admin is pointed at the domain, not the key');
   assert.equal(r.domainNotVerified, true, 'flagged so the admin is told to verify the domain');
 });
 
@@ -82,11 +87,11 @@ test('13. a provider timeout is EMAIL_TIMEOUT and never hangs the request', asyn
   assert.ok(Date.now() - started < 15000, 'the abort cap bounds the request');
 });
 
-test('13b. a provider outage is SMTP_CONNECTION_FAILED, and the next send recovers', async () => {
+test('13b. a provider outage is EMAIL_PROVIDER_UNAVAILABLE, and the next send recovers', async () => {
   globalThis.fetch = async () => { throw new Error('ECONNREFUSED api.resend.com'); };
   const bad = await send();
   assert.equal(bad.code, EMAIL_CODES.CONNECTION_FAILED);
-  assert.equal(bad.code, 'SMTP_CONNECTION_FAILED');
+  assert.equal(bad.code, 'EMAIL_PROVIDER_UNAVAILABLE');
 
   globalThis.fetch = async () => jsonResponse(200, { id: 'msg_after_recovery' });
   const good = await send();
@@ -149,7 +154,7 @@ test('a template with no body is TEMPLATE_ERROR', async () => {
   assert.equal(r.code, EMAIL_CODES.TEMPLATE_ERROR);
 });
 
-test('missing configuration is reported as skipped + EMAIL_NOT_CONFIGURED', async () => {
+test('missing configuration is reported as skipped + EMAIL_CONFIG_MISSING', async () => {
   delete process.env.RESEND_API_KEY;
   const r = await send();
   assert.equal(r.skipped, true);
@@ -171,12 +176,15 @@ test('SECURITY: no failure path ever returns the API key or the message body', a
 });
 
 test('classifyStatus maps every status onto a stable, documented code', () => {
-  assert.equal(classifyStatus(401), 'SMTP_AUTH_FAILED');
-  assert.equal(classifyStatus(403, 'domain is not verified'), 'SMTP_AUTH_FAILED');
+  assert.equal(classifyStatus(401), 'EMAIL_AUTH_FAILED');
+  // A 403 naming an unverified domain is now its OWN code: the operator fixes DNS at the
+  // provider, not the API key, and collapsing the two sent the last debug in the wrong direction.
+  assert.equal(classifyStatus(403, 'domain is not verified'), 'EMAIL_DOMAIN_UNVERIFIED');
   assert.equal(classifyStatus(403, 'forbidden'), 'EMAIL_REJECTED');
   assert.equal(classifyStatus(422), 'EMAIL_REJECTED');
   assert.equal(classifyStatus(429), 'EMAIL_RATE_LIMITED');
-  assert.equal(classifyStatus(502), 'SMTP_CONNECTION_FAILED');
+  assert.equal(classifyStatus(502), 'EMAIL_PROVIDER_UNAVAILABLE');
+  assert.equal(classifyStatus(422, 'recipient is on the suppression list'), 'EMAIL_SUPPRESSED');
   assert.equal(classifyStatus(418), 'EMAIL_SEND_FAILED');
   for (const code of Object.values(EMAIL_CODES)) {
     assert.ok(adminMessageFor(code).length > 10, `${code} has an admin-safe message`);

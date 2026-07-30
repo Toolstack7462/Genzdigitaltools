@@ -36,6 +36,14 @@ const RECIPIENT_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DUPLICATE_WINDOW_MS = Number(process.env.RENEWAL_EMAIL_DEDUPE_MS) || 60 * 1000;
 
 /** Most recent CONFIRMED email reminder for a client inside `windowMs`, else null. */
+/**
+ * A row represents a SUCCESSFUL send unless it is explicitly marked failed. Legacy rows
+ * predate the status field and were only ever written on acceptance, so absent = sent.
+ */
+function isSentRow(r) {
+  return !r || r.status !== 'failed';
+}
+
 async function recentEmailReminder(clientId, windowMs) {
   try {
     const cutoff = Date.now() - windowMs;
@@ -43,6 +51,10 @@ async function recentEmailReminder(clientId, windowMs) {
       .sort({ sentAt: -1 })
       .limit(5);
     for (const r of rows || []) {
+      // A FAILED attempt must never open the dedupe window: the admin's retry is the
+      // recovery path, and suppressing it as a "duplicate" would strand the client with
+      // no reminder at all — the exact silent-failure mode this logging exists to expose.
+      if (!isSentRow(r)) continue;
       const at = new Date(r.sentAt || r.createdAt || 0).getTime();
       if (at && at >= cutoff) return new Date(at);
     }
@@ -217,13 +229,29 @@ router.get('/', async (req, res) => {
     }
 
     // Attach the latest reminder per client (single bounded read).
+    // Two SEPARATE facts, deliberately not merged:
+    //   lastReminder — the newest DELIVERED reminder ("Last reminded"). A failed attempt must
+    //                  never appear here, or the admin reads a delivery outage as success.
+    //   lastFailure  — the newest FAILED attempt, so the outage is visible in the UI itself
+    //                  rather than only in a server log nobody can reach.
     const lastReminderByClient = {};
+    const lastFailureByClient = {};
     try {
       const logs = await RenewalReminderLog.find({}).sort({ sentAt: -1 }).limit(500);
       for (const l of logs || []) {
         const cid = String(l.clientId || '');
-        if (cid && !lastReminderByClient[cid]) {
-          lastReminderByClient[cid] = { at: l.sentAt || l.createdAt || null, channel: l.channel || null };
+        if (!cid) continue;
+        if (isSentRow(l)) {
+          if (!lastReminderByClient[cid]) {
+            lastReminderByClient[cid] = { at: l.sentAt || l.createdAt || null, channel: l.channel || null };
+          }
+        } else if (!lastFailureByClient[cid]) {
+          lastFailureByClient[cid] = {
+            at: l.sentAt || l.createdAt || null,
+            channel: l.channel || null,
+            code: l.failureCode || null,
+            message: l.failureMessage || null,
+          };
         }
       }
     } catch (_) { /* best-effort; never breaks the list */ }
@@ -261,6 +289,7 @@ router.get('/', async (req, res) => {
         overdueDays: soonestDaysLeft != null && soonestDaysLeft < 0 ? -soonestDaysLeft : 0,
         suggestedStage: deriveStage(clientArchived ? null : soonestDaysLeft),
         lastReminder: lastReminderByClient[c.clientId] || null,
+        lastFailure: lastFailureByClient[c.clientId] || null,
         followup: followupDTO(followupByClient[c.clientId]),
       };
     });
@@ -412,12 +441,34 @@ router.post('/:clientId/remind', async (req, res) => {
       const dup = await recentEmailReminder(String(client._id), DUPLICATE_WINDOW_MS);
       if (dup) { console.log(`[renewal-email] stage=deduped cid=${cid}`); return; }
 
-      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer });
+      // deferred: off the request path, so it gets the long budget rather than the 2.5s
+      // request cap that was silently truncating these sends.
+      const r = await sendRenewalReminderEmail(client.email, { clientName: client.fullName, tools, offer, deferred: true });
       if (!r || r.error || r.skipped) {
         const code = (r && r.code) || EMAIL_CODES.UNKNOWN;
-        // Provider wording stays in the server log — the admin sees it via the unchanged
-        // "Last reminded" history simply not advancing.
         console.error(`[renewal-email] stage=failed cid=${cid} code=${code} admin="${adminMessageFor(code)}" detail=${(r && r.error) || 'no response'} note=not-recorded-admin-can-retry`);
+        // RECORD THE FAILURE. Previously this returned silently and the ONLY trace was a log
+        // line on a box whose logs are not readable from the app — so a total delivery outage
+        // looked identical to "nobody clicked the button", and it went unnoticed twice.
+        // A failed row never counts as "reminded" (isSentRow) and never opens the dedupe
+        // window, so it changes no existing behaviour beyond making the failure visible.
+        try {
+          await RenewalReminderLog.create({
+            clientId: String(client._id),
+            clientEmail: client.email,
+            channel: 'email',
+            toolCount: tools.length,
+            sentBy: req.userId,
+            sentAt: new Date(),
+            status: 'failed',
+            failureCode: code,
+            failureMessage: adminMessageFor(code),
+            template: 'renewal_reminder',
+            correlationId: cid,
+          });
+        } catch (e) {
+          console.error(`[renewal-email] stage=failed_record_error cid=${cid} msg=${e.message}`);
+        }
         return;
       }
       console.log(`[renewal-email] stage=accepted cid=${cid} msgId=${r.messageId || '-'}`);

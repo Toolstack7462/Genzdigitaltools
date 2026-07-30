@@ -17,7 +17,7 @@ const router = express.Router();
 const User = require('../models/User');
 const EmailVerification = require('../models/EmailVerification');
 const ActivityLog = require('../models/ActivityLog');
-const { getClientIp } = require('../middleware/authEnhanced');
+const { getClientIp, requireAuth, requireAdmin } = require('../middleware/authEnhanced');
 const { normalizeAuthInputs } = require('../middleware/normalize');
 const { authLimiter } = require('../middleware/rateLimiter');
 const { normalizeEmail, emailMatch } = require('../utils/signupPolicy');
@@ -25,6 +25,8 @@ const { completeSignup } = require('../utils/completeSignup');
 const { sendAfterResponse } = require('../utils/deferredSend');
 const {
   isEmailEnabled,
+  diagnostics: emailDiagnostics,
+  verifyProvider,
   sendVerificationEmail,
   sendPasswordResetEmail,
   sendPasswordResetSuccessEmail,
@@ -140,7 +142,7 @@ router.post('/resend-verification', authLimiter, normalizeAuthInputs, async (req
       const ip = getClientIp(req);
       res.json({ success: true, message: 'A new verification code is on its way.' });
       sendAfterResponse(res, 'resend-verification', async () => {
-        const r = await sendVerificationEmail(email, issued.code);
+        const r = await sendVerificationEmail(email, issued.code, { deferred: true });
         if (r.error || r.skipped) {
           console.error(`[resend] result=failed code=${r.code || 'UNKNOWN'} note=cooldown-not-consumed`);
           return;
@@ -159,7 +161,7 @@ router.post('/resend-verification', authLimiter, normalizeAuthInputs, async (req
       // exists), so deferring the send changes nothing the caller can observe.
       res.json({ success: true, message: 'If your account needs verification, a new code is on its way.' });
       sendAfterResponse(res, 'resend-verification-legacy', async () => {
-        await sendVerificationEmail(email, code);
+        await sendVerificationEmail(email, code, { deferred: true });
         await ActivityLog.log('SYSTEM', null, 'EMAIL_VERIFICATION_RESENT', { email, ip });
       });
       return;
@@ -224,6 +226,45 @@ router.post('/reset-password', authLimiter, async (req, res) => {
 });
 
 // ─── GET /email-status (diagnostic; no secrets) ────────────────────────────────
+// Deliberately shallow and unauthenticated: it only reports whether the two env vars are
+// set. It CANNOT detect a revoked key, an unverified domain or blocked egress — for that
+// see /email-health below, which is why that one is admin-only.
 router.get('/email-status', (req, res) => res.json({ success: true, emailEnabled: isEmailEnabled() }));
+
+// ─── GET /email-health (ADMIN ONLY — performs a REAL provider check) ───────────
+//
+// Answers, in one call, the question that took hours of black-box probing during the last
+// two outages: is the mailer actually able to talk to the provider right now, and if not,
+// which layer is broken? It hits the provider's authenticated /domains endpoint — no email
+// is sent, no send quota is consumed — so it exercises DNS, TCP, TLS, credentials and
+// domain verification in one shot.
+//
+// Admin-only because it makes an authenticated outbound call on demand; leaving it open
+// would hand anyone a free way to burn the server's outbound capacity.
+// Returns booleans, codes, latency and domain names only — never the API key.
+router.get('/email-health', requireAuth, requireAdmin, async (req, res) => {
+  const config = emailDiagnostics();
+  if (!config.enabled) {
+    return res.status(503).json({
+      success: false, ok: false, code: 'EMAIL_CONFIG_MISSING', config,
+      error: 'Email is not configured on the server (RESEND_API_KEY / EMAIL_FROM).',
+    });
+  }
+  const probe = await verifyProvider();
+  // 200 when the provider is genuinely reachable AND the sending domain is usable;
+  // 503 otherwise, so an uptime check can key on the status alone.
+  return res.status(probe.ok ? 200 : 503).json({
+    success: probe.ok,
+    ok: probe.ok,
+    code: probe.code || null,
+    providerStatus: probe.status || null,
+    latencyMs: probe.latencyMs,
+    fromDomain: probe.fromDomain || null,
+    sendingDomainVerified: probe.sendingVerified,
+    domains: probe.domains || [],
+    error: probe.ok ? null : (probe.adminMessage || 'The email provider check failed.'),
+    config,
+  });
+});
 
 module.exports = router;

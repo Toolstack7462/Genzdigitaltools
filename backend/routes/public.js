@@ -150,7 +150,9 @@ router.post('/register', normalizeAuthInputs, async (req, res) => {
     });
 
     sendAfterResponse(res, 'signup-verification', async () => {
-      const r = await sendVerificationEmail(email, issued.code);
+      // deferred: this send is already off the request path, so it takes the long budget.
+      // With the request budget it was aborted at 2.5s and the mail was lost silently.
+      const r = await sendVerificationEmail(email, issued.code, { deferred: true });
       if (r.error || r.skipped) {
         console.error(`[signup] stage=email result=failed rid=${rid} code=${r.code || 'UNKNOWN'} emailMs=${Date.now() - te} note=cooldown-not-consumed-user-can-resend`);
         return;
