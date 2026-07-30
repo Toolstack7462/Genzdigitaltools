@@ -9,6 +9,7 @@ import {
 import { useReveal } from '../hooks/useReveal';
 import FAQItem from '../components/public/FAQItem';
 import CTASection from '../components/public/CTASection';
+import TrustpilotReviewCollector from '../components/public/TrustpilotReviewCollector';
 import ShowcaseCard from '../components/public/showcase/ShowcaseCard';
 import SHOWCASE_ITEMS from '../components/public/showcase/showcaseItems';
 import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from '../components/public/PublicNavbar';
@@ -617,6 +618,9 @@ const Home = () => {
           </div>
         </div>
       </section>
+
+      {/* ── TRUST / REVIEWS (Trustpilot Review Collector) ── */}
+      <TrustpilotReviewCollector />
 
       <CTASection />
     </div>

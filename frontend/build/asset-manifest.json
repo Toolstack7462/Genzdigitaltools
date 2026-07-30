@@ -1,8 +1,8 @@
 {
   "files": {
     "main.css": "/static/css/main.4c2941e0.css",
-    "main.js": "/static/js/main.a5e695b5.js",
-    "static/js/7370.3e11d8ca.chunk.js": "/static/js/7370.3e11d8ca.chunk.js",
+    "main.js": "/static/js/main.2f72e45e.js",
+    "static/js/2972.50ee7807.chunk.js": "/static/js/2972.50ee7807.chunk.js",
     "static/js/1496.823efbbf.chunk.js": "/static/js/1496.823efbbf.chunk.js",
     "static/js/2191.c9ae0ab1.chunk.js": "/static/js/2191.c9ae0ab1.chunk.js",
     "static/js/6538.d2c213e1.chunk.js": "/static/js/6538.d2c213e1.chunk.js",
@@ -69,8 +69,8 @@
     "static/media/logo-genz-digital-store.png": "/static/media/logo-genz-digital-store.d40cfbc5b2753a55ffab.png",
     "index.html": "/index.html",
     "main.4c2941e0.css.map": "/static/css/main.4c2941e0.css.map",
-    "main.a5e695b5.js.map": "/static/js/main.a5e695b5.js.map",
-    "7370.3e11d8ca.chunk.js.map": "/static/js/7370.3e11d8ca.chunk.js.map",
+    "main.2f72e45e.js.map": "/static/js/main.2f72e45e.js.map",
+    "2972.50ee7807.chunk.js.map": "/static/js/2972.50ee7807.chunk.js.map",
     "1496.823efbbf.chunk.js.map": "/static/js/1496.823efbbf.chunk.js.map",
     "2191.c9ae0ab1.chunk.js.map": "/static/js/2191.c9ae0ab1.chunk.js.map",
     "6538.d2c213e1.chunk.js.map": "/static/js/6538.d2c213e1.chunk.js.map",
@@ -137,6 +137,6 @@
   },
   "entrypoints": [
     "static/css/main.4c2941e0.css",
-    "static/js/main.a5e695b5.js"
+    "static/js/main.2f72e45e.js"
   ]
 }
