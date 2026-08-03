@@ -25,7 +25,7 @@ const vaultCrypto = require('../../utils/stealth/vaultCrypto');
 const { verifyAccountCookies, maskEmail } = require('../../utils/stealth/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, hasSessionCookie } = require('../../utils/stealth/cookies');
 const { unavailableReason, accountHealth } = require('../../utils/stealth/accountSelect');
-const { nextResetAt, RESET_LABEL } = require('../../utils/stealth/time');
+const { nextResetAt, needsReset, RESET_LABEL } = require('../../utils/stealth/time');
 const launchCode = require('../../utils/launchCode');
 const launchStore = require('../../utils/launchStore');
 const { requireCsrf } = require('../../middleware/csrf');
@@ -98,6 +98,64 @@ function safePagination(query) {
   const page = Math.max(1, parseInt(query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20));
   return { page, limit, skip: (page - 1) * limit };
+}
+
+// ─── Clients list: search + chip filters (applied BEFORE the page slice) ────────
+// These mirror the filter chips in the admin clients table (AdminStealthWriter.js)
+// so a term/chip matches across EVERY StealthWriter client instead of only the
+// rows that happen to be on the current page. Nothing here mutates or persists a
+// client — presentClient() remains the only writer (lazy usage reset).
+const CLIENT_FILTER_KEYS = new Set(['all', 'active', 'disabled', 'expired', 'limit_reached', 'has_sessions', 'zero_sessions']);
+const LEASE_FILTER_KEYS = new Set(['has_sessions', 'zero_sessions']);
+
+/** Usage as the dashboard shows it: the 5:00 AM PKT reset is applied read-only. */
+function usedAsShown(client, action, now) {
+  if (!client.usage || needsReset(client.usage.lastResetAt, now)) return 0;
+  return access.usedFor(client, action);
+}
+/** Same rule the table uses: a finite limit with nothing left on either action. */
+function isLimitReached(client, now) {
+  return ['humanizer', 'detector'].some((action) => {
+    const limit = access.limitFor(client, action);
+    return limit >= 0 && limit - usedAsShown(client, action, now) <= 0;
+  });
+}
+function matchesClientFilter(client, key, leaseCounts, now) {
+  switch (key) {
+    case 'active': return client.status === 'active' && access.assessStatus(client, now).reason !== access.REASONS.PLAN_EXPIRED;
+    case 'disabled': return client.status === 'disabled';
+    case 'expired': return access.assessStatus(client, now).reason === access.REASONS.PLAN_EXPIRED;
+    case 'limit_reached': return isLimitReached(client, now);
+    case 'has_sessions': return (leaseCounts.get(String(client._id)) || 0) > 0;
+    case 'zero_sessions': return !(leaseCounts.get(String(client._id)) || 0);
+    default: return true;
+  }
+}
+function matchesClientSearch(client, term, userById) {
+  if (!term) return true;
+  const user = userById.get(String(client.userId)) || null;
+  return [user && user.fullName, user && user.email, client.planName, client.status]
+    .filter(Boolean).join(' ').toLowerCase().includes(term);
+}
+/** Every active lease counted per client in ONE query (mirrors /stats). */
+async function activeLeaseCountsByClient() {
+  const counts = new Map();
+  const leases = await StealthLease.find({ revoked: false });
+  for (const lease of leases) {
+    if (!lease.isActive()) continue;
+    const key = String(lease.stealthClientId);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return counts;
+}
+/** Linked CRM users for a set of stealth clients, batched into ONE query. */
+async function usersForClients(clients) {
+  const map = new Map();
+  const ids = [...new Set(clients.map(c => c.userId && String(c.userId)).filter(Boolean))];
+  if (!ids.length) return map;
+  const users = await User.find({ _id: { $in: ids } }).select('fullName email').catch(() => []);
+  (users || []).forEach(u => map.set(String(u._id), u));
+  return map;
 }
 
 // Build the admin-facing view of a StealthClient: snapshot + linked user info.
@@ -180,32 +238,42 @@ router.get('/stats', async (req, res) => {
 });
 
 // ─── List clients ───────────────────────────────────────────────────────────
+// Search and the chip filter are matched against the WHOLE list first, so paging
+// can never hide a match; only the rows on the requested page are then expanded
+// with presentClient() (the expensive per-client step). totalCount always
+// reflects what matched, which is what the "Showing 1–50 of 123" line reads.
 router.get('/clients', async (req, res) => {
   try {
     const { status } = req.query;
-    const { page, limit, skip } = safePagination(req.query);
+    const { page, limit } = safePagination(req.query);
     const query = {};
     if (status === 'active' || status === 'disabled') query.status = status;
 
     const all = await StealthClient.find(query).sort({ createdAt: -1 });
-    const totalCount = all.length;
-    const pageItems = all.slice(skip, skip + limit);
-    const clients = await Promise.all(pageItems.map(presentClient));
 
-    // Optional text search across linked user fields (post-presentation).
-    let filtered = clients;
-    if (req.query.search) {
-      const term = String(req.query.search).toLowerCase().slice(0, 100);
-      filtered = clients.filter(c =>
-        (c.user?.email || '').toLowerCase().includes(term) ||
-        (c.user?.fullName || '').toLowerCase().includes(term) ||
-        (c.planName || '').toLowerCase().includes(term));
-    }
+    const term = String(req.query.search || '').trim().toLowerCase().slice(0, 100);
+    const rawFilter = String(req.query.filter || 'all');
+    const filterKey = CLIENT_FILTER_KEYS.has(rawFilter) ? rawFilter : 'all';
+
+    // Only pay for the bulk lookups this particular request actually needs.
+    const userById = term ? await usersForClients(all) : new Map();
+    const leaseCounts = LEASE_FILTER_KEYS.has(filterKey) ? await activeLeaseCountsByClient() : new Map();
+
+    const now = new Date();
+    const matched = all.filter(c =>
+      matchesClientFilter(c, filterKey, leaseCounts, now) && matchesClientSearch(c, term, userById));
+
+    const totalCount = matched.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / limit));
+    const currentPage = Math.min(page, totalPages); // clamp an out-of-range page to the last one
+    const skip = (currentPage - 1) * limit;
+    const pageItems = matched.slice(skip, skip + limit);
+    const clients = await Promise.all(pageItems.map(presentClient));
 
     return res.json({
       success: true,
-      clients: filtered,
-      pagination: { page, limit, totalCount, totalPages: Math.ceil(totalCount / limit), hasMore: skip + pageItems.length < totalCount },
+      clients,
+      pagination: { page: currentPage, limit, totalCount, totalPages, hasMore: skip + pageItems.length < totalCount },
     });
   } catch (err) {
     console.error('Stealth list clients error:', err.message);

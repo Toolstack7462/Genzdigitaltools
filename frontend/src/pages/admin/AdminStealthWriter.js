@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import {
   Sparkles, Plus, RefreshCw, Trash2, Edit2, ShieldOff, Clock,
   Loader2, X, Save, Eye, Settings as SettingsIcon, Users, Zap,
-  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search, Pin
+  KeyRound, Star, CheckCircle2, AlertOctagon, ShieldCheck, List, Globe, Search, Pin,
+  ChevronLeft, ChevronRight
 } from 'lucide-react';
 import { stealthAdmin } from '../../services/stealthService';
 import { withCsrfRetry, openFromLaunchResponse, openLaunchWindow, closeLaunchWindow } from '../../services/launchService';
@@ -12,7 +13,10 @@ import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 import ListFilterBar from '../../components/admin/ListFilterBar';
 
-// ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
+// Clients are paginated SERVER-side (search + chip filter are matched across every
+// StealthWriter client, not just the page on screen). The accounts list stays small,
+// so it keeps its lightweight client-side filtering below.
+const CLIENTS_PAGE_SIZE = 50;
 const ACCOUNT_FILTERS = [
   { key: 'all', label: 'All' }, { key: 'active', label: 'Active' }, { key: 'standby', label: 'Standby' },
   { key: 'session_expired', label: 'Session expired' }, { key: 'limit_reached', label: 'Limit reached' },
@@ -38,26 +42,6 @@ function acctMatchesFilter(a, key) {
 function acctMatchesSearch(a, q) {
   if (!q) return true;
   return [a.label, a.status, a.maskedIdentifier, a.verification?.result].filter(Boolean).join(' ').toLowerCase().includes(q);
-}
-function cliLimitReached(c) {
-  const h = c.limits?.humanizer, d = c.limits?.detector;
-  return (typeof h === 'number' && h >= 0 && (c.remaining?.humanizer ?? 1) <= 0)
-      || (typeof d === 'number' && d >= 0 && (c.remaining?.detector ?? 1) <= 0);
-}
-function cliMatchesFilter(c, key) {
-  switch (key) {
-    case 'active': return c.status === 'active' && !c.expired;
-    case 'disabled': return c.status === 'disabled';
-    case 'expired': return !!c.expired;
-    case 'limit_reached': return cliLimitReached(c);
-    case 'has_sessions': return (c.activeLeaseCount || 0) > 0;
-    case 'zero_sessions': return !(c.activeLeaseCount || 0);
-    default: return true;
-  }
-}
-function cliMatchesSearch(c, q) {
-  if (!q) return true;
-  return [c.user?.fullName, c.user?.email, c.planName, c.status].filter(Boolean).join(' ').toLowerCase().includes(q);
 }
 const NoMatchBox = ({ onClear }) => (
   <div className="p-8 text-center">
@@ -96,34 +80,67 @@ const AdminStealthWriter = () => {
   const [leasesAccount, setLeasesAccount] = useState(null);
   const [verifyingId, setVerifyingId] = useState(null);
   const [acctSearch, setAcctSearch] = useState(''); const [acctFilter, setAcctFilter] = useState('all');
-  const [cliSearch, setCliSearch] = useState(''); const [cliFilter, setCliFilter] = useState('all');
+  const [cliSearchInput, setCliSearchInput] = useState(''); // raw field value
+  const [cliSearch, setCliSearch] = useState('');           // debounced, sent to the API
+  const [cliFilter, setCliFilter] = useState('all');
+  const [cliPage, setCliPage] = useState(1);
+  const [cliPagination, setCliPagination] = useState(null);
+  const [listLoading, setListLoading] = useState(false); // list refreshes after the first load
+  const firstLoadRef = useRef(true); // full-page spinner only on the very first load
 
   const filteredAccounts = useMemo(() => {
     const q = acctSearch.trim().toLowerCase();
     return accounts.filter(a => acctMatchesFilter(a, acctFilter) && acctMatchesSearch(a, q));
   }, [accounts, acctSearch, acctFilter]);
-  const filteredClients = useMemo(() => {
-    const q = cliSearch.trim().toLowerCase();
-    return clients.filter(c => cliMatchesFilter(c, cliFilter) && cliMatchesSearch(c, q));
-  }, [clients, cliSearch, cliFilter]);
+
+  // Debounce the search field — never fire an API request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setCliSearch(cliSearchInput.trim());
+      setCliPage(1); // a new term restarts at page 1
+    }, 350);
+    return () => clearTimeout(t);
+  }, [cliSearchInput]);
 
   const load = useCallback(async () => {
     try {
-      setLoading(true);
+      if (firstLoadRef.current) setLoading(true); else setListLoading(true);
+      const params = { page: cliPage, limit: CLIENTS_PAGE_SIZE };
+      if (cliSearch) params.search = cliSearch;
+      if (cliFilter && cliFilter !== 'all') params.filter = cliFilter;
       const [s, st, cl, ac] = await Promise.all([
-        stealthAdmin.getSettings(), stealthAdmin.getStats(), stealthAdmin.listClients({ limit: 100 }),
+        stealthAdmin.getSettings(), stealthAdmin.getStats(), stealthAdmin.listClients(params),
         stealthAdmin.listAccounts(),
       ]);
       setSettings(s.data.settings);
       setStats(st.data.stats);
       setClients(cl.data.clients || []);
+      setCliPagination(cl.data.pagination || null);
       setAccounts(ac.data.accounts || []);
     } catch (e) {
       showError(e.response?.data?.error || 'Failed to load StealthWriter module');
-    } finally { setLoading(false); }
-  }, [showError]);
+    } finally { firstLoadRef.current = false; setLoading(false); setListLoading(false); }
+  }, [cliPage, cliSearch, cliFilter, showError]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Page range + a compact window of page numbers for the footer.
+  const pg = cliPagination || { page: 1, limit: CLIENTS_PAGE_SIZE, totalCount: 0, totalPages: 1 };
+  const rangeStart = pg.totalCount === 0 ? 0 : (pg.page - 1) * pg.limit + 1;
+  const rangeEnd = Math.min(pg.page * pg.limit, pg.totalCount);
+  const pageNumbers = useMemo(() => {
+    const total = pg.totalPages || 1;
+    const cur = pg.page || 1;
+    let lo = Math.max(1, cur - 2);
+    let hi = Math.min(total, cur + 2);
+    while (hi - lo < 4 && (lo > 1 || hi < total)) {
+      if (lo > 1) lo--; else if (hi < total) hi++; else break;
+    }
+    const out = [];
+    for (let p = lo; p <= hi; p++) out.push(p);
+    return out;
+  }, [pg.page, pg.totalPages]);
+  const cliDirty = cliSearch.length > 0 || cliFilter !== 'all';
 
   // Doubles as the picker's server-side search: no term → first 100 (cached);
   // a term queries the DB by name OR email so every client is reachable.
@@ -330,20 +347,22 @@ const AdminStealthWriter = () => {
           <div className="ds-card rounded-xl overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
               <h2 className="font-semibold text-slate-700">StealthWriter clients</h2>
-              <button onClick={load} className="text-slate-400 hover:text-slate-600"><RefreshCw size={16} /></button>
+              <button onClick={load} className="text-slate-400 hover:text-slate-600">
+                {listLoading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
+              </button>
             </div>
-            {clients.length > 0 && (
+            {(clients.length > 0 || cliDirty) && (
               <div className="px-4 py-3 border-b border-slate-100">
                 <ListFilterBar
-                  search={cliSearch} onSearch={setCliSearch} placeholder="Search clients by name, email, plan, or status…"
-                  options={CLIENT_FILTERS} value={cliFilter} onChange={setCliFilter}
-                  resultText={`Showing ${filteredClients.length} of ${clients.length}`} />
+                  search={cliSearchInput} onSearch={setCliSearchInput} placeholder="Search clients by name, email, plan, or status…"
+                  options={CLIENT_FILTERS} value={cliFilter} onChange={(k) => { setCliFilter(k); setCliPage(1); }}
+                  resultText={`Showing ${rangeStart}–${rangeEnd} of ${pg.totalCount}`} />
               </div>
             )}
             {clients.length === 0 ? (
-              <p className="p-8 text-center text-slate-400 text-sm">No StealthWriter clients yet.</p>
-            ) : filteredClients.length === 0 ? (
-              <NoMatchBox onClear={() => { setCliSearch(''); setCliFilter('all'); }} />
+              cliDirty
+                ? <NoMatchBox onClear={() => { setCliSearchInput(''); setCliSearch(''); setCliFilter('all'); setCliPage(1); }} />
+                : <p className="p-8 text-center text-slate-400 text-sm">No StealthWriter clients yet.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -354,7 +373,7 @@ const AdminStealthWriter = () => {
                     <th className="px-4 py-2 font-medium">Status</th><th className="px-4 py-2 font-medium text-right">Actions</th>
                   </tr></thead>
                   <tbody>
-                    {filteredClients.map((c) => (
+                    {clients.map((c) => (
                       <tr key={c.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                         <td className="px-4 py-2.5">
                           <div className="font-medium text-slate-700">{c.user?.fullName || '—'}</div>
@@ -388,6 +407,35 @@ const AdminStealthWriter = () => {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {/* Pagination — server-side, so every StealthWriter client is reachable */}
+            {pg.totalCount > 0 && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 flex-wrap">
+                <div className="text-[12px] text-genz-muted">
+                  Showing {rangeStart}–{rangeEnd} of {pg.totalCount} client{pg.totalCount > 1 ? 's' : ''}
+                </div>
+                {pg.totalPages > 1 && (
+                  <div className="inline-flex items-center gap-1 flex-wrap">
+                    <button type="button" onClick={() => setCliPage(Math.max(1, pg.page - 1))}
+                      disabled={pg.page <= 1 || listLoading}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border border-genz-border text-genz-muted hover:text-genz-blue hover:border-genz-blue/40 disabled:opacity-40 disabled:cursor-not-allowed">
+                      <ChevronLeft size={13} /> Previous
+                    </button>
+                    {pageNumbers.map(p => (
+                      <button key={p} type="button" onClick={() => setCliPage(p)} disabled={listLoading}
+                        className={`min-w-[30px] px-2 py-1.5 rounded-lg text-[12px] font-semibold border ${p === pg.page ? 'bg-genz-blue/10 border-genz-blue/40 text-genz-blue' : 'border-genz-border text-genz-muted hover:border-genz-blue/40'}`}>
+                        {p}
+                      </button>
+                    ))}
+                    <button type="button" onClick={() => setCliPage(Math.min(pg.totalPages, pg.page + 1))}
+                      disabled={pg.page >= pg.totalPages || listLoading}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold border border-genz-border text-genz-muted hover:text-genz-blue hover:border-genz-blue/40 disabled:opacity-40 disabled:cursor-not-allowed">
+                      Next <ChevronRight size={13} />
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>
