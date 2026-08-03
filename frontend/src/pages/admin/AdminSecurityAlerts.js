@@ -4,7 +4,7 @@ import {
   ShieldAlert, AlertTriangle, CheckCircle2, Eye, RefreshCw, Filter,
   User, Clock, Monitor, Globe, Zap, ChevronDown, X,
   Lock, LogOut, Smartphone, UserX, Flag, Info,
-  Mail, Hash, Puzzle, ChevronRight, ShieldOff, Search,
+  Mail, Hash, Puzzle, ChevronLeft, ChevronRight, ShieldOff, Search,
   Ban, Check
 } from 'lucide-react';
 import api from '../../services/api';
@@ -437,6 +437,8 @@ const DEVICE_STATUS = {
 };
 
 // ── Device Profiles panel (approve/block client devices) ─────────────────────
+const DEVICES_PAGE_SIZE = 50; // server-side page size; the API filters before slicing
+
 const DeviceProfilesPanel = () => {
   const { showSuccess, showError } = useToast();
   const [devices, setDevices]   = useState([]);
@@ -445,24 +447,52 @@ const DeviceProfilesPanel = () => {
   const [busy, setBusy]         = useState(null);
   const [q, setQ]               = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [page, setPage]         = useState(1);
+  const [pagination, setPagination] = useState(null);
+
+  // A new search term or status narrows the whole dataset — start from page 1.
+  useEffect(() => { setPage(1); }, [q, statusFilter]);
 
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const params = new URLSearchParams({ limit: 100 });
+      const params = new URLSearchParams({ page, limit: DEVICES_PAGE_SIZE });
       if (q) params.set('q', q);
       if (statusFilter) params.set('status', statusFilter);
       const res = await api.get(`/admin/security-alerts/devices?${params}`);
       setDevices(res.data.devices || []);
       setStats(res.data.stats || {});
+      setPagination({
+        page: res.data.page || 1,
+        limit: res.data.limit || DEVICES_PAGE_SIZE,
+        total: res.data.total || 0,
+        totalPages: res.data.totalPages || 1,
+      });
     } catch (e) {
       showError('Failed to load device profiles');
     } finally {
       setLoading(false);
     }
-  }, [q, statusFilter, showError]);
+  }, [page, q, statusFilter, showError]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Range + a compact window of page numbers for the footer.
+  const pg = pagination || { page: 1, limit: DEVICES_PAGE_SIZE, total: 0, totalPages: 1 };
+  const rangeStart = pg.total === 0 ? 0 : (pg.page - 1) * pg.limit + 1;
+  const rangeEnd = Math.min(pg.page * pg.limit, pg.total);
+  const pageNumbers = (() => {
+    const total = pg.totalPages || 1;
+    const cur = pg.page || 1;
+    let lo = Math.max(1, cur - 2);
+    let hi = Math.min(total, cur + 2);
+    while (hi - lo < 4 && (lo > 1 || hi < total)) {
+      if (lo > 1) lo--; else if (hi < total) hi++; else break;
+    }
+    const out = [];
+    for (let p = lo; p <= hi; p++) out.push(p);
+    return out;
+  })();
 
   const act = async (id, action) => {
     setBusy(id + action);
@@ -569,6 +599,40 @@ const DeviceProfilesPanel = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pagination — the API filters the whole dataset before slicing, so every device is reachable */}
+      {!loading && pg.total > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-xs text-genz-muted">
+            Showing {rangeStart}–{rangeEnd} of {pg.total} device{pg.total === 1 ? '' : 's'}
+          </p>
+          {pg.totalPages > 1 && (
+            <div className="inline-flex items-center gap-1 flex-wrap">
+              <button type="button" onClick={() => setPage(Math.max(1, pg.page - 1))}
+                disabled={pg.page <= 1 || loading}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-genz-navy disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}>
+                <ChevronLeft size={13} /> Previous
+              </button>
+              {pageNumbers.map(p => (
+                <button key={p} type="button" onClick={() => setPage(p)} disabled={loading}
+                  className={`min-w-[30px] px-2 py-1.5 rounded-lg text-xs font-semibold transition-all ${p === pg.page ? 'text-genz-teal' : 'text-genz-navy'}`}
+                  style={p === pg.page
+                    ? { background: 'rgba(0,175,193,0.18)', border: '1px solid rgba(0,175,193,0.45)' }
+                    : { background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}>
+                  {p}
+                </button>
+              ))}
+              <button type="button" onClick={() => setPage(Math.min(pg.totalPages, pg.page + 1))}
+                disabled={pg.page >= pg.totalPages || loading}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-genz-navy disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                style={{ background: 'rgba(0,175,193,0.08)', border: '1px solid rgba(0,175,193,0.2)' }}>
+                Next <ChevronRight size={13} />
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>

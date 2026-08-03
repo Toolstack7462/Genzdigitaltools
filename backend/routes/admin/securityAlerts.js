@@ -128,7 +128,7 @@ router.get('/scans', async (req, res) => {
 // Registered BEFORE /:id so "devices" isn't captured as an :id param.
 router.get('/devices', async (req, res) => {
   try {
-    const { page, limit, skip } = safePagination(req.query);
+    const { page, limit } = safePagination(req.query); // skip recomputed below, after clamping
     const { status, q } = req.query;
 
     let devices = await DeviceProfile.find({})
@@ -146,8 +146,13 @@ router.get('/devices', async (req, res) => {
       );
     }
 
+    // status/q above already narrowed the FULL dataset, so total and stats below
+    // describe every match — never just the slice the page happens to show.
     const total = devices.length;
-    const paged = devices.slice(skip, skip + limit).map(d => ({
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const currentPage = Math.min(page, totalPages); // clamp an out-of-range page to the last one
+    const pageSkip = (currentPage - 1) * limit;
+    const paged = devices.slice(pageSkip, pageSkip + limit).map(d => ({
       ...d,
       browserCount: Array.isArray(d.browserInstanceIds) ? d.browserInstanceIds.length : 0,
     }));
@@ -158,7 +163,7 @@ router.get('/devices', async (req, res) => {
       blocked:  devices.filter(d => d.status === 'blocked').length,
     };
 
-    res.json({ devices: paged, total, page, limit, stats });
+    res.json({ devices: paged, total, page: currentPage, limit, totalPages, stats });
   } catch (err) {
     console.error('[securityAlerts GET /devices]', err);
     res.status(500).json({ error: 'Failed to fetch device profiles' });
