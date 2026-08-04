@@ -42,6 +42,8 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    # Bounds the worst case now that the SFTP step retries (3 attempts + backoff).
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,12 +93,41 @@ jobs:
           # ONE serial connection (mirror:use-pget-n 1, no --parallel) and give it
           # generous retries/reconnect — matching the single-connection manual deploy.
           common="set sftp:auto-confirm yes; set net:max-retries 5; set net:timeout 40; set net:persist-retries 5; set net:reconnect-interval-base 5; set mirror:parallel-transfer-count 1; set mirror:use-pget-n 1;"
+
+          # WHY THIS RETRIES: lftp's net:max-retries only covers reconnects *inside* one
+          # invocation. When the shared host refuses the SSH channel outright — CloudLinux
+          # LVE entry-process limit, "Unable to startup channel" — lftp exits immediately
+          # (observed: this step dying in 10s) and the whole deploy failed with a perfectly
+          # good build. That refusal is transient and unrelated to the commit, so the step
+          # now retries the mirror before giving up. `mirror -c` resumes, so a retry only
+          # re-sends what is missing.
+          mirror_to() {
+            label="$1"; target="$2"; extra="${3:-}"
+            attempt=1; max=3
+            while :; do
+              echo "==> $label (attempt $attempt/$max)"
+              if lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+                   "$common mirror -R -c --no-perms --verbose --exclude-glob *.map $extra frontend/build/ $target/; bye"; then
+                echo "==> $label: OK"
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ]; then
+                echo "::error::$label failed after $max attempts — Hostinger SFTP kept refusing the connection."
+                return 1
+              fi
+              wait=$(( attempt * 30 ))
+              echo "::warning::$label attempt $attempt failed (transient SFTP refusal) — retrying in ${wait}s"
+              sleep "$wait"
+              attempt=$(( attempt + 1 ))
+            done
+          }
+
           echo "==> [1/2] main domain root"
-          lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-            "$common mirror -R -c --no-perms --verbose --exclude-glob *.map frontend/build/ $MAIN_WEB/; bye"
+          mirror_to "main root" "$MAIN_WEB"
+          # Let the host release the first session's entry process before opening another.
+          sleep 5
           echo "==> [2/2] app subdomain root (never overwrite its .htaccess)"
-          lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-            "$common mirror -R -c --no-perms --verbose --exclude-glob *.map --exclude-glob .htaccess frontend/build/ $APP_WEB/; bye"
+          mirror_to "app root" "$APP_WEB" "--exclude-glob .htaccess"
           echo "==> SFTP upload complete to both roots."
 
       - name: Verify live bundle on both domains
@@ -107,12 +138,14 @@ jobs:
           fail=0
           for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
             # Retry to ride out CDN propagation (index.html is served no-cache, so this
-            # converges quickly once the origin file is replaced).
+            # converges once the origin file is replaced). The window is 20x15s = 5min:
+            # a 60s window previously failed a run whose upload HAD landed, turning slow
+            # edge propagation into a red build.
             LIVE=""
-            for i in $(seq 1 10); do
+            for i in $(seq 1 20); do
               LIVE="$(curl -s --max-time 20 "$d/index.html?cb=$i$RANDOM" | grep -o 'main\.[a-z0-9]*\.js' | head -1 || true)"
               [ "$LIVE" = "$LOCAL" ] && break
-              sleep 6
+              sleep 15
             done
             echo "$d -> ${LIVE:-<none>}"
             [ "$LIVE" = "$LOCAL" ] || { echo "::error::$d is NOT serving $LOCAL (got ${LIVE:-none}) — deploy did not land."; fail=1; }
