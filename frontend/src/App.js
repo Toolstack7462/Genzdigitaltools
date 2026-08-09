@@ -100,6 +100,9 @@ const Portfolio = lazy(() => import('./pages/public/Portfolio'));
 // Admin Pages — code-split
 const AdminLogin = lazy(() => import('./pages/admin/AdminLogin'));
 const AdminDashboardEnhanced = lazy(() => import('./pages/admin/AdminDashboardEnhanced'));
+// BEGIN GENZ BUSINESS CRM v2.0.0
+const AdminBusinessCrm = lazy(() => import('./pages/admin/AdminBusinessCrm'));
+// END GENZ BUSINESS CRM v2.0.0
 const AdminToolsEnhanced = lazy(() => import('./pages/admin/AdminToolsEnhanced'));
 const AdminToolForm = lazy(() => import('./pages/admin/AdminToolForm'));
 const AdminClientsEnhanced = lazy(() => import('./pages/admin/AdminClientsEnhanced'));
@@ -186,6 +189,9 @@ function App() {
             {/* ── Admin Routes (untouched) ─────────────────────── */}
             <Route path="/admin/login"   element={<AdminLogin />} />
             <Route path="/admin/dashboard" element={<ErrorBoundary><AdminRoute><AdminDashboardEnhanced /></AdminRoute></ErrorBoundary>} />
+            {/* BEGIN GENZ BUSINESS CRM v2.0.0 */}
+            <Route path="/admin/business/*" element={<ErrorBoundary><AdminRoute><AdminBusinessCrm /></AdminRoute></ErrorBoundary>} />
+            {/* END GENZ BUSINESS CRM v2.0.0 */}
             <Route path="/admin/tools"   element={<ErrorBoundary><AdminRoute><AdminToolsEnhanced /></AdminRoute></ErrorBoundary>} />
             <Route path="/admin/tools/new" element={<ErrorBoundary><AdminRoute><AdminToolForm /></AdminRoute></ErrorBoundary>} />
             {/* Tool Setup Wizard retired — the single create-tool flow is /admin/tools/new.

@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, Users, Activity, LogOut, FileText, Mail,
-  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome, Megaphone, CalendarClock, Gift, PenTool, Bot
+  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome, Megaphone, CalendarClock, Gift, PenTool, Bot, BriefcaseBusiness
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import RefreshButton from './RefreshButton';
@@ -11,6 +11,9 @@ import api from '../services/api';
 
 const NAV_ITEMS = [
   { to: '/admin/dashboard', icon: LayoutDashboard, label: 'Dashboard',   group: 'Overview' },
+  // BEGIN GENZ BUSINESS CRM v2.0.0
+  { to: '/admin/business', icon: BriefcaseBusiness, label: 'Business CRM', group: 'Overview' },
+  // END GENZ BUSINESS CRM v2.0.0
   { to: '/admin/tools',     icon: Package,         label: 'Tools',       group: 'Manage'   },
   { to: '/admin/clients',   icon: Users,           label: 'Members',     group: 'Manage'   },
   { to: '/admin/assignments', icon: Activity,      label: 'Assignments', group: 'Manage'   },
