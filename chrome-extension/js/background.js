@@ -2288,6 +2288,9 @@ chrome.runtime.onInstalled.addListener((details) => {
   initialize();
   runCleanupSync(`onInstalled:${details.reason}`).catch(() => {});
   setTimeout(() => injectBridgeIntoDashboardTabs(`onInstalled:${details.reason}`), 500);
+  // Re-registered on every install AND update so an upgrade from an older build (which had
+  // no Claude policy at all) picks the enforcer up without the member doing anything.
+  registerClaudeEnforcer(`onInstalled:${details.reason}`).catch(() => {});
 });
 
 // Startup listener
@@ -2296,6 +2299,7 @@ chrome.runtime.onStartup.addListener(() => {
   initialize();
   runCleanupSync('onStartup').catch(() => {});
   setTimeout(() => injectBridgeIntoDashboardTabs('onStartup'), 1000);
+  registerClaudeEnforcer('onStartup').catch(() => {});
 });
 
 // Message listener
@@ -3297,6 +3301,51 @@ async function injectContentScript(tabId, url) {
     return true;
   } catch (error) {
     logger.warn('Content script injection failed', { error: error.message });
+    return false;
+  }
+}
+
+// ============================================================================
+// EXTENSION-BASED Claude MODEL + EFFORT POLICY (claude.ai only)
+// ============================================================================
+// Registers js/claudeEnforcer.js as a MAIN-world content script at document_start so the
+// page's own fetch/XHR are wrapped BEFORE any app code captures a reference — that is what
+// makes the Fable-5 / High-Extra-Max block a REQUEST-level block rather than a CSS one.
+//
+// SCOPE: `https://claude.ai/*` + `https://*.claude.ai/*` ONLY. The PROXY Claude host
+// (claude1.genzdigitalstore.com) cannot match these patterns, so the gateway and its own
+// server-side policy are entirely untouched. No other tool is affected, and no new
+// permission is required — `scripting` + the existing host permissions already cover it.
+const CLAUDE_ENFORCER_ID = 'genz-claude-policy';
+const CLAUDE_ENFORCER_MATCHES = ['https://claude.ai/*', 'https://*.claude.ai/*'];
+
+async function registerClaudeEnforcer(reason) {
+  try {
+    if (!chrome.scripting || !chrome.scripting.registerContentScripts) return false;
+    const spec = {
+      id: CLAUDE_ENFORCER_ID,
+      matches: CLAUDE_ENFORCER_MATCHES,
+      js: ['js/claudeEnforcer.js'],
+      runAt: 'document_start',
+      world: 'MAIN',
+      allFrames: false,
+      persistAcrossSessions: true,
+    };
+    // Re-registering a live id throws, so prefer update and fall back to a fresh register.
+    const existing = await chrome.scripting
+      .getRegisteredContentScripts({ ids: [CLAUDE_ENFORCER_ID] })
+      .catch(() => []);
+    if (existing && existing.length) {
+      await chrome.scripting.updateContentScripts([spec]);
+    } else {
+      await chrome.scripting.registerContentScripts([spec]);
+    }
+    logger.debug('Claude policy enforcer registered', { reason });
+    return true;
+  } catch (error) {
+    // Never fatal: a registration failure must not affect login, the shield, or any other
+    // tool. It is logged so a broken rollout is visible in diagnostics.
+    logger.warn('Claude policy enforcer registration failed', { reason, error: error.message });
     return false;
   }
 }
