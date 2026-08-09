@@ -333,6 +333,9 @@ const proxyGatewayRoutes      = require('./routes/proxy/gateway');
 const proxyAgentSyncRoutes    = require('./routes/proxy/agentSync');
 // WriteHuman V2 monitoring module (isolated) — read-mostly proxy to the standalone V2 service.
 const adminWriteHumanV2Routes = require('./routes/admin/writehumanV2');
+// BEGIN GENZ BUSINESS CRM v2.0.0
+const businessCrmRoutes = require('./modules/business-crm');
+// END GENZ BUSINESS CRM v2.0.0
 // CSRF token for tool-launch POSTs (one-time launch bootstrap). Any authenticated session.
 const launchTokenRoutes       = require('./routes/launchToken');
 
@@ -381,6 +384,9 @@ app.use('/api/crm/proxy/agent',       proxyAgentSyncRoutes);
 // WriteHuman V2 monitoring (isolated, admin-gated). Small body limit (commands only).
 // Dormant (503) until WRITEHUMAN_V2_ADMIN_KEY is set — mounting it changes nothing existing.
 app.use('/api/crm/admin/writehuman-v2', express.json({ limit: '256kb' }), adminWriteHumanV2Routes);
+// BEGIN GENZ BUSINESS CRM v2.0.0
+app.use('/api/crm/admin/business', businessCrmRoutes);
+// END GENZ BUSINESS CRM v2.0.0
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check

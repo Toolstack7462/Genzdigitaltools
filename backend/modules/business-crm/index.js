@@ -1,0 +1,52 @@
+'use strict';
+const express = require('express');
+const rateLimit = require('express-rate-limit');
+const { requireAdminAuth } = require('../../middleware/authEnhanced');
+const db = require('./db');
+const csrf = require('./csrf');
+const money = require('./money');
+const { resolveAccess, PERMISSIONS } = require('./permissions');
+const { asyncHandler } = require('./http');
+const dashboard = require('./routes/dashboard');
+const sales = require('./routes/sales');
+const contacts = require('./routes/contacts');
+const products = require('./routes/products');
+const payments = require('./routes/payments');
+const expenses = require('./routes/expenses');
+const reports = require('./routes/reports');
+const operations = require('./routes/operations');
+const search = require('./routes/search');
+const admin = require('./routes/admin');
+const sync = require('./routes/sync');
+const accessLinks = require('./routes/accessLinks');
+
+const router = express.Router();
+router.use((req, res, next) => { res.setHeader('Cache-Control', 'private, no-store'); res.setHeader('X-Business-CRM-Version', '2.0.0'); next(); });
+router.use(requireAdminAuth);
+router.use(asyncHandler(async (req, res, next) => { await db.ensureSchema(); req.businessAccess = await resolveAccess(req.user); if (req.businessAccess.role === 'DISABLED') return res.status(403).json({ error: 'Business CRM access is disabled', code: 'BUSINESS_ACCESS_DISABLED' }); next(); }));
+router.get('/bootstrap', asyncHandler(async (req, res) => {
+  const settingsRows = await db.query('SELECT * FROM biz_crm_settings WHERE id=1'); const token = csrf.issue(req, res);
+  res.json({ version: '2.0.0', user: { id: String(req.userId), email: req.user.email, fullName: req.user.fullName, authRole: req.userRole }, access: req.businessAccess, permissionsCatalog: PERMISSIONS, currencies: money.CURRENCIES, settings: settingsRows[0], csrfToken: token, online: true });
+}));
+router.use(rateLimit({ windowMs: 60 * 1000, limit: 240, standardHeaders: true, legacyHeaders: false, keyGenerator: (req) => String(req.userId || req.ip) }));
+router.use(csrf.requireToken);
+router.use('/dashboard', dashboard);
+router.use('/sales', sales);
+router.use('/contacts', contacts);
+router.use('/products', products);
+router.use('/payments', payments);
+router.use('/expenses', expenses);
+router.use('/reports', reports);
+router.use('/operations', operations);
+router.use('/search', search);
+router.use('/admin', admin);
+router.use('/sync', sync);
+// Website access → CRM reconciliation inbox. Read-only against the website access system.
+router.use('/access-links', accessLinks);
+router.use((req, res) => res.status(404).json({ error: 'Business CRM route not found', code: 'BUSINESS_ROUTE_NOT_FOUND' }));
+router.use((error, req, res, next) => { // eslint-disable-line no-unused-vars
+  const status = Number(error.status || (error.code === 'ER_DUP_ENTRY' ? 409 : 500)); const safeStatus = status >= 400 && status < 600 ? status : 500;
+  if (safeStatus >= 500) console.error(`[Business CRM ${req.requestId || '-'}]`, error);
+  res.status(safeStatus).json({ error: safeStatus >= 500 ? 'Business CRM request failed' : error.message, code: error.code || (safeStatus >= 500 ? 'BUSINESS_INTERNAL_ERROR' : 'BUSINESS_REQUEST_ERROR'), requestId: req.requestId || null });
+});
+module.exports = router;

@@ -1,0 +1,7 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { Search as SearchIcon } from 'lucide-react';
+import { useResource } from '../hooks';
+import { formatDate } from '../constants';
+import { Card, ErrorState, Loading, PageHeader, SearchBox, Status } from '../components/ui';
+export default function SearchPage(){const[q,setQ]=useState('');const r=useResource(()=>q.length>=2?`/search?q=${encodeURIComponent(q)}`:'/search?q=',[q]);if(r.loading&&q.length>=2)return <Loading/>;return <><PageHeader title="Global search" description="Find invoices, clients, vendors, products and tasks from one field."/><SearchBox value={q} onChange={setQ} placeholder="Type at least two characters…"/>{r.error&&<ErrorState message={r.error} onRetry={r.reload}/>}<Card className="bcrm-section" title={`${r.data?.results?.length||0} results`}><div className="bcrm-timeline">{(r.data?.results||[]).map(x=>{const href=x.type==='sale'?`/admin/business/sales/${x.id}`:x.type==='client'?`/admin/business/clients/${x.id}`:x.type==='vendor'?`/admin/business/vendors/${x.id}`:'/admin/business/tasks';return <article key={`${x.type}-${x.id}`}><strong><Link to={href}>{x.title}</Link></strong><p><Status>{x.type}</Status> {x.subtitle} • {formatDate(x.sort_date,true)}</p></article>})}{q.length<2&&<div className="bcrm-empty"><SearchIcon size={30}/><strong>Start searching</strong><p>Search uses server-side permission filters, so each team member only sees authorized modules.</p></div>}</div></Card></>}
