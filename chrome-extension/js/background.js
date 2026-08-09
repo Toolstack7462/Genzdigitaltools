@@ -2288,9 +2288,9 @@ chrome.runtime.onInstalled.addListener((details) => {
   initialize();
   runCleanupSync(`onInstalled:${details.reason}`).catch(() => {});
   setTimeout(() => injectBridgeIntoDashboardTabs(`onInstalled:${details.reason}`), 500);
-  // Re-registered on every install AND update so an upgrade from an older build (which had
-  // no Claude policy at all) picks the enforcer up without the member doing anything.
-  registerClaudeEnforcer(`onInstalled:${details.reason}`).catch(() => {});
+  // 3.9.16: tear down the 3.9.15 MAIN-world enforcer. Its registration was persisted, so it
+  // outlives the update — this is what un-breaks a browser already upgraded from 3.9.15.
+  unregisterClaudeEnforcer(`onInstalled:${details.reason}`).catch(() => {});
 });
 
 // Startup listener
@@ -2299,7 +2299,9 @@ chrome.runtime.onStartup.addListener(() => {
   initialize();
   runCleanupSync('onStartup').catch(() => {});
   setTimeout(() => injectBridgeIntoDashboardTabs('onStartup'), 1000);
-  registerClaudeEnforcer('onStartup').catch(() => {});
+  // Belt to the onInstalled brace: if the update event was missed (service worker asleep,
+  // crash during update), the next browser start still clears the stale registration.
+  unregisterClaudeEnforcer('onStartup').catch(() => {});
 });
 
 // Message listener
@@ -3306,46 +3308,49 @@ async function injectContentScript(tabId, url) {
 }
 
 // ============================================================================
-// EXTENSION-BASED Claude MODEL + EFFORT POLICY (claude.ai only)
+// 3.9.16 HOTFIX — REMOVE the 3.9.15 Claude MAIN-world policy enforcer
 // ============================================================================
-// Registers js/claudeEnforcer.js as a MAIN-world content script at document_start so the
-// page's own fetch/XHR are wrapped BEFORE any app code captures a reference — that is what
-// makes the Fable-5 / High-Extra-Max block a REQUEST-level block rather than a CSS one.
+// 3.9.15 registered js/claudeEnforcer.js as a MAIN-world content script at document_start
+// and, in the name of tamper resistance, redefined window.fetch, XMLHttpRequest.prototype
+// .open/.send, navigator.sendBeacon and Storage.prototype.setItem as NON-CONFIGURABLE and
+// NON-WRITABLE. That does not merely resist a hostile user — it forbids the HOST PAGE from
+// doing ordinary things. Any library that wraps fetch or XHR (telemetry, session replay,
+// error reporting — near-universal in a production SPA) then throws:
 //
-// SCOPE: `https://claude.ai/*` + `https://*.claude.ai/*` ONLY. The PROXY Claude host
-// (claude1.genzdigitalstore.com) cannot match these patterns, so the gateway and its own
-// server-side policy are entirely untouched. No other tool is affected, and no new
-// permission is required — `scripting` + the existing host permissions already cover it.
+//   TypeError: Cannot redefine property: fetch
+//   TypeError: Cannot assign to read only property 'open' of object '[object Object]'
+//
+// Claude's bundle is ES modules, which are always strict, so even a plain assignment threw.
+// An uncaught TypeError in the bootstrap chain at document_start stops the SPA before first
+// render: claude.ai/new hung on a blank dark page. Verified against the shipped file — 7 of 7
+// realistic bootstrap patterns threw.
+//
+// The enforcer and its registration are removed outright. Body-level model/effort enforcement
+// is NOT re-attempted here: it inherently requires patching global primitives on a third-party
+// origin (declarativeNetRequest cannot read or rewrite a request BODY), and Claude's real
+// endpoints and payload field names have never been captured from an authorised session. The
+// Fable-5 / effort policy remains enforced SERVER-SIDE in the Claude proxy gateway, which is
+// unaffected by any of this. Stability first.
+//
+// ⚠ The 3.9.15 registration used persistAcrossSessions:true, so it SURVIVES the update to
+// 3.9.16. Deleting the registration code is therefore NOT enough — anyone already on 3.9.15
+// would stay broken. We must explicitly unregister the id. This runs on install AND startup
+// and is the single line that actually rescues an already-affected user.
 const CLAUDE_ENFORCER_ID = 'genz-claude-policy';
-const CLAUDE_ENFORCER_MATCHES = ['https://claude.ai/*', 'https://*.claude.ai/*'];
 
-async function registerClaudeEnforcer(reason) {
+async function unregisterClaudeEnforcer(reason) {
   try {
-    if (!chrome.scripting || !chrome.scripting.registerContentScripts) return false;
-    const spec = {
-      id: CLAUDE_ENFORCER_ID,
-      matches: CLAUDE_ENFORCER_MATCHES,
-      js: ['js/claudeEnforcer.js'],
-      runAt: 'document_start',
-      world: 'MAIN',
-      allFrames: false,
-      persistAcrossSessions: true,
-    };
-    // Re-registering a live id throws, so prefer update and fall back to a fresh register.
+    if (!chrome.scripting || !chrome.scripting.getRegisteredContentScripts) return false;
     const existing = await chrome.scripting
       .getRegisteredContentScripts({ ids: [CLAUDE_ENFORCER_ID] })
       .catch(() => []);
-    if (existing && existing.length) {
-      await chrome.scripting.updateContentScripts([spec]);
-    } else {
-      await chrome.scripting.registerContentScripts([spec]);
-    }
-    logger.debug('Claude policy enforcer registered', { reason });
+    if (!existing || !existing.length) return false;
+    await chrome.scripting.unregisterContentScripts({ ids: [CLAUDE_ENFORCER_ID] });
+    logger.info('Removed the 3.9.15 Claude policy enforcer registration', { reason });
     return true;
   } catch (error) {
-    // Never fatal: a registration failure must not affect login, the shield, or any other
-    // tool. It is logged so a broken rollout is visible in diagnostics.
-    logger.warn('Claude policy enforcer registration failed', { reason, error: error.message });
+    // Never fatal: this must not affect login, the shield, or any other tool.
+    logger.warn('Could not remove the Claude enforcer registration', { reason, error: error.message });
     return false;
   }
 }
