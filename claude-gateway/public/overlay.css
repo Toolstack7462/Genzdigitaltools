@@ -1,6 +1,16 @@
-/* Gen Z Proxy-Tool overlay — small, clean, premium bottom-right widget (no top bar). */
+/* Gen Z Proxy-Tool overlay — small, clean, premium bottom-LEFT widget (no top bar).
+   Moved from bottom-right to bottom-left: on Claude the right-hand side of the viewport is
+   where the composer's send / microphone / attachment controls and the model+effort selector
+   sit, and the fixed widget overlapped them. The bottom-left corner is free on Claude —
+   #genz-acct-card (the only other bottom-left element in this file) is built exclusively for
+   ChatGPT (`if (!CHATGPT) return` in buildChatgptAccountCard), so there is no collision.
+   env(safe-area-inset-*) keeps it clear of the iPhone home indicator and any notch in
+   landscape; max-width stops it overflowing at high browser zoom / very narrow viewports. */
 #genz-sw-widget{
-  position:fixed; right:16px; bottom:16px; z-index:2147483646; width:188px;
+  position:fixed; z-index:2147483646; width:188px;
+  left:calc(16px + env(safe-area-inset-left, 0px));
+  bottom:calc(16px + env(safe-area-inset-bottom, 0px));
+  max-width:calc(100vw - 32px); box-sizing:border-box;
   font:500 12px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:#e6f6fb;
   background:linear-gradient(160deg, rgba(11,18,32,.94), rgba(16,36,59,.94));
   border:1px solid rgba(6,182,212,.28); border-radius:12px;
@@ -44,8 +54,13 @@
 #genz-sw-widget.genz-sw-collapsed .genz-sw-body{display:none;}
 #genz-sw-widget.genz-sw-collapsed .genz-sw-head{cursor:pointer; border-bottom:0;}
 
+/* Toast sits immediately beside the widget. Mirrored with it: 206px = widget width 188 + the
+   16px gutter + 2px gap, so it now sits to the RIGHT of the bottom-left widget instead of to
+   the left of the bottom-right one. Same visual relationship, opposite corner. */
 .genz-sw-toast{
-  position:fixed; bottom:16px; right:206px; z-index:2147483647;
+  position:fixed; z-index:2147483647;
+  bottom:calc(16px + env(safe-area-inset-bottom, 0px));
+  left:calc(206px + env(safe-area-inset-left, 0px));
   background:linear-gradient(160deg, rgba(11,18,32,.95), rgba(16,36,59,.95)); color:#e6f6fb;
   border:1px solid rgba(6,182,212,.4); padding:10px 14px; border-radius:11px;
   box-shadow:0 12px 32px rgba(0,0,0,.45); font:600 12px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -54,8 +69,21 @@
 .genz-sw-toast-out{opacity:0; transform:translateY(8px);}
 
 @media (max-width:640px){
-  #genz-sw-widget{ right:10px; bottom:10px; width:174px; }
-  .genz-sw-toast{ right:10px; bottom:150px; }
+  /* On a phone/narrow tablet Claude's composer spans the FULL width of the bottom of the
+     viewport, so a widget pinned to the very bottom would sit on top of it in either corner —
+     moving to the left alone does not clear it. Lift it above the composer instead. 96px is the
+     clearance for Claude's single-line mobile composer plus its control row; it is deliberately
+     a single number so it can be tuned from one place after a real-device check. */
+  #genz-sw-widget{
+    left:calc(10px + env(safe-area-inset-left, 0px));
+    bottom:calc(96px + env(safe-area-inset-bottom, 0px));
+    width:174px;
+  }
+  .genz-sw-toast{
+    left:calc(10px + env(safe-area-inset-left, 0px));
+    bottom:calc(150px + env(safe-area-inset-bottom, 0px));
+    max-width:calc(100vw - 20px);
+  }
 }
 
 /* ChatGPT: clean "Gen Z Digital Store" card pinned bottom-left, replacing the real
