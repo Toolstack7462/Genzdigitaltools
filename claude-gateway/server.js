@@ -2003,12 +2003,24 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         uRes.resume();
         return sendBlockPage(res, 'unavailable');
       }
-      // ┌─ Fix B (mobile-only): break the loop's TAIL ───────────────────────────────────────────
+      // ┌─ Fix B (ALL DEVICES): break the loop's TAIL ───────────────────────────────────────────
       // /api/challenge_redirect is Claude's attempt to solve a challenge by NAVIGATING the whole
       // tab; through this proxy it can never clear, so don't retry it or show a notice — bounce
       // straight back to the app so the loop cannot form. Runs BEFORE the nav-retry block so a
-      // mobile client never spends the 2 retry waits on this dead path. Desktop is untouched.
-      if (cfChallengeDetected && isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD && isMobileClient(req)
+      // client never spends the 2 retry waits on this dead path.
+      //
+      // ★ DEVICE GATE REMOVED (2026-08-10). This read `&& isMobileClient(req)`, so it never ran
+      // for the class that contains EVERY MacBook and iPad: classifyDevice() returns 'desktop' for
+      // Mac Safari, Mac Chrome and iPadOS Safari (iPadOS sends a Macintosh UA), and there is no
+      // Mac/Safari branch anywhere in this file — a Mac and a Windows PC are handled identically.
+      // The Cloudflare challenge itself is device-independent (the live evidence quoted by the
+      // retry block below records the SAME 200⇄403 alternation with identical cookies, identity
+      // and device), so gating its MITIGATION by device was the defect: the loop breaker was
+      // skipped for exactly the devices reporting the loop. The sibling notice block below already
+      // learned this and says so in its own comment; Fix A and Fix B were never updated to match.
+      // SCOPE: reachable only when cfChallengeDetected is already true — a 2xx response, normal
+      // navigation, identity, cookies, retries and every other path are untouched.
+      if (cfChallengeDetected && isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD
           && /^\/api\/challenge_redirect\b/.test(reqPathOnly) && !res.headersSent) {
         logIt(false); uRes.resume();
         safeLog('cf_redirect_break', {
@@ -2090,13 +2102,21 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         return sendNoticePage(res, { status: cls.httpStatus, title: cls.title, msg: cls.msg });
       }
       // └─ end Cloudflare-challenge navigation handling ─────────────────────────────────────────
-      // ┌─ Fix A (mobile-only): a Cloudflare challenge on an XHR/API fetch must NOT reach the app ─
+      // ┌─ Fix A (ALL DEVICES): a Cloudflare challenge on an XHR/API fetch must NOT reach the app ─
       // Return a benign, NON-navigating transient error so Claude's SPA retries the call in place
       // instead of navigating the whole tab into the unsolvable /api/challenge_redirect loop. This
       // is the HEAD of the loop (Fix B above is the tail). Auth is untouched — the challenge is
       // never a login/session failure (redirected_to_login=false on 100% of these); we only refuse
-      // to forward an unsolvable challenge DOCUMENT to a background fetch. Desktop never reaches here.
-      if (cfChallengeDetected && !isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD && isMobileClient(req) && !res.headersSent) {
+      // to forward an unsolvable challenge DOCUMENT to a background fetch.
+      //
+      // ★ DEVICE GATE REMOVED (2026-08-10) — same reasoning as Fix B above. While this was
+      // `&& isMobileClient(req)`, a challenged API call on a MacBook/iPad/Windows desktop was
+      // handed Cloudflare's raw 403 challenge HTML, which is precisely what makes Claude's SPA
+      // full-page-navigate to /api/challenge_redirect and start the reload cascade. Feeding a
+      // challenge DOCUMENT to a background fetch is never correct on any device.
+      // SCOPE: reachable only when cfChallengeDetected is already true. A successful XHR, and
+      // every non-challenge error, take exactly the same path as before on every device.
+      if (cfChallengeDetected && !isHtmlNav && CLAUDE_MOBILE_XHR_SHIELD && !res.headersSent) {
         logIt(false); uRes.resume();
         safeLog('cf_xhr_shield', {
           cid: ctx.cid || null, instance: INSTANCE_ID, request_path: reqPathOnly,

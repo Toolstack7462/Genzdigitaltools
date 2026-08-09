@@ -332,10 +332,30 @@ test('mobile: a Cloudflare challenge on a nav returns ONE recoverable notice, ne
 test('DESKTOP gets the same treatment — the failure is not device-specific', async () => {
   // The live log showed EVERY request classifying as 'desktop' while the client was reporting the
   // fault, so gating this by device is precisely why the earlier rounds changed nothing.
+  //
+  // ★ UPDATED 2026-08-10. The intent of this test is unchanged and is now MORE true: desktop is
+  // treated identically to mobile. What changed is the expected value on THIS path. It probed
+  // /api/challenge_redirect, which — since the Fix B device gate was removed — is handled by the
+  // loop breaker (204, navigation cancelled) instead of falling through to retry→notice. Asserting
+  // 503 here would now re-encode the very gate that was removed. The general challenged-navigation
+  // path still ends in the recoverable notice on desktop, and that is asserted separately below so
+  // the notice path is not silently lost.
   const sess = await openSession();
   const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
-  assert.strictEqual(r.status, 503, 'desktop also gets the recoverable notice, not the challenge document');
-  assert.ok(!/Verifying you are human/i.test(r.body), 'the self-reloading challenge is not replayed on desktop either');
+  assert.strictEqual(r.status, 204, 'desktop gets the same loop breaker as mobile — navigation cancelled');
+  assert.ok(!r.headers['location'], 'no redirect: the running page is left exactly where it is');
+  assert.ok(!/Verifying you are human/i.test(r.body || ''), 'the self-reloading challenge is not replayed on desktop either');
+});
+
+test('DESKTOP still gets the recoverable notice on a NORMAL challenged navigation', async () => {
+  // Guards the other half of the change: removing the Fix B gate must not swallow the ordinary
+  // retry→notice path. A challenged nav that is NOT /api/challenge_redirect must behave exactly as
+  // it did before on desktop — retried, then one manual-retry notice.
+  const sess = await openSession();
+  const r = await get('/perma-challenge', { cookie: sess, 'user-agent': UA_DESKTOP, 'sec-ch-ua-mobile': '?0', accept: 'text/html' });
+  assert.strictEqual(r.status, 503, 'the existing desktop notice path is preserved');
+  assert.match(r.body, /try again/i, 'and the retry is still the user’s to make');
+  assert.ok(!/Verifying you are human/i.test(r.body), 'never the challenge document');
 });
 
 // ── A challenged navigation is TRANSIENT — retry it rather than surface it ────
@@ -358,10 +378,22 @@ test('retries are BOUNDED — a permanently challenged path gives up and never l
   assert.match(r.body, /try again/i, 'and the retry is the user’s to make');
 });
 
-test('an XHR/API challenge is NOT retried or rewritten (only page navigations are)', async () => {
+test('an XHR/API challenge is NOT RETRIED (only page navigations are) — but it IS shielded', async () => {
+  // ★ UPDATED 2026-08-10. The claim this test exists to protect — "only navigations are retried" —
+  // is unchanged and still asserted: the retry block is gated on isHtmlNav, so an XHR never spends
+  // a retry wait. What changed is the second half. It used to assert the challenge was passed
+  // through RAW to the app's fetch handler, which is exactly the defect Fix A exists to prevent:
+  // handing Cloudflare's challenge DOCUMENT to a background fetch is what makes Claude's SPA
+  // full-page-navigate into the unsolvable /api/challenge_redirect loop. Since the Fix A device
+  // gate was removed, desktop receives the same structured retryable 503 mobile already did.
   const sess = await openSession();
+  const t0 = Date.now();
   const r = await get('/api/challenge_redirect', { cookie: sess, 'user-agent': UA_DESKTOP, accept: 'application/json' });
-  assert.notStrictEqual(r.status, 503, 'the app’s own fetch handler still sees the real upstream answer');
+  const dt = Date.now() - t0;
+  assert.ok(dt < 400, 'NOT retried — returns immediately with no retry wait: ' + dt + 'ms');
+  assert.strictEqual(r.status, 503, 'shielded: a structured transient error, not the challenge document');
+  assert.match(r.headers['content-type'] || '', /application\/json/, 'JSON, so the SPA cannot treat it as a page');
+  assert.ok(!/Verifying you are human/i.test(r.body), 'the raw challenge never reaches the app');
 });
 
 // ── 'own' kill-switch (CLAUDE_MOBILE_UPSTREAM=own) — the reversible fallback ───
