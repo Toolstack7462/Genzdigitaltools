@@ -442,3 +442,32 @@
   .bcrm-combo-value, .bcrm-combo-clear { min-height: 44px; }
   .bcrm-combo-list button { min-height: 44px; }
 }
+
+/* ── Invoice header preview (Settings) and message preview ────────────────── */
+/* A read-only mirror of the PDF header so the operator can confirm branding without downloading a
+   document. Colours are the same brand tokens the PDF uses. */
+.bcrm-invoice-preview { border: 1px solid var(--bcrm-border); border-radius: 12px; overflow: hidden; }
+.bcrm-invoice-preview-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 14px 16px; background: var(--bcrm-navy); border-bottom: 4px solid var(--bcrm-cyan);
+}
+.bcrm-invoice-preview-bar img { width: 42px; height: 42px; flex: none; object-fit: contain; }
+.bcrm-invoice-preview-bar > div { display: grid; gap: 2px; min-width: 0; }
+.bcrm-invoice-preview-bar strong { color: #fff; font-size: 15px; font-weight: 800; overflow-wrap: anywhere; }
+.bcrm-invoice-preview-bar span { color: #9ed8ea; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+/* Pushed to the trailing edge on wide viewports; falls into the flex flow when it no longer fits. */
+.bcrm-invoice-preview-meta { margin-left: auto; text-align: right; }
+.bcrm-invoice-preview-meta strong { font-size: 13px; }
+.bcrm-invoice-preview-meta span { color: #c8e4ef; font-weight: 600; letter-spacing: 0; }
+.bcrm-invoice-preview-body { padding: 12px 16px; background: var(--bcrm-card); }
+.bcrm-invoice-preview-body p { margin: 0 0 6px; font-size: 11px; color: var(--bcrm-muted); overflow-wrap: anywhere; }
+.bcrm-invoice-preview-body p:last-child { margin-bottom: 0; }
+
+/* The prepared WhatsApp text. Monospace-ish line handling keeps the blank line before the sign-off
+   visible, which is how the message actually arrives. */
+.bcrm-message-preview { min-height: 172px; line-height: 1.55; white-space: pre-wrap; resize: vertical; }
+
+@media (max-width: 480px) {
+  /* Below this width the right-aligned meta block would squash the store name, so it stacks. */
+  .bcrm-invoice-preview-meta { margin-left: 0; text-align: left; width: 100%; }
+}

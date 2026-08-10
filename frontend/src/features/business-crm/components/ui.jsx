@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, LoaderCircle, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { AlertTriangle, ChevronDown, LoaderCircle, MessageCircle, Plus, RefreshCw, Search, X } from 'lucide-react';
 import { formatMoney } from '../constants';
 export function PageHeader({ title, description, actions }) { return <div className="bcrm-page-head"><div><p className="bcrm-eyebrow">Gen Z Business Console</p><h1>{title}</h1>{description && <p>{description}</p>}</div>{actions && <div className="bcrm-actions">{actions}</div>}</div>; }
 export function Button({ children, variant = 'primary', icon: Icon, ...props }) { return <button className={`bcrm-btn bcrm-btn-${variant}`} {...props}>{Icon && <Icon size={16} />}{children}</button>; }
@@ -13,8 +13,61 @@ export function Table({ columns, rows, rowKey = 'id', empty, onRow, className = 
 export function Field({ label, hint, className = '', children }) { return <label className={`bcrm-field ${className}`}><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
 export function Input(props) { return <input className="bcrm-input" {...props}/>; }
 export function Select(props) { return <select className="bcrm-input" {...props}/>; }
-export function Textarea(props) { return <textarea className="bcrm-input bcrm-textarea" {...props}/>; }
+// className MERGES rather than replaces: spreading props over a hardcoded className would drop the
+// base .bcrm-input styling the moment a caller passed one of its own.
+export function Textarea({ className = '', ...props }) { return <textarea className={`bcrm-input bcrm-textarea ${className}`.trim()} {...props}/>; }
 export function Status({ children, tone = 'neutral', className = '' }) { return <span className={`bcrm-status bcrm-status-${tone} ${className}`.trim()}>{children}</span>; }
+
+/**
+ * Read-only preview of a prepared customer message, with copy and an explicit send action.
+ *
+ * WHY A PREVIEW AT ALL: the reminder flows previously called window.open() AFTER awaiting the prepare
+ * request. A popup opened outside a user gesture is blocked by default in Chrome and Safari, so the
+ * WhatsApp tab silently never appeared while the reminder was already recorded as prepared. Opening
+ * from a button inside this dialog is a real gesture, so it is not blocked — and the operator gets to
+ * read what is about to be sent to a customer before it goes.
+ */
+export function MessagePreview({ open, title = 'Message preview', message, recipient, url, onClose, onSend }) {
+  const [copied, setCopied] = useState('');
+  useEffect(() => { if (open) setCopied(''); }, [open, message]);
+  if (!open) return null;
+  const copy = async () => {
+    try {
+      // navigator.clipboard needs a secure context; the textarea fallback keeps copy working on
+      // plain HTTP and in older browsers rather than failing silently.
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(message || '');
+      else {
+        const scratch = document.createElement('textarea');
+        scratch.value = message || '';
+        scratch.setAttribute('readonly', 'readonly');
+        scratch.style.position = 'fixed';
+        scratch.style.opacity = '0';
+        document.body.appendChild(scratch);
+        scratch.select();
+        document.execCommand('copy');
+        document.body.removeChild(scratch);
+      }
+      setCopied('Message copied to your clipboard.');
+    } catch { setCopied('Copy is unavailable in this browser — select the text above instead.'); }
+  };
+  return <Modal
+    open={open}
+    title={title}
+    onClose={onClose}
+    footer={<>
+      <Button variant="secondary" onClick={copy}>Copy message</Button>
+      {url && <Button icon={MessageCircle} onClick={() => onSend?.(url)}>Open in WhatsApp</Button>}
+    </>}
+  >
+    <div className="bcrm-form">
+      {recipient && <p className="bcrm-modal-note">Sending to {recipient}. Review the wording before it goes out.</p>}
+      {/* Read-only textarea rather than a <pre>: it keeps line breaks, wraps on mobile, and lets the
+          operator select the text manually if the clipboard API is blocked. */}
+      <Textarea className="bcrm-message-preview" readOnly rows={9} value={message || ''} aria-label="Prepared message text" />
+      {copied && <p className="bcrm-modal-note">{copied}</p>}
+    </div>
+  </Modal>;
+}
 /**
  * Toolbar search field. `busy` shows a quiet inline spinner while a request for the current text is
  * still in flight — pages must NOT unmount this component to show a full-page loader, because that

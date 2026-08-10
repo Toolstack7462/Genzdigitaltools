@@ -5,7 +5,7 @@ import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { useResource } from '../hooks';
 import { crmPath, formatDate, formatMoney, today } from '../constants';
-import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, Select, Status, Table, Textarea } from '../components/ui';
+import { Button, Card, ErrorState, Field, Input, Loading, MessagePreview, Modal, PageHeader, Select, Status, Table, Textarea } from '../components/ui';
 
 export default function SaleDetail() {
   const { id } = useParams();
@@ -14,6 +14,7 @@ export default function SaleDetail() {
   const credentialsVisible = crm.has('credentials.view');
   const resource = useResource(() => `/sales/${id}${credentialsVisible ? '?credentials=1' : ''}`, [id, credentialsVisible]);
   const [payment, setPayment] = useState(null);
+  const [reminder, setReminder] = useState(null);
   const [error, setError] = useState('');
   const [working, setWorking] = useState(false);
 
@@ -27,12 +28,18 @@ export default function SaleDetail() {
     catch (requestError) { setError(messageFromError(requestError)); }
     finally { setWorking(false); }
   };
+  // The prepared message is shown for review first. Opening WhatsApp happens from the dialog's own
+  // button, which is a real user gesture and therefore not blocked as a popup.
   const prepareReminder = async (reminderType, entityType = 'sale', entityId = sale.id) => {
     try {
       const response = await crmApi.post('/operations/reminders/prepare', { reminderType, entityType, entityId });
-      window.open(response.data.url, '_blank', 'noopener,noreferrer');
-      await crmApi.post(`/operations/reminders/${response.data.id}/opened`, {});
+      setReminder(response.data);
     } catch (requestError) { setError(messageFromError(requestError)); }
+  };
+  const sendReminder = async (url) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    try { await crmApi.post(`/operations/reminders/${reminder.id}/opened`, {}); } catch { /* the message is already open; the audit ping is best effort */ }
+    setReminder(null);
   };
   const changeStatus = async (value) => {
     if (!window.confirm(`Change invoice status to ${value}?`)) return;
@@ -61,8 +68,8 @@ export default function SaleDetail() {
   return <>
     <PageHeader title={sale.invoice_number} description={`${sale.client_name} • ${formatDate(sale.sale_date)} • ${sale.currency_code}`} actions={<>
       {crm.has('sales.edit') && <Button variant="secondary" icon={Edit3} onClick={() => navigate(crmPath(`sales/${id}/edit`))}>Edit</Button>}
-      {crm.has('invoice.view') && <Button variant="secondary" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf`), '_blank')}>Invoice PDF</Button>}
-      {crm.has('invoice.credentials') && credentialsVisible && <Button variant="ghost" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf?credentials=1`), '_blank')}>PDF + access</Button>}
+      {crm.has('invoice.view') && <Button variant="secondary" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf`), '_blank', 'noopener,noreferrer')}>Invoice PDF</Button>}
+      {crm.has('invoice.credentials') && credentialsVisible && <Button variant="ghost" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf?credentials=1`), '_blank', 'noopener,noreferrer')}>PDF + access</Button>}
     </>} />
     {error && <div className="bcrm-banner warning">{error}</div>}
     <div className="bcrm-grid bcrm-grid-4">
@@ -113,5 +120,10 @@ export default function SaleDetail() {
         <Field label="Notes"><Textarea value={payment.notes} onChange={(event) => setPayment({ ...payment, notes: event.target.value })} /></Field>
       </div>}
     </Modal>
+    <MessagePreview
+      open={Boolean(reminder)} title="WhatsApp reminder preview" message={reminder?.message}
+      recipient={reminder?.recipient} url={reminder?.url}
+      onClose={() => setReminder(null)} onSend={sendReminder}
+    />
   </>;
 }

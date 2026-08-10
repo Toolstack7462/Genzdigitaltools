@@ -5,13 +5,14 @@ import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { useDebouncedValue, useResource } from '../hooks';
 import { crmPath, formatDate, formatMoney, today } from '../constants';
-import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Table, Textarea } from '../components/ui';
+import { Button, Card, ErrorState, Field, Input, Loading, MessagePreview, Modal, PageHeader, SearchBox, Select, Table, Textarea } from '../components/ui';
 
 export default function Payments({ type }) {
   const crm = useBusinessCrm();
   const client = type === 'client';
   const [query, setQuery] = useState('');
   const [entry, setEntry] = useState(null);
+  const [reminder, setReminder] = useState(null);
   const [error, setError] = useState('');
   const path = client ? '/payments/client-pending' : '/payments/vendor-dues';
   const canPost = crm.has(client ? 'payments.client.record' : 'payments.vendor.record');
@@ -22,12 +23,17 @@ export default function Payments({ type }) {
     try { await crmApi.post(`/payments/sales/${entry.saleId}`, entry); setEntry(null); setError(''); resource.reload(); }
     catch (requestError) { setError(messageFromError(requestError)); }
   };
+  // Preview first, then open WhatsApp from the dialog button so the popup is tied to a user gesture.
   const remind = async (row) => {
     try {
       const response = await crmApi.post('/operations/reminders/prepare', { reminderType: client ? 'client_pending' : 'vendor_due', entityType: 'sale', entityId: row.id });
-      window.open(response.data.url, '_blank', 'noopener,noreferrer');
-      await crmApi.post(`/operations/reminders/${response.data.id}/opened`, {});
+      setReminder(response.data);
     } catch (requestError) { setError(messageFromError(requestError)); }
+  };
+  const sendReminder = async (url) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    try { await crmApi.post(`/operations/reminders/${reminder.id}/opened`, {}); } catch { /* best effort */ }
+    setReminder(null);
   };
 
   if (resource.initialLoading) return <Loading />;
@@ -56,5 +62,10 @@ export default function Payments({ type }) {
         <Field label="Notes"><Textarea value={entry.notes} onChange={(event) => setEntry({ ...entry, notes: event.target.value })} /></Field>
       </div>}
     </Modal>
+    <MessagePreview
+      open={Boolean(reminder)} title={client ? 'Payment reminder preview' : 'Vendor payment reminder preview'}
+      message={reminder?.message} recipient={reminder?.recipient} url={reminder?.url}
+      onClose={() => setReminder(null)} onSend={sendReminder}
+    />
   </>;
 }

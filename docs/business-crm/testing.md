@@ -16,20 +16,22 @@
 
 ```bash
 # Backend — full suite (includes the CRM tests)
-cd backend && npm test                     # 333 tests
+cd backend && npm test                     # 365 tests
 
 # Backend — CRM only
 cd backend && node --test tests/businessCrmIsolation.test.js
 cd backend && node --test tests/businessCrmRuntimeDefects.test.js
+cd backend && node --test tests/businessCrmSearch.test.js
+cd backend && node --test tests/businessCrmInvoiceReminders.test.js
 
 # Backend — syntax
 cd backend && node --check modules/business-crm/routes/<file>.js
 
 # Frontend — full suite (includes the CRM routing tests)
-cd frontend && CI=true npx craco test --watchAll=false     # 41 tests
+cd frontend && CI=true npx craco test --watchAll=false     # 77 tests
 
 # Frontend — CRM only
-cd frontend && CI=true npx craco test --testPathPattern=crmRouting --watchAll=false
+cd frontend && CI=true npx craco test --testPathPattern="crmRouting|crmSearch|crmInvoiceReminders" --watchAll=false
 
 # Frontend — production build, exactly as CI builds it
 cd frontend && CI=false GENERATE_SOURCEMAP=false npm run build
@@ -115,6 +117,9 @@ which happened, and is why `code()` exists in that file.
 | `schema.sql` or `db.js` | isolation test → migration script twice → **backup first** |
 | Reconciliation | isolation test → full backend suite → reconcile twice and compare `created` |
 | CRM navigation or `constants.js` | `crmRouting.test.js` → full frontend suite → production build |
+| `invoicePdf.js`, `invoiceLogo.js` or the logo asset | `businessCrmInvoiceReminders.test.js` → **render a real PDF and look at it**; confirm the logo decodes, the invoice number is legible on the navy band, no content crosses the 42/553 pt margins, and no purchase cost or profit appears |
+| `reminderTemplates.js` | `businessCrmInvoiceReminders.test.js` → print every variant and read it; a customer-facing message cannot be recalled once sent |
+| Reminder UI or `MessagePreview` | `crmInvoiceReminders.test.js` → full frontend suite → confirm no popup opens before the review dialog and that `window.open` still carries `noopener` |
 | CRM CSS or layout | production build → **measure** rendered touch targets and body overflow at 320/360/390/412/768 px |
 | `AdminLayoutEnhanced.js` or `App.js` | full frontend suite → production build → manually re-check non-CRM admin pages, client login, public site |
 | Service worker | production build → verify scope and that no `/api/` entry is cached |

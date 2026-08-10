@@ -39,8 +39,9 @@ All **VERIFIED FROM CODE** unless marked otherwise.
 | Client receipts, vendor payments, reversals | `services/paymentService.js`, `routes/payments.js` |
 | Expenses and cashbook | `services/expenseService.js`, `routes/expenses.js`, `routes/reports.js` |
 | Reports (revenue, collections, profit, expiries) | `routes/reports.js`, `pages/Reports.jsx` |
-| PDF invoices | `invoicePdf.js`, `routes/sales.js` (`GET /sales/:id/invoice.pdf`) |
+| PDF invoices, branded | `invoicePdf.js`, `invoiceLogo.js`, `assets/invoice-logo.png`, `routes/sales.js` (`GET /sales/:id/invoice.pdf`) |
 | Tasks, activities, WhatsApp reminder drafts | `routes/operations.js`, `services/reminderService.js` |
+| Customer message wording, English only | `reminderTemplates.js` (pure, unit-tested; payment · renewal · expiring-soon · expired · vendor due) |
 | PKR / INR / NGN ledgers, never combined | `money.js`, every currency-scoped query |
 | Encrypted optional credentials on sale items | `encryption.js` (AES-256-GCM) |
 | Website access reconciliation | `services/websiteAccessService.js`, `routes/accessLinks.js`, `pages/LinkedAccess.jsx` |
