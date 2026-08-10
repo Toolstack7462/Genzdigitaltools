@@ -81,10 +81,13 @@ test('the dashboard scopes its month with half-open DATE bounds', () => {
 });
 
 test('every named placeholder in the dashboard has a matching parameter', () => {
-  // A renamed placeholder without its parameter is how this fix could silently break: mysql2 throws
-  // at execute() time, which would be another 500.
-  const source = code(path.join(MODULE_DIR, 'routes', 'dashboard.js'));
-  const calls = [...source.matchAll(/db\.query\(\s*`([\s\S]*?)`\s*,\s*\{([^}]*)\}\s*\)/g)];
+  // A renamed placeholder whose parameter was not renamed with it throws at execute() — another 500.
+  // Deliberately scoped to dashboard.js: it is the file this change rewrote, and every one of its
+  // queries passes an explicit object literal. Files that spread (`{ ...p }`) cannot have their
+  // supplied keys determined statically, so widening this check produces false positives rather
+  // than signal — the colon-in-comment hazard is covered precisely by the next test instead.
+  const raw = fs.readFileSync(path.join(MODULE_DIR, 'routes', 'dashboard.js'), 'utf8');
+  const calls = [...raw.matchAll(/db\.query\(\s*`([\s\S]*?)`\s*,\s*\{([^}]*)\}\s*\)/g)];
   assert.ok(calls.length >= 8, `expected the dashboard fan-out, found ${calls.length} parameterised queries`);
   const problems = [];
   for (const [, sql, paramText] of calls) {
@@ -95,6 +98,24 @@ test('every named placeholder in the dashboard has a matching parameter', () => 
     }
   }
   assert.deepEqual(problems, [], `unbound placeholders would throw at execute(): ${problems.join('; ')}`);
+});
+
+test('no SQL template literal contains a colon-bearing comment', () => {
+  // Direct guard for the exact regression above: a `--` comment inside a db.query template literal
+  // must not contain a colon, or mysql2 will treat it as a placeholder.
+  const offenders = [];
+  for (const file of crmSourceFiles()) {
+    const raw = fs.readFileSync(file, 'utf8');
+    for (const [, sql] of raw.matchAll(/db\.query\(\s*`([\s\S]*?)`/g)) {
+      for (const line of sql.split('\n')) {
+        const comment = line.match(/--(.*)$/);
+        if (comment && /:[a-zA-Z_]/.test(comment[1])) {
+          offenders.push(`${path.relative(MODULE_DIR, file).replace(/\\/g, '/')} :: --${comment[1].trim().slice(0, 50)}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `colon inside a SQL comment becomes a phantom placeholder: ${offenders.join('; ')}`);
 });
 
 // ── Defect 2: monetary precision at the SQL boundary ─────────────────────────
