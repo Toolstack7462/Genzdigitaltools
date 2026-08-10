@@ -2,7 +2,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ArrowRight, Plus, RefreshCw } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { useResource } from '../hooks';
-import { formatDate, formatMoney } from '../constants';
+import { crmPath, formatDate, formatMoney } from '../constants';
 import { Button, Card, ErrorState, Loading, Metric, PageHeader, Status, Table } from '../components/ui';
 
 export default function Dashboard() {
@@ -31,7 +31,7 @@ export default function Dashboard() {
       description="Sales, collections, liabilities and follow-ups in one live workspace."
       actions={<>
         <Button variant="secondary" icon={RefreshCw} onClick={resource.reload}>Refresh</Button>
-        {crm.has('sales.create') && <Button icon={Plus} onClick={() => navigate('sales/new')}>New sale</Button>}
+        {crm.has('sales.create') && <Button icon={Plus} onClick={() => navigate(crmPath('sales/new'))}>New sale</Button>}
       </>}
     />
     {!crm.online && <div className="bcrm-banner warning">Offline mode: figures below are the last server response. Confirmed balances require synchronization.</div>}
@@ -39,17 +39,17 @@ export default function Dashboard() {
       {metrics.map(([label, value, tone, hint]) => <Metric key={label} label={label} value={value ?? '0.00'} currency={crm.currency} tone={tone} hint={hint} />)}
     </div>
     <div className="bcrm-grid bcrm-grid-2 bcrm-section">
-      <Card title="Recent sales" subtitle="Latest invoices in selected currency" className="flush" actions={<Link className="bcrm-btn bcrm-btn-ghost" to="sales">View all <ArrowRight size={14} /></Link>}>
+      <Card title="Recent sales" subtitle="Latest invoices in selected currency" className="flush" actions={<Link className="bcrm-btn bcrm-btn-ghost" to={crmPath('sales')}>View all <ArrowRight size={14} /></Link>}>
         <Table
           rows={data.recentSales || []}
           columns={[
-            { key: 'invoice_number', label: 'Invoice', render: (row) => <Link to={`sales/${row.id}`} onClick={(event) => event.stopPropagation()}>{row.invoice_number}</Link> },
+            { key: 'invoice_number', label: 'Invoice', render: (row) => <Link to={crmPath(`sales/${row.id}`)} onClick={(event) => event.stopPropagation()}>{row.invoice_number}</Link> },
             { key: 'client_name', label: 'Client' },
             { key: 'sale_date', label: 'Date', render: (row) => formatDate(row.sale_date) },
             { key: 'subtotal_sale', label: 'Total', render: (row) => formatMoney(row.subtotal_sale, row.currency_code) },
             { key: 'client_paid', label: 'Received', render: (row) => formatMoney(row.client_paid, row.currency_code) },
           ]}
-          onRow={(row) => navigate(`sales/${row.id}`)}
+          onRow={(row) => navigate(crmPath(`sales/${row.id}`))}
         />
       </Card>
       <Card title="Top products" subtitle="Current month performance" className="flush">
@@ -67,7 +67,7 @@ export default function Dashboard() {
           <Metric label="Open tasks" value={data.tasks?.open || 0} tone="blue" />
           <Metric label="Overdue" value={data.tasks?.overdue || 0} tone={data.tasks?.overdue ? 'red' : 'green'} />
         </div>
-        <div className="bcrm-form-actions"><Link className="bcrm-btn bcrm-btn-secondary" to="tasks">Open task board</Link></div>
+        <div className="bcrm-form-actions"><Link className="bcrm-btn bcrm-btn-secondary" to={crmPath('tasks')}>Open task board</Link></div>
       </Card>
       {crm.has('audit.view') && <Card title="Recent activity" subtitle="Immutable financial and operational audit trail">
         <div className="bcrm-timeline">

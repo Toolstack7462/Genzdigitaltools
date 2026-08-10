@@ -4,7 +4,7 @@ import { MessageCircle, Save } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { useResource } from '../hooks';
-import { formatDate, formatMoney, today } from '../constants';
+import { crmPath, formatDate, formatMoney, today } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Table, Textarea } from '../components/ui';
 
 export default function Payments({ type }) {
@@ -37,7 +37,7 @@ export default function Payments({ type }) {
     {error && <div className="bcrm-banner warning">{error}</div>}
     <div className="bcrm-filterbar"><SearchBox value={query} onChange={setQuery} placeholder="Name, phone or invoice…" /></div>
     <Card className="flush"><Table rows={resource.data?.rows || []} columns={[
-      { key: 'invoice_number', label: 'Invoice', render: (row) => <Link to={`/admin/business/sales/${row.id}`}>{row.invoice_number}</Link> },
+      { key: 'invoice_number', label: 'Invoice', render: (row) => <Link to={crmPath(`sales/${row.id}`)}>{row.invoice_number}</Link> },
       { key: 'party_name', label: client ? 'Client' : 'Vendor' }, { key: 'sale_date', label: 'Date', render: (row) => formatDate(row.sale_date) },
       { key: 'total_amount', label: 'Total', render: (row) => formatMoney(row.total_amount, row.currency_code) }, { key: 'paid_amount', label: 'Paid', render: (row) => formatMoney(row.paid_amount, row.currency_code) },
       { key: 'pending_amount', label: client ? 'Pending' : 'Due', render: (row) => <strong>{formatMoney(row.pending_amount, row.currency_code)}</strong> },

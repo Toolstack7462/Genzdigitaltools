@@ -4,7 +4,7 @@ import { MessageSquarePlus, Save } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { useResource } from '../hooks';
-import { formatDate, formatMoney } from '../constants';
+import { crmPath, formatDate, formatMoney } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, PageHeader, Select, Status, Table, Textarea } from '../components/ui';
 
 export default function ContactDetail({ kind }) {
@@ -36,7 +36,7 @@ export default function ContactDetail({ kind }) {
   };
 
   const financialColumns = singular === 'client' ? [
-    { key: 'invoice_number', label: 'Invoice', render: (sale) => <Link to={`/admin/business/sales/${sale.id}`}>{sale.invoice_number}</Link> },
+    { key: 'invoice_number', label: 'Invoice', render: (sale) => <Link to={crmPath(`sales/${sale.id}`)}>{sale.invoice_number}</Link> },
     { key: 'sale_date', label: 'Date', render: (sale) => formatDate(sale.sale_date) },
     { key: 'currency_code', label: 'Currency' },
     { key: 'subtotal_sale', label: 'Sale', render: (sale) => formatMoney(sale.subtotal_sale, sale.currency_code) },
@@ -44,7 +44,7 @@ export default function ContactDetail({ kind }) {
     ...(crm.has('profit.view') ? [{ key: 'gross_profit', label: 'Profit', render: (sale) => formatMoney(sale.gross_profit, sale.currency_code) }] : []),
     { key: 'status', label: 'Status', render: (sale) => <Status>{sale.status}</Status> },
   ] : [
-    { key: 'invoice_number', label: 'Invoice', render: (sale) => <Link to={`/admin/business/sales/${sale.id}`}>{sale.invoice_number}</Link> },
+    { key: 'invoice_number', label: 'Invoice', render: (sale) => <Link to={crmPath(`sales/${sale.id}`)}>{sale.invoice_number}</Link> },
     { key: 'sale_date', label: 'Date', render: (sale) => formatDate(sale.sale_date) },
     { key: 'currency_code', label: 'Currency' },
     { key: 'subtotal_cost', label: 'Purchase', render: (sale) => formatMoney(sale.subtotal_cost, sale.currency_code) },
