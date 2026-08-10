@@ -105,3 +105,46 @@ test('label extraction is visibility-independent (innerText returns "" once hidd
     'label to concatenated textContent and let a click through on a blocked row');
   assert.match(fn, /childNodes/, 'the label must come from the first text-bearing child');
 });
+
+// ── Effort picker detected by CONTENT, not by ARIA role ───────────────────────
+// The role-based rule above only fires when a row is BOTH inside [role=menu|listbox] AND is
+// itself [role=menuitem|option]. Claude's effort control satisfies neither, so Low/Medium/
+// High/Max all stayed visible. These guard the content-signature pass that replaced it.
+test('effort: the content-signature config exists and is claude-scoped', () => {
+  for (const k of ['effortRowSel', 'effortWordSource', 'effortAllowSource']) {
+    assert.ok(new RegExp(k + ':').test(TOOLCFG), `menuPolicy.${k} must exist`);
+  }
+  assert.strictEqual((TOOLCFG.match(/effortRowSel:/g) || []).length, 1,
+    'exactly one effort policy, inside the claude.ai override');
+});
+
+test('effort: a group is only acted on with >=2 effort siblings AND a permitted one', () => {
+  const start = SHIELD.indexOf('function sweepEffortGroups');
+  assert.ok(start !== -1, 'sweepEffortGroups must exist');
+  const fn = SHIELD.slice(start, start + 2200);
+  assert.match(fn, /grp\.length < 2/, 'a lone effort word must never qualify');
+  assert.match(fn, /hasAllowed/, 'a group with no permitted level must be ignored');
+  assert.match(fn, /EFFORT_ALLOW_RE\.test\(grp\[h\]\.label\)\)\s*\{/,
+    'permitted levels must be skipped, never hidden');
+});
+
+test('effort: the auto-fallback goes through the app and cannot loop', () => {
+  const start = SHIELD.indexOf('function sweepEffortGroups');
+  const fn = SHIELD.slice(start, start + 2600);
+  // Match the GUARD CONDITION, not merely the flag: asserting on the bare name also matched
+  // the assignment, so deleting the condition left the test green while the loop guard was gone.
+  assert.match(fn, /!\s*keys\[b\]\.__genzEffortFixed/,
+    'the fallback must be guarded by the flag, not merely set it');
+  assert.match(fn, /keys\[b\]\.__genzEffortFixed\s*=\s*true/, 'and must record that it fired');
+  assert.match(fn, /fallback\.click\(\)/,
+    "the fallback must use the app's own handler, not a storage write we don't understand");
+  assert.match(fn, /\/\^medium\$\/i/, 'Medium must be preferred as the fallback level');
+});
+
+test('effort: permitted levels are exactly Low and Medium', () => {
+  const re = grabSource('effortAllowSource');
+  for (const ok of ['Low', 'Medium']) assert.ok(re.test(ok), `${ok} must be permitted`);
+  for (const no of ['High', 'Extra', 'Extra High', 'Max', 'Maximum', 'Ultra', 'Highest']) {
+    assert.ok(!re.test(no), `${no} must NOT be permitted`);
+  }
+});

@@ -200,11 +200,103 @@
     if (MENU_KEEP_RE && MENU_KEEP_RE.test(label)) return false;   // keep wins
     return MENU_BLOCK_RE.test(label);
   }
+  // ── Effort picker, identified by CONTENT rather than by ARIA role ──────────────────────
+  // The role-based pass below only fires when a row is BOTH inside a [role=menu|listbox] AND is
+  // itself a [role=menuitem|option]. Claude's effort control satisfies neither, so it was never
+  // touched. Instead of guessing at more roles, find the picker by what it contains: a cluster of
+  // SIBLING rows each labelled exactly an effort word.
+  //
+  // The two-sibling + one-permitted requirement is the whole safety argument. Prose cannot
+  // produce sibling elements labelled exactly "Low" and "High"; a picker always does. A lone
+  // "Max" in a conversation has no effort-word sibling and is therefore never considered.
+  var EFFORT_ROW_SEL = (MENU && MENU.effortRowSel) || null;
+  var EFFORT_WORD_RE = MENU ? safeRe(MENU.effortWordSource, 'i') : null;
+  var EFFORT_ALLOW_RE = MENU ? safeRe(MENU.effortAllowSource, 'i') : null;
+
+  function effortLabel(n) {
+    var l = menuLabel(n);
+    return (l && l.length <= 12 && EFFORT_WORD_RE && EFFORT_WORD_RE.test(l)) ? l : null;
+  }
+  function sweepEffortGroups(base) {
+    if (!EFFORT_ROW_SEL || !EFFORT_WORD_RE || !EFFORT_ALLOW_RE) return;
+    var rows;
+    try { rows = base.querySelectorAll(EFFORT_ROW_SEL); } catch (e) { return; }
+    // Bucket effort-labelled rows by their parent — siblings of a picker share one.
+    var buckets = [], keys = [];
+    for (var i = 0; i < rows.length; i++) {
+      var lab = effortLabel(rows[i]);
+      if (!lab) continue;
+      var p = rows[i].parentNode;
+      if (!p) continue;
+      var k = keys.indexOf(p);
+      if (k === -1) { keys.push(p); buckets.push([]); k = keys.length - 1; }
+      buckets[k].push({ el: rows[i], label: lab });
+    }
+    for (var b = 0; b < buckets.length; b++) {
+      var grp = buckets[b];
+      if (grp.length < 2) continue;                                    // not a picker
+      var hasAllowed = false;
+      for (var g = 0; g < grp.length; g++) if (EFFORT_ALLOW_RE.test(grp[g].label)) hasAllowed = true;
+      if (!hasAllowed) continue;                                       // not an effort picker
+      var blockedSelected = null, fallback = null;
+      for (var h = 0; h < grp.length; h++) {
+        if (EFFORT_ALLOW_RE.test(grp[h].label)) {
+          // Prefer Medium as the fallback; fall back to whatever permitted row exists.
+          if (!fallback || /^medium$/i.test(grp[h].label)) fallback = grp[h].el;
+          continue;                                                    // Low / Medium stay
+        }
+        if (isSelectedRow(grp[h].el)) blockedSelected = grp[h].el;
+        try {
+          grp[h].el.setAttribute('data-genz-menu-blocked', '1');
+          grp[h].el.style.setProperty('display', 'none', 'important');
+        } catch (e) {}
+      }
+      // A conversation already pinned to High/Max must not stay there. Choose the permitted
+      // level through the APP'S OWN handler (a real click on the Medium row) rather than by
+      // writing to storage we do not understand — the app then updates the composer, persists
+      // its own preference and stays internally consistent. Guarded so it happens at most once
+      // per rendered group, which stops any click/re-render loop.
+      if (blockedSelected && fallback && !keys[b].__genzEffortFixed) {
+        keys[b].__genzEffortFixed = true;
+        try { fallback.click(); } catch (e) {}
+      }
+    }
+  }
+  // Is this row the currently-chosen level? Covers the ARIA states and the common
+  // data-state/class conventions, since we cannot rely on Claude's specific markup.
+  function isSelectedRow(el) {
+    try {
+      if (el.getAttribute('aria-checked') === 'true') return true;
+      if (el.getAttribute('aria-selected') === 'true') return true;
+      var ds = el.getAttribute('data-state') || '';
+      if (/^(checked|active|selected|on)$/i.test(ds)) return true;
+      if (el.querySelector && el.querySelector('[data-state="checked"],[aria-checked="true"]')) return true;
+      return /(^|\s)(is-)?(selected|active|checked)(\s|$)/i.test(el.className || '');
+    } catch (e) { return false; }
+  }
+  // True when the row sits in a confirmed effort picker and is not a permitted level. Used by the
+  // click guard so a blocked level cannot be chosen even if a re-render outruns the hide.
+  function effortBlocked(n) {
+    if (!EFFORT_WORD_RE || !EFFORT_ALLOW_RE) return false;
+    var lab = effortLabel(n);
+    if (!lab || EFFORT_ALLOW_RE.test(lab)) return false;
+    var p = n.parentNode; if (!p) return false;
+    var sibs = p.children || [], seen = 0, allowed = false;
+    for (var i = 0; i < sibs.length; i++) {
+      var l = effortLabel(sibs[i]);
+      if (!l) continue;
+      seen++;
+      if (EFFORT_ALLOW_RE.test(l)) allowed = true;
+    }
+    return seen >= 2 && allowed;
+  }
+
   function sweepMenuPolicy(root) {
     if (!MENU) return;
     try {
       var base = (root && root.nodeType === 1) ? root : (document.body || document.documentElement);
       if (!base) return;
+      sweepEffortGroups(base);
       var seen = [];
       if (base.matches && base.matches(MENU.containers)) seen.push(base);
       // A mutation often lands INSIDE an already-open popover, so walk up as well as down.
@@ -349,6 +441,13 @@
       if (MENU && ev.target && ev.target.closest) {
         var mi = ev.target.closest(MENU.items);
         if (mi && mi.closest(MENU.containers) && menuBlocked(mi)) {
+          ev.preventDefault(); ev.stopPropagation();
+          if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+          return;
+        }
+        // Same refusal for an effort row identified by content rather than by role.
+        var er = EFFORT_ROW_SEL ? ev.target.closest(EFFORT_ROW_SEL) : null;
+        if (er && effortBlocked(er)) {
           ev.preventDefault(); ev.stopPropagation();
           if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
           return;
