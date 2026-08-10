@@ -28,7 +28,9 @@ Mounted once, at `/api/crm/admin/business`, from `backend/server-crm.js`. This m
 | `encryption.js` | AES-256-GCM for item credentials; lazy 503 if the vault key is missing |
 | `audit.js` | Audit writes with recursive secret redaction |
 | `validation.js` | Joi schemas; currency limited to PKR/INR/NGN |
-| `invoicePdf.js` | Invoice PDF; never includes purchase cost or profit |
+| `invoicePdf.js` | Branded invoice PDF (logo, brand palette, payment status); never includes purchase cost or profit |
+| `invoiceLogo.js` | Decodes `assets/invoice-logo.png` for PDF embedding. **Fixed path only** — never `settings.logo_url`, never a URL. Returns `null` on failure so an invoice still renders |
+| `reminderTemplates.js` | English customer message wording. Pure and unit-tested; no credentials, cost or profit |
 | `csv.js` | CSV parse/serialise with formula-injection neutralisation |
 | `http.js` | `asyncHandler`, `pageParams`, `safeLike`, `sendCsv` |
 

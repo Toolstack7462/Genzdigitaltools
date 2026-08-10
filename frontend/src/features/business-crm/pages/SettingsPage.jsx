@@ -3,6 +3,9 @@ import { Save, ShieldCheck } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { Button, Card, ErrorState, Field, Input, Loading, PageHeader, Select, Textarea } from '../components/ui';
+// Same brand asset the backend embeds in the PDF, so the preview cannot drift from the document.
+import invoiceLogo from '../../../assets/brand/logo-genz-digital-store.png';
+import { today } from '../constants';
 
 const toForm = (row = {}) => ({
   storeName: row.store_name || 'Gen Z Digital Store',
@@ -57,6 +60,30 @@ export default function SettingsPage() {
         <Field label="WhatsApp country code"><Input inputMode="numeric" value={form.whatsappCountryCode} onChange={(e)=>change('whatsappCountryCode',e.target.value.replace(/\D/g,''))}/></Field>
         <Field label="Invoice terms"><Textarea value={form.invoiceTerms} onChange={(e)=>change('invoiceTerms',e.target.value)}/></Field>
       </div></Card>
+      {/*
+        Read-only preview of how the store identity appears at the top of a PDF invoice. It mirrors
+        the PDF header rather than driving it: the PDF embeds a fixed local brand asset, so the
+        operator can confirm the wording and contact details without a download.
+      */}
+      <Card title="Invoice header preview" subtitle="How the top of a customer invoice reads with these details">
+        <div className="bcrm-invoice-preview" aria-label="Invoice header preview">
+          <div className="bcrm-invoice-preview-bar">
+            <img src={invoiceLogo} alt="" aria-hidden="true" />
+            <div>
+              <strong>{form.storeName || 'Gen Z Digital Store'}</strong>
+              <span>BUSINESS INVOICE</span>
+            </div>
+            <div className="bcrm-invoice-preview-meta">
+              <strong>{form.invoicePrefix || 'GDS'}-000142</strong>
+              <span>Date: {today()}</span>
+            </div>
+          </div>
+          <div className="bcrm-invoice-preview-body">
+            <p><em>Billed in {form.defaultCurrency || 'PKR'} · status shown as Paid, Partially Paid, Pending or Cancelled</em></p>
+            <p>{[form.storePhone, form.storeEmail, form.storeAddress].filter(Boolean).join(' • ') || 'Add a phone, email and address to show contact details in the invoice footer.'}</p>
+          </div>
+        </div>
+      </Card>
       <Card title="Credential policy" subtitle="Encrypted credentials stay server-side; output requires both policy and permission"><div className="bcrm-form">
         <label className="bcrm-check"><input type="checkbox" checked={form.includeCredentialsInInvoice} onChange={(e)=>change('includeCredentialsInInvoice',e.target.checked)}/> Permit credentials on PDF invoices for users who also hold the invoice.credentials permission</label>
         <label className="bcrm-check"><input type="checkbox" checked={form.includeCredentialsInMessages} onChange={(e)=>change('includeCredentialsInMessages',e.target.checked)}/> Permit credentials in prepared messages for authorized users</label>

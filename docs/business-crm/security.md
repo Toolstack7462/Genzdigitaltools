@@ -7,7 +7,7 @@
 | **Status** | As-built. This is a record of tested boundaries, **not** a security certification. |
 | **Last verified commit** | `8b76b617f67928e6454226d1861f9d35913a3981` |
 | **Last verified date** | 2026-08-10 |
-| **Source files inspected** | `backend/modules/business-crm/{index,permissions,csrf,encryption,audit,csv,money,validation,invoicePdf,http,db}.js`, `routes/*.js`, `frontend/src/features/business-crm/{api.js,BusinessCrmContext.jsx,offline/*}`, `frontend/public/admin/business/sw.js`, `backend/middleware/authEnhanced.js`, `backend/server-crm.js` (CORS, read only). |
+| **Source files inspected** | `backend/modules/business-crm/{index,permissions,csrf,encryption,audit,csv,money,validation,invoicePdf,invoiceLogo,reminderTemplates,http,db}.js`, `routes/*.js`, `frontend/src/features/business-crm/{api.js,BusinessCrmContext.jsx,offline/*}`, `frontend/public/admin/business/sw.js`, `backend/middleware/authEnhanced.js`, `backend/server-crm.js` (CORS, read only). |
 | **Related documents** | [`rbac-matrix.md`](rbac-matrix.md), [`offline-sync.md`](offline-sync.md), [`known-issues.md`](known-issues.md), [`../../SECURITY_NOTES.md`](../../SECURITY_NOTES.md) |
 | **Owner / maintainer** | Repository owner (`Toolstack7462`). |
 | **What this document does not verify** | Penetration testing, dependency CVE status, MANAGER/STAFF/VIEWER runtime enforcement, and the production vault key. **No claim of "secure" or "fully tested" is made.** |
@@ -109,6 +109,10 @@ response can enter Cache Storage. **VERIFIED FROM CODE and VERIFIED IN PRODUCTIO
 | Idempotency | Unique keys on clients, vendors, sales, payments, expenses and the sync ledger | VERIFIED FROM CODE |
 | Optimistic concurrency | `version` columns → HTTP 409 `VERSION_CONFLICT` | VERIFIED FROM CODE |
 | Payment integrity | Overpayment refused (409); reversals additive, originals preserved | VERIFIED FROM CODE |
+| PDF string syntax | `pdfEscape()` escapes `\`, `(`, `)`, flattens newlines, and emits every non-ASCII character as a WinAnsi octal escape — operator text cannot terminate a PDF string or inject a content-stream operator | VERIFIED FROM CODE + test |
+| Invoice logo path | Fixed constant from `__dirname`. `settings.logo_url` is **never** used as a filesystem path or fetched: doing so would turn invoice rendering into an arbitrary file read / SSRF that anyone who can edit settings could trigger | VERIFIED FROM CODE + test |
+| Outbound customer messages | `reminderTemplates.js` interpolates only client/vendor name, product, invoice number, currency, amount and dates — never credentials, cost, profit or vendor pricing. Whitespace in operator-entered values is collapsed, so a crafted client name cannot forge extra message lines | VERIFIED FROM CODE + test |
+| New browser tabs | Every `window.open` in the CRM passes `noopener,noreferrer`, so an opened tab holds no `window.opener` handle back to the admin session | VERIFIED FROM CODE + test |
 
 ## Error disclosure
 

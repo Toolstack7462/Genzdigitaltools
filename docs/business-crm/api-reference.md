@@ -57,7 +57,7 @@ All paths are relative to `/api/crm/admin/business`.
 | PUT | `/sales/:id` | `sales.edit` | Joi `saleUpdate`; requires matching `version` → **409** `VERSION_CONFLICT` |
 | PATCH | `/sales/:id/status` | `sales.cancel` | Status transition |
 | DELETE | `/sales/:id` | `sales.delete` | Soft delete |
-| GET | `/sales/:id/invoice.pdf` | `invoice.view` | Credentials embedded only when the settings switch **and** `invoice.credentials` **and** `credentials.view` all allow it. Purchase cost and profit are never in the PDF |
+| GET | `/sales/:id/invoice.pdf` | `invoice.view` | Branded PDF: Gen Z logo, navy/cyan header, `BUSINESS INVOICE` title, and a Paid / Partially Paid / Pending / Cancelled status derived from the ledger. Credentials embedded only when the settings switch **and** `invoice.credentials` **and** `credentials.view` all allow it. Purchase cost and profit are never in the PDF. `Cache-Control: private, no-store` |
 
 ## Contacts (clients and vendors)
 
@@ -126,6 +126,13 @@ required permission is chosen at request time rather than declared statically.
 
 Reminders **prepare a draft** (a click-to-chat URL and stored message). The CRM does not send
 WhatsApp messages itself.
+
+`prepare` returns the composed message and a `wa.me` deep link. The wording is **English only** and
+comes from [`reminderTemplates.js`](../../backend/modules/business-crm/reminderTemplates.js) — payment,
+renewal, expiring-soon, expired and vendor-due variants. The renewal variant is chosen from the expiry
+date, so the wording cannot contradict the date it prints. No template carries credentials, purchase
+cost, profit or vendor pricing: a sent message cannot be recalled. The UI shows the draft for review
+and only opens WhatsApp from a button press, so the tab is not blocked as an unsolicited popup.
 
 ## Website access links
 

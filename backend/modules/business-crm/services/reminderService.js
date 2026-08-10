@@ -5,6 +5,7 @@ const db = require('../db');
 const audit = require('../audit');
 const money = require('../money');
 const { httpError } = require('./salesService');
+const templates = require('../reminderTemplates');
 
 function digits(value) { return String(value || '').replace(/\D/g, ''); }
 function whatsappPhone(value, countryCode) {
@@ -29,11 +30,17 @@ async function prepare(req, { reminderType, entityType, entityId }) {
     if (reminderType === 'vendor_due') {
       const due = money.nonNegative(money.subtract(sale.subtotal_cost, sale.vendor_paid));
       recipient = sale.vendor_whatsapp;
-      message = `Assalam-o-Alaikum ${sale.vendor_name || 'Vendor'}, ${settings.store_name || 'Gen Z Digital Store'} ki taraf se ${sale.invoice_number} ka vendor due ${sale.currency_code} ${due} record hai. Payment coordination ke liye reply karein.`;
+      message = templates.vendorDueReminder({
+        vendorName: sale.vendor_name, invoiceNumber: sale.invoice_number,
+        currency: sale.currency_code, dueAmount: due, storeName: settings.store_name,
+      });
     } else {
       const pending = money.nonNegative(money.subtract(sale.subtotal_sale, sale.client_paid));
       recipient = sale.client_whatsapp;
-      message = `Assalam-o-Alaikum ${sale.client_name}, ${settings.store_name || 'Gen Z Digital Store'} ki invoice ${sale.invoice_number} ka pending amount ${sale.currency_code} ${pending} hai. Meherbani karke payment update share karein. Shukriya.`;
+      message = templates.clientPaymentReminder({
+        clientName: sale.client_name, invoiceNumber: sale.invoice_number,
+        currency: sale.currency_code, pendingAmount: pending, storeName: settings.store_name,
+      });
     }
   } else if (entityType === 'sale_item' && reminderType === 'expiry') {
     const rows = await db.query(
@@ -43,7 +50,10 @@ async function prepare(req, { reminderType, entityType, entityId }) {
     );
     if (!rows.length) throw httpError('Expiry item not found', 404, 'ITEM_NOT_FOUND');
     const item = rows[0]; saleId = item.sale_id; recipient = item.client_whatsapp;
-    message = `Assalam-o-Alaikum ${item.client_name}, aapka ${item.name} access ${item.expiry_date || 'jaldi'} expire ho raha hai. Renewal ke liye ${settings.store_name || 'Gen Z Digital Store'} ko reply karein.`;
+    message = templates.renewalReminder({
+      clientName: item.client_name, productName: item.name, expiryDate: item.expiry_date,
+      invoiceNumber: item.invoice_number, storeName: settings.store_name,
+    });
   } else throw httpError('Unsupported reminder type', 400, 'REMINDER_UNSUPPORTED');
   const phone = whatsappPhone(recipient, settings.whatsapp_country_code || '92');
   const id = crypto.randomUUID();
