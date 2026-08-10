@@ -80,7 +80,20 @@ const AdminLayoutEnhanced = ({ children }) => {
   // untouched — `compact` is false and the original classes apply verbatim.
   const crmWorkspace = location.pathname.startsWith('/admin/business');
 
-  const SidebarContent = ({ compact = false }) => (
+  // RENDER HELPER, NOT A COMPONENT — call it, never write <renderSidebar />.
+  //
+  // This is declared inside AdminLayoutEnhanced because it closes over sidebarOpen, isActive,
+  // groups, adminUser and handleLogout. A function declared inside a component gets a NEW
+  // identity on every render, so if it is used as JSX (<SidebarContent />) React sees a
+  // different component TYPE each time and unmounts + remounts the whole sidebar on every
+  // parent render — losing focus, resetting scroll and re-running effects. That fires on any
+  // state change here and on every route change, because `crmWorkspace` is derived from
+  // location.pathname.
+  //
+  // Calling it instead inlines the returned elements into this component's own tree, so React
+  // reconciles them normally and nothing remounts. Hoisting it to module scope would also work
+  // but would mean threading five props for no behavioural gain.
+  const renderSidebar = ({ compact = false } = {}) => (
     <div className="flex flex-col h-full"
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
       <div className={`h-[84px] flex items-center border-b ${compact ? 'justify-center px-2' : 'px-4'}`} style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
@@ -159,7 +172,7 @@ const AdminLayoutEnhanced = ({ children }) => {
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
       {/* Desktop sidebar — icon rail at >=1280px inside the CRM, hidden 1024-1279px, full elsewhere */}
       <div className={crmWorkspace ? 'hidden xl:flex w-[72px] flex-shrink-0' : 'hidden lg:flex w-56 flex-shrink-0'}>
-        <SidebarContent compact={crmWorkspace} />
+        {renderSidebar({ compact: crmWorkspace })}
       </div>
 
       {/* Mobile overlay */}
@@ -172,7 +185,7 @@ const AdminLayoutEnhanced = ({ children }) => {
             <motion.div className="relative w-64 h-full"
               initial={reduce ? false : { x: -280 }} animate={{ x: 0 }} exit={reduce ? undefined : { x: -280 }}
               transition={{ type: 'tween', ease: [0.16, 1, 0.3, 1], duration: 0.28 }}>
-              <SidebarContent />
+              {renderSidebar()}
               <button className="absolute top-4 right-4 text-white/60 hover:text-white"
                       onClick={() => setSidebarOpen(false)} aria-label="Close menu">
                 <X size={18} />
