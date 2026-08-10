@@ -1,6 +1,6 @@
 {
   "name": "genz-chrome-extension",
-  "version": "3.9.17",
+  "version": "3.9.18",
   "private": true,
   "description": "Test harness for the Gen Z Digital Store Chrome extension. Not shipped in the packed extension — Chrome ignores it.",
   "scripts": {

@@ -25,20 +25,58 @@ const BG = read('js/background.js');
 const SHIELD = read('js/shield.js');
 
 // ── 1. INACTIVITY ─────────────────────────────────────────────────────────────
-test('PRESERVE: idle window is 15 minutes', () => {
-  const m = TOOLCFG.match(/export const IDLE_TIMEOUT_MINUTES\s*=\s*(\d+)/);
-  assert.ok(m, 'IDLE_TIMEOUT_MINUTES must exist in toolConfigs.js');
-  assert.strictEqual(m[1], '15',
-    'the idle window is 15 minutes; changing it alters when shared sessions end');
-});
-
-test('PRESERVE: idle applies to exactly the four tool hosts — and NOT claude.ai', () => {
+// Policy set 2026-08-10: 20 minutes, HIX AI + GPT Bypass ONLY.
+const IDLE_MIN = TOOLCFG.match(/export const IDLE_TIMEOUT_MINUTES\s*=\s*(\d+)/);
+const IDLE_HOSTS = (() => {
   const m = TOOLCFG.match(/export const IDLE_TIMEOUT_HOSTS\s*=\s*\[([^\]]*)\]/);
   assert.ok(m, 'IDLE_TIMEOUT_HOSTS must exist');
-  const hosts = m[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-  assert.deepStrictEqual(hosts.sort(), ['bypassgpt.ai', 'hix.ai', 'ryne.ai', 'writehuman.ai']);
-  assert.ok(!hosts.includes('claude.ai'),
-    'extension Claude has never been in the idle list; adding it would be a behaviour change');
+  return m[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+})();
+// Mirrors idleHostMatch(): exact host or a subdomain of one.
+const idleApplies = (h) => IDLE_HOSTS.some(k => h === k || h.endsWith('.' + k));
+
+test('idle window is 20 minutes', () => {
+  assert.ok(IDLE_MIN, 'IDLE_TIMEOUT_MINUTES must exist in toolConfigs.js');
+  assert.strictEqual(IDLE_MIN[1], '20', 'the inactivity window must be 20 minutes');
+});
+
+test('(1) HIX AI expires on inactivity', () => {
+  assert.strictEqual(idleApplies('hix.ai'), true);
+  assert.strictEqual(idleApplies('www.hix.ai'), true);
+  assert.strictEqual(idleApplies('app.hix.ai'), true);
+});
+
+test('(2) BypassGPT expires on inactivity', () => {
+  assert.strictEqual(idleApplies('bypassgpt.ai'), true);
+  assert.strictEqual(idleApplies('www.bypassgpt.ai'), true);
+});
+
+test('(3) SciSpace does NOT expire on inactivity', () => {
+  for (const h of ['scispace.com', 'typeset.io', 'www.scispace.com']) {
+    assert.strictEqual(idleApplies(h), false, `${h} must have no inactivity expiry`);
+  }
+});
+
+test('(4) Claude does NOT expire on inactivity', () => {
+  for (const h of ['claude.ai', 'www.claude.ai']) {
+    assert.strictEqual(idleApplies(h), false, `${h} must have no inactivity expiry`);
+  }
+});
+
+test('(5) every other supported tool does NOT expire on inactivity', () => {
+  for (const h of ['writehuman.ai', 'ryne.ai', 'grok.com', 'chatgpt.com',
+                   'stealthwriter.ai', 'anything-added-later.com']) {
+    assert.strictEqual(idleApplies(h), false, `${h} must have no inactivity expiry`);
+  }
+  assert.deepStrictEqual(IDLE_HOSTS.slice().sort(), ['bypassgpt.ai', 'hix.ai'],
+    'the idle list must contain exactly HIX AI and GPT Bypass');
+});
+
+test('activity-reset logic is unchanged (timer resets on any interaction)', () => {
+  assert.match(BG, /function idleActivityReporter\(/, 'the in-tab interaction reporter must remain');
+  assert.match(BG, /setStorage\(\{\s*\[idleKey\(host\)\]:\s*Date\.now\(\)/,
+    'an interaction must still stamp the per-host activity key');
+  assert.match(BG, /now - last >= limitMs/, 'the expiry comparison must be unchanged');
 });
 
 test('PRESERVE: the idle watchdog wiring is intact', () => {
@@ -74,7 +112,31 @@ test('PRESERVE: a refresh cannot bypass a revoked state (server re-verifies ever
     'the credentials endpoint re-verification contract must remain documented and intact');
 });
 
+test('(6) admin/backend revoke still blocks ALL tools, independently of the idle list', () => {
+  // reason='blocked' comes ONLY from the cleanup-manifest 403 / device_blocked branch, and it
+  // wipes EVERY known tool. It has no relationship to IDLE_TIMEOUT_HOSTS, so narrowing the idle
+  // policy cannot weaken (or fix) it. This is what a SciSpace "reason=blocked" screen actually is.
+  assert.match(BG, /err\?\.status === 403 \|\| code === 'device_blocked'/,
+    'the account-disabled / device-blocked branch must remain');
+  assert.match(BG, /for \(const \[toolId, rec\] of Object\.entries\(known\)\)[\s\S]{0,120}'blocked'/,
+    'a backend block must still wipe every known tool, not a subset');
+  const idleSection = BG.slice(BG.indexOf('async function checkIdleSessions'));
+  assert.ok(!/'blocked'/.test(idleSection.slice(0, 900)),
+    'the idle path must never emit reason=blocked — those are separate mechanisms');
+});
+
 // ── 3. MONTHLY EXPIRY -> RENEWAL ──────────────────────────────────────────────
+test('(7) monthly expiry -> renewal is untouched by the idle policy', () => {
+  // The renewal path is driven by backend-confirmed assignment state, never by the idle timer.
+  const idleSection = BG.slice(BG.indexOf('async function checkIdleSessions'));
+  for (const bad of ['endDate', 'renew', 'assignment']) {
+    assert.ok(!new RegExp(bad, 'i').test(idleSection.slice(0, 900)),
+      `checkIdleSessions must not reference ${bad} — renewal is a separate mechanism`);
+  }
+  assert.match(read('js/expired.js'), /SUBSCRIPTION\/ASSIGNMENT expired/i,
+    'the expired page must still distinguish a subscription expiry from a session expiry');
+});
+
 test('PRESERVE: the expired page and its Renew route still exist', () => {
   assert.ok(fs.existsSync(path.join(EXT, 'expired.html')), 'expired.html must exist');
   assert.ok(fs.existsSync(path.join(EXT, 'js', 'expired.js')), 'js/expired.js must exist');

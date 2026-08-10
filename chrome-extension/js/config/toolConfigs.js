@@ -565,17 +565,29 @@ export function isShieldHost(hostname) {
   return SHIELD_HOSTS.some(k => h === k || h.endsWith('.' + k));
 }
 
-// ── Idle session timeout (all extension-based tools) ─────────────────────────
+// ── Idle session timeout (HIX AI and GPT Bypass ONLY) ────────────────────────
 // After IDLE_TIMEOUT_MINUTES of no user activity in the tool tab, the shared session is
 // ended (cookies + page storage cleared, tabs sent to the expired page) so a forgotten,
 // logged-in shared account can't be left open. ANY interaction (move/scroll/key/click)
 // resets the timer, so active users are never interrupted. Auth/login logic is untouched —
 // this only ends an already-open session, the same way an expired assignment is cleaned up.
-// STANDARDIZED at 15 min for HIX AI, GPT Bypass, Ryne and WriteHuman (one shared timeout so
-// every supported tool behaves identically). The resulting screen is the SESSION-expired
-// message ("launch again from your Gen Z Dashboard"), never the subscription/renew screen.
-export const IDLE_TIMEOUT_MINUTES = 15;
-export const IDLE_TIMEOUT_HOSTS = ['hix.ai', 'bypassgpt.ai', 'ryne.ai', 'writehuman.ai'];
+// The resulting screen is the SESSION-expired message ("launch again from your Gen Z
+// Dashboard"), never the subscription/renew screen.
+//
+// SCOPE — 2026-08-10. The window is 20 minutes and the policy applies to HIX AI and GPT
+// Bypass ONLY. It previously ran at 15 minutes across four hosts (Ryne and WriteHuman
+// included); both were narrowed deliberately. Every other extension-supported tool —
+// WriteHuman, Ryne, Claude, Grok, ChatGPT, SciSpace and anything added later — now has NO
+// inactivity expiry at all: its session ends only through the paths that already governed
+// it (backend/admin revoke, assignment expiry, monthly renewal), none of which are affected
+// by this constant. checkIdleSessions() iterates exactly this list, so removing a host is
+// the whole mechanism for exempting it.
+//
+// NOTE: these two values are the ENTIRE idle policy. background.js reads nothing else, so a
+// change here is the complete change — and it is locked by test/lifecyclePreserve.test.js so
+// it cannot drift silently.
+export const IDLE_TIMEOUT_MINUTES = 20;
+export const IDLE_TIMEOUT_HOSTS = ['hix.ai', 'bypassgpt.ai'];
 export function idleHostMatch(hostname) {
   const h = String(hostname || '').replace(/^www\./, '').toLowerCase();
   return IDLE_TIMEOUT_HOSTS.find(k => h === k || h.endsWith('.' + k)) || null;
