@@ -1,0 +1,226 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   CRM WORKSPACE MODE — responsive shell, navigation, tables, forms, modals.
+
+   Loaded AFTER business-crm.css so it deliberately supersedes that file's
+   max-width:1100px / 820px / 560px blocks, which turned the sidebar into a
+   19-item horizontally scrolling strip and forced 620-680px min-width tables.
+
+   Every selector is scoped to .bcrm-* so no unrelated Admin page is affected.
+
+   Layout contract (one full text sidebar at a time):
+     >= 1280px   compact Admin icon rail + CRM sidebar + content
+     1024-1279   Admin rail hidden by Tailwind xl:, CRM sidebar + Back control
+     < 1024px    no permanent sidebar; focus-trapped drawer + quick-nav bar
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Shell ───────────────────────────────────────────────────────────────── */
+/* The Admin shell already owns the viewport and scrolls .app-main, so the CRM
+   fills its container instead of computing a magic 100vh offset. */
+.bcrm-root { min-height: 0; }
+.bcrm-shell {
+  grid-template-columns: 236px minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: linear-gradient(180deg, #f8fbff, #f3f7fb);
+}
+.bcrm-subnav { display: flex; flex-direction: column; gap: 10px; padding: 16px 10px; min-height: 0; }
+.bcrm-nav-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.bcrm-nav-group + .bcrm-nav-group { margin-top: 13px; }
+.bcrm-nav-group-label {
+  margin: 0 0 5px; padding: 0 10px;
+  font-size: 9.5px; font-weight: 850; letter-spacing: .15em; text-transform: uppercase;
+  color: rgba(255, 255, 255, .34);
+}
+.bcrm-subnav-back {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 40px; padding: 8px 10px; flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, .14); border-radius: 10px;
+  color: rgba(255, 255, 255, .78); font-size: 11.5px; font-weight: 750; text-decoration: none;
+}
+.bcrm-subnav-back:hover { background: rgba(255, 255, 255, .09); color: #fff; }
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+.bcrm-toolbar { flex-wrap: nowrap; gap: 10px; padding: 0 18px; }
+.bcrm-toolbar-lead { min-width: 0; gap: 10px; }
+.bcrm-toolbar-trail { gap: 8px; flex-shrink: 0; }
+.bcrm-toolbar-title {
+  font-size: 13.5px; font-weight: 850; color: var(--bcrm-navy);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.bcrm-menu-btn, .bcrm-icon-btn {
+  display: none; align-items: center; justify-content: center;
+  min-width: 44px; min-height: 40px;
+  border: 1px solid var(--bcrm-border); border-radius: 11px;
+  background: #fff; color: var(--bcrm-navy); cursor: pointer;
+}
+.bcrm-icon-btn { display: inline-flex; }
+.bcrm-icon-btn:hover, .bcrm-menu-btn:hover { border-color: #93c5fd; background: #f8fbff; }
+.bcrm-back-btn {
+  display: none; align-items: center; gap: 6px;
+  min-height: 40px; padding: 0 12px;
+  border: 1px solid var(--bcrm-border); border-radius: 11px;
+  background: #fff; color: var(--bcrm-navy);
+  font-size: 11.5px; font-weight: 800; text-decoration: none; white-space: nowrap;
+}
+.bcrm-back-btn:hover { border-color: #93c5fd; background: #f8fbff; }
+.bcrm-connect { border: 0; cursor: pointer; font-family: inherit; gap: 7px; white-space: nowrap; }
+.bcrm-connect em { font-style: normal; font-weight: 800; opacity: .85; }
+.bcrm-connect:focus-visible,
+.bcrm-menu-btn:focus-visible,
+.bcrm-icon-btn:focus-visible,
+.bcrm-back-btn:focus-visible,
+.bcrm-nav a:focus-visible,
+.bcrm-quicknav a:focus-visible,
+.bcrm-quicknav button:focus-visible { outline: 2px solid var(--bcrm-cyan); outline-offset: 2px; }
+
+/* ── Content ─────────────────────────────────────────────────────────────── */
+/* The Admin <main> drops its own padding inside the CRM, so this is the single
+   source of content spacing — no double padding, no compounding gutters. */
+.bcrm-main { padding: 22px; max-width: 1360px; margin: 0 auto; }
+
+/* ── Drawer (mobile navigation) ──────────────────────────────────────────── */
+.bcrm-quicknav { display: none; }
+.bcrm-drawer-backdrop {
+  position: fixed; inset: 0; z-index: 1200; display: flex;
+  background: rgba(0, 8, 32, .55); backdrop-filter: blur(4px);
+}
+.bcrm-drawer {
+  width: min(320px, 88vw); max-width: 88vw; height: 100dvh;
+  display: flex; flex-direction: column;
+  background: var(--bcrm-gradient-navy); color: #fff;
+  box-shadow: 24px 0 60px rgba(0, 8, 32, .45);
+}
+.bcrm-drawer > header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 16px 14px; padding-top: calc(16px + env(safe-area-inset-top));
+  border-bottom: 1px solid rgba(255, 255, 255, .1);
+}
+.bcrm-drawer > header strong { display: block; font-size: 14px; }
+.bcrm-drawer > header span {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .15em; color: #67e8f9;
+}
+.bcrm-drawer > header button {
+  width: 40px; height: 40px; display: grid; place-items: center;
+  border: 1px solid rgba(255, 255, 255, .18); border-radius: 11px;
+  background: transparent; color: #fff; cursor: pointer;
+}
+.bcrm-drawer-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain; padding: 14px 10px;
+}
+.bcrm-drawer > footer {
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid rgba(255, 255, 255, .1);
+}
+.bcrm-drawer > footer a {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 44px; border: 1px solid rgba(255, 255, 255, .16); border-radius: 11px;
+  color: #fff; font-size: 12px; font-weight: 800; text-decoration: none;
+}
+
+/* ── Laptop: 1024-1279px ─────────────────────────────────────────────────── */
+/* The Admin rail is hidden by Tailwind xl: here, so the CRM owns the only
+   sidebar and must offer an explicit route back to the Admin Console. */
+@media (min-width: 1024px) and (max-width: 1279.98px) {
+  .bcrm-back-btn { display: inline-flex; }
+  .bcrm-shell { grid-template-columns: 212px minmax(0, 1fr); }
+  .bcrm-main { padding: 20px; }
+}
+
+/* ── Tablet & mobile: below 1024px ───────────────────────────────────────── */
+@media (max-width: 1023.98px) {
+  .bcrm-shell { display: block; border-radius: 0; }
+  /* Supersedes the old horizontally scrolling nav strip entirely. */
+  .bcrm-subnav { display: none !important; }
+  .bcrm-menu-btn { display: inline-flex; }
+  .bcrm-toolbar { position: sticky; top: 0; height: 58px; padding: 0 12px; }
+  .bcrm-back-btn, .bcrm-toolbar label { display: none; }
+  .bcrm-main { padding: 14px 14px calc(76px + env(safe-area-inset-bottom)); }
+  .bcrm-quicknav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 900;
+    align-items: stretch; justify-content: space-around; gap: 2px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+    background: rgba(255, 255, 255, .97);
+    border-top: 1px solid var(--bcrm-border);
+    backdrop-filter: blur(10px);
+  }
+  .bcrm-quicknav a, .bcrm-quicknav button {
+    flex: 1 1 0; min-width: 0; min-height: 48px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    border: 0; background: transparent; border-radius: 12px;
+    color: var(--bcrm-muted); font-family: inherit; font-size: 10px; font-weight: 800;
+    text-decoration: none; cursor: pointer;
+  }
+  .bcrm-quicknav a.active { color: var(--bcrm-blue); background: #eff6ff; }
+  .bcrm-quicknav span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* ── Stacked table cards below 768px ─────────────────────────────────────── */
+/* The Table component already emits td[data-label], so each cell labels itself.
+   Data is reflowed, never dropped. */
+@media (max-width: 767.98px) {
+  .bcrm-table-wrap { overflow: visible; }
+  .bcrm-table { min-width: 0; display: block; border-collapse: separate; }
+  .bcrm-table thead { display: none; }
+  .bcrm-table tbody, .bcrm-table tr, .bcrm-table td { display: block; width: auto; }
+  .bcrm-table tr {
+    margin: 0 0 10px; padding: 12px 13px; background: #fff;
+    border: 1px solid var(--bcrm-border); border-radius: 14px;
+    box-shadow: 0 4px 14px rgba(0, 16, 48, .04);
+  }
+  .bcrm-table tbody tr:last-child { margin-bottom: 0; }
+  .bcrm-table td {
+    border: 0; padding: 6px 0; font-size: 12.5px;
+    display: grid; grid-template-columns: minmax(84px, 38%) minmax(0, 1fr);
+    align-items: start; gap: 12px;
+  }
+  .bcrm-table td + td { border-top: 1px dashed #eef2f6; }
+  .bcrm-table td::before {
+    content: attr(data-label);
+    font-size: 9.5px; font-weight: 850; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--bcrm-muted); padding-top: 2px;
+  }
+  /* Row actions get a full-width row so 44px touch targets fit. */
+  .bcrm-table td .bcrm-btn { width: 100%; }
+  .bcrm-table td .bcrm-form-actions { justify-content: stretch; flex-wrap: wrap; }
+}
+
+/* ── Forms & modals below 768px ──────────────────────────────────────────── */
+@media (max-width: 767.98px) {
+  .bcrm-form-grid, .bcrm-form-grid-3 { grid-template-columns: 1fr; }
+  .bcrm-btn, .bcrm-input { min-height: 44px; }
+  .bcrm-form-actions {
+    position: sticky; bottom: 0; z-index: 2; margin-top: 4px;
+    padding: 10px 0 calc(4px + env(safe-area-inset-bottom));
+    background: #fff; border-top: 1px solid #eef2f6;
+  }
+  .bcrm-form-actions .bcrm-btn { flex: 1 1 auto; }
+
+  /* Centered desktop dialogs become bottom sheets. */
+  .bcrm-modal-backdrop { padding: 0; display: flex; align-items: flex-end; }
+  .bcrm-modal {
+    width: 100%; max-width: 100%; max-height: 92dvh;
+    border-radius: 18px 18px 0 0; display: flex; flex-direction: column;
+  }
+  .bcrm-modal > header { position: sticky; top: 0; z-index: 1; background: #fff; }
+  .bcrm-modal-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .bcrm-modal > footer {
+    position: sticky; bottom: 0; flex-wrap: wrap;
+    padding-bottom: calc(13px + env(safe-area-inset-bottom)); background: #fff;
+  }
+  .bcrm-modal > footer .bcrm-btn { flex: 1 1 auto; }
+
+  .bcrm-page-head { display: block; }
+  .bcrm-actions { justify-content: flex-start; margin-top: 12px; }
+  .bcrm-totalbar { justify-content: flex-start; }
+  .bcrm-kv, .bcrm-permission-grid { grid-template-columns: 1fr; }
+}
+
+/* Long labels and unbroken identifiers were the actual source of horizontal
+   overflow, so they wrap rather than the page being clipped with
+   overflow-x:hidden, which would only have hidden the symptom. */
+.bcrm-root { overflow-wrap: anywhere; }
+.bcrm-table td, .bcrm-kv strong, .bcrm-banner, .bcrm-page-head h1 { overflow-wrap: anywhere; }

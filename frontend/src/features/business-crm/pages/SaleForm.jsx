@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Save, Trash2 } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
-import { formatMoney, today } from '../constants';
+import { crmPath, formatMoney, today } from '../constants';
 import { offlineDb } from '../offline/db';
 import { queueOperation } from '../offline/queue';
 import { Button, Card, ErrorState, Field, Input, Loading, PageHeader, Select, Textarea } from '../components/ui';
@@ -152,10 +152,10 @@ export default function SaleForm() {
         if (!crm.has('offline.sync')) throw new Error('Your role cannot queue offline financial entries.');
         if (payload.items.some((item) => item.credentialEmail || item.credentialPassword)) throw new Error('Credentials cannot be stored in the offline queue. Remove them or reconnect.');
         const clean = { ...payload, items: payload.items.map(({ credentialEmail, credentialPassword, keepCredentialEmail, keepCredentialPassword, ...rest }) => rest) };
-        await queueOperation('sale.create', clean, crm.bootstrap?.user?.id); crm.setQueued(crm.queued + 1); navigate('../sales'); return;
+        await queueOperation('sale.create', clean, crm.bootstrap?.user?.id); crm.setQueued(crm.queued + 1); navigate(crmPath('sales')); return;
       }
       const response = editing ? await crmApi.put(`/sales/${id}`, payload) : await crmApi.post('/sales', payload);
-      navigate(`/admin/business/sales/${response.data.id}`);
+      navigate(crmPath(`sales/${response.data.id}`));
     } catch (requestError) { setError(messageFromError(requestError)); }
     finally { setSaving(false); }
   };

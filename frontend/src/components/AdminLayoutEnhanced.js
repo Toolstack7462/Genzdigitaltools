@@ -72,24 +72,34 @@ const AdminLayoutEnhanced = ({ children }) => {
     return acc;
   }, {});
 
-  const SidebarContent = () => (
+  // ── Business CRM workspace mode (route-scoped) ────────────────────────────
+  // Inside /admin/business/* the CRM renders its own full sidebar, so showing this one as well
+  // produced TWO full text sidebars and squeezed the content column on laptops. Here the global
+  // Admin nav collapses to an icon rail at >=1280px and hides entirely between 1024-1279px, where
+  // the CRM toolbar provides a "Back to Admin Console" control instead. Every other Admin page is
+  // untouched — `compact` is false and the original classes apply verbatim.
+  const crmWorkspace = location.pathname.startsWith('/admin/business');
+
+  const SidebarContent = ({ compact = false }) => (
     <div className="flex flex-col h-full"
          style={{ background: 'var(--gradient-navy)', borderRight: '1px solid rgba(6,182,212,0.16)' }}>
-      <div className="h-[84px] flex items-center px-4 border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
-        <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Admin dashboard">
+      <div className={`h-[84px] flex items-center border-b ${compact ? 'justify-center px-2' : 'px-4'}`} style={{ borderColor: 'rgba(255,255,255,0.08)' }}>
+        <Link to="/admin/dashboard" onClick={() => setSidebarOpen(false)} className="flex items-center gap-3 group" aria-label="Admin dashboard" title={compact ? 'Admin dashboard' : undefined}>
           <span className="ds-logo-tile">
             <BrandLogo size="lg" glow />
           </span>
-          <span className="flex flex-col leading-tight">
-            <span className="text-white font-bold text-[15px] tracking-tight">Gen Z Digital Store</span>
-            <span className="flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">
-              <Shield size={10} /> Admin Console
+          {!compact && (
+            <span className="flex flex-col leading-tight">
+              <span className="text-white font-bold text-[15px] tracking-tight">Gen Z Digital Store</span>
+              <span className="flex items-center gap-1 mt-0.5 text-[10px] font-bold uppercase tracking-[0.16em] text-genz-cyan">
+                <Shield size={10} /> Admin Console
+              </span>
             </span>
-          </span>
+          )}
         </Link>
       </div>
 
-      {adminUser && (
+      {adminUser && !compact && (
         <div className="px-4 py-3 border-b" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
@@ -104,10 +114,10 @@ const AdminLayoutEnhanced = ({ children }) => {
         </div>
       )}
 
-      <nav className="flex-1 p-3 overflow-y-auto">
+      <nav className={`flex-1 overflow-y-auto ${compact ? 'p-2' : 'p-3'}`}>
         {Object.entries(groups).map(([group, items]) => (
           <div key={group} className="mb-3">
-            <p className="px-3 mb-1 text-[10px] font-bold uppercase tracking-widest text-white/30">{group}</p>
+            {!compact && <p className="px-3 mb-1 text-[10px] font-bold uppercase tracking-widest text-white/30">{group}</p>}
             <div className="space-y-0.5">
               {items.map(({ to, icon: Icon, label }) => {
                 const active = isActive(to);
@@ -115,9 +125,11 @@ const AdminLayoutEnhanced = ({ children }) => {
                   <Link key={to} to={to}
                         onClick={() => setSidebarOpen(false)}
                         aria-current={active ? 'page' : undefined}
-                        className={`ds-navitem ${active ? 'active' : ''}`}>
+                        aria-label={compact ? label : undefined}
+                        title={compact ? label : undefined}
+                        className={`ds-navitem ${active ? 'active' : ''} ${compact ? 'justify-center px-0' : ''}`}>
                     <Icon size={17} className="ds-navicon flex-shrink-0" />
-                    {label}
+                    {!compact && label}
                   </Link>
                 );
               })}
@@ -126,16 +138,18 @@ const AdminLayoutEnhanced = ({ children }) => {
         ))}
       </nav>
 
-      <div className="p-3 border-t space-y-1" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
+      <div className={`border-t space-y-1 ${compact ? 'p-2' : 'p-3'}`} style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
         <a href="https://genzdigitalstore.com" target="_blank" rel="noopener noreferrer"
-           className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all">
+           title={compact ? 'View Website' : undefined} aria-label={compact ? 'View Website' : undefined}
+           className={`flex items-center rounded-xl text-sm text-white/60 hover:text-white hover:bg-white/5 transition-all ${compact ? 'justify-center py-2.5' : 'gap-2.5 px-3 py-2.5'}`}>
           <ExternalLink size={16} />
-          View Website
+          {!compact && 'View Website'}
         </a>
         <button onClick={handleLogout}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-all">
+                title={compact ? 'Logout' : undefined} aria-label={compact ? 'Logout' : undefined}
+                className={`w-full flex items-center rounded-xl text-sm font-medium text-red-300 hover:text-red-200 hover:bg-red-500/10 border border-red-500/20 hover:border-red-500/40 transition-all ${compact ? 'justify-center py-2.5' : 'gap-2.5 px-3 py-2.5'}`}>
           <LogOut size={16} />
-          Logout
+          {!compact && 'Logout'}
         </button>
       </div>
     </div>
@@ -143,9 +157,9 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
-      {/* Desktop sidebar */}
-      <div className="hidden lg:flex w-56 flex-shrink-0">
-        <SidebarContent />
+      {/* Desktop sidebar — icon rail at >=1280px inside the CRM, hidden 1024-1279px, full elsewhere */}
+      <div className={crmWorkspace ? 'hidden xl:flex w-[72px] flex-shrink-0' : 'hidden lg:flex w-56 flex-shrink-0'}>
+        <SidebarContent compact={crmWorkspace} />
       </div>
 
       {/* Mobile overlay */}
@@ -193,8 +207,11 @@ const AdminLayoutEnhanced = ({ children }) => {
           <RefreshButton variant="dark" className="!h-8 !w-8" />
         </div>
 
-        <main className="app-main flex-1 overflow-y-auto p-5 sm:p-6" style={{ background: 'var(--gradient-app)' }}>
-          <div className="max-w-[1200px] mx-auto">{children}</div>
+        {/* Inside the CRM the workspace supplies its own padding and max width, so the outer
+            padding + 1200px clamp are dropped to avoid double padding and a needlessly narrow
+            content column. Unrelated Admin pages keep the original spacing exactly. */}
+        <main className={`app-main flex-1 overflow-y-auto ${crmWorkspace ? 'p-0' : 'p-5 sm:p-6'}`} style={{ background: 'var(--gradient-app)' }}>
+          {crmWorkspace ? children : <div className="max-w-[1200px] mx-auto">{children}</div>}
         </main>
       </div>
     </div>

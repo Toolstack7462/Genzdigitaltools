@@ -22,7 +22,10 @@ import AuditPage from './pages/AuditPage';
 import ImportsPage from './pages/ImportsPage';
 import OfflineQueue from './pages/OfflineQueue';
 import Forbidden from './pages/Forbidden';
+import NotFound from './pages/NotFound';
 import './business-crm.css';
+// Loaded second on purpose: it supersedes the base file's narrow-screen rules.
+import './business-crm-responsive.css';
 
 function Gate({ permission, children }) {
   const crm = useBusinessCrm();
@@ -57,6 +60,8 @@ export default function BusinessCrmApp() {
     <Route path="audit" element={protectedPage('audit.view', <AuditPage />)} />
     <Route path="imports" element={protectedPage('imports.manage', <ImportsPage />)} />
     <Route path="forbidden" element={<Forbidden />} />
-    <Route path="*" element={<Navigate to="." replace />} />
+    {/* Absolute, VISIBLE fallback. The previous `<Navigate to="." replace />` resolved to the
+        current path, so it redirected to itself and rendered nothing — the blank-panel bug. */}
+    <Route path="*" element={<NotFound />} />
   </Route></Routes></BusinessCrmProvider>;
 }

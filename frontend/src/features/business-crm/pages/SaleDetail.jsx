@@ -4,7 +4,7 @@ import { Bell, Edit3, FileText, MessageCircle, RotateCcw, Save, XCircle } from '
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
 import { useResource } from '../hooks';
-import { formatDate, formatMoney, today } from '../constants';
+import { crmPath, formatDate, formatMoney, today } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, Select, Status, Table, Textarea } from '../components/ui';
 
 export default function SaleDetail() {
@@ -60,7 +60,7 @@ export default function SaleDetail() {
 
   return <>
     <PageHeader title={sale.invoice_number} description={`${sale.client_name} • ${formatDate(sale.sale_date)} • ${sale.currency_code}`} actions={<>
-      {crm.has('sales.edit') && <Button variant="secondary" icon={Edit3} onClick={() => navigate('edit')}>Edit</Button>}
+      {crm.has('sales.edit') && <Button variant="secondary" icon={Edit3} onClick={() => navigate(crmPath(`sales/${id}/edit`))}>Edit</Button>}
       {crm.has('invoice.view') && <Button variant="secondary" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf`), '_blank')}>Invoice PDF</Button>}
       {crm.has('invoice.credentials') && credentialsVisible && <Button variant="ghost" icon={FileText} onClick={() => window.open(crmApi.rawUrl(`/sales/${sale.id}/invoice.pdf?credentials=1`), '_blank')}>PDF + access</Button>}
     </>} />
@@ -94,8 +94,8 @@ export default function SaleDetail() {
     </Card>
     <Card title="Internal information" className="bcrm-section">
       <div className="bcrm-kv">
-        <div><span>Client</span><strong><Link to={`../../clients/${sale.client_id}`}>{sale.client_name}</Link></strong></div>
-        {crm.has('vendors.view') && <div><span>Vendor</span><strong>{sale.vendor_id ? <Link to={`../../vendors/${sale.vendor_id}`}>{sale.vendor_name}</Link> : '—'}</strong></div>}
+        <div><span>Client</span><strong><Link to={crmPath(`clients/${sale.client_id}`)}>{sale.client_name}</Link></strong></div>
+        {crm.has('vendors.view') && <div><span>Vendor</span><strong>{sale.vendor_id ? <Link to={crmPath(`vendors/${sale.vendor_id}`)}>{sale.vendor_name}</Link> : '—'}</strong></div>}
         <div><span>Order type</span><strong>{sale.order_type}</strong></div><div><span>Version</span><strong>{sale.version}</strong></div>
       </div>
       {sale.notes && <p>{sale.notes}</p>}{sale.invoice_instructions && <p><strong>Invoice note:</strong> {sale.invoice_instructions}</p>}
