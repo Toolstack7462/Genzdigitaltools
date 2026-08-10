@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const audit = require('../audit');
 const money = require('../money');
-const { asyncHandler, pageParams } = require('../http');
+const { asyncHandler, pageParams, safeLike } = require('../http');
 const { validate } = require('../validation');
 const { requirePermission, has } = require('../permissions');
 const { httpError } = require('../services/salesService');
@@ -22,7 +22,7 @@ router.get('/', requirePermission('products.view'), asyncHandler(async (req, res
   const { page, pageSize, offset } = pageParams(req.query); const where = ['deleted_at IS NULL']; const params = { limit: pageSize, offset };
   if (req.query.currency) { where.push('currency_code=:currency'); params.currency = money.assertCurrency(req.query.currency); }
   if (req.query.active !== undefined) { where.push('active=:active'); params.active = String(req.query.active) === 'false' ? 0 : 1; }
-  if (req.query.q) { where.push('(name LIKE :q OR category LIKE :q)'); params.q = `%${String(req.query.q).slice(0, 160)}%`; }
+  if (req.query.q) { where.push("(name LIKE :q OR category LIKE :q OR COALESCE(duration_label,'') LIKE :q)"); params.q = safeLike(req.query.q); }
   const [rows, counts] = await Promise.all([db.query(`SELECT * FROM biz_crm_products WHERE ${where.join(' AND ')} ORDER BY name LIMIT :limit OFFSET :offset`, params), db.query(`SELECT COUNT(*) total FROM biz_crm_products WHERE ${where.join(' AND ')}`, params)]);
   res.json({ rows: rows.map((row) => forRequest(req, row)), page, pageSize, total: Number(counts[0]?.total || 0) });
 }));

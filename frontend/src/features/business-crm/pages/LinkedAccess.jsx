@@ -3,7 +3,8 @@ import { BadgeCheck, Ban, Link2, RefreshCw, Undo2 } from 'lucide-react';
 import { crmApi, messageFromError } from '../api';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { CURRENCIES, formatDate, today } from '../constants';
-import { Button, Card, Empty, ErrorState, Field, Input, Loading, Modal, PageHeader, Select, Status, Table, Textarea } from '../components/ui';
+import { useDebouncedValue } from '../hooks';
+import { Button, Card, Empty, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Status, Table, Textarea } from '../components/ui';
 
 /**
  * Website Access — the reconciliation inbox.
@@ -72,12 +73,17 @@ export default function LinkedAccess() {
 
   const [rows, setRows] = useState([]);
   const [summary, setSummary] = useState(null);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [warning, setWarning] = useState('');
   const [syncing, setSyncing] = useState(false);
   const [financial, setFinancial] = useState('NEEDS_FINANCIAL_DETAILS');
   const [access, setAccess] = useState('');
+  const [query, setQuery] = useState('');
+  // Search is server-side: the row set is paginated, so filtering in the browser would only ever
+  // narrow the current page and would silently miss matches on later pages.
+  const search = useDebouncedValue(query);
   const [vendors, setVendors] = useState([]);
   const [editor, setEditor] = useState(null);
   const [form, setForm] = useState(emptyFinancials);
@@ -87,18 +93,20 @@ export default function LinkedAccess() {
     setLoading(true);
     setError('');
     try {
-      const query = new URLSearchParams({ pageSize: '200' });
-      if (financial) query.set('financialStatus', financial);
-      if (access) query.set('accessStatus', access);
-      const response = await crmApi.get(`/access-links?${query.toString()}`);
+      const params = new URLSearchParams({ pageSize: '200' });
+      if (financial) params.set('financialStatus', financial);
+      if (access) params.set('accessStatus', access);
+      if (search) params.set('search', search);
+      const response = await crmApi.get(`/access-links?${params.toString()}`);
       setRows(response.data.rows || []);
+      setTotal(Number(response.data.total || 0));
       setSummary(response.data.summary || null);
     } catch (err) {
       setError(messageFromError(err));
     } finally {
       setLoading(false);
     }
-  }, [financial, access]);
+  }, [financial, access, search]);
 
   // Reconciliation is best-effort: a failure here must leave the rest of the CRM usable, so it only
   // ever raises a non-blocking warning and the list is loaded either way.
@@ -234,7 +242,7 @@ export default function LinkedAccess() {
     },
   ], [canLink]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (loading && !rows.length) return <Loading label="Loading website access records…" />;
+  if (loading && !rows.length && !query) return <Loading label="Loading website access records…" />;
   if (error && !rows.length) return <ErrorState message={error} onRetry={load} />;
 
   return <>
@@ -251,11 +259,15 @@ export default function LinkedAccess() {
     <div className="bcrm-filterbar">
       <Field label="Financial status"><Select value={financial} onChange={(event) => setFinancial(event.target.value)}>{FINANCIAL_FILTERS.map(([value, label]) => <option key={value || 'all'} value={value}>{label}</option>)}</Select></Field>
       <Field label="Access status"><Select value={access} onChange={(event) => setAccess(event.target.value)}>{ACCESS_FILTERS.map(([value, label]) => <option key={value || 'all'} value={value}>{label}</option>)}</Select></Field>
+      <SearchBox value={query} onChange={setQuery} busy={loading} placeholder="Client, email, phone, tool or source…" />
     </div>
-    <Card className="flush" title={`${rows.length} access record${rows.length === 1 ? '' : 's'}`}>
+    <Card className="flush" title={`${total || rows.length} access record${(total || rows.length) === 1 ? '' : 's'}`}>
       {rows.length
         ? <Table rows={rows} columns={columns} className="bcrm-linked-access-table" />
-        : <Empty title="Nothing to reconcile" description="Website access records appear here automatically once they exist." />}
+        : <Empty
+          title={query ? 'No access record matches that search' : 'Nothing to reconcile'}
+          description={query ? 'Try a client name, email address, phone number, tool name or source.' : 'Website access records appear here automatically once they exist.'}
+        />}
     </Card>
 
     <Modal

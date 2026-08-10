@@ -386,3 +386,59 @@
 }
 /* Disabled primary stays clearly inert without losing its identity. */
 .bcrm-linked-access-actions .bcrm-btn:disabled { opacity: .55; cursor: not-allowed; }
+
+/* ── Async combobox (search-first selectors) ──────────────────────────────── */
+/* Used by the sale form in place of dropdowns that had to preload 500 records. The popup is
+   positioned relative to its own wrapper and constrained in height so a long result list scrolls
+   inside itself instead of extending the page. */
+.bcrm-combo { position: relative; }
+.bcrm-combo-input { position: relative; display: flex; align-items: center; gap: 8px; }
+.bcrm-combo-input > svg:first-child { position: absolute; left: 10px; color: var(--bcrm-muted); pointer-events: none; }
+.bcrm-combo-input .bcrm-input { padding-left: 32px; }
+.bcrm-combo-input > .bcrm-spin { position: absolute; right: 10px; color: var(--bcrm-muted); }
+.bcrm-combo-selected { display: flex; align-items: stretch; gap: 6px; }
+.bcrm-combo-value {
+  flex: 1; min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 41px; padding: 9px 11px; border: 1px solid var(--bcrm-border); border-radius: 10px;
+  background: #fff; color: var(--bcrm-text); font-size: 12px; font-weight: 650; cursor: pointer; text-align: left;
+}
+/* The selected value can be a long client or product name. It must not be able to widen the grid
+   column, so it truncates with an ellipsis and exposes the full text through the button's label. */
+.bcrm-combo-value > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bcrm-combo-value > svg { flex: none; color: var(--bcrm-muted); }
+.bcrm-combo-value:focus-visible, .bcrm-combo-clear:focus-visible { outline: 3px solid var(--bcrm-cyan); outline-offset: 1px; }
+.bcrm-combo-clear {
+  flex: none; width: 41px; display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--bcrm-border); border-radius: 10px; background: #fff; color: var(--bcrm-muted); cursor: pointer;
+}
+.bcrm-combo.is-disabled .bcrm-combo-value { background: #f1f5f9; cursor: not-allowed; }
+/* The mirror only exists to carry `required` into native form validation. It must stay in the layout
+   (a display:none control is exempt from validation) while remaining invisible and unfocusable. */
+.bcrm-combo-mirror { position: absolute; left: 0; bottom: 0; width: 1px; height: 1px; opacity: 0; padding: 0; border: 0; pointer-events: none; }
+.bcrm-combo-pop {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; right: 0;
+  background: #fff; border: 1px solid var(--bcrm-border); border-radius: 11px;
+  box-shadow: var(--bcrm-shadow); overflow: hidden;
+}
+.bcrm-combo-list { list-style: none; margin: 0; padding: 4px; max-height: 244px; overflow-y: auto; }
+.bcrm-combo-list button {
+  width: 100%; display: grid; gap: 1px; text-align: left; padding: 8px 10px; min-height: 40px;
+  border: 0; border-radius: 8px; background: transparent; cursor: pointer; color: var(--bcrm-text);
+}
+.bcrm-combo-list button strong { font-size: 12px; font-weight: 700; }
+.bcrm-combo-list button small { font-size: 10px; color: var(--bcrm-muted); }
+/* Long names wrap inside the option rather than forcing the popup wider. */
+.bcrm-combo-list button strong, .bcrm-combo-list button small { overflow-wrap: anywhere; }
+.bcrm-combo-list button.is-active, .bcrm-combo-list button:hover { background: rgba(6, 182, 212, .12); }
+.bcrm-combo-list button:focus-visible { outline: 3px solid var(--bcrm-cyan); outline-offset: -3px; }
+.bcrm-combo-note { margin: 0; padding: 10px 12px; font-size: 11px; color: var(--bcrm-muted); }
+.bcrm-combo-foot { padding: 6px; border-top: 1px solid var(--bcrm-border); }
+.bcrm-combo-foot .bcrm-btn { width: 100%; }
+.bcrm-search-busy { flex: none; color: var(--bcrm-muted); }
+.bcrm-modal-note { margin: 0 0 12px; font-size: 11px; color: var(--bcrm-muted); }
+
+/* Touch widths: the combobox trigger, clear button and every option meet the 44px floor. */
+@media (max-width: 1023.98px) {
+  .bcrm-combo-value, .bcrm-combo-clear { min-height: 44px; }
+  .bcrm-combo-list button { min-height: 44px; }
+}

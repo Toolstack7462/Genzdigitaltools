@@ -2,7 +2,7 @@
 const express = require('express');
 const db = require('../db');
 const money = require('../money');
-const { asyncHandler } = require('../http');
+const { asyncHandler, pageParams, safeLike } = require('../http');
 const { requirePermission, has } = require('../permissions');
 const router = express.Router();
 function range(req) {
@@ -61,6 +61,13 @@ router.get('/summary', requirePermission('reports.view'), asyncHandler(async (re
 }));
 router.get('/cashbook', requirePermission('cashbook.view'), asyncHandler(async (req, res) => {
   const { from, to, currency } = range(req);
+  // Cashbook search runs in JS, after the UNION, on purpose: the two legs put the searchable text in
+  // different columns (a payment has its own notes, an expense synthesises "category: description"
+  // inside the SELECT), so there is no single column to match in SQL. The row set is already bounded
+  // by currency and the date range, and the vendor filter below still runs first, so an operator
+  // without vendors.view can never search a vendor payment into view.
+  const cashSearch = String(req.query.search || req.query.q || '').trim().toLowerCase().slice(0, 160);
+  const entryType = String(req.query.entryType || '').trim();
   const rows = await db.query(`
     SELECT payment_date entry_date,CASE WHEN party_type='client' THEN 'client_receipt' ELSE 'vendor_payment' END entry_type,
       CASE WHEN party_type='client' THEN amount ELSE -amount END signed_amount,method,reference,notes,sale_id source_id,created_at
@@ -71,17 +78,37 @@ router.get('/cashbook', requirePermission('cashbook.view'), asyncHandler(async (
     ORDER BY entry_date DESC,created_at DESC`, { currency, from, to });
   const visibleRows = has(req, 'vendors.view') ? rows : rows.filter((row) => row.entry_type !== 'vendor_payment');
   let balance = 0n;
+  // The running balance is accumulated over every permitted row BEFORE search or type filtering.
+  // Filtering first would make the balance column the balance of the matched subset, which reads
+  // like a real ledger balance but is not one.
   const chronological = [...visibleRows].reverse().map((row) => { const signed = money.toMinor(row.signed_amount); balance += signed; return { ...row, signed_amount: money.fromMinor(signed), running_balance: money.fromMinor(balance) }; }).reverse();
-  res.json({ from, to, currency, rows: chronological });
+  const typed = entryType ? chronological.filter((row) => row.entry_type === entryType) : chronological;
+  const matched = cashSearch
+    ? typed.filter((row) => [row.notes, row.reference, row.method, row.entry_type]
+      .some((field) => String(field || '').toLowerCase().includes(cashSearch)))
+    : typed;
+  res.json({ from, to, currency, search: cashSearch || null, entryType: entryType || null, total: matched.length, rows: matched });
 }));
 router.get('/expiries', requirePermission('expiries.view'), asyncHandler(async (req, res) => {
   const from = String(req.query.from || new Date().toISOString().slice(0, 10));
   const days = Math.max(0, Math.min(365, Number(req.query.days || 30)));
-  const rows = await db.query(`SELECT i.id,i.name,i.account_type,i.duration_label,i.expiry_date,s.id sale_id,s.invoice_number,s.currency_code,
-    c.id client_id,c.name client_name,c.whatsapp,c.email,DATEDIFF(i.expiry_date,:fromDate) days_remaining
-    FROM biz_crm_sale_items i JOIN biz_crm_sales s ON s.id=i.sale_id JOIN biz_crm_clients c ON c.id=s.client_id
-    WHERE s.deleted_at IS NULL AND s.status<>'cancelled' AND i.expiry_date BETWEEN :fromDate AND DATE_ADD(:fromDate,INTERVAL :days DAY)
-    ORDER BY i.expiry_date,c.name`, { fromDate: from, days });
-  res.json({ from, days, rows });
+  // Server-side search over client, product and invoice. safeLike escapes backslash, percent and
+  // underscore, so an operator typing "%" matches a literal percent sign instead of every row.
+  const search = req.query.search || req.query.q ? safeLike(req.query.search || req.query.q) : null;
+  const { page, pageSize, offset } = pageParams(req.query);
+  const filter = `s.deleted_at IS NULL AND s.status<>'cancelled'
+    AND i.expiry_date BETWEEN :fromDate AND DATE_ADD(:fromDate,INTERVAL :days DAY)
+    ${search ? 'AND (c.name LIKE :search OR i.name LIKE :search OR s.invoice_number LIKE :search)' : ''}`;
+  const params = { fromDate: from, days, ...(search ? { search } : {}) };
+  const [rows, counts] = await Promise.all([
+    db.query(`SELECT i.id,i.name,i.account_type,i.duration_label,i.expiry_date,s.id sale_id,s.invoice_number,s.currency_code,
+      c.id client_id,c.name client_name,c.whatsapp,c.email,DATEDIFF(i.expiry_date,:fromDate) days_remaining
+      FROM biz_crm_sale_items i JOIN biz_crm_sales s ON s.id=i.sale_id JOIN biz_crm_clients c ON c.id=s.client_id
+      WHERE ${filter}
+      ORDER BY i.expiry_date,c.name LIMIT :limit OFFSET :offset`, { ...params, limit: pageSize, offset }),
+    db.query(`SELECT COUNT(*) total FROM biz_crm_sale_items i JOIN biz_crm_sales s ON s.id=i.sale_id
+      JOIN biz_crm_clients c ON c.id=s.client_id WHERE ${filter}`, params),
+  ]);
+  res.json({ from, days, page, pageSize, total: Number(counts[0]?.total || 0), rows });
 }));
 module.exports = router;

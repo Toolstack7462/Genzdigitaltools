@@ -48,7 +48,16 @@ router.get('/access', requirePermission('access.manage'), asyncHandler(async (re
   const access = await db.query('SELECT * FROM biz_crm_user_access'); const overrides = await db.query('SELECT * FROM biz_crm_user_permissions');
   const accessMap = new Map(access.map((row) => [String(row.user_id), row]));
   const overrideMap = overrides.reduce((map, row) => { const key = String(row.user_id); if (!map[key]) map[key] = []; map[key].push({ permission: row.permission_key, effect: row.effect }); return map; }, {});
-  res.json({ permissions: PERMISSIONS, users: users.map((user) => ({ ...user, id: String(user._id || user.id), access: accessMap.get(String(user._id || user.id)) || null, overrides: overrideMap[String(user._id || user.id)] || [] })) });
+  const shaped = users.map((user) => ({ ...user, id: String(user._id || user.id), access: accessMap.get(String(user._id || user.id)) || null, overrides: overrideMap[String(user._id || user.id)] || [] }));
+  // Team search is applied in JS, not SQL: the user list comes from the shared `users` model through
+  // the Mongoose-style adapter, and the business role being searched lives in a separate CRM table
+  // that is only joined here in memory. The list is bounded to three admin roles above.
+  const search = String(req.query.search || req.query.q || '').trim().toLowerCase().slice(0, 160);
+  const matched = search
+    ? shaped.filter((user) => [user.fullName, user.email, user.role, user.status, user.access?.business_role]
+      .some((field) => String(field || '').toLowerCase().includes(search)))
+    : shaped;
+  res.json({ permissions: PERMISSIONS, total: matched.length, users: matched });
 }));
 // Account provisioning and password resets are deliberately NOT exposed here. The Business CRM
 // reads the existing `users` table (GET /access above) but must never write it: creating an

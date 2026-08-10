@@ -95,6 +95,25 @@ export default function BusinessCrmLayout() {
     };
   }, [drawerOpen, closeDrawer]);
 
+  // Ctrl/Cmd+K opens the existing global search page. It deliberately reuses the toolbar's search
+  // target rather than introducing a second search surface, so there is one place results come from.
+  useEffect(() => {
+    const searchPath = crmPath('search');
+    const onKeyDown = (event) => {
+      if (event.altKey || String(event.key).toLowerCase() !== 'k' || !(event.ctrlKey || event.metaKey)) return;
+      event.preventDefault();
+      if (location.pathname !== searchPath) navigate(crmPath('search'));
+      // The search page autofocuses on mount, which covers arriving from another route. This handles
+      // the case where the operator is already on the page and expects the field to be reselected.
+      window.requestAnimationFrame(() => {
+        const input = document.querySelector('.bcrm-main .bcrm-search input');
+        if (input) { input.focus(); input.select(); }
+      });
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [navigate, location.pathname]);
+
   // Close on navigation, and whenever the viewport grows past the drawer breakpoint.
   useEffect(() => { setDrawerOpen(false); }, [location.pathname]);
   useEffect(() => {
@@ -206,8 +225,8 @@ export default function BusinessCrmLayout() {
                 type="button"
                 className="bcrm-icon-btn"
                 onClick={() => navigate(crmPath('search'))}
-                aria-label="Search the Business CRM"
-                title="Search"
+                aria-label="Search the Business CRM (Control or Command + K)"
+                title="Search — Ctrl+K"
               >
                 <Icons.Search size={16} aria-hidden="true" />
               </button>
