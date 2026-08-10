@@ -127,6 +127,9 @@
     for (var i = 0; i < hrefSubs.length; i++) parts.push('a[href*="' + hrefSubs[i] + '" i]');
     for (var j = 0; j < hideSelectors.length; j++) { if (hideSelectors[j]) parts.push(hideSelectors[j]); }
     parts.push('[data-genz-shield-hidden="1"]');
+    // Menu policy rows: the attribute survives a React re-render that rewrites the inline
+    // style attribute, so the row stays hidden without us having to win a styling race.
+    parts.push('[data-genz-menu-blocked="1"]');
     var css = parts.join(',') + '{display:none !important;}';
     var s = document.createElement('style'); s.id = 'genz-shield-style'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
@@ -159,6 +162,70 @@
       if (base.matches && base.matches(SWEEP_SEL)) processOne(base); // the subtree root itself
       var nodes = base.querySelectorAll(SWEEP_SEL);
       for (var i = 0; i < nodes.length; i++) processOne(nodes[i]);
+    } catch (e) {}
+    sweepMenuPolicy(base);
+  }
+
+  // ── Menu policy: remove specific rows from an OPEN picker (Claude model/effort) ─────────
+  // Deliberately NOT part of processOne / hideTextSource: those run over every a/button/li/
+  // span/div/p/h1-h4 on the page, so a word like "High" or "Max" would be blanked inside a
+  // conversation, an artifact or a code block. Everything here is gated on the row living
+  // inside an open menu/listbox popover, so page content is never touched. Config-driven and
+  // host-scoped, so a tool without a menuPolicy behaves exactly as before.
+  var MENU = (CFG.menuPolicy && CFG.menuPolicy.containers && CFG.menuPolicy.items) ? CFG.menuPolicy : null;
+  var MENU_BLOCK_RE = MENU ? safeRe(MENU.blockSource, 'i') : null;
+  var MENU_KEEP_RE = MENU ? safeRe(MENU.keepSource, 'i') : null;
+
+  // A row's label is its FIRST text-bearing child chunk. Claude's model rows render the name
+  // and a description as sibling children ("Max" + "Maximum reasoning"), so whole-textContent
+  // matching would produce "MaxMaximum reasoning" and match nothing.
+  //
+  // Deliberately NOT innerText: innerText is layout-dependent and returns '' for a row we have
+  // ALREADY hidden, which silently collapsed the label back to concatenated textContent and let
+  // a click through on a blocked row. Walking childNodes is visibility-independent, so the same
+  // verdict holds whether the row is displayed or not — which is what the click guard needs.
+  function menuLabel(n) {
+    try {
+      for (var i = 0; i < n.childNodes.length; i++) {
+        var t = (n.childNodes[i].textContent || '').replace(/\s+/g, ' ').trim();
+        if (t) return t.slice(0, 40);
+      }
+      return (n.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+    } catch (e) { return ''; }
+  }
+  function menuBlocked(n) {
+    if (!MENU_BLOCK_RE) return false;
+    var label = menuLabel(n);
+    if (!label) return false;
+    if (MENU_KEEP_RE && MENU_KEEP_RE.test(label)) return false;   // keep wins
+    return MENU_BLOCK_RE.test(label);
+  }
+  function sweepMenuPolicy(root) {
+    if (!MENU) return;
+    try {
+      var base = (root && root.nodeType === 1) ? root : (document.body || document.documentElement);
+      if (!base) return;
+      var seen = [];
+      if (base.matches && base.matches(MENU.containers)) seen.push(base);
+      // A mutation often lands INSIDE an already-open popover, so walk up as well as down.
+      var up = base.closest && base.closest(MENU.containers);
+      if (up) seen.push(up);
+      var found = base.querySelectorAll(MENU.containers);
+      for (var i = 0; i < found.length; i++) seen.push(found[i]);
+      for (var c = 0; c < seen.length; c++) {
+        var items = seen[c].querySelectorAll(MENU.items);
+        // No "already processed" marker: a picker holds a handful of rows and React reuses
+        // nodes with NEW labels across opens, so a cached verdict would go stale and let a
+        // blocked row reappear on the second open. Re-deciding is cheap at this scale.
+        for (var j = 0; j < items.length; j++) {
+          if (menuBlocked(items[j])) {
+            try {
+              items[j].setAttribute('data-genz-menu-blocked', '1');
+              items[j].style.setProperty('display', 'none', 'important');
+            } catch (e) {}
+          }
+        }
+      }
     } catch (e) {}
   }
 
@@ -276,6 +343,17 @@
   // links that resolve to a blocked route; never interferes with the working area.
   function onClickCapture(ev) {
     try {
+      // Menu policy: refuse the selection outright, not just visually. Capture phase runs
+      // before the app's own handler, so even if a re-render briefly showed the row (or a
+      // keyboard/synthetic activation reached it), the blocked choice cannot be made.
+      if (MENU && ev.target && ev.target.closest) {
+        var mi = ev.target.closest(MENU.items);
+        if (mi && mi.closest(MENU.containers) && menuBlocked(mi)) {
+          ev.preventDefault(); ev.stopPropagation();
+          if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+          return;
+        }
+      }
       var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
       if (!a) return;
       if (isOwnUi(a) || isWorkArea(a) || isCaptchaNode(a)) return;
@@ -320,6 +398,12 @@
     if (!cfg) return;
     if (Array.isArray(cfg.blockRouteFragments)) blockFrags = cfg.blockRouteFragments;
     if (Array.isArray(cfg.hideSelectors)) hideSelectors = cfg.hideSelectors;
+    // Re-injection on an SPA re-nav must not silently drop the menu policy.
+    if (cfg.menuPolicy && cfg.menuPolicy.containers && cfg.menuPolicy.items) {
+      MENU = cfg.menuPolicy;
+      MENU_BLOCK_RE = safeRe(MENU.blockSource, 'i');
+      MENU_KEEP_RE = safeRe(MENU.keepSource, 'i');
+    }
     scheduleFull();
     maybeBlockCurrentRoute();
   };

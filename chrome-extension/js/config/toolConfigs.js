@@ -517,12 +517,34 @@ export const SHIELD_OVERRIDES = {
   // left fully intact. The runtime sweep (attr 'user-menu'/'account'/'profile'/'avatar', the
   // 'settings|log out|...' text rule, and the email rule) remains the backup for anything that
   // renders after paint.
-  'claude.ai': { hideSelectors: [
-    '[data-testid*="user-menu" i]',                          // account/profile trigger (identity + menu opener)
-    '[data-testid*="account" i]',                            // account trigger variants (versioned testids)
-    '[role="menu"]:has([data-testid*="logout" i])',          // already-open account dropdown (whole menu)
-    '[role="menu"]:has([data-testid*="log-out" i])'          // ditto, hyphenated testid variant
-  ] }
+  'claude.ai': {
+    hideSelectors: [
+      '[data-testid*="user-menu" i]',                          // account/profile trigger (identity + menu opener)
+      '[data-testid*="account" i]',                            // account trigger variants (versioned testids)
+      '[role="menu"]:has([data-testid*="logout" i])',          // already-open account dropdown (whole menu)
+      '[role="menu"]:has([data-testid*="log-out" i])'          // ditto, hyphenated testid variant
+    ],
+    // ── Claude MODEL / EFFORT menu policy (claude.ai ONLY) ──────────────────────────────
+    // Fable 5 and the High / Extra / Max effort levels are removed from the pickers, and a
+    // click on one is refused in the capture phase so the choice cannot be made even if a
+    // re-render briefly outruns the hide. Opus / Sonnet / Haiku and Low / Medium are kept.
+    //
+    // WHY NOT `hideTextSource`: that rule runs over every a/button/li/span/div/p/h1-h4 on the
+    // page (shield.js processOne), so putting "High" or "Max" in it would blank those words
+    // anywhere in a conversation, an artifact or a code block. `menuPolicy` is evaluated ONLY
+    // for rows inside an OPEN menu/listbox popover, so page content is never touched.
+    //
+    // Matching is on the row's FIRST TEXT LINE: Claude's model rows carry a description
+    // underneath ("Fable 5" + "Fastest for everyday tasks"), so matching the whole textContent
+    // would both miss the row and risk matching prose in that description.
+    menuPolicy: {
+      containers: '[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-radix-menu-content]',
+      items: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"]',
+      // keep wins over block, so a future "Opus … high-context" row is never lost by accident
+      keepSource: '\\b(opus|sonnet|haiku)\\b|^(low|medium)$',
+      blockSource: '\\bfable\\b|^(high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra)$'
+    }
+  }
 };
 
 // Hosts the header-hide shield must ALWAYS be injected on — even when the site is opened
@@ -584,6 +606,9 @@ export function getShieldConfig(url, tool) {
       if (o.enabled === false) cfg.enabled = false;
       if (Array.isArray(o.hideSelectors)) cfg.hideSelectors = cfg.hideSelectors.concat(o.hideSelectors);
       if (Array.isArray(o.hrefSubstrings)) cfg.hrefSubstrings = cfg.hrefSubstrings.concat(o.hrefSubstrings);
+      // Host-scoped by construction: only the matched override can contribute one, so no other
+      // tool can ever receive a menu policy.
+      if (o.menuPolicy) cfg.menuPolicy = o.menuPolicy;
     }
   }
   const ts = tool && tool.extensionSettings && tool.extensionSettings.shield;

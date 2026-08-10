@@ -76,9 +76,9 @@ test('the stale 3.9.15 registration is explicitly torn down on install AND start
     `expected the teardown to be defined and called from both onInstalled and onStartup (found ${calls.length} references)`);
 });
 
-test('manifest is 3.9.16 and permissions are unchanged from 3.9.14', () => {
+test('manifest is 3.9.17 and permissions are unchanged from 3.9.14', () => {
   const m = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
-  assert.strictEqual(m.version, '3.9.16');
+  assert.strictEqual(m.version, '3.9.17');
   assert.deepStrictEqual(
     m.permissions.slice().sort(),
     ['alarms', 'cookies', 'management', 'notifications', 'scripting', 'storage', 'tabs'],
