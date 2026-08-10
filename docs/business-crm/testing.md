@@ -118,7 +118,7 @@ which happened, and is why `code()` exists in that file.
 | Reconciliation | isolation test → full backend suite → reconcile twice and compare `created` |
 | CRM navigation or `constants.js` | `crmRouting.test.js` → full frontend suite → production build |
 | `invoicePdf.js`, `invoiceLogo.js` or the logo asset | `businessCrmInvoiceReminders.test.js` → **render a real PDF and look at it**; confirm the logo decodes, the invoice number is legible on the navy band, no content crosses the 42/553 pt margins, and no purchase cost or profit appears |
-| `reminderTemplates.js` | `businessCrmInvoiceReminders.test.js` → print every variant and read it; a customer-facing message cannot be recalled once sent |
+| `reminderTemplates.js` | `businessCrmInvoiceReminders.test.js` → print every variant and read it; a customer-facing message cannot be recalled once sent. Check a settled invoice is refused, emails are masked, and PKR/INR/NGN never mix |
 | Reminder UI or `MessagePreview` | `crmInvoiceReminders.test.js` → full frontend suite → confirm no popup opens before the review dialog and that `window.open` still carries `noopener` |
 | CRM CSS or layout | production build → **measure** rendered touch targets and body overflow at 320/360/390/412/768 px |
 | `AdminLayoutEnhanced.js` or `App.js` | full frontend suite → production build → manually re-check non-CRM admin pages, client login, public site |

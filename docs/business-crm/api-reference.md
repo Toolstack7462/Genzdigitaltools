@@ -128,11 +128,32 @@ Reminders **prepare a draft** (a click-to-chat URL and stored message). The CRM 
 WhatsApp messages itself.
 
 `prepare` returns the composed message and a `wa.me` deep link. The wording is **English only** and
-comes from [`reminderTemplates.js`](../../backend/modules/business-crm/reminderTemplates.js) — payment,
-renewal, expiring-soon, expired and vendor-due variants. The renewal variant is chosen from the expiry
-date, so the wording cannot contradict the date it prints. No template carries credentials, purchase
-cost, profit or vendor pricing: a sent message cannot be recalled. The UI shows the draft for review
-and only opens WhatsApp from a button press, so the tab is not blocked as an unsolicited popup.
+comes from [`reminderTemplates.js`](../../backend/modules/business-crm/reminderTemplates.js). The UI
+shows the draft for review and only opens WhatsApp from a button press, so the tab is not blocked as an
+unsolicited popup.
+
+`reminderType` is a closed set; anything else is **400** `REMINDER_UNSUPPORTED`.
+
+| `entityType` | `reminderType` | Template |
+|---|---|---|
+| `sale` | `client_pending` | Pending payment — invoice, numbered item list, totals, outstanding balance |
+| `sale` | `client_overdue` | Overdue payment — firmer wording, same figures, plus the invoice date |
+| `sale` | `invoice_share` | Invoice summary; **allowed** for a settled invoice, and says so |
+| `sale` | `vendor_due` | Supplier balance. Never mentions the client's sale price or our margin |
+| `sale_item` | `expiry` | Renewal; the variant is chosen from the expiry date |
+| `sale_item` | `expiring_soon` · `renewal_due_today` · `expired` | The same three variants, requested explicitly |
+
+**A payment reminder is refused with 409 `REMINDER_NOT_PAYABLE`** when the invoice has no outstanding
+balance, or is cancelled. Telling a customer who has already paid that they owe money is not something
+an operator can take back, so the check is server-side; the UI additionally disables the control and
+explains why. `invoice_share` is deliberately exempt — it is a statement, not a demand.
+
+Message content: client name, invoice number, item names, **masked** account email, activation and
+expiry dates, renewal period, renewal amount, invoice total, amount received and outstanding balance —
+each omitted cleanly when unavailable, so no `undefined`, `null`, invalid date or empty label ever
+ships. Dates render as `10 August 2026`; amounts as `PKR 2,500.00` with the currency always attached,
+and one message never mixes two currencies. No template carries a password, cookie, token, session
+value, provider credential, purchase cost, profit or vendor pricing.
 
 ## Website access links
 
