@@ -152,3 +152,57 @@ jobs:
           done
           [ "$fail" = "0" ] || exit 1
           echo "✅ Both roots serve $LOCAL"
+
+      - name: Verify this build's assets are actually FETCHABLE on both roots
+        run: |
+          set -euo pipefail
+          # WHY THIS EXISTS (2026-08-11 white-page incident):
+          # The step above only proves index.html REFERENCES the expected bundle name. It does
+          # not prove the bundle is on the server. A mirror pass that dies mid-directory still
+          # returns 0, and index.html uploads BEFORE static/js, so the app root ended up
+          # publishing an index.html that asked for 41 JS files (main bundle + every lazy chunk)
+          # which had only reached the main root. Requests for the missing bundle then hit the
+          # app root's own SPA fallback and came back as "302 -> /client/login" with
+          # Content-Type text/html. The browser received HTML where it expected JavaScript, so
+          # nothing booted: the entire app subdomain was a white page while this workflow
+          # reported a successful deploy.
+          #
+          # THE LOAD-BEARING RULE IS THE CONTENT-TYPE ASSERTION, not the status code. A SPA
+          # fallback can legitimately answer 200 for a path that does not exist; what it can
+          # never do is return JavaScript. Checking only for a non-2xx would miss any root whose
+          # fallback rewrites (rather than redirects) a missing bundle straight to index.html.
+          # Redirects are additionally not followed (no -L) so the reported status stays honest
+          # and one missing asset costs one request rather than two.
+          ASSETS="$(node -e '
+            const m = require("./frontend/build/asset-manifest.json");
+            const s = new Set();
+            for (const f of (m.entrypoints || [])) s.add("/" + String(f).replace(/^\/+/, ""));
+            for (const f of Object.values(m.files || {})) if (/\.(js|css)$/.test(f)) s.add(f);
+            process.stdout.write([...s].join("\n"));
+          ')"
+          COUNT="$(printf "%s\n" "$ASSETS" | grep -c . || true)"
+          echo "Checking $COUNT asset(s) of this build on each root."
+          fail=0
+          for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            bad=0
+            while IFS= read -r a; do
+              [ -n "$a" ] || continue
+              read -r code ctype <<<"$(curl -s -o /dev/null --max-time 25 \
+                -w '%{http_code} %{content_type}' "$d$a" || echo '000 none')"
+              case "$code:$ctype" in
+                200:*javascript*|200:*ecmascript*|200:*text/css*) ;;
+                *)
+                  bad=$((bad + 1))
+                  [ "$bad" -le 5 ] && echo "::error::$d$a -> HTTP $code ($ctype)"
+                  ;;
+              esac
+            done <<<"$ASSETS"
+            if [ "$bad" -gt 0 ]; then
+              echo "::error::$d is missing or mis-serving $bad of $COUNT build asset(s) — the deploy is INCOMPLETE and this root will white-page."
+              fail=1
+            else
+              echo "✅ $d serves all $COUNT build assets"
+            fi
+          done
+          [ "$fail" = "0" ] || exit 1
+          echo "✅ Both roots serve every asset of this build"
