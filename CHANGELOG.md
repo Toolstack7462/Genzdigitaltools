@@ -1,5 +1,41 @@
 # Changelog
 
+## [Unreleased] — Business CRM runtime defect fixes
+
+CRM-only. No change to admin/client authentication, Give Access, assignment routes, extension,
+proxy, StealthWriter, Claude gateway, the public site, or any non-`biz_crm_*` table. No schema
+migration.
+
+- **Dashboard 500 fixed (collation).** Every `GET /api/crm/admin/business/dashboard` failed with
+  *"Illegal mix of collations (utf8mb4_unicode_ci,COERCIBLE) and (utf8mb4_general_ci,COERCIBLE) for
+  operation '='"*. `DATE_FORMAT(col,'%Y-%m') = :month` compares two COERCIBLE operands: the
+  `'%Y-%m'` literal carries the client character set's default collation (`utf8mb4_general_ci`)
+  while the bound parameter is coerced to the session/database collation (`utf8mb4_unicode_ci`).
+  Neither outranks the other, so MariaDB refuses; `currency_code=:currency` survived only because a
+  column outranks a literal. All four month-scoped queries now use half-open DATE bounds
+  (`col >= :monthStart AND col < :nextMonthStart`) — collation-free and sargable. Reproduced and
+  confirmed by executing both forms against the production database through the app's own driver.
+- **Reports 400 fixed (decimal precision).** `GET /reports/summary` returned `INVALID_MONEY`
+  whenever the range contained a sale: `AVG()` widens `DECIMAL(18,2)` to `DECIMAL(22,6)` and, with
+  `decimalNumbers:false`, it arrived as e.g. `"1250.000000"`, which `money.toMinor` rejects by
+  design. Now `COALESCE(ROUND(AVG(subtotal_sale),2),0)`. Monetary validation was **not** loosened —
+  it still refuses more than two decimals.
+- **Touch targets.** Every interactive CRM control is at least 44x44 on touch widths: menu, toolbar
+  icon and back buttons, drawer close, sidebar back control, drawer navigation links (the base
+  stylesheet's 820px rule shrank them to 36px), buttons, inputs, the reporting-currency select and
+  the connection pill. Verified by measuring 715 rendered controls at 320/360/390/412/768px.
+- **320px toolbar overlap fixed.** Below 420px the trailing controls overlapped the menu button,
+  making the CRM menu unclickable. The workspace title is dropped at that width (it is repeated in
+  the drawer header) and the remaining controls shrink instead of colliding.
+- Regression tests — `backend/tests/businessCrmRuntimeDefects.test.js`: no collation-fragile
+  comparison may return, every named placeholder must have a matching parameter, every `AVG()` must
+  be rounded, `money.js` must stay strict, month bounds including the December rollover, and
+  permission gating is unchanged.
+- Known and deliberately unchanged: a request from a **non-approved** origin returns 500 rather
+  than 403, because the CORS origin callback in `backend/server-crm.js` rejects with an `Error`. The
+  approved app origin correctly receives 401/403 with `access-control-allow-origin`, so the CRM
+  itself is unaffected. That is shared global middleware, outside CRM scope.
+
 ## [Unreleased] — Claude Usage-Management Dashboard
 
 Claude-only, additive. StealthWriter was used as a read-only architectural reference; no

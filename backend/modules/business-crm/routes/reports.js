@@ -14,7 +14,11 @@ router.get('/summary', requirePermission('reports.view'), asyncHandler(async (re
   const { from, to, currency } = range(req); const profitVisible = has(req, 'profit.view'); const vendorVisible = has(req, 'vendors.view');
   const [saleRows, expenseRows, collectionRows, dailySales, dailyCollections, clients, products, categories] = await Promise.all([
     db.query(`SELECT COALESCE(SUM(subtotal_sale),0) revenue,COALESCE(SUM(subtotal_cost),0) cost,COUNT(*) sale_count,
-      COALESCE(AVG(subtotal_sale),0) average_invoice FROM biz_crm_sales WHERE deleted_at IS NULL AND status<>'cancelled'
+      -- ROUND is required, not cosmetic. AVG() widens DECIMAL(18,2) to DECIMAL(22,6) and the pool
+      -- runs with decimalNumbers:false, so this arrived as e.g. "1250.000000". money.toMinor accepts
+      -- at most two decimals by design, so it threw INVALID_MONEY and the whole report 400'd the
+      -- moment any sale existed in the range. Rounding at the SQL boundary keeps money.js strict.
+      COALESCE(ROUND(AVG(subtotal_sale),2),0) average_invoice FROM biz_crm_sales WHERE deleted_at IS NULL AND status<>'cancelled'
       AND currency_code=:currency AND sale_date BETWEEN :from AND :to`, { currency, from, to }),
     db.query(`SELECT COALESCE(SUM(amount),0) expenses FROM biz_crm_expenses WHERE deleted_at IS NULL AND status='posted'
       AND currency_code=:currency AND expense_date BETWEEN :from AND :to`, { currency, from, to }),

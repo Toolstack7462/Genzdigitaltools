@@ -12,6 +12,26 @@ router.get('/', requirePermission('dashboard.view'), asyncHandler(async (req, re
   const currency = money.assertCurrency(req.query.currency || settings.default_currency || 'PKR');
   const today = String(req.query.date || new Date().toISOString().slice(0, 10));
   const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : today.slice(0, 7);
+  // Half-open DATE bounds for `month`, used instead of DATE_FORMAT(col,'%Y-%m')=:month.
+  //
+  // WHY: comparing a formatted string to a bound parameter made BOTH operands COERCIBLE with
+  // DIFFERENT collations. The '%Y-%m' literal inside DATE_FORMAT is tagged with the client
+  // character set's default collation (utf8mb4_general_ci), while the bound parameter is coerced to
+  // the session/database collation (utf8mb4_unicode_ci). Neither operand outranks the other, so
+  // MariaDB refused with "Illegal mix of collations (utf8mb4_unicode_ci,COERCIBLE) and
+  // (utf8mb4_general_ci,COERCIBLE) for operation '='" and every dashboard request 500'd.
+  // `currency_code=:currency` survives only because a COLUMN outranks a literal.
+  // Reproduced and the fix confirmed by executing both forms through this driver against the
+  // production database: the DATE_FORMAT form fails, the range form returns rows.
+  //
+  // Comparing DATE columns against DATE-shaped parameters involves no collation at all, and the
+  // range is sargable so it can use the existing sale_date / payment_date / expense_date indexes.
+  const monthStart = `${month}-01`;
+  const nextMonthStart = (() => {
+    const [year, monthNumber] = month.split('-').map(Number);
+    return new Date(Date.UTC(monthNumber === 12 ? year + 1 : year, monthNumber === 12 ? 0 : monthNumber, 1))
+      .toISOString().slice(0, 10);
+  })();
   const profitVisible = has(req, 'profit.view');
   const vendorVisible = has(req, 'vendors.view');
   const expenseVisible = has(req, 'expenses.view');
@@ -20,7 +40,7 @@ router.get('/', requirePermission('dashboard.view'), asyncHandler(async (req, re
     db.query(`SELECT COALESCE(SUM(subtotal_sale),0) sales,COALESCE(SUM(subtotal_cost),0) cost,COUNT(*) sale_count FROM biz_crm_sales
       WHERE deleted_at IS NULL AND status<>'cancelled' AND currency_code=:currency AND sale_date=:today`, { currency, today }),
     db.query(`SELECT COALESCE(SUM(subtotal_sale),0) sales,COALESCE(SUM(subtotal_cost),0) cost,COUNT(*) sale_count FROM biz_crm_sales
-      WHERE deleted_at IS NULL AND status<>'cancelled' AND currency_code=:currency AND DATE_FORMAT(sale_date,'%Y-%m')=:month`, { currency, month }),
+      WHERE deleted_at IS NULL AND status<>'cancelled' AND currency_code=:currency AND sale_date >= :monthStart AND sale_date < :nextMonthStart`, { currency, monthStart, nextMonthStart }),
     db.query(`SELECT COALESCE(SUM(subtotal_sale-client_paid),0) client_pending,COALESCE(SUM(subtotal_cost-vendor_paid),0) vendor_due
       FROM biz_crm_sales WHERE deleted_at IS NULL AND status<>'cancelled' AND currency_code=:currency`, { currency }),
     db.query(`SELECT COUNT(*) open_tasks,SUM(CASE WHEN due_at<NOW() AND status NOT IN ('completed','cancelled') THEN 1 ELSE 0 END) overdue_tasks
@@ -30,15 +50,15 @@ router.get('/', requirePermission('dashboard.view'), asyncHandler(async (req, re
       ORDER BY s.created_at DESC LIMIT 8`, { currency }),
     db.query(`SELECT i.name,COUNT(*) units,SUM(i.sale_price) revenue,SUM(i.sale_price-i.purchase_cost) profit
       FROM biz_crm_sale_items i JOIN biz_crm_sales s ON s.id=i.sale_id
-      WHERE s.deleted_at IS NULL AND s.status<>'cancelled' AND s.currency_code=:currency AND DATE_FORMAT(s.sale_date,'%Y-%m')=:month
-      GROUP BY i.name ORDER BY revenue DESC LIMIT 8`, { currency, month }),
+      WHERE s.deleted_at IS NULL AND s.status<>'cancelled' AND s.currency_code=:currency AND s.sale_date >= :monthStart AND s.sale_date < :nextMonthStart
+      GROUP BY i.name ORDER BY revenue DESC LIMIT 8`, { currency, monthStart, nextMonthStart }),
     db.query(`SELECT action_key,entity_type,entity_id,actor_user_id,created_at FROM biz_crm_audit_logs ORDER BY created_at DESC LIMIT 10`),
     db.query(`SELECT party_type,COALESCE(SUM(amount),0) amount FROM biz_crm_payments
       WHERE currency_code=:currency AND payment_date=:today GROUP BY party_type`, { currency, today }),
     db.query(`SELECT party_type,COALESCE(SUM(amount),0) amount FROM biz_crm_payments
-      WHERE currency_code=:currency AND DATE_FORMAT(payment_date,'%Y-%m')=:month GROUP BY party_type`, { currency, month }),
+      WHERE currency_code=:currency AND payment_date >= :monthStart AND payment_date < :nextMonthStart GROUP BY party_type`, { currency, monthStart, nextMonthStart }),
     db.query(`SELECT COALESCE(SUM(amount),0) expenses FROM biz_crm_expenses
-      WHERE deleted_at IS NULL AND status='posted' AND currency_code=:currency AND DATE_FORMAT(expense_date,'%Y-%m')=:month`, { currency, month }),
+      WHERE deleted_at IS NULL AND status='posted' AND currency_code=:currency AND expense_date >= :monthStart AND expense_date < :nextMonthStart`, { currency, monthStart, nextMonthStart }),
   ]);
   const todaySummary = summaryRows[0] || {};
   const monthSummary = monthRows[0] || {};
