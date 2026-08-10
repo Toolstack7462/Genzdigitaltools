@@ -41,7 +41,7 @@ All **VERIFIED FROM CODE** unless marked otherwise.
 | Reports (revenue, collections, profit, expiries) | `routes/reports.js`, `pages/Reports.jsx` |
 | PDF invoices, branded | `invoicePdf.js`, `invoiceLogo.js`, `assets/invoice-logo.png`, `routes/sales.js` (`GET /sales/:id/invoice.pdf`) |
 | Tasks, activities, WhatsApp reminder drafts | `routes/operations.js`, `services/reminderService.js` |
-| Customer message wording, English only | `reminderTemplates.js` (pure, unit-tested; payment · renewal · expiring-soon · expired · vendor due) |
+| Customer message wording, English only | `reminderTemplates.js` (pure, unit-tested; pending payment · overdue payment · expiring soon · renewal due today · expired · invoice sharing · vendor due). Masked account emails, `10 August 2026` dates, `PKR 2,500.00` amounts, numbered multi-item lists |
 | PKR / INR / NGN ledgers, never combined | `money.js`, every currency-scoped query |
 | Encrypted optional credentials on sale items | `encryption.js` (AES-256-GCM) |
 | Website access reconciliation | `services/websiteAccessService.js`, `routes/accessLinks.js`, `pages/LinkedAccess.jsx` |

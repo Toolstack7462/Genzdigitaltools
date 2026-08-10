@@ -25,10 +25,15 @@ export default function Payments({ type }) {
   };
   // Preview first, then open WhatsApp from the dialog button so the popup is tied to a user gesture.
   const remind = async (row) => {
+    if (Number(row.pending_amount ?? 0) <= 0) { setError('That invoice has no outstanding balance, so no payment reminder was prepared.'); return; }
     try {
       const response = await crmApi.post('/operations/reminders/prepare', { reminderType: client ? 'client_pending' : 'vendor_due', entityType: 'sale', entityId: row.id });
       setReminder(response.data);
-    } catch (requestError) { setError(messageFromError(requestError)); }
+    } catch (requestError) {
+      setError(messageFromError(requestError));
+      // The row was settled elsewhere: reload so the list stops offering a reminder for it.
+      if (requestError?.response?.data?.code === 'REMINDER_NOT_PAYABLE') resource.reload();
+    }
   };
   const sendReminder = async (url) => {
     window.open(url, '_blank', 'noopener,noreferrer');
@@ -50,7 +55,7 @@ export default function Payments({ type }) {
       { key: 'pending_amount', label: client ? 'Pending' : 'Due', render: (row) => <strong>{formatMoney(row.pending_amount, row.currency_code)}</strong> },
       { key: 'actions', label: 'Actions', render: (row) => <div className="bcrm-actions">
         {canPost && <Button variant="secondary" onClick={() => setEntry({ saleId: row.id, partyType: type, amount: row.pending_amount, paymentDate: today(), method: client ? 'Cash' : 'Bank', reference: '', notes: '' })}>Post payment</Button>}
-        {crm.has('reminders.prepare') && <Button variant="ghost" icon={MessageCircle} onClick={() => remind(row)}>Reminder</Button>}
+        {crm.has('reminders.prepare') && Number(row.pending_amount ?? 0) > 0 && <Button variant="ghost" icon={MessageCircle} onClick={() => remind(row)}>Reminder</Button>}
       </div> },
     ]} /></Card>
     <Modal open={Boolean(entry)} title={client ? 'Record client receipt' : 'Record vendor payment'} onClose={() => setEntry(null)} footer={<><Button variant="secondary" onClick={() => setEntry(null)}>Cancel</Button><Button icon={Save} onClick={submit}>Post payment</Button></>}>

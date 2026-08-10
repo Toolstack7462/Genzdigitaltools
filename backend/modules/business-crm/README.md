@@ -30,7 +30,7 @@ Mounted once, at `/api/crm/admin/business`, from `backend/server-crm.js`. This m
 | `validation.js` | Joi schemas; currency limited to PKR/INR/NGN |
 | `invoicePdf.js` | Branded invoice PDF (logo, brand palette, payment status); never includes purchase cost or profit |
 | `invoiceLogo.js` | Decodes `assets/invoice-logo.png` for PDF embedding. **Fixed path only** — never `settings.logo_url`, never a URL. Returns `null` on failure so an invoice still renders |
-| `reminderTemplates.js` | English customer message wording. Pure and unit-tested; no credentials, cost or profit |
+| `reminderTemplates.js` | English customer message wording — seven templates. Pure and unit-tested. Masks account emails; never a password, cost or profit. Exports `formatDate`, `formatAmount`, `maskEmail`, `itemList` |
 | `csv.js` | CSV parse/serialise with formula-injection neutralisation |
 | `http.js` | `asyncHandler`, `pageParams`, `safeLike`, `sendCsv` |
 

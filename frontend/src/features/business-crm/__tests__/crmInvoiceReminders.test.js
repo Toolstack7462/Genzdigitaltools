@@ -173,3 +173,49 @@ describe('branding preview styling is scoped and responsive', () => {
     expect(added).not.toMatch(/overflow-x:\s*hidden/);
   });
 });
+
+describe('the payment reminder action is gated on an outstanding balance', () => {
+  const saleDetail = code(path.join(PAGES_DIR, 'SaleDetail.jsx'));
+  const payments = code(path.join(PAGES_DIR, 'Payments.jsx'));
+
+  test('SaleDetail derives an outstanding flag that excludes cancelled invoices', () => {
+    expect(saleDetail).toMatch(/const clientOutstanding = sale\.status !== 'cancelled' && Number\(sale\.client_pending \?\? 0\) > 0;/);
+  });
+
+  test('SaleDetail only offers the client payment reminder when something is owed', () => {
+    // The enabled button must sit on the true branch of clientOutstanding.
+    expect(saleDetail).toMatch(/clientOutstanding \? <Button[^>]*onClick=\{\(\) => prepareReminder\('client_pending'\)\}/);
+    // The false branch renders a disabled control that explains itself, rather than nothing at all.
+    expect(saleDetail).toMatch(/: <Button variant="ghost" icon=\{MessageCircle\} disabled title=/);
+    expect(saleDetail).toMatch(/fully paid, so there is no outstanding balance to remind about/);
+    expect(saleDetail).toMatch(/cancelled, so no payment reminder can be sent/);
+  });
+
+  test('SaleDetail gates the vendor reminder on the field the API actually returns', () => {
+    // salesService exposes vendor_due, not vendor_pending; the wrong name would disable it always.
+    expect(saleDetail).toMatch(/Number\(sale\.vendor_due \?\? 0\) > 0 \?/);
+    expect(saleDetail).not.toMatch(/vendor_pending/);
+  });
+
+  test('Payments hides the reminder on a settled row and refuses to prepare one', () => {
+    expect(payments).toMatch(/Number\(row\.pending_amount \?\? 0\) > 0 && <Button[^>]*onClick=\{\(\) => remind\(row\)\}/);
+    // Belt and braces: even if a stale row is clicked, no request is sent.
+    expect(payments).toMatch(/if \(Number\(row\.pending_amount \?\? 0\) <= 0\) \{ setError\(/);
+    expect(payments).toMatch(/no outstanding balance, so no payment reminder was prepared/);
+  });
+
+  test('Payments reloads when the server reports the invoice is no longer payable', () => {
+    // The row was settled elsewhere; leaving a stale "Pending" figure next to an error is worse than
+    // refreshing the list.
+    expect(payments).toMatch(/requestError\?\.response\?\.data\?\.code === 'REMINDER_NOT_PAYABLE'/);
+    expect(payments).toMatch(/resource\.reload\(\)/);
+  });
+
+  test('no reminder page invents its own message text', () => {
+    // Wording lives in reminderTemplates.js on the server. A second copy in the UI would drift.
+    for (const name of REMINDER_PAGES) {
+      const source = code(path.join(PAGES_DIR, name));
+      expect(source).not.toMatch(/Hello \$\{|friendly payment reminder|due for renewal/);
+    }
+  });
+});

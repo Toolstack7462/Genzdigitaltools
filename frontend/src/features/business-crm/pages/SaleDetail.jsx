@@ -21,6 +21,10 @@ export default function SaleDetail() {
   if (resource.loading) return <Loading />;
   if (resource.error) return <ErrorState message={resource.error} onRetry={resource.reload} />;
   const sale = resource.data;
+  // A payment reminder is only meaningful while money is genuinely owed. The backend refuses a
+  // settled or cancelled invoice with 409 REMINDER_NOT_PAYABLE; disabling the control here means the
+  // operator sees why up front instead of triggering an error.
+  const clientOutstanding = sale.status !== 'cancelled' && Number(sale.client_pending ?? 0) > 0;
 
   const submitPayment = async () => {
     setWorking(true); setError('');
@@ -82,11 +86,11 @@ export default function SaleDetail() {
       <Table rows={sale.items || []} columns={itemColumns} />
     </Card>
     <div className={`bcrm-grid ${crm.has('vendors.view') ? 'bcrm-grid-2' : ''} bcrm-section`}>
-      <Card title="Client ledger" subtitle={`${sale.client_name} • ${sale.client_whatsapp || 'No WhatsApp'}`} actions={crm.has('reminders.prepare') && <Button variant="ghost" icon={MessageCircle} onClick={() => prepareReminder('client_pending')}>Reminder</Button>}>
+      <Card title="Client ledger" subtitle={`${sale.client_name} • ${sale.client_whatsapp || 'No WhatsApp'}`} actions={crm.has('reminders.prepare') && (clientOutstanding ? <Button variant="ghost" icon={MessageCircle} onClick={() => prepareReminder('client_pending')}>Payment reminder</Button> : <Button variant="ghost" icon={MessageCircle} disabled title={sale.status === 'cancelled' ? 'This invoice is cancelled, so no payment reminder can be sent.' : 'This invoice is fully paid, so there is no outstanding balance to remind about.'}>Payment reminder</Button>)}>
         <div className="bcrm-kv"><div><span>Received</span><strong>{formatMoney(sale.client_paid, sale.currency_code)}</strong></div><div><span>Pending</span><strong>{formatMoney(sale.client_pending, sale.currency_code)}</strong></div></div>
         {crm.has('payments.client.record') && Number(sale.client_pending) > 0 && <div className="bcrm-form-actions"><Button onClick={() => setPayment({ partyType: 'client', amount: sale.client_pending, paymentDate: today(), method: 'Cash', reference: '', notes: '' })}>Record receipt</Button></div>}
       </Card>
-      {crm.has('vendors.view') && <Card title="Vendor ledger" subtitle={sale.vendor_name || 'No vendor linked'} actions={crm.has('reminders.prepare') && sale.vendor_id && <Button variant="ghost" icon={MessageCircle} onClick={() => prepareReminder('vendor_due')}>Reminder</Button>}>
+      {crm.has('vendors.view') && <Card title="Vendor ledger" subtitle={sale.vendor_name || 'No vendor linked'} actions={crm.has('reminders.prepare') && sale.vendor_id && (Number(sale.vendor_due ?? 0) > 0 ? <Button variant="ghost" icon={MessageCircle} onClick={() => prepareReminder('vendor_due')}>Payment reminder</Button> : <Button variant="ghost" icon={MessageCircle} disabled title="This vendor balance is settled, so there is nothing to remind about.">Payment reminder</Button>)}>
         <div className="bcrm-kv"><div><span>Paid</span><strong>{formatMoney(sale.vendor_paid, sale.currency_code)}</strong></div><div><span>Due</span><strong>{formatMoney(sale.vendor_due, sale.currency_code)}</strong></div></div>
         {crm.has('payments.vendor.record') && sale.vendor_id && Number(sale.vendor_due) > 0 && <div className="bcrm-form-actions"><Button onClick={() => setPayment({ partyType: 'vendor', amount: sale.vendor_due, paymentDate: today(), method: 'Bank', reference: '', notes: '' })}>Record vendor payment</Button></div>}
       </Card>}
