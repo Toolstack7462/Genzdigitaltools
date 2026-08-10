@@ -542,7 +542,23 @@ export const SHIELD_OVERRIDES = {
       items: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"]',
       // keep wins over block, so a future "Opus … high-context" row is never lost by accident
       keepSource: '\\b(opus|sonnet|haiku)\\b|^(low|medium)$',
-      blockSource: '\\bfable\\b|^(high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra)$'
+      blockSource: '\\bfable\\b|^(high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra)$',
+
+      // ── Effort menu, detected by CONTENT rather than by role ──────────────────────────
+      // The role-based rule above missed Claude's effort picker entirely: it only fires when a
+      // row is BOTH inside [role=menu|listbox] AND itself [role=menuitem|option]. If the control
+      // is a segmented control, a radio group or plain buttons in a popover, both tests fail and
+      // nothing is ever hidden — which is exactly what was reported (Low/Medium/High/Max all
+      // visible).
+      //
+      // An effort picker identifies itself by its CONTENT: a cluster of SIBLING rows whose
+      // labels are each exactly an effort word. That is what makes this safe without knowing
+      // Claude's markup — a group is only acted on when it holds at least two such siblings AND
+      // at least one permitted level, so a lone "High" or "Max" in a conversation, an artifact
+      // or a code block can never qualify. Nothing outside such a group is touched.
+      effortRowSel: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"],[role="radio"],[role="tab"],button,li,label,[tabindex]',
+      effortWordSource: '^(low|medium|high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra)$',
+      effortAllowSource: '^(low|medium)$'
     }
   }
 };
