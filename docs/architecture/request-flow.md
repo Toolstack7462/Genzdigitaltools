@@ -93,3 +93,26 @@ Admin and client use **separate cookie names and separate localStorage keys**, s
    - `429` → "Too many attempts…"
    - everything else (400/403/404/5xx) → `SAFE_GENERIC_MESSAGE`
 3. **FE** `diagnosticsVisible()` (`authDiagnostics.js:151`) is `true` **only** for a development build (`NODE_ENV==='development'`, inlined by CRA at build time). Production members always see the safe string on screen; rich (still secret-free) detail stays in the dev console / `collectClientDiag` and correlates to backend logs via the shared `X-Request-Id` / Error ID.
+
+## Business CRM request flow
+
+Diagrams: [`../business-crm/system-diagrams.md`](../business-crm/system-diagrams.md).
+
+**Workspace load**
+
+1. `/admin/business` → `AdminRoute` calls `GET /api/crm/auth/admin/me` (existing endpoint, admin
+   cookies attached by the browser). Role must be `ADMIN`, `SUPER_ADMIN` or `SUPPORT`.
+2. `AdminBusinessCrm` renders inside `AdminLayoutEnhanced`; `BusinessCrmProvider` calls
+   `GET /api/crm/admin/business/bootstrap`.
+3. That request passes `requireAdminAuth`, then `ensureSchema()`, then `resolveAccess()` which maps the
+   auth role to a business role and applies `biz_crm_user_access` plus overrides.
+4. The response carries the resolved permission list, the currency list, settings and a **CSRF token**.
+5. Every later CRM request sends `x-business-csrf-token` and is rate-limited to 240/min per user.
+
+**Website access reconciliation** — CRM-initiated only. `POST /access-links/reconcile` reads
+`ToolAssignment` and `buildProxyAssignmentDTOs()`, upserts `biz_crm_access_links` by `external_key`,
+and returns 200 even when partial. No existing website route ever calls the CRM.
+
+**Failure shape:** a CRM 5xx returns a generic `Business CRM request failed` with a request id; the
+stack is logged server-side only. Read the log at
+`~/domains/api.genzdigitalstore.com/hbuilds/current/nodejs/console.log`.

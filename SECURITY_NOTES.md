@@ -69,3 +69,34 @@ Full analysis: `REFERENCE_EXTENSION_ANALYSIS.md`
 To rotate `COOKIES_ENCRYPTION_KEY`: update the environment variable and re-save all existing session bundles in the admin tool editor (they will be re-encrypted with the new key on save).
 
 To rotate `JWT_SECRET` / `JWT_REFRESH_SECRET`: all active sessions will be invalidated; users will need to log in again.
+
+## Business CRM
+
+Full record of what was and was not tested:
+[`docs/business-crm/security.md`](docs/business-crm/security.md).
+
+- **No new authentication.** The CRM reuses `requireAdminAuth` and the existing admin cookies. No CRM
+  login, no second cookie, no second token system, no second user store.
+- **The CRM never writes the shared `users` table.** Account creation and password reset are disabled
+  and return HTTP 405 `CRM_USER_WRITE_DISABLED` — a reset would bump `tokenVersion` and silently drop a
+  live admin session.
+- **Authorisation is server-enforced.** 44 permission keys across 5 roles; cost, profit, vendor data
+  and credentials are removed server-side, not merely hidden in the UI. See
+  [`docs/business-crm/rbac-matrix.md`](docs/business-crm/rbac-matrix.md).
+- **CSRF:** double-submit token issued by `/bootstrap`, required on every other CRM endpoint.
+- **Credentials at rest:** AES-256-GCM with a random IV and AAD bound to `"<saleId>:<itemId>:field"`.
+  The key (`BUSINESS_CRM_VAULT_KEY`, 64 hex) is read lazily, so a missing key yields HTTP 503 on
+  credential paths only and never blocks boot. Its production presence is **UNKNOWN**.
+- **Private data is never cached.** Every CRM response sets `Cache-Control: private, no-store`, and the
+  CRM service worker is scoped to `/admin/business/`, is network-first, and never caches `/api/*`.
+- **Nothing sensitive in browser storage.** The session lives only in `HttpOnly` cookies; measured
+  storage contained no token, password or cookie value.
+- **Audit redaction:** before/after payloads have any `password|credential|cipher|token|secret|cookie`
+  key replaced with `[REDACTED]`.
+- **Known, unchanged:** a request from a **non-approved** origin returns 500 rather than 403, because
+  the CORS origin callback in `backend/server-crm.js` rejects with an `Error`. The approved app origin
+  correctly receives 401/403. Shared global middleware, left alone. Recorded as
+  *NON-BLOCKING PLATFORM CORS WARNING — NOT CHANGED*.
+
+**Not assessed:** penetration testing, dependency CVE status, MANAGER/STAFF/VIEWER runtime
+enforcement, logout-state clearing. No claim of "secure" is made.

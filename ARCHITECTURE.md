@@ -459,3 +459,35 @@ Full per-component dependency and blast-radius detail:
   wiring, RDP/`windows-service` runtime for the V2 sync agent): **Not verified from code.**
 
 **No source file was modified in producing this documentation.**
+
+---
+
+## Business CRM (additive module)
+
+The Business CRM is documented separately and in full: **[`docs/business-crm/README.md`](docs/business-crm/README.md)**.
+
+Summary of how it fits this architecture:
+
+- **One login.** It is a workspace inside this admin application at `/admin/business/*`, reusing
+  `AdminRoute`, `AdminLayoutEnhanced`, the shared axios client and the existing `requireAdminAuth`
+  middleware. No second login, cookie, token system or user table.
+- **One API mount.** `/api/crm/admin/business/*`, added with a single `require` and a single `app.use`
+  in `backend/server-crm.js`.
+- **Its own tables only.** 21 `biz_crm_*` tables, plus its own `mysql2` pool over the same
+  `DATABASE_URL`. It writes nothing else.
+- **Two sources of truth.** The existing website access system owns operational access; the CRM owns
+  financial data. The CRM mirrors access **read-only** and never writes a website table, and no
+  financial field appears on Give Access or any assignment screen.
+- **Failure isolation.** No existing website route calls the CRM, so a CRM fault cannot affect
+  assignment creation or client access.
+
+Key documents: [`architecture`](docs/business-crm/architecture.md) ·
+[`data-model`](docs/business-crm/data-model.md) ·
+[`api-reference`](docs/business-crm/api-reference.md) ·
+[`rbac-matrix`](docs/business-crm/rbac-matrix.md) ·
+[`website-access-bridge`](docs/business-crm/website-access-bridge.md) ·
+[`troubleshooting`](docs/business-crm/troubleshooting.md) ·
+[`operations-runbook`](docs/business-crm/operations-runbook.md) ·
+[`known-issues`](docs/business-crm/known-issues.md)
+
+**No source file was modified in producing that documentation either.**

@@ -34,6 +34,24 @@
 | Renewals aggregation wrong | Renewals route + window util | `backend/routes/admin/renewals.js`, `backend/utils/renewalWindow.js` | assignment models | `npm test` renewalWindow; admin Renewals list |
 | Deploy didn't land / stale bundle | Deploy script / workflow | the relevant `deploy-*.sh`, `.github/workflows/deploy-frontend.yml`, `.htaccess` | application code | Post-deploy live-bundle-hash check both domains; `/api/crm/health` 200 |
 
+## Business CRM
+
+The Business CRM has its own documentation set — see
+[`../business-crm/README.md`](../business-crm/README.md), and
+[`../business-crm/troubleshooting.md`](../business-crm/troubleshooting.md) for the long-form version of
+these rows.
+
+| Issue type | Responsible component | Exact likely files | Must remain untouched | Required regression tests |
+|---|---|---|---|---|
+| CRM blank content panel / accumulated URL | CRM routing | `frontend/src/features/business-crm/{constants.js,BusinessCrmApp.jsx,BusinessCrmLayout.jsx}`, `pages/NotFound.jsx` | `App.js` route, `AdminRoute.js`, auth | `crmRouting.test.js`; frontend suite; production build |
+| Two full sidebars / CRM content squeezed | Route-scoped workspace mode | `frontend/src/components/AdminLayoutEnhanced.js` (`crmWorkspace` branches), `business-crm-responsive.css` | non-CRM admin layout | Frontend suite; measure a CRM **and** a non-CRM admin page |
+| CRM 500 | The specific CRM route/service | `backend/modules/business-crm/routes/**`, `services/**` | non-`biz_crm_*` tables, shared auth | Read the server log first; `npm test` |
+| CRM 400 `INVALID_MONEY` | Money boundary | the SQL producing the value — wrap `AVG()` in `ROUND(...,2)` | `money.js` strictness | `businessCrmRuntimeDefects.test.js` |
+| CRM 403 | CRM RBAC | `backend/modules/business-crm/permissions.js`, `routes/admin.js` | the shared `users` table | `npm test`; verify 403 still holds for roles that must not hold the key |
+| 503 `VAULT_NOT_CONFIGURED` | Encryption configuration | environment only (`BUSINESS_CRM_VAULT_KEY`) | `encryption.js` contract | Credential round-trip on a test record |
+| Website Access row missing / wrong status | Access bridge | `backend/modules/business-crm/services/websiteAccessService.js`, `routes/accessLinks.js` | `routes/admin/assignments.js`, `utils/proxyAssignments.js`, `models/ToolAssignment.js` | `businessCrmIsolation.test.js`; reconcile twice |
+| Mobile overflow / control under 44 px | CRM responsive CSS | `frontend/src/features/business-crm/business-crm-responsive.css` | blanket `overflow-x: hidden` | Measure rendered sizes at 320/360/390/412/768 px |
+
 **Rule of thumb:** locate the row, change only the "exact likely files", leave the "must remain
 untouched" set alone unless git history + reproduction prove the root cause lives there, then run
 the "required regression tests" plus the blast-radius set for any shared file you had to touch.

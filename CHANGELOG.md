@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased] — Business CRM as-built documentation
+
+Documentation only. No application code, CSS, SQL, dependency, environment file, workflow or
+configuration was changed.
+
+- New set under `docs/business-crm/`: README (index), Roman Urdu owner guide, current-state,
+  architecture, system-diagrams, data-model, api-reference, rbac-matrix, website-access-bridge,
+  ui-design-system, security, offline-sync, operations-runbook, troubleshooting, testing and
+  known-issues.
+- Five decision records under `docs/business-crm/adr/`: the shared admin workspace, pull-only access
+  reconciliation, no financial fields in Give Access, three currencies with no conversion, and the
+  browser-storage / service-worker boundaries.
+- Local module maps: `backend/modules/business-crm/README.md` and
+  `frontend/src/features/business-crm/README.md`.
+- Small targeted additions linking the CRM into `README.md`, `ARCHITECTURE.md`,
+  `DEPLOYMENT_CHECKLIST.md`, `SECURITY_NOTES.md` and all eight files in `docs/architecture/`.
+- Every technical statement is labelled VERIFIED FROM CODE, VERIFIED FROM TEST, VERIFIED IN
+  PRODUCTION, NOT VERIFIED FROM CODE or PRODUCTION STATUS UNKNOWN. The production `biz_crm_*` schema
+  inventory beyond table count and migration version, and the runtime status of
+  `BUSINESS_CRM_VAULT_KEY`, are recorded as **UNKNOWN**.
+
 ## [Unreleased] — Business CRM runtime defect fixes
 
 CRM-only. No change to admin/client authentication, Give Access, assignment routes, extension,

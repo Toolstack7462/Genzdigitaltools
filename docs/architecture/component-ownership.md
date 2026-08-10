@@ -249,3 +249,40 @@ is still required at boot by the auth middleware.
 - **`frontend/app.htaccess`, `frontend/public/.htaccess`** — reverse-proxy/SPA routing per
   root. **Sec: partial** (route exposure). **Multi-flow:** Yes.
 - **`scripts/build-extension.mjs`** — builds the extension zip into the frontend download dirs.
+
+## Business CRM (additive module)
+
+Full map: [`../business-crm/architecture.md`](../business-crm/architecture.md) ·
+[`backend/modules/business-crm/README.md`](../../backend/modules/business-crm/README.md) ·
+[`frontend/src/features/business-crm/README.md`](../../frontend/src/features/business-crm/README.md)
+
+### `backend/modules/business-crm/`
+
+**Owns:** the financial CRM API at `/api/crm/admin/business` and the 21 `biz_crm_*` tables.
+**Does not own:** authentication (reuses `requireAdminAuth`), identity (reads `users`, never writes it),
+or operational tool access (mirrors it read-only).
+Key files: `index.js` (router + middleware order), `db.js` (own pool + `ensureSchema`), `schema.sql`,
+`permissions.js` (44 keys, 5 roles), `money.js`, `encryption.js`, 12 routers, 6 services.
+`services/websiteAccessService.js` is the **only** file permitted to read website access models.
+
+### `frontend/src/features/business-crm/`
+
+**Owns:** the `/admin/business/*` workspace — 22 pages, layout, context, offline queue, two
+stylesheets. **Does not own:** the admin shell or the axios client, both reused.
+Key files: `constants.js` (`crmPath()` + navigation), `BusinessCrmApp.jsx` (routes + permission gates),
+`BusinessCrmLayout.jsx` (sidebar, toolbar, drawer), `BusinessCrmContext.jsx` (bootstrap, CSRF,
+currency, online state).
+
+### Shared files with a CRM footprint
+
+| File | CRM footprint |
+|---|---|
+| `frontend/src/App.js` | one `lazy()` import + one `<Route path="/admin/business/*">` |
+| `frontend/src/components/AdminLayoutEnhanced.js` | one `NAV_ITEMS` entry + route-scoped `crmWorkspace` branches |
+| `frontend/src/services/api.js` | reused unchanged by the CRM |
+| `backend/server-crm.js` | one `require` + one `app.use` |
+
+### `frontend/public/admin/business/sw.js`
+
+**Owns:** asset-shell caching for the CRM only. Scope `/admin/business/`, network-first, never caches
+`/api/*`.

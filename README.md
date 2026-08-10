@@ -2,6 +2,17 @@
 
 Your all-in-one digital tools hub. Access AI, academic, SEO, design, productivity, marketing, and business tools from one secure Gen Z Digital Store membership.
 
+## Documentation
+
+- **Business CRM (as-built):** [`docs/business-crm/README.md`](docs/business-crm/README.md) — the
+  financial CRM at `/admin/business`. Architecture, data model, API, RBAC, the website-access bridge,
+  troubleshooting, runbook and decision records. Owner guide in Roman Urdu:
+  [`docs/business-crm/README_URDU.md`](docs/business-crm/README_URDU.md)
+- **Platform architecture:** [`docs/architecture/architecture-index.md`](docs/architecture/architecture-index.md)
+  and [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- **Deploying:** [`DEPLOYMENT_CHECKLIST.md`](DEPLOYMENT_CHECKLIST.md)
+- **Security notes:** [`SECURITY_NOTES.md`](SECURITY_NOTES.md)
+
 ## Project Stack
 
 - **Frontend**: React 19, Tailwind CSS, Shadcn/UI, React Router v7

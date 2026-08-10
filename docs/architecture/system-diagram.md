@@ -120,3 +120,21 @@ flowchart TD
   WF -.->|"frontend/build → both roots"| MAIN
   WF -.->|"frontend/build → both roots"| APP
 ```
+
+## 6. Business CRM
+
+The CRM's own diagrams — system context, admin auth, reconciliation, manual sale, payment/reversal,
+offline queue and deployment — live in
+[`../business-crm/system-diagrams.md`](../business-crm/system-diagrams.md).
+
+```mermaid
+flowchart LR
+  A["/admin/login<br/>existing"] --> B["AdminLayoutEnhanced<br/>existing shell"]
+  B --> C["/admin/business/*<br/>CRM workspace"]
+  C --> D["/api/crm/admin/business/*<br/>requireAdminAuth"]
+  D --> E[("biz_crm_* — 21 tables<br/>CRM writes")]
+  D -. "read only" .-> F[("users, tools,<br/>tool_assignments")]
+```
+
+Note the dotted edge: the CRM **reads** website access data and never writes it. See
+[`../business-crm/adr/002-pull-only-access-reconciliation.md`](../business-crm/adr/002-pull-only-access-reconciliation.md).

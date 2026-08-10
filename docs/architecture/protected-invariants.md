@@ -129,3 +129,36 @@
   the shared session after 15 minutes idle.
 - **Preserve:** any fix must leave all of the above working. Regression-test the ones adjacent
   to the change per `blast-radius-map.md`.
+
+## Business CRM
+
+Full set: [`../business-crm/README.md`](../business-crm/README.md). These are the CRM invariants;
+most are test-enforced.
+
+- **Two sources of truth, never blurred.** The existing website access system owns operational access
+  (who has a tool, start, expiry, revoked/expired, access mode). The CRM owns financial data. The CRM
+  mirrors access read-only and never writes a website table.
+- **No financial field on any access screen.** No "Add to Business CRM" checkbox, no Sale Price,
+  Currency, Purchase Cost, Vendor, Amount Received or Profit on Give Access, Assign Tool, Bulk Assign,
+  proxy, StealthWriter or renewals.
+- **A manual CRM sale grants nothing.** It creates no `ToolAssignment`, proxy client, stealth client,
+  extension entitlement, gateway entitlement or portal access.
+- **The CRM never writes the shared `users` table.** Account creation and password reset return
+  HTTP 405 `CRM_USER_WRITE_DISABLED`.
+- **Reconciliation is pull-only and idempotent.** `biz_crm_access_links.external_key` stays `UNIQUE`;
+  a vanished source is marked `SOURCE_MISSING`, never deleted; financial linkage survives every run;
+  the missing-record sweep is skipped if any source errored.
+- **Schema changes are additive.** `CREATE TABLE IF NOT EXISTS` only; no `DROP`, `TRUNCATE` or
+  `RENAME`; every `ALTER` targets `biz_crm_*`.
+- **Money stays exact.** Integer minor units, at most two decimals, no float, and **no currency
+  conversion** — PKR, INR and NGN totals are never summed. Round in SQL rather than loosening
+  `money.js`.
+- **Every CRM navigation target is absolute**, via `crmPath()`. The `path="*"` route renders a visible
+  not-found page, never `<Navigate to=".">`.
+- **One full text sidebar at any width.** Workspace mode stays gated on
+  `location.pathname.startsWith('/admin/business')` so unrelated admin pages are untouched.
+- **Service-worker scope stays `/admin/business/`, network-first, and never caches `/api/*`.** Every
+  CRM response keeps `Cache-Control: private, no-store`.
+- **No authentication material in browser storage.** The session lives only in `HttpOnly` cookies.
+- **Preserve:** any CRM fix must leave all of the above true. `businessCrmIsolation.test.js`,
+  `businessCrmRuntimeDefects.test.js` and `crmRouting.test.js` enforce most of them.

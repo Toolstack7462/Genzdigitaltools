@@ -154,3 +154,32 @@
 - **Mandatory tests:** post-deploy live-bundle-hash check on both domains (the workflow already
   does this); `/api/crm/health` 200 after a backend deploy; a gateway `/__genz/health` 200
   after a gateway deploy.
+
+## `backend/modules/business-crm/**` — the Business CRM module
+
+**Blast radius: contained by design.** The module is mounted once at `/api/crm/admin/business`, opens
+its **own** `mysql2` pool, and writes only `biz_crm_*` tables. A fault here cannot alter website access,
+authentication or any other module. `encryption.js` throws lazily, so a missing vault key cannot stop
+the server booting.
+
+**What still radiates outward:** the shared axios client and the four shared mount points
+(`App.js`, `AdminLayoutEnhanced.js`, `services/api.js`, `server-crm.js`). A change to any of those
+affects every admin and client page — re-test non-CRM admin pages, client login and the public site.
+
+**Also note:** `ensureSchema()` runs on every CRM request, so a `schema.sql` edit reaches production on
+the first authenticated CRM request after deploy. Back up before releasing a schema change.
+
+**Regression set:** `cd backend && npm test` (includes `businessCrmIsolation.test.js` and
+`businessCrmRuntimeDefects.test.js`), then the CRM smoke test in
+[`../business-crm/operations-runbook.md`](../business-crm/operations-runbook.md).
+
+## `frontend/src/features/business-crm/**` — the CRM workspace
+
+**Blast radius: contained**, except for the two shared files above. All styles are namespaced `bcrm-`
+so they cannot leak into other admin pages.
+
+**Highest-risk file:** `constants.js`. It owns `crmPath()` and the navigation table. A relative
+navigation target reintroduced anywhere here produces accumulating URLs and a blank content panel.
+
+**Regression set:** `crmRouting.test.js`, the full frontend suite, a production build with
+`CI=false`, and rendered-size measurement at 320/360/390/412/768 px if CSS changed.

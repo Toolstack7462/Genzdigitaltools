@@ -62,3 +62,32 @@ Never commit real values to git.
 - [ ] Access button opens the tool with a fresh authorized session
 - [ ] Extension popup shows "Managed by admin" for access policy
 - [ ] Logout clears session cookies
+
+## Business CRM
+
+Full procedure: [`docs/business-crm/operations-runbook.md`](docs/business-crm/operations-runbook.md).
+
+Before release:
+
+- [ ] Change stays inside the CRM boundaries in [`docs/business-crm/architecture.md#change-boundaries`](docs/business-crm/architecture.md#change-boundaries)
+- [ ] `cd backend && npm test` passes
+- [ ] `cd frontend && CI=true npx craco test --watchAll=false` passes
+- [ ] `cd frontend && CI=false GENERATE_SOURCEMAP=false npm run build` compiles (use `CI=false` — `CI=true` fails on pre-existing warnings in unrelated pages)
+- [ ] `frontend/build` and `frontend/yarn.lock` restored before staging (both are tracked and get dirtied locally)
+- [ ] Secret scan on the diff; explicit paths staged, never `git add .`
+- [ ] **If `schema.sql` changed: database backup taken.** `ensureSchema()` applies it on the first CRM request after deploy — there is no migration gate
+- [ ] Rollback point recorded (current `origin/main` hash)
+
+After release — verify, do not assume:
+
+- [ ] Frontend Action ran on the merge commit **or** was correctly skipped because the commit was backend-only (`paths` filter is `frontend/**`)
+- [ ] Served bundle contains the change (compare a local `CI=false GENERATE_SOURCEMAP=false` build's chunk hash with the served one)
+- [ ] Backend build repointed: `readlink ~/domains/api.genzdigitalstore.com/hbuilds/current`, and the running code contains the change
+- [ ] `grep -c '\[Business CRM' ~/domains/api.genzdigitalstore.com/hbuilds/current/nodejs/console.log` — zero errors, and confirmed with a real request
+- [ ] Authenticated smoke test: Dashboard and Reports return 200 for PKR, INR and NGN; 20 sidebar clicks give clean URLs; unknown CRM path shows the not-found state; deep-link refresh works
+- [ ] 390 px: drawer opens/closes, no control under 44 px, no horizontal scroll
+- [ ] Non-CRM admin pages restore the full 224 px sidebar; no CRM financial field on `/admin/assignments`
+- [ ] No CRM console errors; responses carry `Cache-Control: private, no-store`
+
+Do **not** run `deploy-hostinger.sh` for a CRM release — it uploads unrelated modules and republishes
+the extension.

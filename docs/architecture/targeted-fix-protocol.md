@@ -99,3 +99,22 @@ git diff --stat
 - Do not overwrite the app-subdomain `.htaccess` or change deploy targets.
 - Do not "modernize" the adapter, gateways, or extension.
 - Do not remove the documented verified discrepancies opportunistically.
+
+## Business CRM notes
+
+The ten steps apply unchanged. Four CRM-specific cautions, each learned from a real defect:
+
+1. **A CRM 500 tells you nothing from the response body.** It is deliberately generic. Get the server
+   log at `~/domains/api.genzdigitalstore.com/hbuilds/current/nodejs/console.log` and filter for
+   `[Business CRM`. Two production faults were misdiagnosed by reading code alone.
+2. **The live backend is the versioned build**, `hbuilds/current`, not the stale `nodejs/` directory.
+   Reading the wrong one wastes hours.
+3. **Measure CSS, do not read it.** Two touch-target defects and an unclickable menu button were
+   invisible in the stylesheet and only appeared when rendered boxes were measured at 320–768 px.
+4. **A backend-only commit does not trigger the frontend Action**, by design (`paths` filter). Never
+   infer "nothing deployed" from an absent run — verify the running code.
+
+Step 3 ("smallest affected component") maps to
+[`../business-crm/architecture.md#change-boundaries`](../business-crm/architecture.md#change-boundaries),
+and step 8 ("required regression tests") to
+[`../business-crm/testing.md`](../business-crm/testing.md).

@@ -140,3 +140,28 @@ While fixing one issue, do **not**:
 | Extension can't auth | `chrome-extension/js/background.js` + `routes/extension/index.js` | frontend, gateways |
 | Data query wrong/slow | the model file; `mysqlAdapter.js` only if the engine is at fault | routes unrelated to it |
 | Deploy didn't land | the relevant `deploy-*.sh` / workflow / `.htaccess` | application code |
+
+## Business CRM
+
+Full detail: [`../business-crm/architecture.md#change-boundaries`](../business-crm/architecture.md#change-boundaries).
+
+**Normally safe (CRM-owned):** `frontend/src/features/business-crm/**` ·
+`frontend/src/pages/admin/AdminBusinessCrm.js` · `frontend/public/admin/business/sw.js` ·
+`backend/modules/business-crm/**` · `backend/scripts/business-crm-*.js`
+
+**Shared, needs broader regression testing:** `frontend/src/App.js` (one lazy import + one route) ·
+`frontend/src/components/AdminLayoutEnhanced.js` (one nav item + the route-scoped workspace branches) ·
+`frontend/src/services/api.js` · `backend/server-crm.js` (one require + one mount)
+
+| Symptom | Change here | Leave alone |
+|---|---|---|
+| CRM blank panel / URL accumulation | `features/business-crm/{constants.js,BusinessCrmApp.jsx,BusinessCrmLayout.jsx}` | `App.js` route, auth |
+| Two full sidebars | `AdminLayoutEnhanced.js` `crmWorkspace` branches only | non-CRM admin layout |
+| CRM 500 | the CRM route or service named in the server log | non-`biz_crm_*` tables |
+| CRM 403 | `modules/business-crm/permissions.js` | the shared `users` table |
+| 503 `VAULT_NOT_CONFIGURED` | environment only | `encryption.js` contract |
+| Website Access wrong | `services/websiteAccessService.js` | `routes/admin/assignments.js`, `models/ToolAssignment.js` |
+| Mobile overflow / small touch target | `business-crm-responsive.css` | blanket `overflow-x: hidden` |
+
+Never write a non-`biz_crm_*` table from the CRM, and never add a financial field to Give Access.
+Both are enforced by `backend/tests/businessCrmIsolation.test.js`.
