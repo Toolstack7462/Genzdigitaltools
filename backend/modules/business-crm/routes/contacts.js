@@ -4,7 +4,7 @@ const db = require('../db');
 const audit = require('../audit');
 const contactService = require('../services/contactService');
 const money = require('../money');
-const { asyncHandler, pageParams } = require('../http');
+const { asyncHandler, pageParams, safeLike } = require('../http');
 const { validate } = require('../validation');
 const { requirePermission, has } = require('../permissions');
 const { httpError } = require('../services/salesService');
@@ -25,7 +25,7 @@ router.get('/:kind', (req, res, next) => requirePermission(req.contactConfig.vie
   const c = req.contactConfig; const { page, pageSize, offset } = pageParams(req.query);
   const where = ['deleted_at IS NULL']; const params = { limit: pageSize, offset };
   if (req.query.status) { where.push('status=:status'); params.status = req.query.status; }
-  if (req.query.q) { where.push('(name LIKE :q OR whatsapp LIKE :q OR email LIKE :q OR company LIKE :q)'); params.q = `%${String(req.query.q).slice(0, 160)}%`; }
+  if (req.query.q) { where.push('(name LIKE :q OR whatsapp LIKE :q OR email LIKE :q OR company LIKE :q)'); params.q = safeLike(req.query.q); }
   const [rows, counts] = await Promise.all([
     db.query(`SELECT * FROM ${c.table} WHERE ${where.join(' AND ')} ORDER BY name LIMIT :limit OFFSET :offset`, params),
     db.query(`SELECT COUNT(*) total FROM ${c.table} WHERE ${where.join(' AND ')}`, params),

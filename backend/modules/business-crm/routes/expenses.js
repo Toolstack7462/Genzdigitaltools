@@ -4,7 +4,7 @@ const db = require('../db');
 const audit = require('../audit');
 const expenseService = require('../services/expenseService');
 const money = require('../money');
-const { asyncHandler, pageParams } = require('../http');
+const { asyncHandler, pageParams, safeLike } = require('../http');
 const { validate } = require('../validation');
 const { requirePermission } = require('../permissions');
 const { httpError } = require('../services/salesService');
@@ -15,7 +15,7 @@ router.get('/', requirePermission('expenses.view'), asyncHandler(async (req, res
   const { page, pageSize, offset } = pageParams(req.query); const where = ['deleted_at IS NULL']; const params = { limit: pageSize, offset };
   if (req.query.currency) { where.push('currency_code=:currency'); params.currency = money.assertCurrency(req.query.currency); }
   if (req.query.from) { where.push('expense_date>=:fromDate'); params.fromDate = req.query.from; } if (req.query.to) { where.push('expense_date<=:toDate'); params.toDate = req.query.to; }
-  if (req.query.q) { where.push('(description LIKE :q OR category LIKE :q OR payee LIKE :q)'); params.q = `%${String(req.query.q).slice(0, 160)}%`; }
+  if (req.query.q) { where.push('(description LIKE :q OR category LIKE :q OR payee LIKE :q)'); params.q = safeLike(req.query.q); }
   const [rows, counts] = await Promise.all([db.query(`SELECT * FROM biz_crm_expenses WHERE ${where.join(' AND ')} ORDER BY expense_date DESC,created_at DESC LIMIT :limit OFFSET :offset`, params), db.query(`SELECT COUNT(*) total FROM biz_crm_expenses WHERE ${where.join(' AND ')}`, params)]);
   res.json({ rows: rows.map((r) => ({ ...r, amount: money.normalize(r.amount) })), page, pageSize, total: Number(counts[0]?.total || 0) });
 }));

@@ -464,7 +464,11 @@ async function listLinks(filters = {}, paging = { limit: 25, offset: 0 }) {
     params.sourceType = filters.sourceType;
   }
   if (filters.search) {
-    where.push('(client_name LIKE :search OR client_email LIKE :search OR tool_name LIKE :search)');
+    // client_phone and source_type complete the set of columns the operator can actually see in the
+    // table, so every visible field is searchable. external_key is included because it is the only
+    // handle on a SOURCE_MISSING row whose tool name has since changed upstream.
+    where.push(`(client_name LIKE :search OR client_email LIKE :search OR client_phone LIKE :search
+      OR tool_name LIKE :search OR source_type LIKE :search OR external_key LIKE :search)`);
     params.search = filters.search;
   }
   const clause = where.join(' AND ');

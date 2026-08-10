@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Edit3, Plus, Save } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
-import { useResource } from '../hooks';
+import { useDebouncedValue, useResource } from '../hooks';
 import { formatMoney } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Status, Table, Textarea } from '../components/ui';
 
@@ -15,7 +15,8 @@ export default function Products() {
   const [error, setError] = useState('');
   const canManage = crm.has('products.manage');
   const canSeeCost = crm.has('profit.view') || canManage;
-  const resource = useResource(() => `/products?pageSize=500&currency=${crm.currency}&q=${encodeURIComponent(query)}`, [crm.currency, query]);
+  const debounced = useDebouncedValue(query);
+  const resource = useResource(() => `/products?pageSize=100&currency=${crm.currency}&q=${encodeURIComponent(debounced)}`, [crm.currency, debounced]);
 
   const edit = (product) => setForm({
     id: product.id, name: product.name, category: product.category, accountType: product.account_type,
@@ -31,7 +32,7 @@ export default function Products() {
     } catch (requestError) { setError(messageFromError(requestError)); }
   };
 
-  if (resource.loading) return <Loading />;
+  if (resource.initialLoading) return <Loading />;
   if (resource.error) return <ErrorState message={resource.error} onRetry={resource.reload} />;
 
   const columns = [
@@ -45,7 +46,7 @@ export default function Products() {
 
   return <>
     <PageHeader title="Product catalogue" description="Reusable pricing, account type and duration presets for faster invoice entry." actions={canManage && <Button icon={Plus} onClick={() => setForm(empty(crm.currency))}>New product</Button>} />
-    <div className="bcrm-filterbar"><SearchBox value={query} onChange={setQuery} placeholder="Product or category…" /></div>
+    <div className="bcrm-filterbar"><SearchBox value={query} onChange={setQuery} busy={resource.loading} placeholder="Product, category or duration…" /></div>
     <Card className="flush"><Table rows={resource.data?.rows || []} columns={columns} /></Card>
     <Modal open={Boolean(form)} title={form?.id ? 'Edit product' : 'New product'} onClose={() => setForm(null)} footer={<><Button variant="secondary" onClick={() => setForm(null)}>Cancel</Button><Button icon={Save} onClick={save}>Save</Button></>}>
       {error && <div className="bcrm-banner warning">{error}</div>}

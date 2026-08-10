@@ -3,7 +3,7 @@ const express = require('express');
 const crypto = require('crypto');
 const db = require('../db');
 const audit = require('../audit');
-const { asyncHandler } = require('../http');
+const { asyncHandler, safeLike } = require('../http');
 const { validate } = require('../validation');
 const { requirePermission, has } = require('../permissions');
 const reminders = require('../services/reminderService');
@@ -38,6 +38,16 @@ router.get('/tasks', requirePermission('tasks.view'), asyncHandler(async (req, r
   if (req.query.status) { where.push('t.status=:status'); params.status = req.query.status; }
   if (req.query.mine === '1') { where.push('t.assigned_user_id=:actor'); params.actor = actor(req); }
   if (req.query.overdue === '1') where.push("t.due_at<NOW() AND t.status NOT IN ('completed','cancelled')");
+  const search = req.query.search || req.query.q ? safeLike(req.query.search || req.query.q) : null;
+  if (search) {
+    // The vendor clause is gated on vendors.view for the same reason the response below deletes
+    // vendor_name: without the gate, an operator who cannot see vendors could still confirm a
+    // vendor's name by observing which searches return rows.
+    const fields = ['t.title LIKE :search', 't.description LIKE :search', 'c.name LIKE :search', 's.invoice_number LIKE :search'];
+    if (has(req, 'vendors.view')) fields.push('v.name LIKE :search');
+    where.push(`(${fields.join(' OR ')})`);
+    params.search = search;
+  }
   const rows = await db.query(`SELECT t.*,c.name client_name,v.name vendor_name,s.invoice_number FROM biz_crm_tasks t
     LEFT JOIN biz_crm_clients c ON c.id=t.client_id LEFT JOIN biz_crm_vendors v ON v.id=t.vendor_id LEFT JOIN biz_crm_sales s ON s.id=t.sale_id
     WHERE ${where.join(' AND ')} ORDER BY FIELD(t.priority,'urgent','high','normal','low'),t.due_at IS NULL,t.due_at LIMIT 1000`, params);

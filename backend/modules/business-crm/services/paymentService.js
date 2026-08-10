@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const db = require('../db');
 const money = require('../money');
 const audit = require('../audit');
+const { pageParams, safeLike } = require('../http');
 const { getSaleById, httpError } = require('./salesService');
 
 function actor(req) { return String(req.userId || req.user?._id); }
@@ -88,13 +89,29 @@ async function listOutstanding(partyType, filters = {}) {
   const where = ['s.deleted_at IS NULL', 's.status<>\'cancelled\'', `s.${totalColumn}>s.${paidColumn}`];
   const params = {};
   if (filters.currency) { where.push('s.currency_code=:currency'); params.currency = money.assertCurrency(filters.currency); }
-  if (filters.q) { where.push('(s.invoice_number LIKE :q OR p.name LIKE :q OR p.whatsapp LIKE :q)'); params.q = `%${String(filters.q).slice(0, 160)}%`; }
-  const rows = await db.query(
-    `SELECT s.id,s.invoice_number,s.sale_date,s.currency_code,s.${totalColumn} total_amount,s.${paidColumn} paid_amount,
-            (s.${totalColumn}-s.${paidColumn}) pending_amount,p.id party_id,p.name party_name,p.whatsapp,p.email
-       FROM biz_crm_sales s ${contactJoin} WHERE ${where.join(' AND ')} ORDER BY s.sale_date ASC,s.created_at ASC`, params,
-  );
-  return rows.map((row) => ({ ...row, total_amount: decimal(row.total_amount), paid_amount: decimal(row.paid_amount), pending_amount: decimal(row.pending_amount) }));
+  const search = filters.q || filters.search;
+  if (search) { where.push('(s.invoice_number LIKE :q OR p.name LIKE :q OR p.whatsapp LIKE :q OR p.email LIKE :q)'); params.q = safeLike(search); }
+  const clause = where.join(' AND ');
+  // This ledger previously returned every outstanding row with no limit. A page bound keeps the
+  // response size predictable as the ledger grows; the aggregate is computed in SQL over the whole
+  // filtered set so the summary stays correct rather than describing only the current page.
+  const { page, pageSize, offset } = pageParams(filters);
+  const [rows, counts] = await Promise.all([
+    db.query(
+      `SELECT s.id,s.invoice_number,s.sale_date,s.currency_code,s.${totalColumn} total_amount,s.${paidColumn} paid_amount,
+              (s.${totalColumn}-s.${paidColumn}) pending_amount,p.id party_id,p.name party_name,p.whatsapp,p.email
+         FROM biz_crm_sales s ${contactJoin} WHERE ${clause} ORDER BY s.sale_date ASC,s.created_at ASC
+         LIMIT :limit OFFSET :offset`, { ...params, limit: pageSize, offset },
+    ),
+    db.query(
+      `SELECT COUNT(*) total,COALESCE(SUM(s.${totalColumn}-s.${paidColumn}),0) pending_total
+         FROM biz_crm_sales s ${contactJoin} WHERE ${clause}`, params,
+    ),
+  ]);
+  return {
+    rows: rows.map((row) => ({ ...row, total_amount: decimal(row.total_amount), paid_amount: decimal(row.paid_amount), pending_amount: decimal(row.pending_amount) })),
+    page, pageSize, total: Number(counts[0]?.total || 0), pendingTotal: decimal(counts[0]?.pending_total || 0),
+  };
 }
 
 async function listPayments(filters = {}) {
