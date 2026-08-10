@@ -262,3 +262,127 @@
    overflow-x:hidden, which would only have hidden the symptom. */
 .bcrm-root { overflow-wrap: anywhere; }
 .bcrm-table td, .bcrm-kv strong, .bcrm-banner, .bcrm-page-head h1 { overflow-wrap: anywhere; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   WEBSITE ACCESS (/admin/business/website-access) — page-scoped layout.
+
+   ROOT CAUSE these rules correct, measured rather than guessed:
+
+   1. `.bcrm-root { overflow-wrap: anywhere }` and `.bcrm-table td { overflow-wrap: anywhere }`
+      exist so long unbroken identifiers cannot force horizontal page scroll. They also compute
+      onto `.bcrm-status` and `.bcrm-btn`, so a short label breaks mid-word — and with
+      `border-radius: 999px` a two-line pill renders as a circle. Measured at 768px:
+      "expired" 46x52 (2 lines, aspect 0.88), "source missing" 46x96 (4 lines),
+      "Complete Financial Details" 62x192 (9 lines).
+
+   2. This table has ten columns. At 768-1024px each column collapsed to 46-83px, which is what
+      triggered the wrapping above. The table now carries a content-appropriate min-width and
+      scrolls inside its own card, so the page body still never scrolls horizontally.
+
+   3. The action cell used `.bcrm-form-actions`, which below 768px is a sticky, white,
+      top-bordered form footer. Inside a table card that became a sticky strip. The action area now
+      uses its own class and is explicitly static.
+
+   The global overflow-wrap rules are deliberately left in place for long identifiers; they are
+   overridden here only for status pills, buttons and the action area.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Status pills — never split a word, never become a circle ─────────────── */
+.bcrm-linked-access-status,
+.bcrm-linked-access-table .bcrm-status {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
+  width: max-content;
+  max-width: 100%;
+  /* Sentence case comes from the component; the base `capitalize` would give Title Case. */
+  text-transform: none;
+  padding: 5px 10px;
+  line-height: 1.4;
+  border-radius: 999px;
+  /* Colours are inherited from .bcrm-status-<tone> and are intentionally untouched. */
+}
+
+/* ── Action area — never a sticky form footer, never mid-word breaks ──────── */
+.bcrm-linked-access-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  /* Explicitly static: the mobile `.bcrm-form-actions` rule must not apply here. */
+  position: static;
+  background: none;
+  border-top: 0;
+  padding: 0;
+  margin: 0;
+  z-index: auto;
+}
+.bcrm-linked-access-actions .bcrm-btn {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  hyphens: none;
+  line-height: 1.35;
+  text-align: center;
+}
+/* Keep the icon beside its label rather than shrinking or detaching from it. */
+.bcrm-linked-access-actions .bcrm-btn > svg { flex: 0 0 auto; }
+
+/* ── Desktop and tablet, 768px and above — real table ────────────────────── */
+/* Ten columns need real width. Sized to what the content actually requires so labels stay on one
+   line, then allowed to scroll inside its own card. `.bcrm-table-wrap` already has overflow:auto,
+   so the page body is unaffected. */
+@media (min-width: 768px) {
+  .bcrm-linked-access-table .bcrm-table { min-width: 1180px; }
+  /* Action column: enough room for the two controls side by side. */
+  .bcrm-linked-access-table .bcrm-table th:last-child,
+  .bcrm-linked-access-table .bcrm-table td:last-child { min-width: 230px; }
+  .bcrm-linked-access-table .bcrm-table th:nth-child(9),
+  .bcrm-linked-access-table .bcrm-table td:nth-child(9) { min-width: 168px; }
+  .bcrm-linked-access-actions { flex-wrap: nowrap; align-items: center; }
+  .bcrm-linked-access-actions .bcrm-btn { white-space: nowrap; }
+}
+
+/* ── Mobile cards, below 768px ───────────────────────────────────────────── */
+/* The action cell becomes a full-width section under the record details, with its label above and
+   the buttons stacked. */
+@media (max-width: 767.98px) {
+  .bcrm-linked-access-table .bcrm-table td:last-child {
+    display: block;
+    width: 100%;
+    padding-top: 10px;
+    margin-top: 4px;
+    border-top: 1px dashed #eef2f6;
+  }
+  .bcrm-linked-access-table .bcrm-table td:last-child::before {
+    display: block;
+    margin-bottom: 8px;
+    content: attr(data-label);
+    font-size: 9.5px;
+    font-weight: 850;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--bcrm-muted);
+  }
+  .bcrm-linked-access-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 8px;
+  }
+  .bcrm-linked-access-actions .bcrm-btn {
+    width: 100%;
+    min-height: 44px;
+    padding: 10px 12px;
+  }
+  /* Status rows keep the label/value grid, with the pill sitting naturally at its own width. */
+  .bcrm-linked-access-table .bcrm-table td .bcrm-status { margin: 1px 0; }
+}
+
+/* Keyboard focus must stay obvious on both actions. */
+.bcrm-linked-access-actions .bcrm-btn:focus-visible {
+  outline: 2px solid var(--bcrm-cyan);
+  outline-offset: 2px;
+}
+/* Disabled primary stays clearly inert without losing its identity. */
+.bcrm-linked-access-actions .bcrm-btn:disabled { opacity: .55; cursor: not-allowed; }

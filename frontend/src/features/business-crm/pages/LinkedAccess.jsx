@@ -39,6 +39,18 @@ const SOURCE_LABELS = {
 const ACCESS_TONE = { ACTIVE: 'success', EXPIRING: 'warning', EXPIRED: 'danger', REVOKED: 'danger', SOURCE_MISSING: 'neutral' };
 const FINANCIAL_TONE = { NEEDS_FINANCIAL_DETAILS: 'warning', LINKED_TO_SALE: 'success', NON_BILLABLE: 'neutral', IGNORED: 'neutral' };
 
+/**
+ * Turn a backend enum into a readable sentence-case label: NEEDS_FINANCIAL_DETAILS →
+ * "Needs financial details". Sentence case reads better than the `capitalize` transform the base
+ * `.bcrm-status` applies, which produced "Needs Financial Details".
+ *
+ * This is presentation only — the enum values sent to and from the API are untouched.
+ */
+function statusLabel(value) {
+  const words = String(value || '').replace(/_/g, ' ').trim().toLowerCase();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '—';
+}
+
 const emptyFinancials = {
   saleDate: today(),
   orderType: 'new',
@@ -198,20 +210,25 @@ export default function LinkedAccess() {
     { key: 'startDate', label: 'Start', render: (row) => formatDate(row.startDate) },
     { key: 'durationDays', label: 'Duration', render: (row) => (row.durationDays == null ? '—' : `${row.durationDays} days`) },
     { key: 'expiryDate', label: 'Expiry', render: (row) => formatDate(row.expiryDate) },
-    { key: 'accessStatus', label: 'Access', render: (row) => <Status tone={ACCESS_TONE[row.accessStatus] || 'neutral'}>{row.accessStatus.replace(/_/g, ' ').toLowerCase()}</Status> },
-    { key: 'financialStatus', label: 'Financial', render: (row) => <Status tone={FINANCIAL_TONE[row.financialStatus] || 'neutral'}>{row.financialStatus.replace(/_/g, ' ').toLowerCase()}</Status> },
+    { key: 'accessStatus', label: 'Access', render: (row) => <Status tone={ACCESS_TONE[row.accessStatus] || 'neutral'} className="bcrm-linked-access-status">{statusLabel(row.accessStatus)}</Status> },
+    { key: 'financialStatus', label: 'Financial', render: (row) => <Status tone={FINANCIAL_TONE[row.financialStatus] || 'neutral'} className="bcrm-linked-access-status">{statusLabel(row.financialStatus)}</Status> },
     {
       key: 'actions',
       label: 'Action',
       render: (row) => {
-        if (row.financialStatus === 'LINKED_TO_SALE') return <Status tone="success">invoiced</Status>;
+        if (row.financialStatus === 'LINKED_TO_SALE') return <Status tone="success" className="bcrm-linked-access-status">Invoiced</Status>;
         if (!canLink) return '—';
+        // NOTE: deliberately NOT `bcrm-form-actions`. That class picks up a sticky, white,
+        // top-bordered footer below 768px, which turned these table-row buttons into a sticky strip
+        // inside the card. A page-scoped class keeps the action area static and full width.
         if (row.financialStatus === 'NON_BILLABLE' || row.financialStatus === 'IGNORED') {
-          return <Button variant="ghost" icon={Undo2} onClick={() => setStatus(row, 'reopen')}>Reopen</Button>;
+          return <div className="bcrm-linked-access-actions">
+            <Button variant="ghost" icon={Undo2} onClick={() => setStatus(row, 'reopen')}>Reopen</Button>
+          </div>;
         }
-        return <div className="bcrm-form-actions">
-          <Button icon={Link2} disabled={!row.crmClientId} onClick={() => openEditor(row)}>Complete Financial Details</Button>
-          <Button variant="secondary" icon={Ban} onClick={() => setStatus(row, 'non-billable')}>Non-billable</Button>
+        return <div className="bcrm-linked-access-actions">
+          <Button icon={Link2} disabled={!row.crmClientId} onClick={() => openEditor(row)}>Complete financial details</Button>
+          <Button variant="secondary" icon={Ban} onClick={() => setStatus(row, 'non-billable')}>Mark non-billable</Button>
         </div>;
       },
     },
@@ -237,7 +254,7 @@ export default function LinkedAccess() {
     </div>
     <Card className="flush" title={`${rows.length} access record${rows.length === 1 ? '' : 's'}`}>
       {rows.length
-        ? <Table rows={rows} columns={columns} />
+        ? <Table rows={rows} columns={columns} className="bcrm-linked-access-table" />
         : <Empty title="Nothing to reconcile" description="Website access records appear here automatically once they exist." />}
     </Card>
 
