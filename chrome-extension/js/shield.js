@@ -200,126 +200,226 @@
     if (MENU_KEEP_RE && MENU_KEEP_RE.test(label)) return false;   // keep wins
     return MENU_BLOCK_RE.test(label);
   }
-  // ── Effort picker, identified by CONTENT rather than by ARIA role ──────────────────────
-  // The role-based pass below only fires when a row is BOTH inside a [role=menu|listbox] AND is
-  // itself a [role=menuitem|option]. Claude's effort control satisfies neither, so it was never
-  // touched. Instead of guessing at more roles, find the picker by what it contains: a cluster of
-  // SIBLING rows each labelled exactly an effort word.
+  // ── Claude model / effort picker policy ────────────────────────────────────────────────
   //
-  // The two-sibling + one-permitted requirement is the whole safety argument. Prose cannot
-  // produce sibling elements labelled exactly "Low" and "High"; a picker always does. A lone
-  // "Max" in a conversation has no effort-word sibling and is therefore never considered.
-  var EFFORT_ROW_SEL = (MENU && MENU.effortRowSel) || null;
-  var EFFORT_WORD_RE = MENU ? safeRe(MENU.effortWordSource, 'i') : null;
-  var EFFORT_ALLOW_RE = MENU ? safeRe(MENU.effortAllowSource, 'i') : null;
+  // THREE FAILURES THIS REPLACES, in the order they were found:
+  //
+  //  1. ROLE GUESSING. The first rule required a row to be BOTH inside [role=menu|listbox] AND
+  //     itself [role=menuitem|option]. Claude's effort control is neither, so nothing hid.
+  //
+  //  2. PARENT GROUPING. The replacement grouped rows by their IMMEDIATE parentNode and only
+  //     acted on a group of >=2. Low/Medium/High/Extra shared a parent and were hidden; Max sat
+  //     in its own wrapper/section, so its group had size 1 and it survived. A picker is not a
+  //     flat list -- it has dividers, sections and wrappers.
+  //
+  //  3. THE FLASH. Hiding ran through the 150ms debounced flush, i.e. AFTER paint, so blocked
+  //     rows stayed visible for roughly nine frames before vanishing.
+  //
+  // THE FIX: locate the picker by CLIMBING to the lowest ancestor whose subtree holds >=2 rows
+  // of the same kind AND at least one permitted row, then vet that whole container. Sections and
+  // wrappers stop mattering, because the common ancestor still qualifies. Hiding runs
+  // SYNCHRONOUSLY from a MutationObserver callback -- a microtask, which executes BEFORE the next
+  // paint -- so a blocked row never occupies a painted frame.
+  //
+  // WHY NOT PRE-GATE THE POPOVER (hide it, vet it, reveal it): the gate would have to be applied
+  // before we know the element IS a picker, so it would briefly blank unrelated popovers, and any
+  // bug in the reveal would leave real UI invisible. Synchronous pre-paint hiding gets to zero
+  // flash without taking that risk.
+  //
+  // The safety property is unchanged and is what keeps this off page content: a row is only ever
+  // touched when it sits in a container holding at least two same-kind rows and one permitted
+  // one. Prose cannot produce that shape; a picker always does.
+  var ROW_SEL = (MENU && (MENU.rowSel || MENU.effortRowSel)) || null;
+  var MAX_CLIMB = (MENU && MENU.maxClimb) || 8;
+  var MAX_PICKER_NODES = (MENU && MENU.maxPickerNodes) || 400;
+  var KINDS = MENU ? [
+    { kind: 'effort', word: safeRe(MENU.effortWordSource, 'i'), allow: safeRe(MENU.effortAllowSource, 'i'),
+      fallback: MENU.effortFallback || 'Medium', exact: true },
+    { kind: 'model', word: safeRe(MENU.modelWordSource, 'i'), allow: safeRe(MENU.modelAllowSource, 'i'),
+      fallback: MENU.modelFallback || 'Sonnet', exact: false }
+  ].filter(function (k) { return k.word && k.allow; }) : [];
 
-  function effortLabel(n) {
-    var l = menuLabel(n);
-    return (l && l.length <= 12 && EFFORT_WORD_RE && EFFORT_WORD_RE.test(l)) ? l : null;
-  }
-  function sweepEffortGroups(base) {
-    if (!EFFORT_ROW_SEL || !EFFORT_WORD_RE || !EFFORT_ALLOW_RE) return;
-    var rows;
-    try { rows = base.querySelectorAll(EFFORT_ROW_SEL); } catch (e) { return; }
-    // Bucket effort-labelled rows by their parent — siblings of a picker share one.
-    var buckets = [], keys = [];
-    for (var i = 0; i < rows.length; i++) {
-      var lab = effortLabel(rows[i]);
-      if (!lab) continue;
-      var p = rows[i].parentNode;
-      if (!p) continue;
-      var k = keys.indexOf(p);
-      if (k === -1) { keys.push(p); buckets.push([]); k = keys.length - 1; }
-      buckets[k].push({ el: rows[i], label: lab });
+  // Classify a row by its label. Returns {kind,label,allowed,spec} or null.
+  function classifyRow(el) {
+    if (!el || el.nodeType !== 1) return null;
+    var label = menuLabel(el);
+    if (!label) return null;
+    for (var i = 0; i < KINDS.length; i++) {
+      var k = KINDS[i];
+      if (k.exact && label.length > 14) continue;      // an effort label is one short word
+      if (!k.exact && label.length > 40) continue;     // a model label is a short product name
+      if (!k.word.test(label)) continue;
+      var allowed = k.allow.test(label);
+      if (k.kind === 'model' && /fable/i.test(label)) allowed = false;   // fable always loses
+      return { kind: k.kind, label: label, allowed: allowed, spec: k };
     }
-    for (var b = 0; b < buckets.length; b++) {
-      var grp = buckets[b];
-      if (grp.length < 2) continue;                                    // not a picker
-      var hasAllowed = false;
-      for (var g = 0; g < grp.length; g++) if (EFFORT_ALLOW_RE.test(grp[g].label)) hasAllowed = true;
-      if (!hasAllowed) continue;                                       // not an effort picker
-      var blockedSelected = null, fallback = null;
-      for (var h = 0; h < grp.length; h++) {
-        if (EFFORT_ALLOW_RE.test(grp[h].label)) {
-          // Prefer Medium as the fallback; fall back to whatever permitted row exists.
-          if (!fallback || /^medium$/i.test(grp[h].label)) fallback = grp[h].el;
-          continue;                                                    // Low / Medium stay
+    return null;
+  }
+  function rowsOfKind(container, kind) {
+    var out = [];
+    try {
+      var els = container.querySelectorAll(ROW_SEL);
+      for (var i = 0; i < els.length; i++) {
+        var c = classifyRow(els[i]);
+        if (c && c.kind === kind) out.push({ el: els[i], info: c });
+      }
+    } catch (e) {}
+    return out;
+  }
+  // Lowest ancestor that actually looks like this row's picker.
+  function findPicker(row, kind) {
+    var n = row.parentElement, depth = 0;
+    while (n && depth < MAX_CLIMB) {
+      try {
+        // Never climb into the app shell: a composer/editor in scope means we left the popover.
+        if (n.querySelector('textarea,[contenteditable="true"]')) return null;
+        if (n.getElementsByTagName('*').length > MAX_PICKER_NODES) return null;
+      } catch (e) { return null; }
+      var rows = rowsOfKind(n, kind);
+      if (rows.length >= 2) {
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].info.allowed) return { container: n, rows: rows };
         }
-        if (isSelectedRow(grp[h].el)) blockedSelected = grp[h].el;
-        try {
-          grp[h].el.setAttribute('data-genz-menu-blocked', '1');
-          grp[h].el.style.setProperty('display', 'none', 'important');
-        } catch (e) {}
       }
-      // A conversation already pinned to High/Max must not stay there. Choose the permitted
-      // level through the APP'S OWN handler (a real click on the Medium row) rather than by
-      // writing to storage we do not understand — the app then updates the composer, persists
-      // its own preference and stays internally consistent. Guarded so it happens at most once
-      // per rendered group, which stops any click/re-render loop.
-      if (blockedSelected && fallback && !keys[b].__genzEffortFixed) {
-        keys[b].__genzEffortFixed = true;
-        try { fallback.click(); } catch (e) {}
-      }
+      n = n.parentElement; depth++;
     }
+    return null;
   }
-  // Is this row the currently-chosen level? Covers the ARIA states and the common
-  // data-state/class conventions, since we cannot rely on Claude's specific markup.
   function isSelectedRow(el) {
     try {
       if (el.getAttribute('aria-checked') === 'true') return true;
       if (el.getAttribute('aria-selected') === 'true') return true;
       var ds = el.getAttribute('data-state') || '';
       if (/^(checked|active|selected|on)$/i.test(ds)) return true;
-      if (el.querySelector && el.querySelector('[data-state="checked"],[aria-checked="true"]')) return true;
+      if (el.querySelector && el.querySelector('[data-state="checked"],[aria-checked="true"],[aria-selected="true"]')) return true;
       return /(^|\s)(is-)?(selected|active|checked)(\s|$)/i.test(el.className || '');
     } catch (e) { return false; }
   }
-  // True when the row sits in a confirmed effort picker and is not a permitted level. Used by the
-  // click guard so a blocked level cannot be chosen even if a re-render outruns the hide.
-  function effortBlocked(n) {
-    if (!EFFORT_WORD_RE || !EFFORT_ALLOW_RE) return false;
-    var lab = effortLabel(n);
-    if (!lab || EFFORT_ALLOW_RE.test(lab)) return false;
-    var p = n.parentNode; if (!p) return false;
-    var sibs = p.children || [], seen = 0, allowed = false;
-    for (var i = 0; i < sibs.length; i++) {
-      var l = effortLabel(sibs[i]);
-      if (!l) continue;
-      seen++;
-      if (EFFORT_ALLOW_RE.test(l)) allowed = true;
-    }
-    return seen >= 2 && allowed;
+  function labelMatchesFallback(label, spec) {
+    try {
+      return spec.exact
+        ? new RegExp('^' + spec.fallback + '$', 'i').test(label)
+        : new RegExp('\\b' + spec.fallback + '\\b', 'i').test(label);
+    } catch (e) { return false; }
   }
-
-  function sweepMenuPolicy(root) {
-    if (!MENU) return;
+  // Hide every blocked row in a verified picker and normalise a blocked selection.
+  function vetPicker(found, spec) {
+    var rows = found.rows, blockedSelected = null, fallback = null;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.info.allowed) {
+        // Prefer the configured fallback (Medium / Sonnet); otherwise any permitted row.
+        if (!fallback || labelMatchesFallback(r.info.label, spec)) fallback = r.el;
+        continue;
+      }
+      if (isSelectedRow(r.el)) blockedSelected = r.el;
+      try {
+        r.el.setAttribute('data-genz-menu-blocked', '1');
+        r.el.style.setProperty('display', 'none', 'important');
+      } catch (e) {}
+    }
+    // A conversation already pinned to a blocked value must not stay there. Choose the permitted
+    // one through the APP'S OWN handler, so the composer label and the app's stored preference
+    // both update -- instead of writing storage whose shape we do not know. Guarded per container
+    // instance so it fires once and can never loop.
+    if (blockedSelected && fallback && !found.container.__genzPolicyFixed) {
+      found.container.__genzPolicyFixed = true;
+      try { fallback.click(); } catch (e) {}
+    }
+  }
+  // Entry point. Cheap when the subtree holds no picker rows, which is the common case.
+  function applyMenuPolicy(root) {
+    if (!MENU || !ROW_SEL || !KINDS.length) return;
     try {
       var base = (root && root.nodeType === 1) ? root : (document.body || document.documentElement);
       if (!base) return;
-      sweepEffortGroups(base);
-      var seen = [];
-      if (base.matches && base.matches(MENU.containers)) seen.push(base);
-      // A mutation often lands INSIDE an already-open popover, so walk up as well as down.
-      var up = base.closest && base.closest(MENU.containers);
-      if (up) seen.push(up);
-      var found = base.querySelectorAll(MENU.containers);
-      for (var i = 0; i < found.length; i++) seen.push(found[i]);
-      for (var c = 0; c < seen.length; c++) {
-        var items = seen[c].querySelectorAll(MENU.items);
-        // No "already processed" marker: a picker holds a handful of rows and React reuses
-        // nodes with NEW labels across opens, so a cached verdict would go stale and let a
-        // blocked row reappear on the second open. Re-deciding is cheap at this scale.
-        for (var j = 0; j < items.length; j++) {
-          if (menuBlocked(items[j])) {
-            try {
-              items[j].setAttribute('data-genz-menu-blocked', '1');
-              items[j].style.setProperty('display', 'none', 'important');
-            } catch (e) {}
-          }
-        }
+      var candidates = [];
+      try {
+        if (base.matches && base.matches(ROW_SEL)) candidates.push(base);
+        var found = base.querySelectorAll(ROW_SEL);
+        for (var i = 0; i < found.length && candidates.length < 600; i++) candidates.push(found[i]);
+      } catch (e) { return; }
+      var done = [];
+      for (var c = 0; c < candidates.length; c++) {
+        var info = classifyRow(candidates[c]);
+        if (!info) continue;
+        var picker = findPicker(candidates[c], info.kind);
+        if (!picker) continue;
+        if (done.indexOf(picker.container) !== -1) continue;   // vetted already in this pass
+        done.push(picker.container);
+        vetPicker(picker, info.spec);
       }
     } catch (e) {}
   }
+  // Is this element a blocked row inside a verified picker? Used by the selection guards.
+  function isBlockedSelection(el) {
+    try {
+      var row = el && el.closest ? el.closest(ROW_SEL) : null;
+      if (!row) return false;
+      var info = classifyRow(row);
+      if (!info || info.allowed) return false;
+      return !!findPicker(row, info.kind);
+    } catch (e) { return false; }
+  }
+
+  function sweepMenuPolicy(root) { applyMenuPolicy(root); }
+
+  // ── ZERO-FLASH observer + selection guards ───────────────────────────────────────────────
+  // Installed IMMEDIATELY, not from start(). start() waits for DOMContentLoaded, and anything
+  // rendered before that would miss the synchronous pass and be hidden late by the debounced
+  // backstop — i.e. it would flash. document.documentElement exists during parsing, so there is
+  // no reason to wait.
+  //
+  // This observer is separate from the main one ON PURPOSE. That one queues work through a
+  // 150ms debounce, which runs AFTER paint — the reason blocked rows were previously visible for
+  // roughly nine frames. A MutationObserver callback is a MICROTASK: it runs after the DOM
+  // change and BEFORE the next paint, so hiding here means a blocked row never occupies a
+  // painted frame. This is the entire no-flash mechanism.
+  //
+  // Cost: applyMenuPolicy early-outs unless the added subtree contains rows that classify as a
+  // model/effort label, and findPicker refuses to climb into anything holding a composer or
+  // larger than a popover. While a message streams, added nodes are text, so this is one failed
+  // querySelectorAll per mutation batch.
+  var menuGuardsInstalled = false;
+  function installMenuGuards() {
+    if (menuGuardsInstalled || !MENU) return;
+    menuGuardsInstalled = true;
+    try {
+      var menuMo = new MutationObserver(function (muts) {
+        for (var i = 0; i < muts.length; i++) {
+          var added = muts[i].addedNodes;
+          for (var j = 0; j < added.length; j++) {
+            var n = added[j];
+            if (n && n.nodeType === 1) { try { applyMenuPolicy(n); } catch (e) {} }
+          }
+          // A re-render can flip a row's selected state without re-inserting it.
+          if (muts[i].type === 'attributes' && muts[i].target && muts[i].target.nodeType === 1) {
+            try { applyMenuPolicy(muts[i].target); } catch (e) {}
+          }
+        }
+      });
+      menuMo.observe(document.documentElement, {
+        childList: true, subtree: true, attributes: true,
+        attributeFilter: ['aria-checked', 'aria-selected', 'data-state']
+      });
+    } catch (e) {}
+
+    // Selection guards. A click is only one way to activate a row: pointerdown/mousedown fire
+    // first and some menus commit on them, and keyboard users activate with Enter/Space. All are
+    // capture-phase, so they run before the app's own handler.
+    var onSelectCapture = function (ev) {
+      try {
+        if (ev.type === 'keydown' && ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+        if (!isBlockedSelection(ev.target)) return;
+        ev.preventDefault(); ev.stopPropagation();
+        if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+      } catch (e) {}
+    };
+    document.addEventListener('pointerdown', onSelectCapture, true);
+    document.addEventListener('mousedown', onSelectCapture, true);
+    document.addEventListener('keydown', onSelectCapture, true);
+  }
+  installMenuGuards();
 
   // ── Professional restricted-access popup ────────────────────────────────────
   // Replaces the old toast. Shown whenever the member tries to reach a restricted page —
@@ -435,23 +535,13 @@
   // links that resolve to a blocked route; never interferes with the working area.
   function onClickCapture(ev) {
     try {
-      // Menu policy: refuse the selection outright, not just visually. Capture phase runs
-      // before the app's own handler, so even if a re-render briefly showed the row (or a
-      // keyboard/synthetic activation reached it), the blocked choice cannot be made.
-      if (MENU && ev.target && ev.target.closest) {
-        var mi = ev.target.closest(MENU.items);
-        if (mi && mi.closest(MENU.containers) && menuBlocked(mi)) {
-          ev.preventDefault(); ev.stopPropagation();
-          if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
-          return;
-        }
-        // Same refusal for an effort row identified by content rather than by role.
-        var er = EFFORT_ROW_SEL ? ev.target.closest(EFFORT_ROW_SEL) : null;
-        if (er && effortBlocked(er)) {
-          ev.preventDefault(); ev.stopPropagation();
-          if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
-          return;
-        }
+      // Menu policy: refuse the selection outright, not merely visually. See onSelectCapture —
+      // click is only one of the ways a row can be activated, so the same guard is bound to
+      // pointerdown/mousedown/keydown as well.
+      if (MENU && ev.target && isBlockedSelection(ev.target)) {
+        ev.preventDefault(); ev.stopPropagation();
+        if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+        return;
       }
       var a = ev.target && ev.target.closest && ev.target.closest('a[href]');
       if (!a) return;
@@ -517,6 +607,7 @@
     var mo = new MutationObserver(onMutations);
     mo.observe(document.documentElement, { childList: true, subtree: true });
     document.addEventListener('click', onClickCapture, true);
+
     // SPA route changes → full re-sweep + restricted-route re-check (account chrome can
     // re-render and the path can change to/from a restricted page without a full load).
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); onRouteChange(); return r; };

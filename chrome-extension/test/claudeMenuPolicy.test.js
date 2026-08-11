@@ -61,14 +61,7 @@ test('prose is not matched: blocked words only match as a WHOLE label', () => {
   }
 });
 
-test('SCOPING: the menu policy is gated on an open menu container, never page-wide', () => {
-  assert.match(SHIELD, /function sweepMenuPolicy/, 'sweepMenuPolicy must exist');
-  const fn = SHIELD.slice(SHIELD.indexOf('function sweepMenuPolicy'));
-  assert.match(fn.slice(0, 1400), /MENU\.containers/,
-    'rows must be selected via the container list, not from the document at large');
-  assert.match(fn.slice(0, 1400), /querySelectorAll\(MENU\.items\)/,
-    'items must be queried INSIDE a matched container');
-});
+
 
 test('SCOPING: the blocked words are NOT in the page-wide hideTextSource rule', () => {
   const m = TOOLCFG.match(/hideTextSource:\s*'((?:[^'\\]|\\.)*)'/);
@@ -91,12 +84,7 @@ test('SCOPING: only claude.ai carries a menuPolicy', () => {
     `the menuPolicy must sit inside the claude.ai override block (nearest host key was ${nearest})`);
 });
 
-test('the click guard refuses a blocked row, not just hides it', () => {
-  assert.match(SHIELD, /function onClickCapture/);
-  const fn = SHIELD.slice(SHIELD.indexOf('function onClickCapture'), SHIELD.indexOf('function onClickCapture') + 900);
-  assert.match(fn, /menuBlocked\(/, 'the click handler must consult the menu policy');
-  assert.match(fn, /preventDefault/, 'a blocked row must have its activation cancelled');
-});
+
 
 test('label extraction is visibility-independent (innerText returns "" once hidden)', () => {
   const fn = SHIELD.slice(SHIELD.indexOf('function menuLabel'), SHIELD.indexOf('function menuLabel') + 700);
@@ -118,33 +106,92 @@ test('effort: the content-signature config exists and is claude-scoped', () => {
     'exactly one effort policy, inside the claude.ai override');
 });
 
-test('effort: a group is only acted on with >=2 effort siblings AND a permitted one', () => {
-  const start = SHIELD.indexOf('function sweepEffortGroups');
-  assert.ok(start !== -1, 'sweepEffortGroups must exist');
-  const fn = SHIELD.slice(start, start + 2200);
-  assert.match(fn, /grp\.length < 2/, 'a lone effort word must never qualify');
-  assert.match(fn, /hasAllowed/, 'a group with no permitted level must be ignored');
-  assert.match(fn, /EFFORT_ALLOW_RE\.test\(grp\[h\]\.label\)\)\s*\{/,
-    'permitted levels must be skipped, never hidden');
-});
 
-test('effort: the auto-fallback goes through the app and cannot loop', () => {
-  const start = SHIELD.indexOf('function sweepEffortGroups');
-  const fn = SHIELD.slice(start, start + 2600);
-  // Match the GUARD CONDITION, not merely the flag: asserting on the bare name also matched
-  // the assignment, so deleting the condition left the test green while the loop guard was gone.
-  assert.match(fn, /!\s*keys\[b\]\.__genzEffortFixed/,
-    'the fallback must be guarded by the flag, not merely set it');
-  assert.match(fn, /keys\[b\]\.__genzEffortFixed\s*=\s*true/, 'and must record that it fired');
-  assert.match(fn, /fallback\.click\(\)/,
-    "the fallback must use the app's own handler, not a storage write we don't understand");
-  assert.match(fn, /\/\^medium\$\/i/, 'Medium must be preferred as the fallback level');
-});
+
+
 
 test('effort: permitted levels are exactly Low and Medium', () => {
   const re = grabSource('effortAllowSource');
   for (const ok of ['Low', 'Medium']) assert.ok(re.test(ok), `${ok} must be permitted`);
   for (const no of ['High', 'Extra', 'Extra High', 'Max', 'Maximum', 'Ultra', 'Highest']) {
     assert.ok(!re.test(no), `${no} must NOT be permitted`);
+  }
+});
+
+// ── Engine guards (rewritten for the ancestor-climb implementation) ───────────
+// The previous set asserted the old shape: role-based containers, then grouping by immediate
+// parentNode. Both are gone, and each had let a real defect ship — roles that never matched, and
+// a Max row in its own section escaping a same-parent group of size 1.
+
+test('picker is found by CLIMBING, not by immediate parent', () => {
+  assert.match(SHIELD, /function findPicker/, 'findPicker must exist');
+  const fn = SHIELD.slice(SHIELD.indexOf('function findPicker'), SHIELD.indexOf('function findPicker') + 900);
+  assert.match(fn, /parentElement/, 'it must walk up the tree');
+  assert.match(fn, /depth < MAX_CLIMB/, 'the climb must be bounded');
+  assert.ok(!/rows\[i\]\.el\.parentNode\s*===/.test(fn),
+    'grouping must not depend on rows sharing one parent — that is how Max escaped');
+});
+
+test('the climb can never escape a popover into the page', () => {
+  const fn = SHIELD.slice(SHIELD.indexOf('function findPicker'), SHIELD.indexOf('function findPicker') + 900);
+  assert.match(fn, /textarea,\[contenteditable="true"\]/,
+    'a composer in scope means we left the popover and must stop');
+  assert.match(fn, /MAX_PICKER_NODES/, 'an oversized subtree is not a picker');
+});
+
+test('a container still needs >=2 same-kind rows AND a permitted one', () => {
+  const fn = SHIELD.slice(SHIELD.indexOf('function findPicker'), SHIELD.indexOf('function findPicker') + 900);
+  assert.match(fn, /rows\.length >= 2/, 'a lone effort word must never qualify');
+  assert.match(fn, /info\.allowed/, 'a group with no permitted level must be ignored');
+});
+
+test('ZERO FLASH: hiding runs synchronously from an observer, never on a timer', () => {
+  assert.match(SHIELD, /function installMenuGuards/, 'the guards must be installable');
+  const fn = SHIELD.slice(SHIELD.indexOf('function installMenuGuards'), SHIELD.indexOf('function installMenuGuards') + 1800);
+  assert.match(fn, /new MutationObserver/, 'a dedicated observer is required');
+  assert.match(fn, /applyMenuPolicy\(n\)/, 'it must apply the policy on the added node');
+  assert.ok(!/setTimeout/.test(fn),
+    'no timer may sit between the DOM change and the hide — that is what caused the flash');
+  assert.match(SHIELD, /installMenuGuards\(\);/,
+    'guards must install immediately, not from start() which waits for DOMContentLoaded');
+});
+
+test('selection is refused on pointer, mouse AND keyboard', () => {
+  const fn = SHIELD.slice(SHIELD.indexOf('function installMenuGuards'), SHIELD.indexOf('function installMenuGuards') + 1800);
+  // Assert the REGISTRATION, not merely that the event name appears somewhere: the handler body
+  // contains the string 'keydown' for its Enter/Space filter, so a bare includes() stayed green
+  // when the listener itself was deleted.
+  for (const ev of ['pointerdown', 'mousedown', 'keydown']) {
+    assert.ok(
+      new RegExp("addEventListener\\('" + ev + "', onSelectCapture, true\\)").test(fn),
+      `${ev} must be registered as a capture listener — click alone is not enough`);
+  }
+  assert.match(fn, /isBlockedSelection/, 'the guard must consult the verified-picker test');
+  assert.match(fn, /preventDefault/, 'a blocked row must have its activation cancelled');
+});
+
+test('normalisation goes through the app and fires once per container', () => {
+  const fn = SHIELD.slice(SHIELD.indexOf('function vetPicker'), SHIELD.indexOf('function vetPicker') + 1400);
+  assert.match(fn, /!\s*found\.container\.__genzPolicyFixed/, 'guarded by the flag, not merely setting it');
+  assert.match(fn, /__genzPolicyFixed\s*=\s*true/, 'and must record that it fired');
+  assert.match(fn, /fallback\.click\(\)/,
+    "must use the app's own handler so the composer label and stored preference both update");
+});
+
+test('both pickers are governed: effort and model', () => {
+  assert.match(SHIELD, /kind: 'effort'/, 'effort vocabulary must exist');
+  assert.match(SHIELD, /kind: 'model'/, 'model vocabulary must exist');
+  assert.match(SHIELD, /\/fable\/i\.test\(label\)\) allowed = false/,
+    'fable must lose in every variant, regardless of the allow pattern');
+});
+
+test('model policy keeps Opus/Sonnet/Haiku and blocks every Fable variant', () => {
+  const allow = grabSource('modelAllowSource'), word = grabSource('modelWordSource');
+  for (const ok of ['Claude Opus 4.5', 'Claude Sonnet 4.5', 'Claude Haiku 4.5']) {
+    assert.ok(word.test(ok) && allow.test(ok), `${ok} must be recognised and permitted`);
+  }
+  for (const no of ['Fable 5', 'claude-fable-5', 'Fable']) {
+    assert.ok(word.test(no), `${no} must be recognised`);
+    assert.ok(!allow.test(no), `${no} must not be permitted`);
   }
 });

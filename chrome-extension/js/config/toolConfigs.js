@@ -556,9 +556,28 @@ export const SHIELD_OVERRIDES = {
       // Claude's markup — a group is only acted on when it holds at least two such siblings AND
       // at least one permitted level, so a lone "High" or "Max" in a conversation, an artifact
       // or a code block can never qualify. Nothing outside such a group is touched.
-      effortRowSel: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"],[role="radio"],[role="tab"],button,li,label,[tabindex]',
-      effortWordSource: '^(low|medium|high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra)$',
-      effortAllowSource: '^(low|medium)$'
+      // Row candidates. Deliberately wide, because a row is only ever ACTED on once it has been
+      // classified by label AND found to live in a verified picker (see shield.js findPicker).
+      rowSel: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"],[role="radio"],[role="tab"],button,li,label,a,[tabindex]',
+
+      // EFFORT — labels are exact words, so match anchored.
+      effortWordSource: '^(low|medium|high|extra(\\s*high)?|very\\s*high|max(imum)?|highest|ultra|maximal|deep(er)?)$',
+      effortAllowSource: '^(low|medium)$',
+      effortFallback: 'Medium',
+
+      // MODEL — labels carry a family name inside a longer string ("Claude Sonnet 4.5"), so
+      // match on the token rather than anchored. Fable loses in every variant.
+      modelWordSource: '\\b(opus|sonnet|haiku)\\b|\\bfable\\b',
+      modelAllowSource: '\\b(opus|sonnet|haiku)\\b',
+      modelFallback: 'Sonnet',
+
+      // Bounds for the ancestor climb that locates a picker. Small enough that the search can
+      // never escape a popover into the page, large enough to clear nested wrappers/dividers.
+      maxClimb: 8,
+      maxPickerNodes: 400,
+
+      // Legacy aliases retained so an older cached config keeps working.
+      effortRowSel: '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"],[role="radio"],[role="tab"],button,li,label,[tabindex]'
     }
   }
 };
