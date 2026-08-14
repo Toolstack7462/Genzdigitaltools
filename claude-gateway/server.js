@@ -26,6 +26,54 @@ const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
 
+// ── Build fingerprint: WHICH CODE is this worker actually running? ────────────────────────────
+// The Cloudflare-challenge handling below (Fix A / Fix B / the bounded nav retry) is device-
+// independent and covers Mac, iPad, Android and Chromebook alike. That makes the remaining failure
+// question a DEPLOY question, and nothing in any response has ever been able to answer it: from
+// outside, "the fix is live and Cloudflare is still challenging this egress IP" and "an old
+// Passenger worker never picked the fix up" look like the identical broken tab on a MacBook or a
+// phone — and only one of them is a code problem. Guessing between them is how a fix gets rewritten
+// that was already correct.
+//
+// So identify the code by its own bytes. There is no git checkout in the Hostinger app dir (the
+// deploy script SFTPs an explicit file list), so the only honest identity is a content hash: sha256
+// per shipped file, combined in a fixed order. Same files → same id, on every worker and on a
+// developer's machine, which is exactly what "live and local build match" and "every Passenger
+// worker runs the same version" require.
+//
+// Reported on /__genz/health (already lease-free and deliberately public-safe) beside the per-worker
+// id, so polling it a few times enumerates the live workers and proves they agree. This adds a
+// content hash, a random worker id and an uptime — no cookie, token, secret, path or customer data.
+// It touches NO proxying path: every request that succeeds today takes byte-for-byte the same route.
+// `node server.js --build-id` prints the same id and exits, so the deploy script can compare
+// local↔live without duplicating the algorithm in shell.
+const BUILD_FILES = [
+  'server.js', 'package.json',
+  'public/overlay.js', 'public/overlay.css',
+  'lib/quotaTap.js', 'lib/effortPrefs.js', 'lib/modelPolicy.js',
+  'lib/effortPolicy.js', 'lib/streamGuard.js',
+];
+function computeBuild() {
+  const h = crypto.createHash('sha256');
+  let files = 0;
+  for (const rel of BUILD_FILES) {
+    let buf = null;
+    try { buf = fs.readFileSync(path.join(__dirname, rel)); } catch (_) { buf = null; }
+    // An absent file is hashed AS absent rather than skipped: a deploy that fails to upload
+    // overlay.js must read as a DIFFERENT build, never as the same one.
+    h.update(rel + ':' + (buf ? crypto.createHash('sha256').update(buf).digest('hex') : 'absent') + '\n');
+    if (buf) files += 1;
+  }
+  return { id: h.digest('hex').slice(0, 12), files };
+}
+// A fingerprint failure must never be able to keep the gateway down — it is diagnostics, not a
+// dependency. `id: null` reads as "unknown build", which is still the truth.
+const BUILD = (() => {
+  try { return computeBuild(); } catch (_) { return { id: null, files: 0 }; }
+})();
+// Handled before any env validation below, so it works from a plain checkout with no .env.
+if (process.argv.includes('--build-id')) { console.log(BUILD.id || 'unknown'); process.exit(0); }
+
 // Minimal .env loader (dependency-free). Real environment wins (hPanel/Passenger).
 (function loadEnv() {
   try {
@@ -2481,6 +2529,11 @@ const server = http.createServer(async (req, res) => {
       name: TOOL_NAME,
       target: (() => { try { return new URL(TARGET_ORIGIN).host; } catch (_) { return null; } })(),
       defaultPath: DEFAULT_PATH,
+      // Which code answered, and which worker answered it. `id` is the content hash of the shipped
+      // files (see BUILD_FILES): compare it against `node server.js --build-id` in the repo to prove
+      // the deploy landed, and poll this route a few times to prove every Passenger worker reports
+      // the same id — a lower `uptimeSec` than the deploy age on one worker is a stale worker.
+      build: { id: BUILD.id, files: BUILD.files, worker: INSTANCE_ID, uptimeSec: Math.round(process.uptime()) },
       config: {
         hasTargetOrigin: !!TARGET_ORIGIN,
         hasApiBase: !!API_BASE,
