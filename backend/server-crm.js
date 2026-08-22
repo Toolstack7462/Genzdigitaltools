@@ -333,6 +333,10 @@ const proxyGatewayRoutes      = require('./routes/proxy/gateway');
 const proxyAgentSyncRoutes    = require('./routes/proxy/agentSync');
 // WriteHuman V2 monitoring module (isolated) — read-mostly proxy to the standalone V2 service.
 const adminWriteHumanV2Routes = require('./routes/admin/writehumanV2');
+// Proxy Services SLEEP/WAKE (isolated) — unmounts a proxy's Passenger app by commenting the
+// Passenger directives in that proxy's OWN docroot .htaccess, so the vhost answers a static 503
+// and its Node workers exit. Hard-coded to exactly four services; no shell; nothing shared.
+const adminProxySleepRoutes   = require('./routes/admin/proxySleep');
 // BEGIN GENZ BUSINESS CRM v2.0.0
 const businessCrmRoutes = require('./modules/business-crm');
 // END GENZ BUSINESS CRM v2.0.0
@@ -384,6 +388,9 @@ app.use('/api/crm/proxy/agent',       proxyAgentSyncRoutes);
 // WriteHuman V2 monitoring (isolated, admin-gated). Small body limit (commands only).
 // Dormant (503) until WRITEHUMAN_V2_ADMIN_KEY is set — mounting it changes nothing existing.
 app.use('/api/crm/admin/writehuman-v2', express.json({ limit: '256kb' }), adminWriteHumanV2Routes);
+// Proxy Services SLEEP/WAKE (isolated, admin-gated, CSRF on mutations). Tiny body limit: the
+// service is chosen by a fixed :id in the path, so requests carry no meaningful body.
+app.use('/api/crm/admin/proxy-sleep', express.json({ limit: '16kb' }), adminProxySleepRoutes);
 // BEGIN GENZ BUSINESS CRM v2.0.0
 app.use('/api/crm/admin/business', businessCrmRoutes);
 // END GENZ BUSINESS CRM v2.0.0

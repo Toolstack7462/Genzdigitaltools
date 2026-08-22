@@ -154,6 +154,11 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
   -T backend/routes/proxy/agentSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   -T backend/routes/admin/writehumanV2.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/writehumanV2.js" \
+  `# Proxy Services SLEEP/WAKE. server-crm.js requires this at module load, so it MUST ship with` \
+  `# any deploy carrying server-crm.js or the API boots into "Cannot find module" (whole API down,` \
+  `# not just this feature). It has no local requires of its own beyond middleware/authEnhanced.js` \
+  `# and middleware/csrf.js, both of which are already live on the server.` \
+  -T backend/routes/admin/proxySleep.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxySleep.js" \
   `# ── One-time POST launch bootstrap ────────────────────────────────────────────` \
   `# These SIX files are a require-graph that must ship TOGETHER. routes/client/{proxyTools,` \
   `# stealth}.js and routes/admin/{proxyTools,stealth}.js all require utils/launchCode.js,` \

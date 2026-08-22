@@ -11,6 +11,7 @@ import { useToast } from '../../components/Toast';
 import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 import ListFilterBar from '../../components/admin/ListFilterBar';
 import ClaudeUsageDashboard from '../../components/admin/ClaudeUsageDashboard';
+import ProxyServicesPanel from '../../components/admin/ProxyServicesPanel';
 
 // ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
 const ACCOUNT_FILTERS = [
@@ -280,6 +281,11 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
           <button onClick={load} className="ml-auto text-genz-muted hover:text-genz-navy" title="Refresh"><RefreshCw size={18} /></button>
         </div>
         )}
+
+        {/* Proxy Services (sleep/wake). Account-level, not per-tool — it controls whether each
+            proxy's gateway app is mounted at all — so it sits above the per-tool tabs and is
+            hidden when this page is embedded or locked to a single tool. */}
+        {!embedded && !fixedTool && <ProxyServicesPanel />}
 
         {/* Tool tabs (each tool is fully independent) — hidden when locked to one tool.
             WriteHuman and Claude are excluded here: each has its own dedicated sidebar section. */}
