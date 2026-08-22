@@ -19,7 +19,7 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret-0123456789ab
 process.env.JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'test-refresh-secret-0123456789abcdef0123456789';
 process.env.COOKIES_ENCRYPTION_KEY = process.env.COOKIES_ENCRYPTION_KEY || '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
-const { toSleeping, toActive, readState, SERVICE_IDS } = require('../routes/admin/proxySleep').__transform;
+const { toSleeping, toActive, readState, SERVICE_IDS, accountHome } = require('../routes/admin/proxySleep').__transform;
 
 // Real shape of an ACTIVE gateway vhost (secrets replaced with placeholders).
 const ACTIVE_HTACCESS = `PassengerAppRoot /home/u171982351/grok-gateway
@@ -104,4 +104,33 @@ test('transitions are idempotent', () => {
 
 test('the allowlist is exactly the four authorised proxies', () => {
   assert.deepStrictEqual([...SERVICE_IDS].sort(), ['bypassgpt1', 'grok1', 'hix1', 'writehuman2']);
+});
+
+// ── Account-home resolution ─────────────────────────────────────────────────────
+// REGRESSION. Under Passenger this API runs with HOME set to the *domain* directory
+// (/home/u171982351/domains/api.genzdigitalstore.com), not the account root. Building paths
+// from os.homedir() directly therefore produced
+// `.../api.genzdigitalstore.com/domains/grok1.../public_html/.htaccess` and every service
+// reported htaccess_unreadable on the live server. The pure transform tests all passed while
+// this was broken, which is exactly why it needs its own test.
+test('accountHome cuts a Passenger domain HOME back to the account root', () => {
+  const prev = process.env.GENZ_HOME;
+  delete process.env.GENZ_HOME;
+  const realHomedir = require('node:os').homedir;
+  try {
+    require('node:os').homedir = () => '/home/u171982351/domains/api.genzdigitalstore.com';
+    assert.strictEqual(accountHome(), '/home/u171982351');
+    require('node:os').homedir = () => '/home/u171982351';
+    assert.strictEqual(accountHome(), '/home/u171982351');
+  } finally {
+    require('node:os').homedir = realHomedir;
+    if (prev !== undefined) process.env.GENZ_HOME = prev;
+  }
+});
+
+test('accountHome honours an explicit GENZ_HOME override', () => {
+  const prev = process.env.GENZ_HOME;
+  process.env.GENZ_HOME = '/srv/elsewhere';
+  try { assert.strictEqual(accountHome(), '/srv/elsewhere'); }
+  finally { if (prev === undefined) delete process.env.GENZ_HOME; else process.env.GENZ_HOME = prev; }
 });

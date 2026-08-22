@@ -46,7 +46,20 @@ const { requireCsrf } = require('../../middleware/csrf');
 // ── Hard-coded service allowlist ────────────────────────────────────────────────
 // These four IDs are the ONLY things this module will ever act on. Paths are derived from the
 // home directory plus fixed literals here — never from request input.
-const HOME = process.env.GENZ_HOME || os.homedir() || '/home/u171982351';
+// Resolving the ACCOUNT home is subtle: under Passenger this process runs with
+// HOME=/home/u171982351/domains/api.genzdigitalstore.com — the *domain* directory, not the
+// account root. Using os.homedir() directly therefore builds
+// `…/api.genzdigitalstore.com/domains/grok1…/public_html/.htaccess`, which does not exist, and
+// every service reports htaccess_unreadable. Cut the path back at `/domains/` to recover the
+// account root, and keep an env override for anything unusual.
+function accountHome() {
+  if (process.env.GENZ_HOME) return process.env.GENZ_HOME;
+  const h = os.homedir() || '';
+  const i = h.indexOf('/domains/');
+  if (i > 0) return h.slice(0, i);
+  return h || '/home/u171982351';
+}
+const HOME = accountHome();
 
 const SERVICES = Object.freeze({
   bypassgpt1:  { name: 'BypassGPT',      host: 'bypassgpt1.genzdigitalstore.com',  appDir: 'bypassgpt-gateway' },
@@ -308,4 +321,4 @@ router.post('/:id/wake',  requireCsrf, (req, res) => transition(req, res, 'ACTIV
 
 module.exports = router;
 // Exported for unit tests only — pure functions, no filesystem access.
-module.exports.__transform = { toSleeping, toActive, readState, stripBlock, SERVICE_IDS };
+module.exports.__transform = { toSleeping, toActive, readState, stripBlock, SERVICE_IDS, accountHome };
