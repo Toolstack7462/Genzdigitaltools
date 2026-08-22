@@ -76,9 +76,13 @@ test('the stale 3.9.15 registration is explicitly torn down on install AND start
     `expected the teardown to be defined and called from both onInstalled and onStartup (found ${calls.length} references)`);
 });
 
-test('manifest is 3.9.20 and permissions are unchanged from 3.9.14', () => {
+test('manifest is 3.9.25 and permissions are unchanged from 3.9.14', () => {
   const m = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
-  assert.strictEqual(m.version, '3.9.20');
+  // 3.9.23 adds per-tab assignment binding so same-host tools (ChatGPT Plus vs Pro) expire
+  // independently; 3.9.22 shipped the Chat/Work tab policy + zero-flash bootstrap. The version MUST be
+  // bumped with it: the update system reads "latest" from the served ZIP's manifest, so shipping
+  // new code under the old version leaves every installed user un-prompted and on the old build.
+  assert.strictEqual(m.version, '3.9.25');
   assert.deepStrictEqual(
     m.permissions.slice().sort(),
     ['alarms', 'cookies', 'management', 'notifications', 'scripting', 'storage', 'tabs'],

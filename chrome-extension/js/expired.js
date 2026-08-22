@@ -82,6 +82,60 @@
         if (fallbackEl) setTimeout(() => { fallbackEl.style.display = 'block'; }, 1200);
       });
     }
+
+    // ── AUTHORITATIVE VERIFICATION (presentation correctness + renewal recovery) ──────────
+    // Everything above renders from the query string, which is USER-EDITABLE and therefore
+    // presentation only — it has never granted access, and still doesn't. This step asks the
+    // background (the real authority) about the EXACT assignment id that was expired, so:
+    //   • the displayed product is the one that actually expired — Plus is never labelled Pro;
+    //   • a renewed assignment stops showing a stale expired screen (Invariant 10).
+    // Best-effort: if the background is unreachable the static text simply stays.
+    const toolId = (params.get('toolId') || '').slice(0, 64);
+    if (toolId && typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+      chrome.runtime.sendMessage(
+        { type: 'GENZ_EXPIRED_CONTEXT', payload: { toolId } },
+        (res) => {
+          try {
+            if (chrome.runtime.lastError || !res || !res.success) return;
+
+            // Correct the label from the authority, not from the query string.
+            if (res.name && /^[\w .,'&()\-]+$/.test(res.name)) {
+              if (nameEl) nameEl.textContent = res.name;
+              if (msgEl && res.name !== toolLabel) {
+                const v = reason === 'revoked' ? 'has been revoked'
+                  : reason === 'tool_removed' || reason === 'removed' ? 'is no longer available'
+                  : reason === 'blocked' ? 'has been blocked'
+                  : 'has expired';
+                msgEl.innerHTML =
+                  `Your access to <span class="tool">${escapeHtml(res.name)}</span> ${v}. Please renew your plan to continue.`;
+              }
+            }
+
+            // RENEWAL RECOVERY: this assignment is active again, so the expired screen is
+            // stale. Offer a return to the dashboard rather than stranding the member here.
+            // Deliberately NOT an automatic redirect — that risks a loop if state flaps.
+            if (res.active) {
+              document.title = 'Access restored — Gen Z Digital Store';
+              if (titleEl) titleEl.textContent = 'Access restored';
+              if (msgEl) {
+                msgEl.innerHTML = res.name
+                  ? `Your access to <span class="tool">${escapeHtml(res.name)}</span> is active again. Launch it from your Gen Z Dashboard.`
+                  : 'Your access is active again. Launch the tool from your Gen Z Dashboard.';
+              }
+              if (fallbackEl) fallbackEl.style.display = 'none';
+              if (btn) {
+                let app = (params.get('app') || '').slice(0, 200).replace(/\/+$/, '');
+                if (!/^https:\/\/[\w.-]+$/i.test(app)) app = 'https://app.genzdigitalstore.com';
+                btn.textContent = 'Go to Dashboard';
+                btn.href = app + '/client/dashboard';
+                btn.target = '_self';
+                btn.removeAttribute('rel');
+              }
+            }
+          } catch (_) { /* keep whatever is already rendered */ }
+        }
+      );
+    }
   } catch (_) { /* leave the static fallback message in place */ }
 
   function escapeHtml(s) {

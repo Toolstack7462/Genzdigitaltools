@@ -476,7 +476,50 @@ export const SHIELD_DEFAULTS = {
 
 // Per-host overrides (matched on registrable host / hostname).
 export const SHIELD_OVERRIDES = {
-  'chatgpt.com': { hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'] },
+  // EXTENSION-MANAGED ChatGPT ONLY — the real chatgpt.com governed by this extension's shield.
+  // The PROXY ChatGPT (chatgpt1.genzdigitalstore.com, served by proxy-gateway/) never matches this
+  // host key and is a completely separate deploy, so it is untouched by everything below.
+  'chatgpt.com': {
+    hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'],
+
+    // ── Chat / Work mode switcher policy (chatgpt.com ONLY) ────────────────────────────────
+    // ChatGPT's July 2026 merge of the ChatGPT and Codex surfaces added a segmented
+    // "Chat | Work" switcher, Work being an agentic mode. Gen Z-managed sessions are Chat-only.
+    //
+    // WHY THERE IS NO data-testid / class / route HERE. ChatGPT's live markup could not be read
+    // from an authorised session when this was written. A guessed attribute would be worse than
+    // none: it could match the wrong node. So this config carries only a VOCABULARY and BOUNDS,
+    // and shield.js (applyTabPolicy/findSwitch) verifies the switcher structurally in the live
+    // page before touching anything. If the signature does not match, nothing happens.
+    //
+    // WHY THIS CANNOT HIT CONVERSATION CONTENT. Unlike hideTextSource — which runs over every
+    // a/button/li/span/div/p/h1-h4 on the page and must therefore never contain a common word —
+    // "work" here is only ever consulted for a node that is already an interactive control, whose
+    // WHOLE label is exactly "Work", that is not a conversation link, and that sits in a small
+    // composer-free container alongside a control labelled exactly "Chat". A message, an assistant
+    // reply, a chat title, a code block or a document containing the word "work" satisfies none of
+    // those. The word "work" is deliberately ABSENT from hideTextSource for exactly this reason.
+    tabPolicy: {
+      // Candidates only. A candidate is acted on solely after label + container verification.
+      rowSel: '[role="tab"],[role="radio"],[role="menuitemradio"],[role="option"],button,a[href],[tabindex]',
+      // Whole-label, anchored. "Work is important" / "Workspace" / "Homework" never match.
+      blockLabelSource: '^work$',
+      allowLabelSource: '^chat$',
+      // A sidebar conversation TITLED "Work" is a link to /c/<id> — never a mode segment.
+      excludeHrefSource: '/c/|/g/|/gpts|/project|/codex',
+      // A segment label is one short word; anything longer is prose, not a segment.
+      maxLabel: 12,
+      // Bounds for the ancestor climb: large enough to clear a segment wrapper, far too small to
+      // reach the sidebar list or the app shell.
+      maxClimb: 6,
+      maxSwitchNodes: 120,
+      // Require the switcher to mark its active segment (aria-selected / aria-checked /
+      // aria-current / data-state). Set false only if the verified DOM proves no marker exists.
+      requireSelectionMarker: true,
+      // Cap on "Work is active -> click Chat" recoveries per container instance. Loop guard.
+      maxRecoveries: 3
+    }
+  },
   // EXTENSION-BASED Ryne AI ONLY — the real ryne.ai opened through the extension. This does NOT
   // affect the PROXY Ryne (served from ryne1.genzdigitalstore.com via the gateway overlay, a
   // completely separate system that this host key never matches) and no other tool. Purely
@@ -656,6 +699,10 @@ export function getShieldConfig(url, tool) {
       // Host-scoped by construction: only the matched override can contribute one, so no other
       // tool can ever receive a menu policy.
       if (o.menuPolicy) cfg.menuPolicy = o.menuPolicy;
+      // Host-scoped by construction, exactly like menuPolicy: only the matched override can
+      // contribute a tabPolicy, so no other tool — and no future tool — can ever receive the
+      // ChatGPT Chat/Work rule. It is absent from SHIELD_DEFAULTS on purpose.
+      if (o.tabPolicy) cfg.tabPolicy = o.tabPolicy;
     }
   }
   const ts = tool && tool.extensionSettings && tool.extensionSettings.shield;

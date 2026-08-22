@@ -1630,11 +1630,25 @@ async function _handleOpenToolInner(payload) {
   try {
     const toolHostname = new URL(targetUrl).hostname;
     const existingTabs = await chrome.tabs.query({ url: `*://${toolHostname}/*` });
-    if (existingTabs.length > 0) {
-      targetTabId = existingTabs[0].id;
+    // Reuse must respect ASSIGNMENT ownership, not just the hostname. Two ChatGPT products
+    // share chatgpt.com, so taking existingTabs[0] blindly meant launching Pro silently
+    // hijacked an open Plus tab — the same host-is-identity mistake as the expiry defect.
+    // Preference order: a tab already owned by THIS tool, then an unowned tab, and never a
+    // tab owned by a different assignment (that one gets its own new tab instead).
+    let reuseTab = null;
+    let firstUnbound = null;
+    for (const t of existingTabs) {
+      if (!t || t.id == null) continue;
+      const b = await getTabBinding(t.id);
+      if (b && String(b.toolId) === toolIdStr) { reuseTab = t; break; }
+      if (!b && !firstUnbound) firstUnbound = t;
+    }
+    if (!reuseTab && firstUnbound) reuseTab = firstUnbound;
+    if (reuseTab) {
+      targetTabId = reuseTab.id;
       reuseExisting = true;
       await chrome.tabs.update(targetTabId, { active: true });
-      await chrome.windows.update(existingTabs[0].windowId, { focused: true });
+      await chrome.windows.update(reuseTab.windowId, { focused: true });
       logger.debug('Reusing existing tab', { tabId: targetTabId, toolId });
     }
   } catch {}
@@ -1644,6 +1658,11 @@ async function _handleOpenToolInner(payload) {
     targetTabId = newTab.id;
     logger.debug('Opened new tab with fresh session', { tabId: targetTabId, toolId });
   }
+
+  // Bind the tab to the EXACT assignment that launched it, before any expiry enforcement can
+  // run. Re-binding a reused tab supersedes the previous owner's generation, so an in-flight
+  // cleanup for that older assignment is rejected instead of redirecting this tab.
+  await bindTabToTool(targetTabId, toolId, tool && tool.name);
 
   // ── 8. Determine and execute strategy ─────────────────────────────────────
   // direct_open: no credentials and no session bundle. OceanHub req #3/#4: a tool
@@ -1814,6 +1833,95 @@ function isProtectedHost(host) {
   return !!host && PROTECTED_HOST_RE.test(String(host));
 }
 
+// ============================================================================
+// PER-TAB ASSIGNMENT BINDING — exact-identity ownership for expiry enforcement
+// ============================================================================
+// THE DEFECT THIS FIXES. Two separately assigned ChatGPT products (e.g. "ChatGPT Plus"
+// and "Chat Gpt Pro") are distinct tools with distinct toolIds, but both resolve to
+// chatgpt.com. buildToolCleanupConfig() derives tabUrlPatterns from the HOST, so both
+// produce the identical pattern `*://chatgpt.com/*`. clearStorageAndRedirectTabs() then
+// matched tabs by that pattern alone and redirected EVERY match — so expiring Pro
+// redirected the still-active Plus tab to expired.html?tool=Chat%20Gpt%20Pro.
+//
+// Hostname can decide which WEBSITE POLICY applies. It must never decide WHICH
+// ASSIGNMENT EXPIRED. This registry records, per tab, the exact toolId that launched it,
+// so expiry enforcement can verify ownership instead of guessing from the URL.
+//
+// PERSISTENCE: the MV3 service worker suspends, so bindings live in chrome.storage.local
+// and are re-read on demand. Identity ONLY — never cookies, tokens, headers or secrets.
+//
+// GENERATION: a monotonic counter, also persisted. A tab reused for a different
+// assignment gets a NEW generation, so any in-flight cleanup that captured the old
+// generation is rejected instead of acting on the re-bound tab.
+const TAB_BINDINGS_KEY = 'genzTabBindings';   // { [tabId]: {toolId, toolName, gen, boundAt} }
+const LAUNCH_GEN_KEY = 'genzLaunchGeneration';
+
+async function getTabBindings() {
+  const d = await getStorage([TAB_BINDINGS_KEY]);
+  return (d && d[TAB_BINDINGS_KEY]) || {};
+}
+async function getTabBinding(tabId) {
+  const all = await getTabBindings();
+  return all[String(tabId)] || null;
+}
+async function nextLaunchGeneration() {
+  const d = await getStorage([LAUNCH_GEN_KEY]);
+  const next = (Number(d && d[LAUNCH_GEN_KEY]) || 0) + 1;
+  await setStorage({ [LAUNCH_GEN_KEY]: next });
+  return next;
+}
+// Bind (or RE-bind) a tab to the exact assignment that launched it. Re-binding is what
+// makes tab reuse safe: the previous owner's generation is superseded immediately.
+async function bindTabToTool(tabId, toolId, toolName) {
+  if (!tabId || toolId === undefined || toolId === null) return null;
+  try {
+    const gen = await nextLaunchGeneration();
+    const all = await getTabBindings();
+    all[String(tabId)] = {
+      toolId: String(toolId),
+      toolName: String(toolName || ''),
+      gen,
+      boundAt: Date.now(),
+    };
+    await setStorage({ [TAB_BINDINGS_KEY]: all });
+    logger.debug('Tab bound to assignment', { tabId, toolId: String(toolId), gen });
+    return gen;
+  } catch (err) {
+    // Never fatal: a missing binding degrades to the conservative path in
+    // clearStorageAndRedirectTabs (skip when an active sibling shares the host).
+    logger.warn('Tab binding failed', { tabId, error: err.message });
+    return null;
+  }
+}
+async function unbindTab(tabId) {
+  try {
+    const all = await getTabBindings();
+    if (all[String(tabId)]) {
+      delete all[String(tabId)];
+      await setStorage({ [TAB_BINDINGS_KEY]: all });
+    }
+  } catch (_) {}
+}
+// Drop bindings for tabs that no longer exist (service-worker restart / missed onRemoved).
+async function pruneTabBindings() {
+  try {
+    const all = await getTabBindings();
+    const ids = Object.keys(all);
+    if (!ids.length) return;
+    const live = new Set();
+    try {
+      for (const t of await chrome.tabs.query({})) if (t.id != null) live.add(String(t.id));
+    } catch (_) { return; }                       // can't enumerate → leave registry alone
+    let changed = false;
+    for (const id of ids) { if (!live.has(id)) { delete all[id]; changed = true; } }
+    if (changed) await setStorage({ [TAB_BINDINGS_KEY]: all });
+  } catch (_) {}
+}
+
+// A tab no longer exists → forget it. This is the only tab-lifecycle listener the
+// binding registry needs; it touches nothing else.
+chrome.tabs.onRemoved.addListener((tabId) => { unbindTab(tabId).catch(() => {}); });
+
 async function getKnownTools() {
   const d = await getStorage([KNOWN_TOOLS_KEY]);
   return (d && d[KNOWN_TOOLS_KEY]) || {};
@@ -1853,13 +1961,23 @@ async function getAppOrigin() {
 // Remove cookies for every cookie-domain in a tool's cleanup config via
 // chrome.cookies.remove. Scoped strictly to the tool's domains. Returns
 // { removed, domainsChecked } (no cookie values are ever read or logged).
-async function clearCookiesForConfig(cleanup) {
+// `protectedDomains` (optional Set of bare lowercase hosts) are cookie domains still owned
+// by a DIFFERENT, currently-ACTIVE assignment. Two ChatGPT products share one cookie jar for
+// chatgpt.com, so wiping it for expired Pro would log the active Plus session out. Skipping
+// those domains is the cookie-side half of per-assignment isolation. When nothing else is
+// active on the domain (the normal single-assignment case) the wipe is unchanged.
+async function clearCookiesForConfig(cleanup, protectedDomains) {
   let removed = 0;
   const domainsChecked = [];
+  const skipped = [];
   const domains = [...new Set([...(cleanup?.cookieDomains || []), ...(cleanup?.domains || [])])];
   for (let domain of domains) {
     domain = String(domain || '').replace(/^\./, '').toLowerCase();
     if (!domain || isProtectedHost(domain) || domainsChecked.includes(domain)) continue;
+    if (protectedDomains && protectedDomains.has(domain)) {
+      skipped.push(domain);                      // another ACTIVE assignment still needs it
+      continue;
+    }
     domainsChecked.push(domain);
     try {
       const cookies = await chrome.cookies.getAll({ domain });
@@ -1878,15 +1996,31 @@ async function clearCookiesForConfig(cleanup) {
       logger.warn('Cleanup cookie clear failed', { domain, error: err.message });
     }
   }
-  return { removed, domainsChecked };
+  if (skipped.length) {
+    logger.info('Cookie wipe skipped for domains owned by an active assignment', { skipped });
+  }
+  return { removed, domainsChecked, skipped };
 }
 
 // Find open tabs for a tool (chrome.tabs.query), clear their localStorage/
 // sessionStorage (chrome.scripting), then redirect them to the friendly expired
 // page so the live session cannot continue. Returns { redirected, storageCleared }.
-async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
+// `opts` = { toolId, hostSharedWithActive }.
+//   • toolId               the EXACT assignment being expired. When present, a tab is only
+//                          touched if it is verifiably owned by that assignment.
+//   • hostSharedWithActive true when a DIFFERENT, currently-active assignment also matches
+//                          these host patterns (the Plus/Pro case).
+//
+// The URL pattern still selects CANDIDATES — it must, because that is all chrome.tabs.query
+// can filter on — but it no longer decides ownership. Ownership comes from the per-tab
+// binding recorded at launch. Omitting opts.toolId preserves the exact previous behaviour,
+// which is what the idle-timeout path (expireIdleHost) genuinely wants: idle is a HOST
+// concept, and its host list is hix.ai / bypassgpt.ai, never a multi-assignment host.
+async function clearStorageAndRedirectTabs(cleanup, toolName, reason, opts) {
   const patterns = (cleanup?.tabUrlPatterns || []).filter(Boolean);
   if (!patterns.length) return { redirected: 0, storageCleared: false };
+  const wantToolId = opts && opts.toolId != null ? String(opts.toolId) : null;
+  const hostShared = !!(opts && opts.hostSharedWithActive);
 
   let matched = [];
   try {
@@ -1902,6 +2036,9 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
   const who = await getStorage(['userEmail', 'userName']);
   let expiredUrl = chrome.runtime.getURL('expired.html')
     + `?tool=${encodeURIComponent(toolName || '')}&reason=${encodeURIComponent(reason || 'expired')}`;
+  // Non-secret. Lets expired.js ask the background for the AUTHORITATIVE label/status of the
+  // assignment that actually expired, instead of trusting the (user-editable) tool= text.
+  if (wantToolId) expiredUrl += `&toolId=${encodeURIComponent(wantToolId)}`;
   if (appOrigin) expiredUrl += `&app=${encodeURIComponent(appOrigin)}`;
   if (who.userEmail) expiredUrl += `&email=${encodeURIComponent(who.userEmail)}`;
   if (who.userName) expiredUrl += `&name=${encodeURIComponent(who.userName)}`;
@@ -1914,6 +2051,31 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
     try { host = new URL(tab.url).hostname; } catch (_) {}
     if (isProtectedHost(host)) continue;            // never touch dashboard tabs
     if (tab.url.startsWith(chrome.runtime.getURL(''))) continue; // already our page
+
+    // ── EXACT-ASSIGNMENT OWNERSHIP GATE ───────────────────────────────────────
+    // This is the fix for the Plus/Pro cross-expiry defect. The URL pattern got us here;
+    // it does NOT prove this tab belongs to the assignment being expired.
+    let binding = null;
+    if (wantToolId) {
+      binding = await getTabBinding(tab.id);
+      if (binding && String(binding.toolId) !== wantToolId) {
+        // Owned by a DIFFERENT assignment on the same host (the Plus tab while Pro expires).
+        logger.info('Skipping tab owned by another assignment', {
+          tabId: tab.id, expiringToolId: wantToolId, tabToolId: String(binding.toolId),
+        });
+        continue;
+      }
+      if (!binding && hostShared) {
+        // Unbound tab on a host shared with a still-ACTIVE assignment: ownership is genuinely
+        // ambiguous. Invariant 7 — never silently borrow a sibling's state. Leaving an
+        // ambiguous tab alone is strictly safer than expiring somebody's working session;
+        // its access is still enforced server-side on the next credential fetch.
+        logger.info('Skipping unbound tab on a host shared with an active assignment', {
+          tabId: tab.id, expiringToolId: wantToolId,
+        });
+        continue;
+      }
+    }
 
     // Clear page storage IN the tool origin before navigating away.
     try {
@@ -1930,6 +2092,21 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
       void res;
     } catch (_) { /* protected/closed tab — ignore */ }
 
+    // ── STALE-EVENT REJECTION ─────────────────────────────────────────────────
+    // The storage clear above is an await, so the user may have re-launched a DIFFERENT
+    // assignment into this very tab while we were suspended there. Re-read the binding and
+    // require both the toolId AND the generation to be unchanged before navigating.
+    if (wantToolId && binding) {
+      const now = await getTabBinding(tab.id);
+      if (!now || String(now.toolId) !== wantToolId || now.gen !== binding.gen) {
+        logger.info('Tab re-bound mid-cleanup — stale redirect rejected', {
+          tabId: tab.id, expiringToolId: wantToolId,
+          nowToolId: now ? String(now.toolId) : null,
+        });
+        continue;
+      }
+    }
+
     try {
       await chrome.tabs.update(tab.id, { url: expiredUrl });
       redirected++;
@@ -1943,15 +2120,33 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason) {
 // Full per-tool cleanup: cookies + page storage + open tabs + local caches.
 // `entry` carries the manifest fields (toolId/cleanup/status/reason/expiry_date)
 // so the debug log can report assignment_status + expiry_date precisely.
-async function cleanupToolSession(entry) {
+// `activeScope` (optional) describes what OTHER, still-active assignments own:
+//   { domains: Set<string>, patterns: Set<string> }
+// It is what makes an expired assignment unable to disturb an active sibling that merely
+// shares a hostname (ChatGPT Plus vs Chat Gpt Pro). Absent → behaves exactly as before.
+async function cleanupToolSession(entry, activeScope) {
   const cleanup = entry && entry.cleanup;
   if (!cleanup) return;
   const toolId = entry.toolId;
   const reason = entry.reason || entry.status || 'expired';
   const toolName = cleanup.name || 'this tool';
 
-  const { removed: cookiesRemoved, domainsChecked } = await clearCookiesForConfig(cleanup);
-  const { redirected: tabsClosed, storageCleared } = await clearStorageAndRedirectTabs(cleanup, toolName, reason);
+  // Does a DIFFERENT active assignment share this tool's host patterns / cookie domains?
+  let protectedDomains = null;
+  let hostSharedWithActive = false;
+  if (activeScope) {
+    protectedDomains = activeScope.domains || null;
+    const pats = activeScope.patterns;
+    if (pats) {
+      for (const p of (cleanup.tabUrlPatterns || [])) {
+        if (pats.has(p)) { hostSharedWithActive = true; break; }
+      }
+    }
+  }
+
+  const { removed: cookiesRemoved, domainsChecked } = await clearCookiesForConfig(cleanup, protectedDomains);
+  const { redirected: tabsClosed, storageCleared } = await clearStorageAndRedirectTabs(
+    cleanup, toolName, reason, { toolId, hostSharedWithActive });
 
   // Drop any cached decrypted session bundle + domain map entries for this tool.
   try { await removeStorage([sessionCacheKey(toolId)]); } catch (_) {}
@@ -2037,10 +2232,28 @@ async function runCleanupSync(reason = 'manual') {
     const revoked = Array.isArray(manifest?.revoked) ? manifest.revoked : [];
     const activeIds = new Set(active.map(t => String(t.toolId)));
 
+    // Forget bindings for tabs the user has closed (also covers a missed onRemoved
+    // while the service worker was suspended). Cheap: one tabs.query every 2 minutes.
+    await pruneTabBindings();
+
+    // What the still-ACTIVE assignments own. An expiring tool must not wipe cookies or
+    // redirect ambiguous tabs on a host that one of these still depends on — this is what
+    // keeps an expired Chat Gpt Pro from killing an active ChatGPT Plus on chatgpt.com.
+    const activeScope = { domains: new Set(), patterns: new Set() };
+    for (const entry of active) {
+      const c = entry && entry.cleanup;
+      if (!c) continue;
+      for (const d of [...(c.cookieDomains || []), ...(c.domains || [])]) {
+        const bare = String(d || '').replace(/^\./, '').toLowerCase();
+        if (bare) activeScope.domains.add(bare);
+      }
+      for (const p of (c.tabUrlPatterns || [])) activeScope.patterns.add(p);
+    }
+
     // 1) Explicitly revoked/expired/removed/blocked tools from the backend.
     for (const entry of revoked) {
       if (activeIds.has(String(entry.toolId))) continue; // a valid row wins
-      await cleanupToolSession(entry);
+      await cleanupToolSession(entry, activeScope);
     }
 
     // 2) Locally-known tools that vanished from `active` and weren't already
@@ -2048,7 +2261,7 @@ async function runCleanupSync(reason = 'manual') {
     const revokedIds = new Set(revoked.map(t => String(t.toolId)));
     for (const [toolId, rec] of Object.entries(known)) {
       if (activeIds.has(toolId) || revokedIds.has(toolId)) continue;
-      await cleanupToolSession(toKnownEntry(toolId, rec, 'removed'));
+      await cleanupToolSession(toKnownEntry(toolId, rec, 'removed'), activeScope);
     }
 
     // 3) Refresh the registry to exactly the current active set so future syncs
@@ -2613,6 +2826,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           const granted = await chrome.permissions.request({ origins: [originPattern] });
           sendResponse({ success: !!granted, granted: !!granted, originPattern });
+        } catch (err) {
+          sendResponse({ success: false, error: err.message });
+        }
+      })();
+      return true;
+
+    // Authoritative context for the expired page. The `tool=` query parameter is
+    // PRESENTATION ONLY and is user-editable, so expired.js asks here for the real label and
+    // the real current status of the exact assignment (by toolId) that was expired. Editing
+    // the query string therefore changes nothing: this handler ignores it entirely, and it
+    // returns no cookies, tokens, credentials or any other secret.
+    case 'GENZ_EXPIRED_CONTEXT':
+      (async () => {
+        try {
+          const wantId = message.payload && message.payload.toolId != null
+            ? String(message.payload.toolId) : null;
+          if (!wantId) { sendResponse({ success: false, error: 'toolId_required' }); return; }
+
+          // Is this exact tool currently ACTIVE again (i.e. renewed)? The local registry is
+          // refreshed to the authoritative active set on every cleanup run.
+          const known = await getKnownTools();
+          const rec = known[wantId] || null;
+          const stored = await getStorage(['tools']);
+          const listed = (stored.tools || []).find(t => String(t.id) === wantId) || null;
+          const name = (rec && rec.cleanup && rec.cleanup.name) || (listed && listed.name) || null;
+
+          sendResponse({
+            success: true,
+            toolId: wantId,
+            name,                                  // authoritative label for THIS assignment
+            active: !!rec,                         // present in the active registry => renewed
+            targetUrl: (rec ? (listed && listed.targetUrl) : null) || null,
+          });
         } catch (err) {
           sendResponse({ success: false, error: err.message });
         }

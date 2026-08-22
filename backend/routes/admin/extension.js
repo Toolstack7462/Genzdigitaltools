@@ -211,6 +211,29 @@ router.post('/upload',
         return res.status(400).json({ error: 'minVersion cannot be greater than the uploaded version', code: 'min_version_too_high' });
       }
 
+      // ── Accidental-downgrade guard ────────────────────────────────────────────
+      // Publishing is a straight overwrite of the served ZIP, so uploading an older build
+      // silently replaces a newer production release and every client is offered the stale
+      // extension. That is exactly how v3.9.20 came to be served while v3.9.25 was the real
+      // latest. Compare against the EFFECTIVE published version (newer of the on-disk ZIP and
+      // the DB row) — the same value /release shows the admin, so the block can never disagree
+      // with what the panel displays.
+      //
+      // Deliberate rollback stays possible, but it has to be asked for explicitly
+      // (?allowDowngrade=1); it is never the default, and it is recorded in the activity log.
+      const allowDowngrade = /^(1|true|yes)$/i.test(String(req.query.allowDowngrade || ''));
+      const relNow = await ExtensionRelease.getLatest();
+      const publishedNow = effectiveLatest(relNow ? relNow.version : null, readDiskExtensionVersion());
+      const downgrade = !!publishedNow && isOlder(manifest.version, publishedNow);
+      if (downgrade && !allowDowngrade) {
+        return res.status(409).json({
+          error: `Upload blocked: version ${manifest.version} is older than currently deployed version ${publishedNow}.`,
+          code: 'version_downgrade_blocked',
+          uploadedVersion: manifest.version,
+          publishedVersion: publishedNow,
+        });
+      }
+
       // Replace the ZIP in the EXISTING download folders.
       const { written, skipped } = writeExtensionZip(buf);
       if (!written.length) {
@@ -233,6 +256,10 @@ router.post('/upload',
         minVersion: doc.minVersion || null,
         sizeBytes: buf.length,
         foldersWritten: written.length,
+        // Records a deliberate rollback so an intentional downgrade is distinguishable
+        // from a normal release when reading the audit trail later.
+        rollback: downgrade || undefined,
+        replacedVersion: downgrade ? publishedNow : undefined,
       });
 
       res.json({

@@ -121,8 +121,11 @@
   }
 
   // ── Static hide style (href substrings + per-tool exact selectors) ──────────
+  // UPDATABLE, not create-once. The zero-flash bootstrap (js/chatgptEarlyShield.js) installs
+  // this stylesheet at document_start with EMPTY hideSelectors, and the real config arrives
+  // later. A plain `if (exists) return;` would freeze the empty version forever and silently
+  // drop every per-host hide selector. Rebuilding the text is idempotent and cheap.
   function injectStyle() {
-    if (document.getElementById('genz-shield-style')) return;
     var parts = [];
     for (var i = 0; i < hrefSubs.length; i++) parts.push('a[href*="' + hrefSubs[i] + '" i]');
     for (var j = 0; j < hideSelectors.length; j++) { if (hideSelectors[j]) parts.push(hideSelectors[j]); }
@@ -130,8 +133,14 @@
     // Menu policy rows: the attribute survives a React re-render that rewrites the inline
     // style attribute, so the row stays hidden without us having to win a styling race.
     parts.push('[data-genz-menu-blocked="1"]');
+    // Tab policy (ChatGPT Chat/Work switcher): same rationale — the attribute is ours, so a
+    // React re-render that rewrites `style` cannot un-hide the segment. Scoped to an attribute
+    // WE set on an already-verified switcher, so this rule can never match page content.
+    parts.push('[data-genz-tab-blocked="1"]');
     var css = parts.join(',') + '{display:none !important;}';
-    var s = document.createElement('style'); s.id = 'genz-shield-style'; s.textContent = css;
+    var s = document.getElementById('genz-shield-style');
+    if (s) { if (s.textContent !== css) s.textContent = css; return; }
+    s = document.createElement('style'); s.id = 'genz-shield-style'; s.textContent = css;
     (document.head || document.documentElement).appendChild(s);
   }
 
@@ -141,10 +150,27 @@
   // re-scanning the whole DOM on every mutation (critical on streaming SPAs like ChatGPT/Grok).
   // processOne holds the identical per-node rules as before.
   var SWEEP_SEL = 'a,button,[role="button"],li,span,div,p,h1,h2,h3,h4';
+  // Sweep GENERATION rather than a boolean flag. The zero-flash bootstrap runs an initial sweep
+  // with EMPTY account/logout rules; a boolean would mark every node permanently processed and
+  // the real config, arriving moments later, would never re-evaluate them — silently killing the
+  // account shield. Bumping the generation on a config refresh re-opens every node exactly once.
+  //
+  // ⚠ THE GENERATION IS BUMPED ONLY WHEN THE RULES ACTUALLY CHANGE (see __GENZ_SHIELD_REFRESH__).
+  // Bumping it on every refresh caused a WHITE-SCREEN regression on ALL tools: the shield is
+  // re-injected on every tabs.onUpdated 'complete', so the whole document became re-processable
+  // again and again. processOne is not cheap per node (see below), so on a large SPA that is tens
+  // of thousands of nodes x several selector-engine calls, repeatedly — enough to lock the main
+  // thread and leave the browser painting a blank page. Slow connections made it far worse,
+  // because 'complete' fires more often while rendering is already starved. In the steady state
+  // the generation never changes, so every node is evaluated exactly once, as it was originally.
+  var sweepGen = 1;
   function processOne(n) {
-    if (!n || n.nodeType !== 1 || n.__genzShield) return;
-    if (isOwnUi(n) || isCaptchaNode(n) || isWorkArea(n)) { n.__genzShield = true; return; }
-    n.__genzShield = true;
+    if (!n || n.nodeType !== 1 || n.__genzShield === sweepGen) return;
+    // PERF: isCaptchaNode() runs matches + closest + querySelector against an 18-selector list.
+    // It is deliberately NOT in this hot path — hide() re-checks it before touching anything, so
+    // a captcha node still cannot be hidden; it just costs nothing to walk past one.
+    if (isOwnUi(n) || isWorkArea(n)) { n.__genzShield = sweepGen; return; }
+    n.__genzShield = sweepGen;
     var tag = (n.tagName || '').toLowerCase();
     var isControl = tag === 'a' || tag === 'button' || (n.getAttribute && n.getAttribute('role') === 'button');
     if (isControl && attrMatches(n)) { hide(n); return; }
@@ -267,13 +293,20 @@
     return out;
   }
   // Lowest ancestor that actually looks like this row's picker.
+  var MAX_COMPOSER_NODES = (MENU && MENU.maxComposerPickerNodes) || 80;
   function findPicker(row, kind) {
     var n = row.parentElement, depth = 0;
     while (n && depth < MAX_CLIMB) {
       try {
-        // Never climb into the app shell: a composer/editor in scope means we left the popover.
-        if (n.querySelector('textarea,[contenteditable="true"]')) return null;
-        if (n.getElementsByTagName('*').length > MAX_PICKER_NODES) return null;
+        var count = n.getElementsByTagName('*').length;
+        if (count > MAX_PICKER_NODES) return null;
+        // A composer in scope USUALLY means we climbed out of the popover into the app shell —
+        // but Claude renders its model / effort ("mode") controls in the composer cluster, and an
+        // OUTRIGHT refusal here made that picker permanently undetectable. That is why Max stayed
+        // selectable no matter what the vocabulary said: findPicker returned null before any row
+        // was ever classified. The composer is now only disqualifying once the container has
+        // grown past a control-cluster size, which still blocks the app shell.
+        if (n.querySelector('textarea,[contenteditable="true"]') && count > MAX_COMPOSER_NODES) return null;
       } catch (e) { return null; }
       var rows = rowsOfKind(n, kind);
       if (rows.length >= 2) {
@@ -285,12 +318,18 @@
     }
     return null;
   }
+  // Widened deliberately: if a picker marks its active row in a way this misses, vetPicker cannot
+  // tell that the conversation is pinned to a blocked value, and Max stays selected forever.
   function isSelectedRow(el) {
     try {
       if (el.getAttribute('aria-checked') === 'true') return true;
       if (el.getAttribute('aria-selected') === 'true') return true;
-      var ds = el.getAttribute('data-state') || '';
-      if (/^(checked|active|selected|on)$/i.test(ds)) return true;
+      if (el.getAttribute('aria-pressed') === 'true') return true;
+      var cur = el.getAttribute('aria-current');
+      if (cur && cur !== 'false') return true;
+      var ds = el.getAttribute('data-state') || el.getAttribute('data-active') ||
+               el.getAttribute('data-selected') || '';
+      if (/^(checked|active|selected|on|true)$/i.test(ds)) return true;
       if (el.querySelector && el.querySelector('[data-state="checked"],[aria-checked="true"],[aria-selected="true"]')) return true;
       return /(^|\s)(is-)?(selected|active|checked)(\s|$)/i.test(el.className || '');
     } catch (e) { return false; }
@@ -305,13 +344,16 @@
   // Hide every blocked row in a verified picker and normalise a blocked selection.
   function vetPicker(found, spec) {
     var rows = found.rows, blockedSelected = null, fallback = null;
+    var allowedSelected = false, blockedCount = 0;
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];
       if (r.info.allowed) {
         // Prefer the configured fallback (Medium / Sonnet); otherwise any permitted row.
         if (!fallback || labelMatchesFallback(r.info.label, spec)) fallback = r.el;
+        if (isSelectedRow(r.el)) allowedSelected = true;
         continue;
       }
+      blockedCount++;
       if (isSelectedRow(r.el)) blockedSelected = r.el;
       try {
         r.el.setAttribute('data-genz-menu-blocked', '1');
@@ -322,7 +364,17 @@
     // one through the APP'S OWN handler, so the composer label and the app's stored preference
     // both update -- instead of writing storage whose shape we do not know. Guarded per container
     // instance so it fires once and can never loop.
-    if (blockedSelected && fallback && !found.container.__genzPolicyFixed) {
+    //
+    // IT ALSO FIRES WHEN NOTHING PERMITTED IS DETECTABLY SELECTED. Requiring positive proof that a
+    // BLOCKED row was selected made the whole repair conditional on recognising Claude's
+    // selected-state markup; when that markup is not one we know, blockedSelected stayed null, no
+    // repair ran, and a conversation pinned to Max simply stayed on Max — which is exactly the
+    // reported "Sonnet and Max mode is selected and I can't change it". If no permitted row is
+    // marked active, the current value is blocked or unknowable, so we assert the permitted
+    // fallback. Worst case a Low selection we failed to detect becomes Medium: both are permitted,
+    // so the policy is never violated in either direction.
+    if (fallback && blockedCount > 0 && (blockedSelected || !allowedSelected) &&
+        !found.container.__genzPolicyFixed) {
       found.container.__genzPolicyFixed = true;
       try { fallback.click(); } catch (e) {}
     }
@@ -354,6 +406,7 @@
   // Is this element a blocked row inside a verified picker? Used by the selection guards.
   function isBlockedSelection(el) {
     try {
+      if (!ROW_SEL) return false;                 // no menu policy on this host (e.g. ChatGPT)
       var row = el && el.closest ? el.closest(ROW_SEL) : null;
       if (!row) return false;
       var info = classifyRow(row);
@@ -362,7 +415,282 @@
     } catch (e) { return false; }
   }
 
-  function sweepMenuPolicy(root) { applyMenuPolicy(root); }
+  // ── TAB POLICY: ChatGPT "Chat / Work" mode switcher (chatgpt.com ONLY) ──────────────────
+  //
+  // WHAT THIS IS. On 2026-07-16 ChatGPT merged the ChatGPT and Codex surfaces and added a
+  // segmented "Chat | Work" switcher at the top of the interface, Work being an agentic mode.
+  // Gen Z-managed sessions are Chat-only, so Work must be both INVISIBLE and INERT.
+  //
+  // WHY THIS IS NOT A SELECTOR LIST. ChatGPT's markup could not be inspected from an authorised
+  // session when this was written, so there is no verified data-testid, ARIA id, generated class
+  // or route to hardcode. Guessing one would either silently stop working (harmless) or match the
+  // wrong node (NOT harmless). Instead the switcher is IDENTIFIED AT RUNTIME, in the live page, by
+  // a structural signature it must satisfy before a single node is touched. This is the same
+  // pattern already proven on Claude's model/effort picker (findPicker/vetPicker above).
+  //
+  // THE SIGNATURE — every one of these must hold, or nothing happens at all:
+  //   a) A candidate is an INTERACTIVE control (tab/radio/option role, button, a[href], [tabindex]).
+  //      Conversation prose is span/div/p and never qualifies.
+  //   b) Its label — first text-bearing child, so an icon-then-text segment still reads correctly —
+  //      is EXACTLY "Work" (blocked) or EXACTLY "Chat" (permitted), anchored, and <= maxLabel chars.
+  //      "Work is important for my project." is neither exact nor short, so it cannot match.
+  //   c) It is NOT a conversation/project link (excludeHrefSource). This is what keeps a SIDEBAR
+  //      conversation that happens to be TITLED "Work" out of scope — those are links to /c/<id>.
+  //   d) A bounded common ancestor (<= maxSwitchNodes elements, <= maxClimb levels up, containing
+  //      no composer/textarea/contenteditable) holds BOTH a permitted row AND a blocked row.
+  //      Prose cannot manufacture a small container holding two sibling interactive controls
+  //      labelled exactly "Chat" and exactly "Work".
+  //   e) One of the pair carries an explicit SELECTION marker (aria-selected / aria-checked /
+  //      aria-current / data-state=active|checked|selected|on). A segmented switcher always marks
+  //      its active segment; an incidental pair of buttons does not. Configurable via
+  //      requireSelectionMarker so it can be relaxed once the real DOM is confirmed.
+  //
+  // FAILURE MODE IS DELIBERATELY A NO-OP. If ChatGPT changes its markup and the signature stops
+  // matching, the policy simply does nothing — Work becomes visible again. It can never blank the
+  // page, the composer or a conversation. A safe no-match is preferred over a broad false positive.
+  var TABP = (CFG.tabPolicy && CFG.tabPolicy.rowSel && CFG.tabPolicy.blockLabelSource && CFG.tabPolicy.allowLabelSource)
+    ? CFG.tabPolicy : null;
+  var TAB_BLOCK_RE = TABP ? safeRe(TABP.blockLabelSource, 'i') : null;
+  var TAB_ALLOW_RE = TABP ? safeRe(TABP.allowLabelSource, 'i') : null;
+  var TAB_EXCL_HREF_RE = TABP ? safeRe(TABP.excludeHrefSource, 'i') : null;
+  var TAB_ROW_SEL = TABP ? TABP.rowSel : null;
+  var TAB_MAX_LABEL = (TABP && TABP.maxLabel) || 12;
+  var TAB_MAX_CLIMB = (TABP && TABP.maxClimb) || 6;
+  var TAB_MAX_NODES = (TABP && TABP.maxSwitchNodes) || 120;
+  var TAB_NEED_MARKER = !TABP || TABP.requireSelectionMarker !== false;
+  var TAB_MAX_FIXES = (TABP && TABP.maxRecoveries) || 3;
+
+  // (c) A conversation/project link is never a mode segment, whatever it is titled.
+  function tabExcluded(el) {
+    try {
+      if (!TAB_EXCL_HREF_RE) return false;
+      var href = el.getAttribute && el.getAttribute('href');
+      return !!href && TAB_EXCL_HREF_RE.test(href);
+    } catch (e) { return false; }
+  }
+  // (a)+(b) Classify one candidate. Returns {label, allowed} or null.
+  function classifyTab(el) {
+    if (!TABP || !el || el.nodeType !== 1) return null;
+    if (tabExcluded(el)) return null;
+    var label = menuLabel(el);                    // visibility-independent, see menuLabel above
+    if (!label || label.length > TAB_MAX_LABEL) return null;
+    if (TAB_ALLOW_RE && TAB_ALLOW_RE.test(label)) return { label: label, allowed: true };
+    if (TAB_BLOCK_RE && TAB_BLOCK_RE.test(label)) return { label: label, allowed: false };
+    return null;
+  }
+  // (e) Does this row advertise itself as the active segment?
+  function tabSelected(el) {
+    try {
+      if (el.getAttribute('aria-selected') === 'true') return true;
+      if (el.getAttribute('aria-checked') === 'true') return true;
+      var cur = el.getAttribute('aria-current');
+      if (cur && cur !== 'false') return true;
+      var ds = el.getAttribute('data-state') || '';
+      return /^(checked|active|selected|on)$/i.test(ds);
+    } catch (e) { return false; }
+  }
+  function tabRowsIn(container) {
+    var out = [];
+    try {
+      var els = container.querySelectorAll(TAB_ROW_SEL);
+      for (var i = 0; i < els.length; i++) {
+        var c = classifyTab(els[i]);
+        if (c) out.push({ el: els[i], info: c });
+      }
+    } catch (e) {}
+    return out;
+  }
+  // (d)+(e) Lowest bounded ancestor that actually looks like the Chat/Work switcher.
+  function findSwitch(row) {
+    if (!TABP) return null;
+    var n = row.parentElement, depth = 0;
+    while (n && depth < TAB_MAX_CLIMB) {
+      try {
+        // A composer in scope means we climbed out of the switcher into the app shell.
+        if (n.querySelector('textarea,[contenteditable="true"]')) return null;
+        if (n.getElementsByTagName('*').length > TAB_MAX_NODES) return null;
+      } catch (e) { return null; }
+      var rows = tabRowsIn(n);
+      var allowed = 0, blocked = 0, marked = 0;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].info.allowed) allowed++; else blocked++;
+        if (tabSelected(rows[i].el)) marked++;
+      }
+      if (allowed >= 1 && blocked >= 1 && (!TAB_NEED_MARKER || marked >= 1)) {
+        return { container: n, rows: rows };
+      }
+      n = n.parentElement; depth++;
+    }
+    return null;
+  }
+  // Interactive controls in the container that are NOT part of the Chat/Work pair (and are not
+  // nested inside / wrapping one of them). Zero of these means the container exists ONLY to switch
+  // between Chat and Work, so removing the whole thing leaves no orphaned one-item switch.
+  function tabOtherControls(container, rows) {
+    var out = [];
+    try {
+      var els = container.querySelectorAll(TAB_ROW_SEL);
+      for (var i = 0; i < els.length; i++) {
+        var e = els[i], related = false;
+        for (var j = 0; j < rows.length; j++) {
+          var r = rows[j].el;
+          if (r === e || r.contains(e) || e.contains(r)) { related = true; break; }
+        }
+        if (!related) out.push(e);
+      }
+    } catch (e) {}
+    return out;
+  }
+  // ── STRUCTURAL SAFETY: never hide anything that could be the app itself ─────────────────
+  //
+  // THE BLANK-PAGE BUG THIS PREVENTS. findSwitch()'s bounds (no composer in scope, <= maxSwitchNodes
+  // elements) are evaluated AT THE MOMENT A NODE IS INSERTED. At document_start the page is built
+  // progressively, so a wrapper can legitimately hold two links and nothing else for a few frames —
+  // no composer, tiny subtree — and then grow into the whole application. The climb could therefore
+  // select the app shell, tabOtherControls() would see only Chat and Work, and vetSwitch() would
+  // display:none the entire app: a white screen.
+  //
+  // Three defences, because a blank page is far worse than a visible Work tab:
+  //   1. isStructuralNode() — landmark/root elements are never hideable, at any time.
+  //   2. Bounds are RE-CHECKED at hide time, not merely at find time.
+  //   3. Whole-container removal waits until the document is settled (see vetSwitch); before then
+  //      only the Work SEGMENT is hidden, which is all the zero-flash guarantee actually needs.
+  // A fourth, verifyHiddenTabNodes(), repairs anything that slips through after the fact.
+  function isStructuralNode(el) {
+    try {
+      var tag = (el.tagName || '').toLowerCase();
+      if (tag === 'html' || tag === 'body' || tag === 'main' || tag === 'nav' ||
+          tag === 'header' || tag === 'aside' || tag === 'form') return true;
+      if (el === document.body || el === document.documentElement) return true;
+      if (el.parentElement === document.body) return true;          // a top-level layout region
+      if (el.getAttribute && el.getAttribute('role') === 'main') return true;
+      var id = (el.getAttribute && el.getAttribute('id')) || '';
+      if (/^(root|__next|app|main|content)$/i.test(id)) return true;
+      // Contains a landmark or the composer → it is a region of the app, not a switcher.
+      if (el.querySelector && el.querySelector('main,[role="main"],textarea,[contenteditable="true"]')) return true;
+    } catch (e) { return true; }                                     // unsure → refuse to hide
+    return false;
+  }
+  function tabNodeTooBig(el) {
+    try { return el.getElementsByTagName('*').length > TAB_MAX_NODES; } catch (e) { return true; }
+  }
+  function hideTabNode(el) {
+    try {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.getAttribute('data-genz-tab-exempt') === '1') return false;   // proven unsafe before
+      if (isStructuralNode(el) || tabNodeTooBig(el)) return false;         // re-checked at hide time
+      el.setAttribute('data-genz-tab-blocked', '1');
+      el.style.setProperty('display', 'none', 'important');
+      // Belt: if a re-render briefly outruns the style, the segment is still out of the
+      // accessibility tree and out of the focus order, so Tab/arrow keys cannot reach it.
+      el.setAttribute('aria-hidden', 'true');
+      el.setAttribute('tabindex', '-1');
+      return true;
+    } catch (e) { return false; }
+  }
+  function unhideTabNode(el) {
+    try {
+      el.setAttribute('data-genz-tab-exempt', '1');   // never hide this node again
+      el.removeAttribute('data-genz-tab-blocked');
+      el.style.removeProperty('display');
+      el.removeAttribute('aria-hidden');
+      el.removeAttribute('tabindex');
+    } catch (e) {}
+  }
+  // SELF-HEALING. Anything we hid that has since grown into a real region of the app — it now
+  // contains the composer or a landmark, or it exceeded the size bound — is restored and
+  // permanently exempted. This is what turns a mis-identification into a visible Work tab
+  // instead of a dead page, even if ChatGPT changes its markup in the future.
+  function verifyHiddenTabNodes() {
+    if (!TABP) return;
+    try {
+      var hidden = document.querySelectorAll('[data-genz-tab-blocked="1"]');
+      for (var i = 0; i < hidden.length; i++) {
+        var el = hidden[i];
+        if (isStructuralNode(el) || tabNodeTooBig(el)) unhideTabNode(el);
+      }
+    } catch (e) {}
+  }
+  // Enforce the policy on one verified switcher.
+  function vetSwitch(found) {
+    var rows = found.rows, blockedSelected = null, chatRow = null, blockedRows = [];
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.info.allowed) { if (!chatRow) chatRow = r.el; continue; }
+      blockedRows.push(r.el);
+      if (tabSelected(r.el)) blockedSelected = r.el;
+    }
+    if (!chatRow || !blockedRows.length) return;
+
+    // ROUTE / STATE RECOVERY, without knowing the route. If the session is sitting in Work —
+    // direct URL entry, refresh, Back/Forward, or a programmatic switch — activate the app's OWN
+    // Chat segment. ChatGPT's router then returns to Chat by itself, so this works whatever the
+    // Work route or state mechanism turns out to be, and it touches no auth state whatsoever.
+    // Bounded per container instance, so it can never become a redirect/rerender loop.
+    // Not while the document is still parsing: clicking into a half-built router is how you get a
+    // hung SPA, and the state can only be trusted once the app has actually rendered.
+    if (blockedSelected && document.readyState !== 'loading') {
+      var n = (found.container.__genzTabFixes || 0);
+      if (n < TAB_MAX_FIXES) {
+        found.container.__genzTabFixes = n + 1;
+        try { chatRow.click(); } catch (e) {}
+      }
+    }
+
+    // VISUAL RESULT, decided from the LIVE DOM rather than assumed. If the container holds no
+    // other controls, it is purely the Chat/Work switch and would be left as a pointless one-item
+    // segmented pill — so the whole container goes. Otherwise it carries unrelated controls and
+    // only the Work segment goes, leaving the rest of the container intact.
+    // Always remove the Work SEGMENT. It is a leaf control, so this can never blank the page, and
+    // it alone satisfies the zero-flash requirement.
+    for (var b = 0; b < blockedRows.length; b++) hideTabNode(blockedRows[b]);
+
+    // Removing the WHOLE container is only safe once the document has stopped being built. During
+    // document_start parsing a structural wrapper can momentarily hold nothing but these two links
+    // — no composer, tiny subtree — and hiding it blanks the app. Deferring costs nothing visually
+    // (Work is already gone) and a later pass performs the tidy-up.
+    if (document.readyState !== 'loading' && !tabOtherControls(found.container, rows).length) {
+      hideTabNode(found.container);
+    }
+  }
+  // Entry point. Cheap when the subtree holds no Chat/Work labels, which is the common case.
+  function applyTabPolicy(root) {
+    if (!TABP || !TAB_ROW_SEL) return;
+    try {
+      var base = (root && root.nodeType === 1) ? root : (document.body || document.documentElement);
+      if (!base) return;
+      var candidates = [];
+      try {
+        if (base.matches && base.matches(TAB_ROW_SEL)) candidates.push(base);
+        var found = base.querySelectorAll(TAB_ROW_SEL);
+        for (var i = 0; i < found.length && candidates.length < 600; i++) candidates.push(found[i]);
+      } catch (e) { return; }
+      var done = [];
+      for (var c = 0; c < candidates.length; c++) {
+        var info = classifyTab(candidates[c]);
+        if (!info) continue;
+        var sw = findSwitch(candidates[c]);
+        if (!sw) continue;
+        if (done.indexOf(sw.container) !== -1) continue;   // vetted already in this pass
+        done.push(sw.container);
+        vetSwitch(sw);
+      }
+    } catch (e) {}
+  }
+  // Is this element the blocked Work segment of a VERIFIED switcher? Used by the capture guards,
+  // so a click/keypress is refused outright rather than merely hidden.
+  function isBlockedTab(el) {
+    try {
+      if (!TABP || !TAB_ROW_SEL) return false;
+      var row = el && el.closest ? el.closest(TAB_ROW_SEL) : null;
+      if (!row) return false;
+      var info = classifyTab(row);
+      if (!info || info.allowed) return false;
+      return !!findSwitch(row);
+    } catch (e) { return false; }
+  }
+
+  function sweepMenuPolicy(root) { applyMenuPolicy(root); applyTabPolicy(root); }
 
   // ── ZERO-FLASH observer + selection guards ───────────────────────────────────────────────
   // Installed IMMEDIATELY, not from start(). start() waits for DOMContentLoaded, and anything
@@ -380,9 +708,13 @@
   // model/effort label, and findPicker refuses to climb into anything holding a composer or
   // larger than a popover. While a message streams, added nodes are text, so this is one failed
   // querySelectorAll per mutation batch.
+  //
+  // The SAME observer and the SAME three capture listeners also carry the ChatGPT Chat/Work tab
+  // policy. That is deliberate: reusing them means no second observer, no duplicate listeners and
+  // no extra timer on any host, and the ChatGPT policy inherits the identical pre-paint guarantee.
   var menuGuardsInstalled = false;
   function installMenuGuards() {
-    if (menuGuardsInstalled || !MENU) return;
+    if (menuGuardsInstalled || (!MENU && !TABP)) return;
     menuGuardsInstalled = true;
     try {
       var menuMo = new MutationObserver(function (muts) {
@@ -390,17 +722,21 @@
           var added = muts[i].addedNodes;
           for (var j = 0; j < added.length; j++) {
             var n = added[j];
-            if (n && n.nodeType === 1) { try { applyMenuPolicy(n); } catch (e) {} }
+            if (n && n.nodeType === 1) { try { applyMenuPolicy(n); } catch (e) {} try { applyTabPolicy(n); } catch (e) {} }
           }
           // A re-render can flip a row's selected state without re-inserting it.
           if (muts[i].type === 'attributes' && muts[i].target && muts[i].target.nodeType === 1) {
             try { applyMenuPolicy(muts[i].target); } catch (e) {}
+            try { applyTabPolicy(muts[i].target); } catch (e) {}
           }
         }
       });
+      // NOTE: the attributeFilter deliberately excludes the attributes this file WRITES
+      // (data-genz-*, aria-hidden, tabindex, style), so the extension's own DOM edits can never
+      // re-trigger this observer. That is the observer-loop prevention.
       menuMo.observe(document.documentElement, {
         childList: true, subtree: true, attributes: true,
-        attributeFilter: ['aria-checked', 'aria-selected', 'data-state']
+        attributeFilter: ['aria-checked', 'aria-selected', 'data-state', 'aria-current']
       });
     } catch (e) {}
 
@@ -410,7 +746,7 @@
     var onSelectCapture = function (ev) {
       try {
         if (ev.type === 'keydown' && ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
-        if (!isBlockedSelection(ev.target)) return;
+        if (!isBlockedSelection(ev.target) && !isBlockedTab(ev.target)) return;
         ev.preventDefault(); ev.stopPropagation();
         if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
       } catch (e) {}
@@ -538,7 +874,9 @@
       // Menu policy: refuse the selection outright, not merely visually. See onSelectCapture —
       // click is only one of the ways a row can be activated, so the same guard is bound to
       // pointerdown/mousedown/keydown as well.
-      if (MENU && ev.target && isBlockedSelection(ev.target)) {
+      // Same refusal for the ChatGPT Work segment: preventDefault on pointerdown/mousedown does
+      // NOT suppress the subsequent click, so the click phase must be guarded in its own right.
+      if (ev.target && ((MENU && isBlockedSelection(ev.target)) || (TABP && isBlockedTab(ev.target)))) {
         ev.preventDefault(); ev.stopPropagation();
         if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
         return;
@@ -567,6 +905,9 @@
   function flush() {
     flushTimer = null;
     try { injectStyle(); } catch (e) {}
+    // Self-heal: restore anything the tab policy hid that has since turned out to be a real
+    // region of the app. Cheap — normally matches zero or one node. No new timer or observer.
+    try { verifyHiddenTabNodes(); } catch (e) {}
     if (fullPending) { fullPending = false; pending.length = 0; try { sweep(document); } catch (e) {} return; }
     if (!pending.length) return;
     var batch = pending; pending = [];
@@ -583,17 +924,58 @@
     if (pending.length || fullPending) schedule();
   }
 
+  // Identity of the account/logout rule set. Only these four decide what processOne hides, so a
+  // change in this string is the ONLY thing that can justify re-sweeping the whole document.
+  function rulesSignature() {
+    try {
+      return [hrefSubs.join(''), attrSubs.join(''),
+        (HIDE_TEXT_RE && HIDE_TEXT_RE.source) || '',
+        (KEEP_TEXT_RE && KEEP_TEXT_RE.source) || ''].join('');
+    } catch (e) { return ''; }
+  }
+  var lastRulesSig = rulesSignature();
+
   window.__GENZ_SHIELD_REFRESH__ = function (cfg) {
     if (!cfg) return;
     if (Array.isArray(cfg.blockRouteFragments)) blockFrags = cfg.blockRouteFragments;
     if (Array.isArray(cfg.hideSelectors)) hideSelectors = cfg.hideSelectors;
+    // COMPLETENESS MATTERS. The zero-flash bootstrap seeds these as empty placeholders, so the
+    // real config MUST be able to replace every one of them — otherwise the ChatGPT account /
+    // logout shield would stay permanently disabled behind the bootstrap's blanks. For every
+    // other tool this is a no-op: background.js re-sends the same host config it sent before.
+    if (Array.isArray(cfg.hrefSubstrings)) hrefSubs = cfg.hrefSubstrings;
+    if (Array.isArray(cfg.attrSubstrings)) attrSubs = cfg.attrSubstrings;
+    if (cfg.hideTextSource) HIDE_TEXT_RE = safeRe(cfg.hideTextSource, 'i');
+    if (cfg.keepTextSource) KEEP_TEXT_RE = safeRe(cfg.keepTextSource, 'i');
     // Re-injection on an SPA re-nav must not silently drop the menu policy.
     if (cfg.menuPolicy && cfg.menuPolicy.containers && cfg.menuPolicy.items) {
       MENU = cfg.menuPolicy;
       MENU_BLOCK_RE = safeRe(MENU.blockSource, 'i');
       MENU_KEEP_RE = safeRe(MENU.keepSource, 'i');
     }
-    scheduleFull();
+    // Likewise the ChatGPT Chat/Work policy: an SPA re-nav re-injects the shield, and dropping the
+    // policy there would silently restore Work after a route change.
+    if (cfg.tabPolicy && cfg.tabPolicy.rowSel && cfg.tabPolicy.blockLabelSource && cfg.tabPolicy.allowLabelSource) {
+      TABP = cfg.tabPolicy;
+      TAB_BLOCK_RE = safeRe(TABP.blockLabelSource, 'i');
+      TAB_ALLOW_RE = safeRe(TABP.allowLabelSource, 'i');
+      TAB_EXCL_HREF_RE = safeRe(TABP.excludeHrefSource, 'i');
+      TAB_ROW_SEL = TABP.rowSel;
+      installMenuGuards();                    // idempotent; covers a first-time policy arrival
+    }
+    // Re-open every already-swept node for one more pass ONLY when the account/logout rules
+    // genuinely changed — in practice exactly once, when the real config supersedes the empty
+    // zero-flash bootstrap. background.js re-injects the shield on every tabs.onUpdated
+    // 'complete' with the SAME host config, and re-sweeping the whole document each time is what
+    // locked the main thread and produced a blank white page on every tool (worst on slow
+    // connections, where 'complete' fires repeatedly). Same rules → no re-sweep → each node stays
+    // evaluated exactly once, which is the original, cheap behaviour.
+    var sig = rulesSignature();
+    if (sig !== lastRulesSig) {
+      lastRulesSig = sig;
+      sweepGen++;
+      scheduleFull();
+    }
     maybeBlockCurrentRoute();
   };
 
