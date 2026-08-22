@@ -26,7 +26,7 @@ USER=u171982351
 # release layout changes again.
 API_ROOT="${DEPLOY_API_ROOT:-/home/${USER}/domains/api.genzdigitalstore.com/.builds/current/nodejs}"
 MAIN_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html"
-APP_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html/app"
+APP_WEB="/home/${USER}/domains/app.genzdigitalstore.com/public_html"
 BUILD_DIR="frontend/build"
 
 if [[ -z "${SFTP_PASS:-}" ]]; then

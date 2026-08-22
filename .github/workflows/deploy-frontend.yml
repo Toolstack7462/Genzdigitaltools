@@ -3,7 +3,12 @@ name: Deploy frontend to Hostinger
 # Builds the React app and uploads frontend/build/ to the Hostinger frontend over
 # SFTP — to BOTH web roots, exactly like deploy-frontend-only.sh:
 #   - main domain : /home/u171982351/domains/genzdigitalstore.com/public_html
-#   - app subdomain: .../public_html/app   (where /login, /client/*, /admin/* are served)
+#   - app subdomain: /home/u171982351/domains/app.genzdigitalstore.com/public_html
+#     (where /login, /client/*, /admin/* are served). This used to be the NESTED
+#     genzdigitalstore.com/public_html/app. It moved on 2026-08-22, when the main site was
+#     deleted and both hosts were re-created in hPanel as independent domains. Deploying to
+#     the old nested path is a SILENT no-op: `mirror -R` just creates a stray folder under
+#     the main domain and the real app subdomain stays stale forever.
 #
 # WHY SFTP (not the old FTP-Deploy-Action): the previous FTP step reported "success"
 # but never updated the served docroot (its FTP target was not the live directory) and
@@ -37,7 +42,7 @@ env:
   SFTP_PORT: '65002'
   SFTP_USER: 'u171982351'
   MAIN_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html'
-  APP_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html/app'
+  APP_WEB: '/home/u171982351/domains/app.genzdigitalstore.com/public_html'
 
 jobs:
   build-and-deploy:
