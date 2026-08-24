@@ -14,9 +14,14 @@ node --check backend/routes/proxy/agentSync.js && echo "pre-flight node --check 
 ssh-keygen -R "[${HOST}]:${PORT}" >/dev/null 2>&1 || true
 ssh-keyscan -t rsa -p "${PORT}" "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
 T="$(mktemp)"; date -u +"restart %Y-%m-%dT%H:%M:%SZ" > "$T"
-echo "==> Uploading agentSync.js + restart"
+echo "==> Uploading agentSync.js (+ its multi-device modules) + restart"
+# agentSync.js require()s deviceSync.js and candidateSync.js at module load. Shipping the route
+# WITHOUT them boots Passenger into "Cannot find module" and takes the whole API down, so they
+# travel together — re-uploading a module the server already has is a harmless no-op.
 curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/proxy/agentSync.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
+  -T backend/utils/proxy/deviceSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
+  -T backend/utils/proxy/candidateSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T "$T" "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 rm -f "$T"; echo "    done."
 echo "==> Verify boot + ingest still gated"

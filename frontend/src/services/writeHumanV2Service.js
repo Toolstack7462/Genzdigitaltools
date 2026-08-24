@@ -20,4 +20,10 @@ export const writeHumanV2Admin = {
   // Health-alert email (masked read; write to set/change/clear the recipient or toggle alerts).
   getAlertConfig: () => api.get(`/admin/proxy-tools/${TOOL}/alert-config`),
   setAlertConfig: (payload) => api.post(`/admin/proxy-tools/${TOOL}/alert-config`, payload),
+  // Paired sync devices. Any paired machine may supply cookies; the newest VERIFIED bundle wins.
+  getDevices: () => api.get(`/admin/proxy-tools/${TOOL}/devices`),
+  // Returns a single-use pairing code — shown ONCE, never retrievable again.
+  createPairCode: (name) => api.post(`/admin/proxy-tools/${TOOL}/devices/pair-code`, { name }),
+  // Revokes a device's write access. Never deletes the stored cookie bundle.
+  revokeDevice: (deviceId, force = false) => api.delete(`/admin/proxy-tools/${TOOL}/devices/${deviceId}${force ? '?force=1' : ''}`),
 };

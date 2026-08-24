@@ -52,6 +52,11 @@ const AdminWriteHuman = () => {
   const [alert, setAlert] = useState(null);       // { emailMasked, emailSet, enabled, source, smtpConfigured }
   const [alertEmail, setAlertEmail] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
+  // Pairing: the code is returned ONCE by the server and is never retrievable again, so it lives
+  // in component state only until the operator dismisses it. It is never persisted or logged.
+  const [pairCode, setPairCode] = useState(null);   // { code, name, expiresAt }
+  const [pairName, setPairName] = useState('');
+  const [pairing, setPairing] = useState(false);
   const timer = useRef(null);
   const logTick = useRef(0);
 
@@ -102,6 +107,31 @@ const AdminWriteHuman = () => {
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
   }, [loadState, loadLogs]);
 
+  const createPairCode = async () => {
+    try {
+      setPairing(true);
+      const r = await writeHumanV2Admin.createPairCode(pairName.trim() || undefined);
+      setPairCode(r.data); setPairName('');
+    } catch (e) { showError(e.response?.data?.error || 'Failed to create a pairing code'); }
+    finally { setPairing(false); }
+  };
+  const revokeDevice = async (d) => {
+    const name = d.name || d.deviceId;
+    if (!window.confirm(`Revoke ${name}?\n\nIt loses the right to push cookies. The stored session stays exactly as it is — revoking a device never signs anyone out.`)) return;
+    try {
+      await writeHumanV2Admin.revokeDevice(d.deviceId);
+      showSuccess(`${name} revoked`); loadState();
+    } catch (e) {
+      const code = e.response?.data?.code;
+      if (code === 'ACTIVE_SOURCE_ONLY_DEVICE') {
+        if (window.confirm(`${name} is the ONLY paired device and it supplies the session in use.\n\nRevoke anyway? The current cookies keep working, but nothing will be able to refresh them.`)) {
+          try { await writeHumanV2Admin.revokeDevice(d.deviceId, true); showSuccess(`${name} revoked`); loadState(); }
+          catch (e2) { showError(e2.response?.data?.error || 'Failed to revoke'); }
+        }
+      } else showError(e.response?.data?.error || 'Failed to revoke');
+    }
+  };
+
   const act = async (fn, okMsg) => {
     try { setBusy(okMsg); const r = await fn(); showSuccess(okMsg); loadState(); return r; }
     catch (e) { showError(e.response?.data?.error || e.response?.data?.code || 'Action failed'); }
@@ -119,7 +149,16 @@ const AdminWriteHuman = () => {
   const agTone = !ag ? 'mut' : a.agentStale ? 'warn' : 'ok';
   const cdpUp = ag && ag.cdp === '200';
   const cdpTone = !ag ? 'mut' : cdpUp ? 'ok' : 'bad';
-  const syncTone = loggedOut ? 'bad' : a.agentStale == null ? 'mut' : a.agentStale ? 'warn' : 'ok';
+  // Cookie freshness and agent liveness are deliberately different readings: an agent can be alive
+  // while cookies are behind, and cookies can be current while every agent is offline.
+  const syncTone = loggedOut ? 'bad' : a.syncStale == null ? 'mut' : a.syncStale ? 'warn' : 'ok';
+  const syncLabel = loggedOut ? 'logged out' : a.syncStale == null ? 'never' : a.syncStale ? 'behind' : 'fresh';
+  // Multi-device view.
+  const devices = state?.devices || [];
+  const liveDevices = devices.filter((d) => !d.revoked);
+  const activeSource = state?.activeSource || null;
+  const frozen = state?.agentFrozenReport || null;   // last telemetry, known to be out of date
+  const srcTone = !activeSource ? 'mut' : activeSource.online ? 'ok' : 'warn';
   // One honest session label: logged-out / working / unverified / the raw down-state.
   const sessionLabel = loggedOut ? 'logged out'
     : health === 'up' ? 'working'
@@ -168,23 +207,107 @@ const AdminWriteHuman = () => {
         </div>
       )}
 
+      {conn === 'live' && !firstLoad && state?.ingestConfigured === false && (
+        <div className="ds-card rounded-xl p-4 mb-5 border border-red-200 bg-red-50 text-red-700 text-sm flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+          <span><strong>Cookie sync is switched off:</strong> no device is paired, so the server will refuse every push and this session can never refresh itself. Pair a device below to turn sync back on.</span>
+        </div>
+      )}
+      {conn === 'live' && !firstLoad && state?.telemetryFrozen && (
+        <div className="ds-card rounded-xl p-4 mb-5 border border-amber-200 bg-amber-50 text-amber-800 text-sm flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+          <span><strong>Device telemetry is out of date.</strong> The readings below (Chrome/CDP, sign-in) are from {rel(frozen?.reportAt || frozen?.receivedAt)} and are <em>not</em> current — the device stopped reporting. They describe how things were then, not now.</span>
+        </div>
+      )}
+
       {firstLoad ? (
         <div className="flex items-center justify-center py-20 text-slate-400"><Loader2 className="animate-spin mr-2" size={20} /> Loading…</div>
       ) : (
         <>
           {/* Big status stats */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
+            <StatCard icon={Server} label="Active source" value={<Badge tone={srcTone}>{activeSource ? activeSource.name || activeSource.deviceId : 'none yet'}</Badge>} color="from-indigo-500 to-blue-600" />
             <StatCard icon={ShieldCheck} label="Session" value={<Badge tone={stTone}>{sessionLabel}</Badge>} color="from-blue-500 to-cyan-500" />
             <StatCard icon={Activity} label="Sync agent" value={<Badge tone={agTone}>{!ag ? 'no report' : a.agentStale ? 'stale' : 'live'}</Badge>} color="from-emerald-500 to-teal-500" />
             <StatCard icon={Chrome} label="Chrome / CDP" value={<Badge tone={cdpTone}>{!ag ? 'unknown' : cdpUp ? 'connected' : 'down'}</Badge>} color="from-violet-500 to-fuchsia-500" />
-            <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{loggedOut ? 'logged out' : a.agentStale == null ? 'never' : a.agentStale ? 'stale' : 'fresh'}</Badge>} color="from-amber-500 to-orange-500" />
+            <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{syncLabel}</Badge>} color="from-amber-500 to-orange-500" />
           </div>
 
-          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {/* Paired devices — any of them may supply cookies; the newest VERIFIED bundle wins. */}
+          <Panel icon={Server} title="Sync devices" tint="text-indigo-500" right={
+            <div className="flex items-center gap-2">
+              <input value={pairName} onChange={(e) => setPairName(e.target.value)} placeholder="Device name (e.g. LOCAL-PC)" maxLength={32}
+                className="px-3 py-1.5 rounded-lg border border-slate-200 text-[13px] w-52 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
+              <button onClick={createPairCode} disabled={pairing}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-indigo-500 to-blue-600 disabled:opacity-50">
+                {pairing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />} Pair device
+              </button>
+            </div>
+          }>
+            {pairCode && (
+              <div className="mb-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                <p className="text-[13px] text-indigo-900 font-semibold mb-1">Pairing code for {pairCode.name}</p>
+                <p className="font-mono text-2xl font-bold tracking-widest text-indigo-700 mb-2">{pairCode.code}</p>
+                <p className="text-xs text-indigo-800/80">
+                  Run the agent once on that machine with <code className="bg-white/70 px-1 py-0.5 rounded">WHV2_PAIR_CODE={pairCode.code}</code>.
+                  Single use, expires {rel(pairCode.expiresAt).replace(' ago', '')} from now. It is shown only once — nothing can retrieve it again.
+                </p>
+                <button onClick={() => setPairCode(null)} className="mt-2 text-xs font-semibold text-indigo-700 hover:underline">Done</button>
+              </div>
+            )}
+            {liveDevices.length === 0 ? (
+              <p className="text-sm text-slate-400 py-3">No device paired yet. Pair the machine where you sign in to WriteHuman — you can pair several (local PC, RDP) and whichever has the freshest login takes over on its own.</p>
+            ) : (
+              <div className="space-y-2">
+                {liveDevices.map((d) => (
+                  <div key={d.deviceId} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-150 bg-slate-50/60">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
+                        {d.name || d.deviceId}
+                        {d.isActiveSource && <Badge tone="ok">active source</Badge>}
+                        {d.online ? <Badge tone="ok">online</Badge> : <Badge tone="warn">offline · {rel(d.lastSeenAt)}</Badge>}
+                        {d.lastResultCode && d.lastResultCode !== 'PROMOTED' && d.lastResultCode !== 'HEARTBEAT' && d.lastResultCode !== 'COOKIE_BUNDLE_UNCHANGED' && <Badge tone="warn">{d.lastResultCode}</Badge>}
+                      </p>
+                      <p className="text-xs text-slate-500 mt-0.5 truncate">
+                        {d.hostname || '—'} · agent {d.agentVersion || '?'} · {d.promotionCount || 0} promotions · last sync {rel(d.lastSyncSuccessAt)}
+                        {d.cdp ? ` · cdp ${d.cdp}` : ''}
+                      </p>
+                    </div>
+                    <button onClick={() => revokeDevice(d)} className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-red-600 border border-red-200 hover:bg-red-50 flex-shrink-0">Revoke</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4 mt-4">
+            <Panel icon={Server} title="Active cookie source" tint="text-indigo-500">
+              <Row k="Device">{activeSource ? (activeSource.name || activeSource.deviceId) : <Badge tone="mut">none yet</Badge>}</Row>
+              <Row k="Device state">{!activeSource ? '—' : activeSource.online ? <Badge tone="ok">online</Badge> : <Badge tone="warn">offline — last verified bundle still in use</Badge>}</Row>
+              <Row k="Promoted">{rel(activeSource?.promotedAt)}</Row>
+              <Row k="Bundle version">{state?.bundleVersion ?? '—'}</Row>
+              <Row k="Rollback kept">{state?.rollbackAvailable ? <Badge tone="ok">{state.rollbackAvailable}</Badge> : <Badge tone="mut">none</Badge>}</Row>
+              <Row k="Devices paired">{liveDevices.length} · {state?.onlineDeviceCount ?? 0} online</Row>
+            </Panel>
+
+            <Panel icon={Cookie} title="Last candidate" tint="text-teal-500">
+              {state?.candidate ? (<>
+                <Row k="From">{state.candidate.deviceName || state.candidate.deviceId || '—'}</Row>
+                <Row k="Received">{rel(state.candidate.receivedAt)}</Row>
+                <Row k="Outcome"><Badge tone={state.candidate.status === 'promoted' ? 'ok' : state.candidate.status === 'validating' ? 'mut' : 'warn'}>{state.candidate.code || state.candidate.status}</Badge></Row>
+                {state.candidate.code === 'ACCOUNT_MISMATCH' && (
+                  <Row k="Identity">expected {state.candidate.expectedMaskedId || '—'} · got {state.candidate.observedMaskedId || '—'}</Row>
+                )}
+                <Row k="Hash">{state.candidate.hashPrefix ? <code className="text-xs">{state.candidate.hashPrefix}</code> : '—'}</Row>
+              </>) : <p className="text-sm text-slate-400 py-3">No candidate has been offered yet.</p>}
+            </Panel>
+
             <Panel icon={ShieldCheck} title="Session & account" tint="text-blue-500">
               <Row k="Account">{a.label || '—'}</Row>
               <Row k="Health"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
-              <Row k="Sign-in">{a.browserAuthCookies == null ? <Badge tone="mut">unknown</Badge> : loggedOut ? <Badge tone="bad">logged out</Badge> : <Badge tone="ok">logged in</Badge>}</Row>
+              <Row k="Sign-in">{a.browserAuthCookies == null
+                ? <Badge tone="mut">{a.telemetryFrozen ? 'unknown · no device reporting' : 'unknown'}</Badge>
+                : loggedOut ? <Badge tone="bad">signed out</Badge> : <Badge tone="ok">signed in</Badge>}</Row>
               <Row k="Stored status">{a.status || '—'} / {a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>

@@ -32,7 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '2.5.2';
+const AGENT_VERSION = '3.0.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -72,7 +72,61 @@ const CFG = {
   // blocked by an unrelated process (unlike a shared port), and the heartbeat lets us tell a LIVE
   // duplicate from a stale/crashed/PID-reused lock and take the latter over.
   lockFile: process.env.WHV2_LOCK_FILE || FILE_CFG.lockFile || path.join(__dirname, '..', 'agent.lock'),
+  // ── multi-device identity ──────────────────────────────────────────────────
+  // This machine's own pairing. The device id + key are obtained ONCE by redeeming a single-use
+  // pairing code from the admin panel, then persisted here. Several machines can be paired at the
+  // same time; the server promotes whichever supplies the newest VERIFIED bundle, so moving the
+  // login between them needs no configuration change on either side.
+  deviceStateFile: process.env.WHV2_DEVICE_STATE || FILE_CFG.deviceStateFile || path.join(__dirname, '..', 'agent-device.json'),
+  pairCode: process.env.WHV2_PAIR_CODE || '',
+  deviceName: pick('WHV2_DEVICE_NAME', 'deviceName', os.hostname()),
+  // After a cookie CHANGE, poll faster for a short window: a Supabase rotation is usually followed
+  // by more activity, and this catches the follow-up promptly without ever becoming busy-polling.
+  quickPollMs: Math.max(5000, parseInt(pick('WHV2_QUICK_POLL_MS', 'quickPollMs', ''), 10) || 15000),
+  quickPollFor: Math.max(0, parseInt(pick('WHV2_QUICK_POLL_COUNT', 'quickPollFor', ''), 10) || 4),
 };
+
+// ── device state (deviceId + deviceKey + monotonic seq) ──────────────────────
+// Kept OUT of the shared config.json: it holds this machine's secret. Written with an owner-only
+// mode; on Windows the ACL is applied by the provisioning script.
+function loadDeviceState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(CFG.deviceStateFile, 'utf8'));
+    if (s && s.deviceId && s.deviceKey) return { deviceId: s.deviceId, deviceKey: s.deviceKey, seq: Number(s.seq) || 0, name: s.name || null };
+  } catch (_) { /* not paired yet */ }
+  return null;
+}
+function saveDeviceState(st) {
+  try {
+    fs.writeFileSync(CFG.deviceStateFile, JSON.stringify(st, null, 2), { mode: 0o600 });
+    return true;
+  } catch (e) { log('device_state_write_failed', { error: e.message }); return false; }
+}
+/** The pairing endpoint that matches the configured ingest URL (…/cookies -> …/pair). */
+function pairUrl() { return CFG.ingestUrl.replace(/\/cookies\/?$/, '/pair'); }
+
+/**
+ * Redeem a single-use pairing code, once, and persist the resulting device identity.
+ * Never logs the code or the returned key.
+ */
+async function pairDevice(code) {
+  const url = pairUrl();
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, hostname: os.hostname(), agentVersion: AGENT_VERSION }),
+    signal: AbortSignal.timeout(20000),
+  });
+  let body = null; try { body = await resp.json(); } catch (_) {}
+  if (!resp.ok || !body || !body.deviceKey) {
+    log('pairing_failed', { status: resp.status, code: (body && body.code) || null });
+    return null;
+  }
+  const st = { deviceId: body.deviceId, deviceKey: body.deviceKey, name: body.name || CFG.deviceName, seq: 0 };
+  if (!saveDeviceState(st)) return null;
+  log('paired', { device_id: st.deviceId, name: st.name });
+  return st;
+}
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
 function log(event, fields) { try { console.log(`[${new Date().toISOString()}] [wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
@@ -161,11 +215,26 @@ function buildReport(state) {
 // report. Executes any command the server hands back. Returns the parsed body, or {_err}/{_status}.
 async function postToServer(state, payload) {
   let resp;
+  // Per-device identity + a monotonic sequence. The sequence is the server's replay guard: a push
+  // whose seq is not greater than the last one it accepted from THIS device is refused, so a
+  // re-sent or duplicated request can never re-apply an older bundle. The idempotency key lets a
+  // retry of the SAME request (a lost ack, not a new state) be recognised and answered from the
+  // previous outcome instead of being applied twice.
+  const dev = state.device || null;
+  const headers = { 'content-type': 'application/json', 'x-agent-key': (dev && dev.deviceKey) || CFG.agentKey };
+  if (dev && dev.deviceId) headers['x-device-id'] = dev.deviceId;
+  const envelope = Object.assign({ agent: buildReport(state) }, payload);
+  if (dev) {
+    dev.seq = (dev.seq || 0) + 1;
+    envelope.seq = dev.seq;
+    envelope.idempotencyKey = dev.deviceId + ':' + dev.seq;
+    saveDeviceState(dev);
+  }
   try {
     resp = await fetch(CFG.ingestUrl, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-agent-key': CFG.agentKey },
-      body: JSON.stringify(Object.assign({ agent: buildReport(state) }, payload)),
+      headers,
+      body: JSON.stringify(envelope),
       // 20s: a cookie push triggers a server-side verify, and the FIRST request after a Passenger
       // reload is slow (cold start). 10s occasionally aborted -> ingest_post_failed{timeout}; the
       // write still landed but the ack was lost. 20s absorbs cold starts; steady posts are fast.
@@ -178,9 +247,13 @@ async function postToServer(state, payload) {
     if (body && body.command) handleCommand(state, body.command);
     return body || {};
   }
-  state.ingestFails = (state.ingestFails || 0) + 1;
-  recordError(state, 'ingest_http_' + resp.status);
-  return { _status: resp.status };
+  // A 4xx is the server ANSWERING us — the candidate was judged and refused (stale, wrong account,
+  // replayed). That is not unreachability, so it must not drive the backoff that exists to stop us
+  // hammering a down backend; treating a healthy "your bundle is older than the active one" as an
+  // outage would back the agent off to 5-minute polls for no reason.
+  if (resp.status >= 500 || resp.status === 429) state.ingestFails = (state.ingestFails || 0) + 1;
+  recordError(state, 'ingest_http_' + resp.status + ((body && body.code) ? ' ' + body.code : ''));
+  return { _status: resp.status, body, code: body && body.code };
 }
 
 // Execute a whitelisted remote command from the dashboard. Best-effort; never throws.
@@ -259,9 +332,24 @@ async function pushIfChanged(state) {
   }
   const r = await postToServer(state, forced ? { cookies: auth, force: true } : { cookies: auth });
   if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // keep lastHash + forceNext → retry next tick
-  if (r && r._status) { log('ingest_rejected', { status: r._status }); return; }
+  if (r && r._status) {
+    // A REFUSED candidate is a real outcome, not a transport failure: record the server's reason
+    // and stop re-offering the same bundle, or the agent would push a rejected candidate forever.
+    // STALE_BUNDLE in particular is normal and healthy — it just means another device is ahead.
+    const code = (r.body && r.body.code) || r.code || null;
+    if (code === 'STALE_BUNDLE' || code === 'ACCOUNT_MISMATCH' || code === 'REPLAY_REJECTED') state.lastHash = hash;
+    log('ingest_rejected', { status: r._status, code });
+    return;
+  }
   state.lastHash = hash; state.forceNext = false;
-  log('cookie_synchronized', { hash: hash.slice(0, 8), changed: r.changed, result: r.result, forced });
+  // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
+  state.quickPollsLeft = CFG.quickPollFor;
+  log('cookie_synchronized', {
+    hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result, forced,
+    promoted: r.promoted === true, source_switched: r.sourceSwitched === true,
+    active_source: (r.activeSource && r.activeSource.name) || null,
+    is_active_source: r.isActiveSource === true,
+  });
 }
 
 // ── single-instance lock (PID + heartbeat file) ───────────────────────────────
@@ -315,22 +403,35 @@ function start() {
     process.exit(0);
   }
   process.on('exit', releaseLock);   // sync cleanup on any exit; only removes our own lock
-  run();
+  // run() is async (it may redeem a pairing code before the first poll). An unhandled rejection
+  // here would leave the lock held by a process that never polls, so failures exit explicitly and
+  // let the supervisor restart us.
+  run().catch((e) => { log('fatal', { reason: 'startup failed', error: e && e.message }); process.exit(1); });
 }
 
-function run() {
-  if (!CFG.agentKey) {
+async function run() {
+  // Identity resolution, in order: an existing pairing on this machine, else redeem a pairing code
+  // if one was supplied, else fall back to the pre-multi-device single global key.
+  let device = loadDeviceState();
+  if (!device && CFG.pairCode) {
+    try { device = await pairDevice(CFG.pairCode); } catch (e) { log('pairing_error', { error: e.message }); }
+  }
+  if (!device && !CFG.agentKey) {
     const kf = process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile;
-    log('fatal', { reason: kf ? 'agent key file configured but empty/unreadable' : 'no agent key configured (set WHV2_AGENT_KEY or config.agentKeyFile)', key_file: kf || null });
+    log('fatal', {
+      reason: kf ? 'agent key file configured but empty/unreadable' : 'this device is not paired and no agent key is configured',
+      remedy: 'Create a pairing code in Admin -> WriteHuman -> Devices, then start the agent once with WHV2_PAIR_CODE=<code>',
+      key_file: kf || null, device_state: CFG.deviceStateFile,
+    });
     process.exit(1);
   }
   if (!/^https:/i.test(CFG.ingestUrl) && !/(127\.0\.0\.1|localhost)/i.test(CFG.ingestUrl)) {
-    log('warn_insecure_ingest', { note: 'ingest URL is not https — the agent key would travel in cleartext' });
+    log('warn_insecure_ingest', { note: 'ingest URL is not https — the device key would travel in cleartext' });
   }
-  const keySource = process.env.WHV2_AGENT_KEY ? 'env' : ((process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile) ? 'file' : 'none');
-  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile });
+  const keySource = device ? 'device' : (process.env.WHV2_AGENT_KEY ? 'env' : 'file');
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile, device_id: device ? device.deviceId : null, device_name: device ? device.name : null });
 
-  const state = { lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0 };
+  const state = { device, lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
   // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
@@ -340,7 +441,12 @@ function run() {
   const schedule = () => {
     if (state.stopped) return;
     const fails = state.ingestFails || 0;
-    const delay = fails > 0 ? Math.min(CFG.maxBackoffMs, CFG.pollMs * Math.min(2 ** fails, 8)) : CFG.pollMs;
+    // Backoff beats everything; otherwise a recent cookie change buys a short burst of faster
+    // polling (bounded by quickPollFor) so a rotation is picked up in seconds rather than minutes,
+    // then it settles straight back to the low-frequency reconciliation interval.
+    let delay = CFG.pollMs;
+    if (fails > 0) delay = Math.min(CFG.maxBackoffMs, CFG.pollMs * Math.min(2 ** fails, 8));
+    else if (state.quickPollsLeft > 0) { delay = CFG.quickPollMs; state.quickPollsLeft -= 1; }
     if (delay !== CFG.pollMs && delay !== state.lastDelay) log('backoff', { next_ms: delay, ingest_fails: fails });
     state.lastDelay = delay;
     timer = setTimeout(loop, delay);

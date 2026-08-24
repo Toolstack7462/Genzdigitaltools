@@ -1,16 +1,22 @@
 'use strict';
 /**
- * Machine-to-machine cookie ingest for the RDP Cookie Sync Agent.
- * Mounted at /api/crm/proxy/agent — writes fresh auth cookies into the EXISTING ProxyAccount
- * vault (the single source of truth) via the shared applyAccountSession path, so the production
- * gateway serves a live, self-healing session with no separate store.
+ * Machine-to-machine cookie ingest for the Cookie Sync Agent — now MULTI-DEVICE.
  *
- * Least privilege: the agent key can ONLY push cookies / heartbeat / logout for its tool and
- * read its own queued command — it can never read other accounts, clients, or admin data.
- * Tool-scoped, timing-safe key check, per-IP rate limit, optional IP allowlist. Never logs or
- * returns cookie values/tokens.
+ * Mounted at /api/crm/proxy/agent. Any PAIRED device (local PC, RDP-01, RDP-02 ...) running the
+ * agent can push the operator's fresh WriteHuman auth cookies; whichever device supplies the
+ * newest bundle that PASSES VERIFICATION becomes the active source automatically. Moving the
+ * login between machines needs no code change, no env change and no server reconfiguration.
  *
- * DORMANT until PROXY_AGENT_SYNC_KEY is set → every route returns 503 (zero effect on deploy).
+ * Least privilege: a device key can ONLY push cookies / heartbeat / logout for its tool and read
+ * its own queued command. It can never read other accounts, clients, cookies or admin data.
+ * Tool-scoped, per-device hashed keys with timing-safe compare, replay + idempotency protection,
+ * per-IP rate limit, optional IP allowlist. Never logs or returns cookie values or tokens.
+ *
+ * PAIRING KEYS LIVE IN THE DATABASE, NOT IN THE ENVIRONMENT. The previous design authenticated
+ * every agent with one global env var; when that var was lost in a host incident the whole
+ * pipeline answered 503 and nothing recorded the refusal, so a 38-day sync outage went unnoticed.
+ * Device pairing survives an env wipe, and every refusal is now written to the device row where
+ * the admin dashboard can see it.
  */
 const express = require('express');
 const crypto = require('crypto');
@@ -18,12 +24,14 @@ const router = express.Router();
 
 const ProxyAccount = require('../../models/proxy/ProxyAccount');
 const tools = require('../../utils/proxy/tools');
-const vaultCrypto = require('../../utils/proxy/vaultCrypto');
-const { normalizeCookieBundle, replaceAuthCookies, authCookieHash, hasSessionCookie } = require('../../utils/proxy/cookies');
-const { applyAccountSession } = require('../../utils/proxy/applySession');
 const { selectAccount } = require('../../utils/proxy/accountSelect');
+const deviceSync = require('../../utils/proxy/deviceSync');
+const { ingestCandidate, markDeviceLoggedOut, recordAttempt } = require('../../utils/proxy/candidateSync');
 
-const AGENT_KEY = process.env.PROXY_AGENT_SYNC_KEY || '';
+const { CODES } = deviceSync;
+const LEGACY_KEY = process.env.PROXY_AGENT_SYNC_KEY || '';
+// Optional. Deliberately EMPTY by default: with per-device keys an IP pin adds little and breaks
+// roaming/residential devices (a changed egress IP silently 403s every push).
 const ALLOW_IPS = (process.env.PROXY_AGENT_SYNC_ALLOW_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 const ALLOWED_COMMANDS = ['relaunch-chrome', 'reverify'];
@@ -37,14 +45,15 @@ function timingEq(got, expected) {
   const a = Buffer.from(String(got || '')); const b = Buffer.from(String(expected || ''));
   return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
 }
-// Tiny per-IP sliding window — brute-force guard on the key. Generous: the agent polls every
-// few seconds legitimately.
+// Tiny per-IP sliding window — brute-force guard on the keys and the pairing codes.
 const RL = new Map();
 const RL_MAX = Number(process.env.PROXY_AGENT_SYNC_RATE_PER_MIN || 240);
-function rateOk(ip) {
-  const now = Date.now(); const e = RL.get(ip);
-  if (!e || now - e.t > 60000) { RL.set(ip, { t: now, n: 1 }); return true; }
-  e.n += 1; return e.n <= RL_MAX;
+const PAIR_RL_MAX = Number(process.env.PROXY_AGENT_PAIR_RATE_PER_MIN || 10);
+function rateOk(bucket, ip, max) {
+  const key = bucket + '|' + ip;
+  const now = Date.now(); const e = RL.get(key);
+  if (!e || now - e.t > 60000) { RL.set(key, { t: now, n: 1 }); return true; }
+  e.n += 1; return e.n <= max;
 }
 // Non-secret agent telemetry only (counts / ids / status — never cookie values).
 function sanitizeReport(r) {
@@ -57,8 +66,18 @@ function sanitizeReport(r) {
     pollCount: i(r.pollCount), authCookies: i(r.authCookies), uptimeSec: i(r.uptimeSec),
     lastError: s(r.lastError, 200), lastErrorAt: s(r.lastErrorAt, 40), errorCount: i(r.errorCount),
     lastCommand: s(r.lastCommand, 40), lastCommandAt: s(r.lastCommandAt, 40),
-    receivedAt: new Date(),
+    profile: s(r.profile, 80), receivedAt: new Date(),
   };
+}
+
+function activeSourceView(account) {
+  const a = account.activeSource;
+  if (!a) return null;
+  return { deviceId: a.deviceId, name: a.name || null, promotedAt: a.promotedAt || null, bundleVersion: a.bundleVersion || 0 };
+}
+function isActive(account, device) {
+  const a = account.activeSource;
+  return !!(a && device && a.deviceId === device.deviceId);
 }
 
 router.param('tool', (req, res, next, tool) => {
@@ -66,77 +85,144 @@ router.param('tool', (req, res, next, tool) => {
   req.proxyTool = tool; next();
 });
 
-router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res) => {
-  if (!AGENT_KEY) return res.status(503).json({ ok: false, code: 'agent_sync_not_configured' });
-  const ip = clientIp(req);
-  if (!rateOk(ip)) return res.status(429).json({ ok: false, code: 'rate_limited' });
-  if (ALLOW_IPS.length && !ALLOW_IPS.includes(ip)) return res.status(403).json({ ok: false, code: 'ip_not_allowed' });
-  if (!timingEq(req.headers['x-agent-key'], AGENT_KEY)) return res.status(403).json({ ok: false, code: 'forbidden' });
-
-  const tool = req.proxyTool;
-  const tcfg = tools.getTool(tool);
-  const projectRef = tcfg && tcfg.supabase && tcfg.supabase.projectRef;
-  const body = req.body || {};
-  // The RDP Cookie Sync Agent attaches its telemetry under `agent` on every call.
-  const report = sanitizeReport(body.agent);
-
-  // The operator account this agent keeps fresh: the primary, else the selection order.
+async function primaryFor(tool) {
   const accounts = await ProxyAccount.find({ tool });
-  if (!accounts.length) return res.status(404).json({ ok: false, code: 'no_account' });
-  const account = accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0];
+  if (!accounts.length) return null;
+  return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0];
+}
 
-  const pending = account.pendingCommand && ALLOWED_COMMANDS.includes(account.pendingCommand) ? account.pendingCommand : null;
-  const touchLiveness = () => {
-    if (report !== undefined) account.agentReport = report;
-    account.lastSyncedAt = new Date();
-    account.syncCount = (account.syncCount || 0) + 1;
-  };
+/**
+ * POST /:tool/pair — redeem a single-use pairing code created by the admin.
+ * Unauthenticated by design (a brand-new device has no credentials yet); protected by the code's
+ * entropy, its 15-minute TTL, single-use semantics and a tight per-IP rate limit.
+ * Returns the device key ONCE — it is stored only as a hash.
+ */
+router.post('/:tool/pair', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    const ip = clientIp(req);
+    if (!rateOk('pair', ip, PAIR_RL_MAX)) return res.status(429).json({ ok: false, code: 'rate_limited' });
 
-  // Heartbeat (no cookies): liveness + telemetry only.
-  if (body.heartbeat === true && body.cookies == null) {
-    touchLiveness(); if (pending) account.pendingCommand = null; await account.save();
-    return res.json({ ok: true, heartbeat: true, changed: false, command: pending });
+    const account = await primaryFor(req.proxyTool);
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+
+    const body = req.body || {};
+    const r = deviceSync.redeemPairingCode(account, body.code, { hostname: body.hostname, agentVersion: body.agentVersion });
+    if (!r.ok) return res.status(403).json({ ok: false, code: r.code });
+    await account.save();
+    return res.json({ ok: true, code: CODES.OK, deviceId: r.deviceId, deviceKey: r.deviceKey, name: r.name, tool: req.proxyTool });
+  } catch (err) {
+    console.error('[agent-sync] pair error:', err && err.message);
+    return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });
   }
+});
 
-  // Explicit logout signal (agent debounces a vanished auth cookie → real logout).
-  if (body.loggedOut === true) {
-    account.status = 'session_expired'; account.session_status = 'needs_login';
-    account.verification = { result: 'session_expired', maskedId: account.verification?.maskedId || null, httpStatus: 0, checkedAt: new Date() };
-    touchLiveness(); if (pending) account.pendingCommand = null; await account.save();
-    return res.json({ ok: true, loggedOut: true, changed: true, command: pending });
+/**
+ * POST /:tool/cookies — heartbeat, logout signal, or a cookie candidate from a paired device.
+ * Auth: `x-device-id` + `x-agent-key` (per-device). The pre-multi-device global env key is still
+ * accepted for the already-deployed agent, and is mapped onto a real device row so it appears in
+ * the dashboard beside the paired ones and goes through exactly the same safety pipeline.
+ */
+router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res) => {
+  try {
+    const ip = clientIp(req);
+    if (!rateOk('sync', ip, RL_MAX)) return res.status(429).json({ ok: false, code: 'rate_limited' });
+    if (ALLOW_IPS.length && !ALLOW_IPS.includes(ip)) return res.status(403).json({ ok: false, code: 'ip_not_allowed' });
+
+    const tool = req.proxyTool;
+    const account = await primaryFor(tool);
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+
+    const body = req.body || {};
+    const report = sanitizeReport(body.agent);
+    const presentedKey = req.headers['x-agent-key'];
+    const deviceId = req.headers['x-device-id'] ? String(req.headers['x-device-id']).slice(0, 64) : null;
+
+    // -- authenticate -------------------------------------------------------
+    let device = null;
+    if (deviceId) {
+      const a = deviceSync.authenticateDevice(account, deviceId, presentedKey);
+      if (!a.ok) return res.status(403).json({ ok: false, code: a.code });
+      device = a.device;
+    } else if (LEGACY_KEY && timingEq(presentedKey, LEGACY_KEY)) {
+      device = deviceSync.findDevice(account, 'dev_legacy');
+      if (!device) {
+        device = {
+          deviceId: 'dev_legacy', name: 'RDP-LEGACY', hostname: (report && report.host) || null,
+          agentVersion: (report && report.version) || null, keyHash: deviceSync.sha256(LEGACY_KEY),
+          pairedAt: new Date(), revoked: false, lastSeq: 0, syncCount: 0, promotionCount: 0, legacy: true,
+        };
+        account.syncDevices = deviceSync.getDevices(account).concat([device]);
+      }
+      if (device.revoked) return res.status(403).json({ ok: false, code: CODES.DEVICE_REVOKED });
+    } else {
+      // No device header and no usable legacy key. Distinguish "nothing is paired yet" from "you
+      // presented bad credentials" so the operator can tell those apart at a glance.
+      const anyDevice = deviceSync.getDevices(account).some(d => d && !d.revoked);
+      if (!anyDevice && !LEGACY_KEY) {
+        return res.status(503).json({ ok: false, code: 'agent_sync_not_configured', hint: 'No device is paired yet. Create a pairing code in Admin -> WriteHuman -> Devices.' });
+      }
+      return res.status(403).json({ ok: false, code: CODES.AUTH_INVALID });
+    }
+
+    const meta = { report, agentVersion: report && report.version, hostname: report && report.host, seq: null, idempotencyKey: null };
+
+    // -- replay + idempotency ----------------------------------------------
+    const seq = Number(body.seq);
+    if (Number.isFinite(seq)) {
+      if (device.lastSeq && seq <= device.lastSeq) {
+        recordAttempt(account, device, CODES.REPLAY_REJECTED, { report, error: 'seq ' + seq + ' <= ' + device.lastSeq });
+        await account.save();
+        return res.status(409).json({ ok: false, code: CODES.REPLAY_REJECTED, lastSeq: device.lastSeq });
+      }
+      meta.seq = seq;
+    }
+    const idem = body.idempotencyKey ? String(body.idempotencyKey).slice(0, 80) : null;
+    if (idem && device.lastIdempotencyKey && idem === device.lastIdempotencyKey) {
+      // Exact repeat of the previous request — replay the previous outcome, do nothing again.
+      return res.json({ ok: true, code: device.lastResultCode || CODES.OK, idempotent: true, changed: false, promoted: false, command: null });
+    }
+    meta.idempotencyKey = idem;
+
+    const pending = account.pendingCommand && ALLOWED_COMMANDS.includes(account.pendingCommand) ? account.pendingCommand : null;
+    const clearPending = () => { if (pending) account.pendingCommand = null; };
+
+    // -- heartbeat: liveness + telemetry only -------------------------------
+    if (body.heartbeat === true && body.cookies == null) {
+      recordAttempt(account, device, 'HEARTBEAT', meta);
+      clearPending();
+      await account.save();
+      return res.json({ ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, command: pending, activeSource: activeSourceView(account), isActiveSource: isActive(account, device) });
+    }
+
+    // -- explicit logout signal from this device ----------------------------
+    if (body.loggedOut === true) {
+      const r = await markDeviceLoggedOut(account, tool, device, meta);
+      clearPending();
+      await account.save();
+      return res.json({ ok: true, code: r.code, loggedOut: true, downgraded: r.downgraded, changed: r.downgraded, command: pending });
+    }
+
+    // -- cookie candidate ---------------------------------------------------
+    const r = await ingestCandidate(account, tool, device, body.cookies, Object.assign({ force: body.force === true }, meta));
+    clearPending();
+    await account.save();
+
+    const httpCode = (r.code === CODES.PROMOTED || r.code === CODES.COOKIE_BUNDLE_UNCHANGED) ? 200 : 409;
+    return res.status(httpCode).json({
+      ok: httpCode === 200,
+      code: r.code,
+      changed: r.changed,
+      promoted: r.promoted,
+      sourceSwitched: !!r.sourceSwitched,
+      bundleVersion: r.bundleVersion,
+      activeSource: activeSourceView(account),
+      isActiveSource: isActive(account, device),
+      command: pending,
+    });
+  } catch (err) {
+    console.error('[agent-sync] ingest error:', err && err.message);
+    return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });
   }
-
-  // Cookie push.
-  const incoming = normalizeCookieBundle(body.cookies);
-  if (!incoming || !Array.isArray(incoming.cookies) || !incoming.cookies.length) {
-    return res.status(400).json({ ok: false, code: 'no_cookies' });
-  }
-  // Replace-not-merge the auth cookies on the existing stored bundle (keep any non-auth cookies).
-  let stored = null;
-  try { if (account.sessionEncrypted) stored = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted)); } catch (_) { stored = null; }
-  const merged = replaceAuthCookies(stored || { cookies: [] }, incoming.cookies, projectRef);
-  // Safety: NEVER wipe the vault — the merged bundle must still carry an auth/session cookie.
-  if (!hasSessionCookie(merged)) return res.status(400).json({ ok: false, code: 'no_auth_cookie' });
-
-  const newHash = authCookieHash(merged, projectRef);
-  touchLiveness();
-
-  // Unchanged auth cookies → cheap liveness update only (no re-encrypt / no verify) UNLESS the
-  // agent asked to force it (dashboard "Re-sync" / reverify command) — then we re-apply + re-verify
-  // the current cookies even though the hash matches (otherwise Re-sync would be a silent no-op).
-  const unchanged = !!(account.cookieHash && newHash && account.cookieHash === newHash);
-  if (unchanged && body.force !== true) {
-    if (pending) account.pendingCommand = null; await account.save();
-    return res.json({ ok: true, changed: false, command: pending });
-  }
-
-  // Changed (or forced) → the shared write path (encrypt + revoke in-flight leases + auto-verify).
-  const r = await applyAccountSession(account, merged, { tool, source: 'agent', actorType: 'AGENT', actorId: 'cookie-sync-agent', ip });
-  account.cookieHash = newHash;
-  if (report !== undefined) account.agentReport = report;
-  if (pending) account.pendingCommand = null;
-  await account.save();
-  return res.json({ ok: true, changed: !unchanged, forced: body.force === true, result: r.verifyResult, command: pending });
 });
 
 module.exports = router;

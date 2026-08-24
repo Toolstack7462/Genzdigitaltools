@@ -93,6 +93,58 @@ test('every utils/proxy module required by deployed code is itself deployed', ()
     '"Cannot find module"');
 });
 
+/**
+ * The one-off per-feature deploy scripts are the SAME landmine as the main manifest, and they are
+ * easier to miss: each ships a hand-written subset and they long outlive the change they were
+ * written for. `deploy-writehuman-agentsync.sh` shipped ONLY agentSync.js — correct on the day it
+ * was written, fatal the moment that route gained a require() on a module the server did not yet
+ * have. Re-running it would have booted Passenger into "Cannot find module" and taken the whole
+ * API down, and the main-manifest test above would not have noticed, because it only reads
+ * deploy-hostinger.sh.
+ *
+ * Scoped to modules that DID NOT EXIST at the previous release (tracked by the explicit list
+ * below) rather than the full dependency closure: an incremental script legitimately ships only
+ * what changed and relies on the server already holding the stable tree, so demanding the whole
+ * closure would flag every script and a test that cries wolf gets ignored. A NEW module is the
+ * case that actually breaks a deploy, and it is the case every past incident had in common.
+ */
+const NEW_MODULES = ['utils/proxy/deviceSync.js', 'utils/proxy/candidateSync.js'];
+
+function deployScripts() {
+  return fs.readdirSync(ROOT).filter(f => /^deploy.*\.sh$/.test(f));
+}
+
+test('every deploy script that ships a route also ships the new modules that route requires', () => {
+  const offenders = [];
+  for (const script of deployScripts()) {
+    const sh = fs.readFileSync(path.join(ROOT, script), 'utf8');
+    // Files this script sends: `-T backend/<path>` uploads, plus paths handed to deploy-backend.sh.
+    const sends = new Set();
+    let m;
+    const reUpload = /-T\s+backend\/([\w./-]+)/g;
+    while ((m = reUpload.exec(sh))) sends.add(m[1]);
+    const reArg = /deploy-backend\.sh\s+([^\n]*)/g;
+    while ((m = reArg.exec(sh))) {
+      for (const tok of m[1].split(/\s+/)) {
+        const t = tok.replace(/\\$/, '').trim();
+        if (t.startsWith('backend/')) sends.add(t.slice('backend/'.length));
+      }
+    }
+    if (!sends.size) continue;
+
+    for (const file of sends) {
+      for (const dep of localRequires(file)) {
+        if (NEW_MODULES.includes(dep) && !sends.has(dep)) {
+          offenders.push(`${script}: ships ${file} which requires ${dep}, but does not ship it`);
+        }
+      }
+    }
+  }
+  assert.deepStrictEqual(offenders, [],
+    'a per-feature deploy script would ship a route without a module it require()s — ' +
+    'Passenger would boot the API into "Cannot find module"');
+});
+
 test('the manifest only lists backend files that exist', () => {
   for (const f of manifest()) {
     assert.ok(fs.existsSync(path.join(BACKEND, f)), 'manifest lists a missing file: backend/' + f);

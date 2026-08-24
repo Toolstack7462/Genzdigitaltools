@@ -141,6 +141,11 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/utils/proxy/claudeSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/claudeSettings.js" \
   -T backend/utils/proxy/applySession.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/utils/proxy/verifyAndApply.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
+  `# Multi-device cookie sync. routes/admin/proxyTools.js and routes/proxy/agentSync.js both` \
+  `# require these at module load, so a deploy WITHOUT them boots Passenger into "Cannot find` \
+  `# module" and takes the whole API down — see backend/tests/deployManifest.test.js.` \
+  -T backend/utils/proxy/deviceSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
+  -T backend/utils/proxy/candidateSync.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T backend/utils/proxy/healthAlerts.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/healthAlerts.js" \
   -T backend/utils/proxy/usageSearch.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/usageSearch.js" \
   -T backend/utils/proxy/validationResponse.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/validationResponse.js" \

@@ -13,7 +13,7 @@ const ActivityLog = require('../../models/ActivityLog');
 const vaultCrypto = require('./vaultCrypto');
 const tools = require('./tools');
 const { verifyAndApply } = require('./verifyAndApply');
-const { countCookies, cookieNames, hasSessionCookie } = require('./cookies');
+const { countCookies, cookieNames, hasSessionCookie, authCookieHash } = require('./cookies');
 
 // Safe, non-secret metadata about the stored bundle (counts / booleans only — no values).
 function buildSessionMeta(tool, bundle) {
@@ -43,6 +43,15 @@ async function applyAccountSession(account, bundle, opts = {}) {
 
   account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(bundle));
   account.sessionMeta = buildSessionMeta(tool, bundle);
+  // Keep `cookieHash` describing the bundle that is ACTUALLY stored. It used to be written only
+  // by the agent ingest path, so an admin "Refresh session" left the hash describing whatever the
+  // agent last pushed — possibly weeks older than the vault. A device would then compare its own
+  // cookies against that stale hash and could conclude "unchanged" for a bundle the vault does
+  // not hold, silently skipping a real sync. The hash must always describe the active bundle.
+  try {
+    const ref = (tools.supabaseConfig(tool) || {}).projectRef;
+    account.cookieHash = authCookieHash(bundle, ref);
+  } catch (_) { /* the hash is an optimisation, never a correctness requirement */ }
   if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
   account.session_status = 'pending_verification';
   await account.save();

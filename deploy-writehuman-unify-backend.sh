@@ -44,6 +44,10 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/applySession.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/routes/admin/proxyTools.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
   -T backend/routes/proxy/agentSync.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
+  `# Both routes above require these at module load; shipping the routes without them boots` \
+  `# Passenger into "Cannot find module" and takes the whole API down.` \
+  -T backend/utils/proxy/deviceSync.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
+  -T backend/utils/proxy/candidateSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T backend/server-crm.js               "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                     "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 rm -f "${RESTART_TMP}"
