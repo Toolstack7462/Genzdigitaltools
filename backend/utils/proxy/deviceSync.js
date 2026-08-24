@@ -152,6 +152,7 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     syncCount: dev.syncCount || 0,
     promotionCount: dev.promotionCount || 0,
     cdp: (dev.report && dev.report.cdp) || null,
+    profile: (dev.report && dev.report.profile) || null,
     chrome: !!(dev.report && dev.report.chrome),
     authCookies: dev.report && typeof dev.report.authCookies === 'number' ? dev.report.authCookies : null,
     reportAt: (dev.report && dev.report.receivedAt) || null,

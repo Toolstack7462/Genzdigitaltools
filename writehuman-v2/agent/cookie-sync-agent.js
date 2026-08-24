@@ -1,6 +1,12 @@
 'use strict';
 /**
- * WriteHuman V2 — Cookie Sync Agent (runs on the dedicated RDP, next to the 24/7 Chrome).
+ * WriteHuman — Universal Cookie Sync Agent.
+ *
+ * ONE package, installed unchanged on every authorised machine: the local PC, RDP-01, any future
+ * approved RDP. Each installation holds its own identity (device id, device key, name, sequence
+ * number) in `agent-device.json`, obtained once by redeeming a pairing code from the admin panel.
+ * Nothing about the machine is compiled in, so adding or moving a machine needs no code change on
+ * either side — sign in normally on whichever machine you like and that one takes over.
  *
  * Connects to the always-on Chrome via the Chrome DevTools Protocol (CDP), reads the browser
  * cookies (Storage.getCookies on the browser target), keeps ONLY the WriteHuman auth cookies
@@ -79,6 +85,9 @@ const CFG = {
   // login between them needs no configuration change on either side.
   deviceStateFile: process.env.WHV2_DEVICE_STATE || FILE_CFG.deviceStateFile || path.join(__dirname, '..', 'agent-device.json'),
   pairCode: process.env.WHV2_PAIR_CODE || '',
+  // Which Chrome profile this device is authorised to read. Matched against the browser's own
+  // reported user-data-dir; empty means 'whatever this debug port is attached to'.
+  chromeProfile: pick('WHV2_CHROME_PROFILE', 'chromeProfile', ''),
   deviceName: pick('WHV2_DEVICE_NAME', 'deviceName', os.hostname()),
   // After a cookie CHANGE, poll faster for a short window: a Supabase rotation is usually followed
   // by more activity, and this catches the follow-up promptly without ever becoming busy-polling.
@@ -167,10 +176,23 @@ function hashAuthCookies(authList) {
 }
 
 // ── CDP: read all browser cookies via Storage.getCookies ──────────────────────
-async function getAllCookiesViaCDP(cdpUrl) {
+// PROFILE SAFETY. The debug port identifies a running Chrome, not WHICH profile it opened, and
+// reading the wrong profile is a silent failure: the agent syncs somebody else's (or an empty)
+// session and everything downstream looks healthy. When `chromeProfile` is configured, the
+// browser's own reported user-data-dir must contain it, or we refuse to read rather than sync
+// from the wrong place. The value is recorded in telemetry so the dashboard can show which
+// profile is actually feeding the account.
+async function getAllCookiesViaCDP(cdpUrl, state) {
   const verRes = await fetch(cdpUrl + '/json/version', { signal: AbortSignal.timeout(8000) });
   if (!verRes.ok) throw new Error('cdp_version_http_' + verRes.status);
   const ver = await verRes.json();
+  // Chrome reports the profile path in the browser target's `userDataDir` (newer builds) — keep
+  // only the leaf so a full filesystem path is never logged or sent to the server.
+  const dir = ver.userDataDir || ver['user-data-dir'] || '';
+  if (state) state.profile = dir ? String(dir).split(/[\\/]/).filter(Boolean).slice(-2).join('/') : null;
+  if (CFG.chromeProfile && dir && !String(dir).toLowerCase().includes(CFG.chromeProfile.toLowerCase())) {
+    throw new Error('wrong_chrome_profile');
+  }
   const wsUrl = ver.webSocketDebuggerUrl;
   if (!wsUrl) throw new Error('cdp_no_ws_url');
   if (typeof WebSocket === 'undefined') throw new Error('no_global_websocket_need_node22');
@@ -208,6 +230,7 @@ function buildReport(state) {
     uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
     lastCommand: state.lastCommand || null,
     lastCommandAt: state.lastCommandAt ? new Date(state.lastCommandAt).toISOString() : null,
+    profile: state.profile || null,
   };
 }
 
@@ -284,7 +307,7 @@ async function pushIfChanged(state) {
   state.pollCount = (state.pollCount || 0) + 1;
   let cookies;
   try {
-    cookies = await getAllCookiesViaCDP(CFG.cdpUrl);
+    cookies = await getAllCookiesViaCDP(CFG.cdpUrl, state);
     state.cdp = '200'; state.chrome = true; state.lastError = null; state.cdpFails = 0;
   } catch (e) {
     state.cdp = 'DOWN'; state.chrome = false; state.lastError = e.message;

@@ -280,7 +280,7 @@ const AdminWriteHuman = () => {
                       </p>
                       <p className="text-xs text-slate-500 mt-0.5 truncate">
                         {d.hostname || '—'} · agent {d.agentVersion || '?'} · {d.promotionCount || 0} promotions · last sync {rel(d.lastSyncSuccessAt)}
-                        {d.cdp ? ` · cdp ${d.cdp}` : ''}
+                        {d.cdp ? ` · cdp ${d.cdp}` : ''}{d.profile ? ` · profile ${d.profile}` : ''}
                       </p>
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">

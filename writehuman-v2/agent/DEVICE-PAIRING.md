@@ -56,6 +56,7 @@ hash prefix.
 | `WHV2_PAIR_CODE` | — | One-time pairing code. Only needed for the first start. |
 | `WHV2_DEVICE_NAME` | hostname | Name shown in the dashboard. |
 | `WHV2_DEVICE_STATE` | `../agent-device.json` | Where this machine's device id + key live. |
+| `WHV2_CHROME_PROFILE` | - | Profile this device may read. Checked against Chrome's own reported user-data-dir; a mismatch refuses to sync rather than reading the wrong profile. |
 | `WHV2_POLL_MS` | 120000 | Reconciliation interval. |
 | `WHV2_QUICK_POLL_MS` | 15000 | Faster interval used briefly after a cookie change. |
 | `WHV2_QUICK_POLL_COUNT` | 4 | How many quick polls follow a change. |
