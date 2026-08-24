@@ -245,7 +245,18 @@ function noteDeviceAuthState(device, isAuthenticated, now) {
   const at = now || new Date();
   const prev = device.authState || null;
   device.authState = isAuthenticated ? 'authenticated' : 'unauthenticated';
-  if (isAuthenticated && prev === 'unauthenticated') {
+  // A claim is minted on any transition INTO an authenticated state, which is two cases:
+  //   - `unauthenticated` -> `authenticated`: the operator signed in on a device that was signed
+  //     out. A real local sign-in event.
+  //   - no recorded state -> `authenticated`: a NEWLY PAIRED device proving a working session for
+  //     the first time. This case matters more than it looks. Pairing a machine and copying the
+  //     existing cookies to it is a normal way to bring it online, and then the session id is
+  //     already known, the hash may be identical, and the token belongs to the same login - so
+  //     nothing else in the policy would ever let that machine take over. The pairing itself is
+  //     the operator's authorisation; the first verified candidate is what redeems it.
+  // Already-`authenticated` -> `authenticated` is a routine rotation and mints nothing, which is
+  // what keeps a standby from repeatedly seizing the source.
+  if (isAuthenticated && prev !== 'authenticated') {
     device.activationClaimAt = at;
     device.activationClaimUsedAt = null;
   }
@@ -264,7 +275,7 @@ function consumeActivationClaim(device, now) { device.activationClaimUsedAt = no
  * so a request made and forgotten cannot surprise the operator days later by hijacking the source
  * the first time some device happens to sync.
  */
-const ACTIVE_INTENT_TTL_MS = 30 * 60 * 1000;
+const ACTIVE_INTENT_TTL_MS = 15 * 60 * 1000;
 
 function setActiveSourceIntent(account, deviceId, now) {
   const at = now || new Date();

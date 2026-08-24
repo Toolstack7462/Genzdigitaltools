@@ -62,7 +62,7 @@ const CFG = {
   cdpUrl: pick('WHV2_CDP_URL', 'cdpUrl', 'http://127.0.0.1:9222').replace(/\/$/, ''),
   domain: pick('WHV2_TARGET_DOMAIN', 'domain', 'writehuman.ai'),
   ref: pick('WHV2_SUPABASE_REF', 'ref', 'hicfsbrfkzsxbwayibfm'),
-  pollMs: Math.max(15000, parseInt(pick('WHV2_POLL_MS', 'pollMs', ''), 10) || 120000),
+  pollMs: Math.max(15000, parseInt(pick('WHV2_POLL_MS', 'pollMs', ''), 10) || 300000),
   // Consecutive empty (no-auth) polls before we treat it as a real logout and signal V2.
   logoutDebounce: Math.max(1, parseInt(pick('WHV2_LOGOUT_DEBOUNCE', 'logoutDebounce', ''), 10) || 2),
   // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
@@ -91,7 +91,7 @@ const CFG = {
   deviceName: pick('WHV2_DEVICE_NAME', 'deviceName', os.hostname()),
   // After a cookie CHANGE, poll faster for a short window: a Supabase rotation is usually followed
   // by more activity, and this catches the follow-up promptly without ever becoming busy-polling.
-  quickPollMs: Math.max(5000, parseInt(pick('WHV2_QUICK_POLL_MS', 'quickPollMs', ''), 10) || 15000),
+  quickPollMs: Math.max(5000, parseInt(pick('WHV2_QUICK_POLL_MS', 'quickPollMs', ''), 10) || 8000),
   quickPollFor: Math.max(0, parseInt(pick('WHV2_QUICK_POLL_COUNT', 'quickPollFor', ''), 10) || 4),
 };
 
@@ -507,6 +507,11 @@ async function run() {
     let delay = CFG.pollMs;
     if (fails > 0) delay = Math.min(CFG.maxBackoffMs, CFG.pollMs * Math.min(2 ** fails, 8));
     else if (state.quickPollsLeft > 0) { delay = CFG.quickPollMs; state.quickPollsLeft -= 1; }
+    // +/-10% jitter on the steady-state interval. Several devices installed from the same script
+    // would otherwise drift into lockstep and hit the backend in a burst every cycle - harmless at
+    // two machines, not harmless on an account that has run into its process ceiling before.
+    // Backoff is left un-jittered: it is already spreading load by growing.
+    if (fails === 0) delay = Math.round(delay * (0.9 + Math.random() * 0.2));
     if (delay !== CFG.pollMs && delay !== state.lastDelay) log('backoff', { next_ms: delay, ingest_fails: fails });
     state.lastDelay = delay;
     timer = setTimeout(loop, delay);

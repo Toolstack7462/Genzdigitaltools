@@ -93,17 +93,20 @@ const AdminWriteHuman = () => {
     finally { setSavingAlert(false); }
   };
 
-  // Poll: state every 3s (near-real-time), logs every ~9s. Reliable through the double reverse-proxy.
+  // Poll every 30s, logs every ~90s. It was 3s, which on an open dashboard is 1200 backend
+  // requests an hour for a system whose state changes every few MINUTES - the account has hit its
+  // process ceiling before, and a status page is a silly way to spend it. Device heartbeats are
+  // 2-5 minutes apart, so 30s still shows a change within one heartbeat, and Refresh is immediate.
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       if (!alive) return;
       await loadState();
-      if (logTick.current % 3 === 0) await loadLogs();
+      if (logTick.current % 3 === 0) await loadLogs();   // ~90s
       logTick.current += 1;
     };
     tick();
-    timer.current = setInterval(tick, 3000);
+    timer.current = setInterval(tick, 30000);
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
   }, [loadState, loadLogs]);
 
