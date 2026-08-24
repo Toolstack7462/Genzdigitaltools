@@ -31,7 +31,11 @@ const {
   normalizeCookieBundle, buildCookieHeader, hasSessionCookie,
   supabaseAuthCookies, authCookieHash, replaceAuthCookies, cookieNames,
 } = require('./cookies');
-const { CODES, MAX_ROLLBACKS, bundleTokenClaims, putDevice } = require('./deviceSync');
+const {
+  CODES, MAX_ROLLBACKS, bundleTokenClaims, putDevice,
+  noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
+  activeSourceIntentFor, clearActiveSourceIntent,
+} = require('./deviceSync');
 
 // -- single-flight: exactly one promotion in flight per account ---------------
 // Two devices pushing at the same instant must not interleave read-modify-write on the vault.
@@ -160,15 +164,23 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     //        and forth, which is precisely the ping-pong being designed out. A one-time adoption
     //        followed by stability is the behaviour we want, and it still lets the operator sign
     //        in on any paired machine and have it take over on its own.
+    // This device is demonstrably authenticated right now — it just produced auth cookies. If it
+    // was previously signed OUT, that transition mints a one-time activation claim, which is the
+    // only signal that survives the case where the SAME session is copied onto another paired
+    // device (the session id is already known, so nothing else would ever let that machine take
+    // over however legitimately it was set up).
+    noteDeviceAuthState(device, true, now);
+
     const activeSource = account.activeSource || null;
     const isActiveSource = !activeSource || activeSource.deviceId === device.deviceId;
-    const adminPinned = account.preferredSourceDeviceId === device.deviceId;
+    const adminIntent = activeSourceIntentFor(account, device.deviceId, now);
     const activeFailed = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'].includes(account.session_status)
       || !account.sessionEncrypted;
     const known = Array.isArray(account.knownSessionIds) ? account.knownSessionIds : [];
     const freshSignIn = !!(candClaims.sessionId && !known.includes(candClaims.sessionId));
+    const activationClaim = hasActivationClaim(device, now);
 
-    const switchSource = !activeSource || adminPinned || activeFailed || freshSignIn;
+    const switchSource = !activeSource || adminIntent || activeFailed || freshSignIn || activationClaim;
 
     // Remember the session either way — including when the push is about to be ignored, so a
     // standby's own rotations settle into "routine" after first contact instead of re-triggering.
@@ -253,8 +265,9 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     account.candidate = { deviceId: device.deviceId, deviceName: device.name || null, receivedAt: now, status: 'promoted', code: CODES.PROMOTED, hash: candidateHash ? candidateHash.slice(0, 12) : null };
     device.promotionCount = (device.promotionCount || 0) + 1;
     rememberSession();
-    // An admin "Make active" is a one-shot instruction, not a permanent pin.
-    if (account.preferredSourceDeviceId === device.deviceId) account.preferredSourceDeviceId = null;
+    // Spend the one-time signals so the same event can never promote twice.
+    if (switchSource && activationClaim) consumeActivationClaim(device, now);
+    if (switchSource && adminIntent) clearActiveSourceIntent(account);
     recordAttempt(account, device, CODES.PROMOTED, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, success: true });
     await account.save();
 
@@ -312,6 +325,9 @@ async function markDeviceLoggedOut(account, tool, device, opts) {
     const now = new Date();
     device.report = o.report !== undefined ? o.report : device.report;
     device.loggedOutAt = now;
+    // Marking it signed out is what makes the next successful sign-in a TRANSITION, and therefore
+    // what lets this device legitimately reclaim the active source afterwards.
+    noteDeviceAuthState(device, false, now);
     recordAttempt(account, device, 'DEVICE_LOGGED_OUT', { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey });
     const activeId = account.activeSource && account.activeSource.deviceId;
     const isActiveSource = !activeId || activeId === device.deviceId;

@@ -1193,7 +1193,10 @@ router.get('/:tool/agent-state', async (req, res) => {
       bundleVersion: account.bundleVersion || 0,
       // A queued "Make active" that has not taken effect yet — the device must still prove a
       // working session before it gets the title.
-      pendingActiveDeviceId: account.preferredSourceDeviceId || null,
+      pendingActiveDeviceId: (account.activeSourceIntent && new Date(account.activeSourceIntent.expiresAt) > new Date())
+        ? account.activeSourceIntent.deviceId : null,
+      pendingActiveExpiresAt: (account.activeSourceIntent && new Date(account.activeSourceIntent.expiresAt) > new Date())
+        ? account.activeSourceIntent.expiresAt : null,
       rollbackAvailable: Array.isArray(account.rollbackBundles) ? account.rollbackBundles.length : 0,
       lastAgentSeenAt,
       lastSyncAttemptAt: account.lastSyncAttemptAt || null,
@@ -1311,14 +1314,18 @@ router.post('/:tool/devices/:deviceId/make-active', async (req, res) => {
     if (!dev) return res.status(404).json({ ok: false, code: deviceSync.CODES.DEVICE_UNKNOWN });
     if (dev.revoked) return res.status(409).json({ ok: false, code: deviceSync.CODES.DEVICE_REVOKED, error: 'That device is revoked.' });
 
-    account.preferredSourceDeviceId = dev.deviceId;
+    // A one-time intent with a short TTL, not a permanent pin: a request made and forgotten must
+    // not hijack the source days later, the first time that device happens to sync.
+    const intent = deviceSync.setActiveSourceIntent(account, dev.deviceId);
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_MAKE_ACTIVE', { tool: req.proxyTool, accountId: account._id, deviceId: dev.deviceId, ip: getClientIp(req) });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_MAKE_ACTIVE', { tool: req.proxyTool, accountId: account._id, deviceId: dev.deviceId, expiresAt: intent.expiresAt, ip: getClientIp(req) });
     return res.json({
       ok: true,
       pendingDeviceId: dev.deviceId,
       name: dev.name || null,
-      note: 'This device becomes the active source on its next successfully verified sync. The current session keeps serving until then.',
+      expiresAt: intent.expiresAt,
+      ttlMinutes: Math.round(deviceSync.ACTIVE_INTENT_TTL_MS / 60000),
+      note: 'This device becomes the active source on its next successfully verified sync. The current session keeps serving until then, and the request expires on its own if that sync never happens.',
     });
   } catch (err) {
     console.error('Proxy make-active error:', err.message);

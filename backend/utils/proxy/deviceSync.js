@@ -60,6 +60,7 @@ const CODES = {
   PROMOTION_FAILED: 'PROMOTION_FAILED',
   ROLLBACK_COMPLETED: 'ROLLBACK_COMPLETED',
   ACTIVE_SOURCE_ONLY_DEVICE: 'ACTIVE_SOURCE_ONLY_DEVICE',
+  ACTIVATION_CLAIMED: 'ACTIVATION_CLAIMED',
 };
 
 const MAX_ROLLBACKS = 2;          // bounded - encrypted session copies are sensitive at rest
@@ -153,6 +154,9 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     promotionCount: dev.promotionCount || 0,
     cdp: (dev.report && dev.report.cdp) || null,
     profile: (dev.report && dev.report.profile) || null,
+    authState: dev.authState || null,
+    activationClaimAt: dev.activationClaimAt || null,
+    activationClaimUsed: !!dev.activationClaimUsedAt,
     chrome: !!(dev.report && dev.report.chrome),
     authCookies: dev.report && typeof dev.report.authCookies === 'number' ? dev.report.authCookies : null,
     reportAt: (dev.report && dev.report.receivedAt) || null,
@@ -220,6 +224,60 @@ function authenticateDevice(account, deviceId, presentedKey) {
   return { ok: true, code: CODES.OK, device: dev };
 }
 
+/**
+ * Per-device authentication transition -> a one-time ACTIVATION CLAIM.
+ *
+ * The "unseen session id" rule alone cannot see the case where the same valid session is copied
+ * onto another paired device: the session is already known, so that machine could never take over
+ * however legitimately it was set up. What IS observable per device is the transition — this
+ * machine had no working WriteHuman session, and now it does. That is a real local sign-in event
+ * whatever session id it carries.
+ *
+ * The transition mints a claim rather than switching anything directly. The claim is single use
+ * and short lived, and it is only ever spent by a candidate that PASSES verification, so a device
+ * cannot talk its way to the front — it has to prove a working session, once, inside the window.
+ * Without both properties a flapping device (sign out, sign in, sign out) would hand the active
+ * source back and forth, which is the behaviour this policy exists to prevent.
+ */
+const ACTIVATION_TTL_MS = 15 * 60 * 1000;
+
+function noteDeviceAuthState(device, isAuthenticated, now) {
+  const at = now || new Date();
+  const prev = device.authState || null;
+  device.authState = isAuthenticated ? 'authenticated' : 'unauthenticated';
+  if (isAuthenticated && prev === 'unauthenticated') {
+    device.activationClaimAt = at;
+    device.activationClaimUsedAt = null;
+  }
+}
+
+/** Is there an unspent, unexpired activation claim on this device? */
+function hasActivationClaim(device, now) {
+  if (!device || !device.activationClaimAt || device.activationClaimUsedAt) return false;
+  const age = (now ? now.getTime() : Date.now()) - new Date(device.activationClaimAt).getTime();
+  return age >= 0 && age <= ACTIVATION_TTL_MS;
+}
+function consumeActivationClaim(device, now) { device.activationClaimUsedAt = now || new Date(); }
+
+/**
+ * An admin "Make active" is an INTENT with a short TTL, not a permanent pin. It expires on its own,
+ * so a request made and forgotten cannot surprise the operator days later by hijacking the source
+ * the first time some device happens to sync.
+ */
+const ACTIVE_INTENT_TTL_MS = 30 * 60 * 1000;
+
+function setActiveSourceIntent(account, deviceId, now) {
+  const at = now || new Date();
+  account.activeSourceIntent = { deviceId, createdAt: at, expiresAt: new Date(at.getTime() + ACTIVE_INTENT_TTL_MS) };
+  return account.activeSourceIntent;
+}
+function activeSourceIntentFor(account, deviceId, now) {
+  const i = account && account.activeSourceIntent;
+  if (!i || i.deviceId !== deviceId) return false;
+  return new Date(i.expiresAt).getTime() > (now ? now.getTime() : Date.now());
+}
+function clearActiveSourceIntent(account) { account.activeSourceIntent = null; }
+
 /** Persist a mutated device back into the account's registry array. */
 function putDevice(account, dev) {
   account.syncDevices = getDevices(account).map(d => (d && d.deviceId === dev.deviceId ? dev : d));
@@ -253,8 +311,10 @@ function revokeDevice(account, deviceId, opts) {
 }
 
 module.exports = {
-  CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES,
+  CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES, ACTIVATION_TTL_MS, ACTIVE_INTENT_TTL_MS,
   sha256, timingEqHex, cleanName, bundleTokenIat, bundleTokenClaims,
   getDevices, findDevice, publicDevice, putDevice,
   createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice,
+  noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
+  setActiveSourceIntent, activeSourceIntentFor, clearActiveSourceIntent,
 };

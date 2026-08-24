@@ -188,6 +188,13 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
 
     // -- heartbeat: liveness + telemetry only -------------------------------
     if (body.heartbeat === true && body.cookies == null) {
+      // A heartbeat reporting ZERO auth cookies is how we learn a device is signed out. Recording
+      // it is what makes a later sign-in an observable TRANSITION, and therefore what lets that
+      // device legitimately reclaim the active source — the copied-session case that session-id
+      // comparison alone can never see. A heartbeat with no telemetry says nothing either way.
+      if (report && typeof report.authCookies === 'number') {
+        deviceSync.noteDeviceAuthState(device, report.authCookies > 0, new Date());
+      }
       recordAttempt(account, device, 'HEARTBEAT', meta);
       clearPending();
       await account.save();

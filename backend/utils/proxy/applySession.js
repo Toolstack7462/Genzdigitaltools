@@ -48,9 +48,18 @@ async function applyAccountSession(account, bundle, opts = {}) {
   // agent last pushed — possibly weeks older than the vault. A device would then compare its own
   // cookies against that stale hash and could conclude "unchanged" for a bundle the vault does
   // not hold, silently skipping a real sync. The hash must always describe the active bundle.
+  //
+  // GATED to live-agent tools (WriteHuman alone) because this function is the shared vault-write
+  // path for EVERY proxy tool. `cookieHash` only means anything where a device compares against
+  // it; for the other seven tools authCookieHash has no project ref to work with and would just
+  // write null onto their accounts. Harmless, but writing to another tool's row to no purpose is
+  // not a change worth making — and this keeps the blast radius provably WriteHuman-only while
+  // leaving ONE vault-write path, which is what stopped the hash diverging in the first place.
   try {
-    const ref = (tools.supabaseConfig(tool) || {}).projectRef;
-    account.cookieHash = authCookieHash(bundle, ref);
+    if (tools.hasLiveAgent(tool)) {
+      const ref = (tools.supabaseConfig(tool) || {}).projectRef;
+      account.cookieHash = authCookieHash(bundle, ref);
+    }
   } catch (_) { /* the hash is an optimisation, never a correctness requirement */ }
   if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
   account.session_status = 'pending_verification';
