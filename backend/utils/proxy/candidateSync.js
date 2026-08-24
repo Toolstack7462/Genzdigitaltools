@@ -31,7 +31,7 @@ const {
   normalizeCookieBundle, buildCookieHeader, hasSessionCookie,
   supabaseAuthCookies, authCookieHash, replaceAuthCookies, cookieNames,
 } = require('./cookies');
-const { CODES, MAX_ROLLBACKS, bundleTokenIat, putDevice } = require('./deviceSync');
+const { CODES, MAX_ROLLBACKS, bundleTokenClaims, putDevice } = require('./deviceSync');
 
 // -- single-flight: exactly one promotion in flight per account ---------------
 // Two devices pushing at the same instant must not interleave read-modify-write on the vault.
@@ -121,8 +121,10 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
 
     const candidateHash = authCookieHash(candidate, ref);
     const activeHash = activeBundle ? authCookieHash(activeBundle, ref) : null;
-    const candIat = bundleTokenIat(candidate, tool);
-    const activeIat = activeBundle ? bundleTokenIat(activeBundle, tool) : null;
+    const candClaims = bundleTokenClaims(candidate, tool);
+    const activeClaims = activeBundle ? bundleTokenClaims(activeBundle, tool) : { iat: null, sessionId: null };
+    const candIat = candClaims.iat;
+    const activeIat = activeClaims.iat;
 
     // -- 3. unchanged -> cheap liveness only. No decrypt-verify-write cycle, no source switch.
     if (candidateHash && activeHash && candidateHash === activeHash && !o.force) {
@@ -136,10 +138,53 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     if (!o.force && candIat != null && activeIat != null && candIat < activeIat) {
       return fail(CODES.STALE_BUNDLE);
     }
-    // Same signed token from a different device = the SAME session. Refresh the stored bundle if
-    // it genuinely differs, but do NOT hand the active-source title around - that is the
-    // ping-pong we are preventing.
-    const switchSource = (activeIat == null || candIat == null) ? true : (candIat > activeIat);
+
+    // -- 4b. PROMOTION POLICY. "Newest verified wins" is not good enough: two machines both signed
+    //        in and both rotating would trade the active-source title back and forth forever, and
+    //        every handover revokes client leases. So the ACTIVE SOURCE IS STICKY, and only four
+    //        things move it:
+    //          (a) nothing holds it yet;
+    //          (b) an admin pressed "Make active" for this device;
+    //          (c) the active session has FAILED - failover to a verified standby;
+    //          (d) a genuinely FRESH SIGN-IN happened on this device.
+    //        (d) is the subtle one. A token rotation and a fresh sign-in both produce a newer
+    //        `iat`, so recency cannot tell them apart - but a rotation keeps the GoTrue
+    //        `session_id` and a sign-in mints a new one. "Fresh" therefore means a session id the
+    //        SERVER HAS NEVER SEEN. Every session that arrives is remembered, so an unseen session
+    //        is adopted exactly ONCE and every later rotation of it is routine.
+    //
+    //        Remembering per-account rather than per-device is deliberate. Comparing against what
+    //        a device reported LAST cannot answer the first push from a newly paired machine, and
+    //        comparing against the active session alone re-fires forever: a standby signed into a
+    //        different session would look "fresh" on every single rotation and flip the title back
+    //        and forth, which is precisely the ping-pong being designed out. A one-time adoption
+    //        followed by stability is the behaviour we want, and it still lets the operator sign
+    //        in on any paired machine and have it take over on its own.
+    const activeSource = account.activeSource || null;
+    const isActiveSource = !activeSource || activeSource.deviceId === device.deviceId;
+    const adminPinned = account.preferredSourceDeviceId === device.deviceId;
+    const activeFailed = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'].includes(account.session_status)
+      || !account.sessionEncrypted;
+    const known = Array.isArray(account.knownSessionIds) ? account.knownSessionIds : [];
+    const freshSignIn = !!(candClaims.sessionId && !known.includes(candClaims.sessionId));
+
+    const switchSource = !activeSource || adminPinned || activeFailed || freshSignIn;
+
+    // Remember the session either way — including when the push is about to be ignored, so a
+    // standby's own rotations settle into "routine" after first contact instead of re-triggering.
+    const rememberSession = () => {
+      if (!candClaims.sessionId || known.includes(candClaims.sessionId)) return;
+      account.knownSessionIds = known.concat([candClaims.sessionId]).slice(-8);
+    };
+
+    if (!isActiveSource && !switchSource && !o.force) {
+      // A standby quietly keeping its own copy fresh. Nothing to do: promoting it would churn the
+      // vault and revoke leases for a session nobody is serving from.
+      rememberSession();
+      recordAttempt(account, device, CODES.STANDBY_ROUTINE_REFRESH, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey });
+      await account.save();
+      return { code: CODES.STANDBY_ROUTINE_REFRESH, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId: null, verifyResult: null };
+    }
 
     // -- 5. stage the candidate (encrypted, never served to any client, never returned).
     account.candidate = {
@@ -207,6 +252,9 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     }
     account.candidate = { deviceId: device.deviceId, deviceName: device.name || null, receivedAt: now, status: 'promoted', code: CODES.PROMOTED, hash: candidateHash ? candidateHash.slice(0, 12) : null };
     device.promotionCount = (device.promotionCount || 0) + 1;
+    rememberSession();
+    // An admin "Make active" is a one-shot instruction, not a permanent pin.
+    if (account.preferredSourceDeviceId === device.deviceId) account.preferredSourceDeviceId = null;
     recordAttempt(account, device, CODES.PROMOTED, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, success: true });
     await account.save();
 

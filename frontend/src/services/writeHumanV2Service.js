@@ -26,4 +26,7 @@ export const writeHumanV2Admin = {
   createPairCode: (name) => api.post(`/admin/proxy-tools/${TOOL}/devices/pair-code`, { name }),
   // Revokes a device's write access. Never deletes the stored cookie bundle.
   revokeDevice: (deviceId, force = false) => api.delete(`/admin/proxy-tools/${TOOL}/devices/${deviceId}${force ? '?force=1' : ''}`),
+  // Queues a deliberate handover. The device becomes the active source on its next VERIFIED sync,
+  // so an offline or signed-out machine can never become active in name only.
+  makeActive: (deviceId) => api.post(`/admin/proxy-tools/${TOOL}/devices/${deviceId}/make-active`),
 };

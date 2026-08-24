@@ -1191,6 +1191,9 @@ router.get('/:tool/agent-state', async (req, res) => {
         expectedMaskedId: cand.expectedMaskedId || null,
       } : null,
       bundleVersion: account.bundleVersion || 0,
+      // A queued "Make active" that has not taken effect yet — the device must still prove a
+      // working session before it gets the title.
+      pendingActiveDeviceId: account.preferredSourceDeviceId || null,
       rollbackAvailable: Array.isArray(account.rollbackBundles) ? account.rollbackBundles.length : 0,
       lastAgentSeenAt,
       lastSyncAttemptAt: account.lastSyncAttemptAt || null,
@@ -1286,6 +1289,40 @@ router.post('/:tool/devices/pair-code', async (req, res) => {
   } catch (err) {
     console.error('Proxy pair-code error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to create pairing code' });
+  }
+});
+
+// "Make active" — hand the active-source title to a paired device deliberately.
+//
+// The active source is otherwise STICKY (see the promotion policy in candidateSync): a standby
+// quietly refreshing its own copy must not seize it, or two signed-in machines would trade it back
+// and forth. This is the operator's override for the cases policy cannot infer — "I am about to
+// shut the RDP down, move to my laptop".
+//
+// It does NOT promote anything by itself, because the server holds no bundle from that device yet;
+// it records the intent, and the device's NEXT push is verified and promoted like any other
+// candidate. So an offline or signed-out device cannot be made active in name only — the switch
+// happens when, and only when, that device actually proves a working session.
+router.post('/:tool/devices/:deviceId/make-active', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.status(404).json({ ok: false, error: 'No account' });
+    const dev = deviceSync.findDevice(account, req.params.deviceId);
+    if (!dev) return res.status(404).json({ ok: false, code: deviceSync.CODES.DEVICE_UNKNOWN });
+    if (dev.revoked) return res.status(409).json({ ok: false, code: deviceSync.CODES.DEVICE_REVOKED, error: 'That device is revoked.' });
+
+    account.preferredSourceDeviceId = dev.deviceId;
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_MAKE_ACTIVE', { tool: req.proxyTool, accountId: account._id, deviceId: dev.deviceId, ip: getClientIp(req) });
+    return res.json({
+      ok: true,
+      pendingDeviceId: dev.deviceId,
+      name: dev.name || null,
+      note: 'This device becomes the active source on its next successfully verified sync. The current session keeps serving until then.',
+    });
+  } catch (err) {
+    console.error('Proxy make-active error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to set the active source' });
   }
 });
 

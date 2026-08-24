@@ -115,6 +115,15 @@ const AdminWriteHuman = () => {
     } catch (e) { showError(e.response?.data?.error || 'Failed to create a pairing code'); }
     finally { setPairing(false); }
   };
+  const makeActive = async (d) => {
+    const name = d.name || d.deviceId;
+    try {
+      const r = await writeHumanV2Admin.makeActive(d.deviceId);
+      showSuccess(r.data?.note || `${name} will become the active source on its next verified sync`);
+      loadState();
+    } catch (e) { showError(e.response?.data?.error || e.response?.data?.code || 'Failed to set the active source'); }
+  };
+
   const revokeDevice = async (d) => {
     const name = d.name || d.deviceId;
     if (!window.confirm(`Revoke ${name}?\n\nIt loses the right to push cookies. The stored session stays exactly as it is — revoking a device never signs anyone out.`)) return;
@@ -265,6 +274,7 @@ const AdminWriteHuman = () => {
                       <p className="font-semibold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
                         {d.name || d.deviceId}
                         {d.isActiveSource && <Badge tone="ok">active source</Badge>}
+                        {!d.isActiveSource && state?.pendingActiveDeviceId === d.deviceId && <Badge tone="warn">activating on next sync</Badge>}
                         {d.online ? <Badge tone="ok">online</Badge> : <Badge tone="warn">offline · {rel(d.lastSeenAt)}</Badge>}
                         {d.lastResultCode && d.lastResultCode !== 'PROMOTED' && d.lastResultCode !== 'HEARTBEAT' && d.lastResultCode !== 'COOKIE_BUNDLE_UNCHANGED' && <Badge tone="warn">{d.lastResultCode}</Badge>}
                       </p>
@@ -273,7 +283,13 @@ const AdminWriteHuman = () => {
                         {d.cdp ? ` · cdp ${d.cdp}` : ''}
                       </p>
                     </div>
-                    <button onClick={() => revokeDevice(d)} className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-red-600 border border-red-200 hover:bg-red-50 flex-shrink-0">Revoke</button>
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {!d.isActiveSource && (
+                        <button onClick={() => makeActive(d)} title="Hand this device the active-source role on its next verified sync"
+                          className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-indigo-600 border border-indigo-200 hover:bg-indigo-50">Make active</button>
+                      )}
+                      <button onClick={() => revokeDevice(d)} className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-red-600 border border-red-200 hover:bg-red-50">Revoke</button>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -52,6 +52,7 @@ const CODES = {
   CANDIDATE_SCHEMA_INVALID: 'CANDIDATE_SCHEMA_INVALID',
   COOKIE_BUNDLE_UNCHANGED: 'COOKIE_BUNDLE_UNCHANGED',
   STALE_BUNDLE: 'STALE_BUNDLE',
+  STANDBY_ROUTINE_REFRESH: 'STANDBY_ROUTINE_REFRESH',
   ACCOUNT_MISMATCH: 'ACCOUNT_MISMATCH',
   SESSION_EXPIRED: 'SESSION_EXPIRED',
   VERIFICATION_INCONCLUSIVE: 'VERIFICATION_INCONCLUSIVE',
@@ -87,23 +88,36 @@ function cleanName(n, fallback) {
 }
 
 /**
- * The `iat` of the Supabase access token carried by a bundle - our trusted recency ordering.
- * Decoded locally (no signature check needed: we only ORDER by it; the token's validity is
- * decided by the real verification call). Returns null when unavailable.
+ * Claims we trust from the Supabase access token inside a bundle. Decoded locally without a
+ * signature check, which is safe because of what each claim is used FOR: `iat` only ORDERS two
+ * bundles and `sessionId` only tells one login apart from another - neither grants anything.
+ * Whether the token actually works is decided by the real verification call, not here.
+ *
+ *   iat       - issue time. Trusted recency ordering between devices.
+ *   sessionId - the GoTrue session (`session_id`). A token ROTATION keeps it; a fresh sign-in
+ *               mints a new one. That is the only reliable way to tell "this machine refreshed
+ *               the session we already have" from "somebody signed in again over here", and the
+ *               promotion policy turns on exactly that difference.
+ *
+ * Returns { iat: number|null, sessionId: string|null }.
  */
-function bundleTokenIat(bundle, tool) {
+function bundleTokenClaims(bundle, tool) {
   try {
     const ref = (tools.supabaseConfig(tool) || {}).projectRef;
     const header = buildCookieHeader(bundle, tools.targetHost(tool));
     const { accessToken } = extractSupabaseSession(header, ref);
-    if (!accessToken) return null;
+    if (!accessToken) return { iat: null, sessionId: null };
     const part = String(accessToken).split('.')[1];
-    if (!part) return null;
+    if (!part) return { iat: null, sessionId: null };
     const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
     const iat = Number(json && json.iat);
-    return Number.isFinite(iat) ? iat : null;
-  } catch (_) { return null; }
+    const sid = json && (json.session_id || json.sid);
+    return { iat: Number.isFinite(iat) ? iat : null, sessionId: sid ? String(sid) : null };
+  } catch (_) { return { iat: null, sessionId: null }; }
 }
+
+/** Back-compat shorthand for the ordering claim alone. */
+function bundleTokenIat(bundle, tool) { return bundleTokenClaims(bundle, tool).iat; }
 
 // -- device registry (stored on the primary ProxyAccount; mysqlAdapter is schemaless JSON) --
 function getDevices(account) {
@@ -239,7 +253,7 @@ function revokeDevice(account, deviceId, opts) {
 
 module.exports = {
   CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES,
-  sha256, timingEqHex, cleanName, bundleTokenIat,
+  sha256, timingEqHex, cleanName, bundleTokenIat, bundleTokenClaims,
   getDevices, findDevice, publicDevice, putDevice,
   createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice,
 };
