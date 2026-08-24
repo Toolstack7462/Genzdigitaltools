@@ -610,6 +610,50 @@ test('the admin activation intent expires in the 10-15 minute band', () => {
     'a forgotten Make-active request must not stay armed for hours');
 });
 
+// --- no device is special: names are labels, never roles ---------------------
+test('arbitrary device names all behave identically — nothing is hard-coded', async () => {
+  reset();
+  const a = account(bundle(1000));
+  // Deliberately NOT the names used elsewhere in this file. If any logic ever keys on a name like
+  // LOCAL-PC or RDP-01, this test fails, which is the point: the operator must be able to pair a
+  // machine called anything and have it behave the same.
+  const names = ['NOUMAN-ALI6', 'OFFICE-PC', 'kiosk-7'];
+  const devs = names.map(n => ({ name: n, ...pair(a, n) }));
+
+  // Each device in turn signs in and takes the source, using only its one-time pairing claim.
+  let iat = 2000;
+  for (const d of devs) {
+    iat += 500;
+    const r = await ingestCandidate(a, TOOL, d.row, bundle(iat, null, null, 'sess-SHARED').cookies, {});
+    assert.strictEqual(r.code, CODES.PROMOTED, `${d.name} must be able to become the active source`);
+    assert.strictEqual(a.activeSource.name, d.name);
+  }
+  assert.strictEqual(a.activeSource.name, 'kiosk-7', 'the last to activate holds it');
+
+  // And now that every claim is spent, none of them can take it back by routine rotation.
+  const held = a.sessionEncrypted;
+  for (const d of devs.slice(0, 2)) {
+    iat += 100;
+    const r = await ingestCandidate(a, TOOL, d.row, bundle(iat, null, null, 'sess-SHARED').cookies, {});
+    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH, `${d.name} is a standby now`);
+  }
+  assert.strictEqual(a.activeSource.name, 'kiosk-7');
+  assert.strictEqual(a.sessionEncrypted, held);
+});
+
+test('a device name is cosmetic — it never appears in an authorisation decision', () => {
+  const a = account(bundle(1000));
+  // Two devices whose names collide entirely. They must remain distinct principals, because
+  // identity is the device id + key, never the label.
+  const d1 = pair(a, 'SAME-NAME');
+  const d2 = pair(a, 'SAME-NAME');
+  assert.notStrictEqual(d1.deviceId, d2.deviceId, 'ids are independent of the label');
+  assert.notStrictEqual(d1.key, d2.key, 'keys are independent of the label');
+  assert.strictEqual(deviceSync.authenticateDevice(a, d1.deviceId, d2.key).ok, false,
+    'one device cannot authenticate with another device key, identical names notwithstanding');
+  assert.strictEqual(deviceSync.authenticateDevice(a, d1.deviceId, d1.key).ok, true);
+});
+
 // --- revoke safety -----------------------------------------------------------
 test('revoking the only device that supplies the session is refused, and never deletes cookies', async () => {
   reset();
