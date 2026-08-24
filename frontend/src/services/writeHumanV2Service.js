@@ -28,9 +28,14 @@ export const writeHumanV2Admin = {
   revokeDevice: (deviceId, force = false) => api.delete(`/admin/proxy-tools/${TOOL}/devices/${deviceId}${force ? '?force=1' : ''}`),
   // Browser-authorized agent enrolment. The credential is NEVER returned to the browser - the
   // agent collects it by polling with its PKCE verifier, so nothing secret crosses this boundary.
+  // Installer build metadata (version, sha256, size) for the download button. Public route.
+  getAgentBuild: () => api.get('/downloads/writehuman-agent/windows/latest.json'),
   listEnrollments: () => api.get(`/admin/proxy-tools/${TOOL}/enrollments`),
   getEnrollment: (id) => api.get(`/admin/proxy-tools/${TOOL}/enrollments/${id}`),
-  authorizeEnrollment: (id) => api.post(`/admin/proxy-tools/${TOOL}/enrollments/${id}/authorize`),
+  // Takes headers so the caller can attach the CSRF token (see withCsrfRetry). The route is
+  // requireCsrf-protected: it is a state change driven from a browser, which is exactly what
+  // CSRF defends against - so the token is required, not optional.
+  authorizeEnrollment: (id, headers = {}) => api.post(`/admin/proxy-tools/${TOOL}/enrollments/${id}/authorize`, {}, { headers }),
   // Queues a deliberate handover. The device becomes the active source on its next VERIFIED sync,
   // so an offline or signed-out machine can never become active in name only.
   makeActive: (deviceId) => api.post(`/admin/proxy-tools/${TOOL}/devices/${deviceId}/make-active`),

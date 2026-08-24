@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import { ShieldCheck, Loader2, CheckCircle2, AlertTriangle, Monitor } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
+import { withCsrfRetry } from '../../services/launchService';
 
 /**
  * The browser half of agent enrolment.
@@ -40,13 +41,18 @@ const AdminWriteHumanAuthorize = () => {
   const authorize = async () => {
     try {
       setBusy(true);
-      const r = await writeHumanV2Admin.authorizeEnrollment(enrollId);
+      // withCsrfRetry fetches the double-submit token, and refetches once if the server says it
+      // went stale. Without it this POST is rejected with csrf_invalid and the click does nothing.
+      const r = await withCsrfRetry((headers) => writeHumanV2Admin.authorizeEnrollment(enrollId, headers));
       setRec(r.data.enrollment);
       setState('done');
     } catch (e) {
-      setErr(e.response?.data?.code === 'ENROLLMENT_EXPIRED'
+      const code = e.response?.data?.code;
+      setErr(code === 'ENROLLMENT_EXPIRED'
         ? 'This request expired before it was approved. Start the agent again for a fresh one.'
-        : (e.response?.data?.code || e.response?.data?.error || 'Could not authorize this device.'));
+        : code === 'csrf_invalid'
+          ? 'Security token was rejected. Reload this page and try again.'
+          : (code || e.response?.data?.error || 'Could not authorize this device.'));
     } finally { setBusy(false); }
   };
 

@@ -237,18 +237,32 @@ async function enrollViaBrowser(agentId) {
   openInBrowser(start.authorizeUrl);
 
   const interval = Math.max(2000, Number(start.pollIntervalMs) || 3000);
+  let pollFails = 0;
   const deadline = Date.parse(start.expiresAt) || (Date.now() + 10 * 60 * 1000);
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, interval));
     let res, body;
     try {
-      res = await fetch(enrollUrl('poll'), {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ enrollId: start.enrollId, agentId, codeVerifier: verifier }),
-        signal: AbortSignal.timeout(20000),
-      });
+      // Belt AND braces on the timeout. AbortSignal alone has not been enough in this codebase
+      // before - a fetch stalled in DNS resolution can outlive its abort, and this loop then wedges
+      // forever with nothing in the log to say so (observed: the agent sat on a dead enrolment past
+      // its deadline through a local DNS outage, never timing out, never retrying, silent).
+      res = await Promise.race([
+        fetch(enrollUrl('poll'), {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enrollId: start.enrollId, agentId, codeVerifier: verifier }),
+          signal: AbortSignal.timeout(15000),
+        }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('poll_hard_timeout')), 20000)),
+      ]);
       body = await res.json().catch(() => null);
-    } catch (e) { continue; }                       // transient network - keep waiting
+    } catch (e) {
+      // Never fail silently: a poll that cannot reach the server is the single most likely reason
+      // enrolment "just does nothing", and it must be visible in the log.
+      pollFails += 1;
+      if (pollFails === 1 || pollFails % 10 === 0) log('enroll_poll_failed', { attempts: pollFails, error: e.message });
+      continue;
+    }
     if (res.status === 202) continue;               // admin has not clicked yet
     if (res.ok && body && body.deviceKey) {
       const st = { deviceId: body.deviceId, deviceKey: body.deviceKey, name: body.name || CFG.deviceName, seq: 0 };
@@ -702,7 +716,10 @@ async function run() {
     // two machines, not harmless on an account that has run into its process ceiling before.
     // Backoff is left un-jittered: it is already spreading load by growing.
     if (fails === 0) delay = Math.round(delay * (0.9 + Math.random() * 0.2));
-    if (delay !== CFG.pollMs && delay !== state.lastDelay) log('backoff', { next_ms: delay, ingest_fails: fails });
+    // Only a real backoff is worth logging. Jitter means `delay` almost never equals pollMs, so
+    // the old condition printed "backoff" on every healthy poll with ingest_fails 0 - noise that
+    // makes a genuine backoff impossible to spot.
+    if (fails > 0 && delay !== state.lastDelay) log('backoff', { next_ms: delay, ingest_fails: fails });
     state.lastDelay = delay;
     timer = setTimeout(loop, delay);
   };

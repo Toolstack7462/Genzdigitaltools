@@ -120,3 +120,4 @@ credentials.json
 # Chrome extension signing key (pins the Extension ID) — SECRET, never commit
 genz-extension-signing-key.pem
 ext-key-b64.txt
+writehuman-v2/agent/dist/

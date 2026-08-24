@@ -125,7 +125,7 @@ $cfg = [ordered]@{
   deviceStateFile = (Join-Path $InstallDir 'agent-device.json') -replace '\\','/'
   lockFile        = (Join-Path $InstallDir 'agent.lock') -replace '\\','/'
   agentKeyDpapiFile = (Join-Path $InstallDir 'agent.key.dpapi') -replace '\\','/'
-  pollMs          = 300000
+  pollMs          = 45000
 }
 # Set-Content -Encoding Ascii: a UTF-8/BOM file makes cmd and JSON.parse fail in ways that produce
 # no error output at all. This has cost hours before.
@@ -148,8 +148,8 @@ if ($SyncKey) {
   if ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) -eq $SyncKey) { Write-Host '    verified: decrypts back correctly' }
   else { Fail 'the DPAPI key file did not round-trip - refusing to continue' }
 } elseif (-not (Test-Path (Join-Path $InstallDir 'agent.key.dpapi'))) {
-  Write-Host '    NOTE: no -SyncKey given and none stored, so the agent cannot sync yet.' -ForegroundColor Yellow
-  Write-Host '          Re-run with -SyncKey <PROXY_AGENT_SYNC_KEY> (from hPanel).'
+  Write-Host '    No sync key given - the agent will enrol through the browser on first start.' -ForegroundColor Cyan
+  Write-Host '    It prints an Authorize link (also in agent.log); open it while signed in as admin.'
 }
 
 $runCmd = @"
@@ -197,7 +197,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 Write-Host ''
 Write-Host 'Installed.' -ForegroundColor Green
-Write-Host "  agent version : 3.1.0"
+Write-Host "  agent version : 3.2.0"
 Write-Host "  directory     : $InstallDir"
 Write-Host "  log           : $InstallDir\agent.log"
 Write-Host "  identity      : $InstallDir\agent-device.json (device key, owner-only)"
@@ -208,7 +208,7 @@ Write-Host 'Next:'
 Write-Host '  1. Start Chrome with a debug port:  -ShowChromeCommand'
 Write-Host '  2. Sign in to WriteHuman in that window.'
 Write-Host "  3. Start the agent now:  schtasks /run /tn $TaskName"
-Write-Host '  4. It registers itself on first sync - no pairing code and no approval step.'
+Write-Host '  4. On first start it prints an Authorize link. Open it as admin and click once.'
 Write-Host ''
 Write-Host 'The agent never signs in for you and never launches Chrome. It reads only the WriteHuman'
 Write-Host 'auth cookies from the profile you point it at, and nothing else.'

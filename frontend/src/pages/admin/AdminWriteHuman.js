@@ -3,7 +3,7 @@ import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
 import {
   PenTool, Activity, RefreshCw, Loader2, Chrome, CheckCircle2, AlertTriangle,
-  Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save,
+  Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save, Download,
 } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
 import { useToast } from '../../components/Toast';
@@ -52,6 +52,7 @@ const AdminWriteHuman = () => {
   const [alert, setAlert] = useState(null);       // { emailMasked, emailSet, enabled, source, smtpConfigured }
   const [alertEmail, setAlertEmail] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
+  const [agentBuild, setAgentBuild] = useState(null);   // { version, sha256, size, downloadUrl }
   const timer = useRef(null);
   const logTick = useRef(0);
 
@@ -74,6 +75,12 @@ const AdminWriteHuman = () => {
     try { const r = await writeHumanV2Admin.getAlertConfig(); setAlert(r.data); } catch (_) {}
   }, []);
   useEffect(() => { loadAlert(); }, [loadAlert]);
+  // One-time fetch of the published installer's version + checksum for the download button.
+  useEffect(() => {
+    let alive = true;
+    writeHumanV2Admin.getAgentBuild().then((r) => { if (alive && r.data?.ok) setAgentBuild(r.data); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // Save recipient and/or enable-toggle. Empty email clears the dashboard override (env fallback).
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail.trim());
@@ -179,6 +186,11 @@ const AdminWriteHuman = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <a href="/api/crm/downloads/writehuman-agent/windows/latest" download
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-90"
+            title={agentBuild ? `v${agentBuild.version} · ${agentBuild.size ? Math.round(agentBuild.size/1048576) : '?'} MB · SHA-256 ${agentBuild.sha256?.slice(0,16)}…` : 'Windows agent installer'}>
+            <Download size={15} /> Download Windows Agent{agentBuild ? ` v${agentBuild.version}` : ''}
+          </a>
           <button onClick={loadState} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-slate-800 hover:bg-slate-700"><RefreshCw size={15} /> Refresh</button>
         </div>
       </div>

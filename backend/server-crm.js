@@ -317,6 +317,7 @@ const clientProfileRoutes     = require('./routes/client/profile');
 const clientExtensionRoutes   = require('./routes/client/extension');
 const clientPresenceRoutes    = require('./routes/client/presence');
 const extensionRoutes         = require('./routes/extension');
+const agentDownloadRoutes     = require('./routes/proxy/agentDownload');
 const adminExtensionRoutes    = require('./routes/admin/extension');
 // StealthWriter Proxy Gateway module (isolated)
 const adminStealthRoutes      = require('./routes/admin/stealth');
@@ -397,6 +398,8 @@ app.use('/api/crm/admin/business', businessCrmRoutes);
 app.use('/api/crm/client',           clientProfileRoutes);
 
 // Health check
+app.use('/api/crm/downloads/writehuman-agent', agentDownloadRoutes);
+
 app.get('/api/crm/health', async (req, res) => {
   const dbStatus = mysqlAdapter.getStatus();
   // Run a REAL query, not just a "pool exists" check. The old version reported

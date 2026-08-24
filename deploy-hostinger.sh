@@ -159,6 +159,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \
   -T backend/routes/proxy/agentSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
+  -T backend/routes/proxy/agentDownload.js       "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentDownload.js" \
   -T backend/routes/admin/writehumanV2.js        "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/writehumanV2.js" \
   `# Proxy Services SLEEP/WAKE. server-crm.js requires this at module load, so it MUST ship with` \
   `# any deploy carrying server-crm.js or the API boots into "Cannot find module" (whole API down,` \

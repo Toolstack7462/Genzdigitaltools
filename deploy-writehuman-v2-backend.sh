@@ -54,6 +54,7 @@ echo "==> [1/3] Uploading writehumanV2.js + server-crm.js + restart trigger"
 curl --fail-with-body --ftp-create-dirs \
   -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/admin/writehumanV2.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/writehumanV2.js" \
+  -T backend/routes/proxy/agentDownload.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentDownload.js" \
   -T backend/server-crm.js                "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                      "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 rm -f "${RESTART_TMP}"

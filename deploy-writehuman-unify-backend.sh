@@ -49,6 +49,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/deviceSync.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T backend/utils/proxy/agentEnroll.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentEnroll.js" \
+  -T backend/routes/proxy/agentDownload.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentDownload.js" \
   -T backend/server-crm.js               "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
   -T "${RESTART_TMP}"                     "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 rm -f "${RESTART_TMP}"
