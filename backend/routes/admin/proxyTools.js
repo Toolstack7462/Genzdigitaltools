@@ -1051,7 +1051,7 @@ const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
 const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '2.5.2';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.0.0';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }

@@ -182,17 +182,54 @@ function hashAuthCookies(authList) {
 // browser's own reported user-data-dir must contain it, or we refuse to read rather than sync
 // from the wrong place. The value is recorded in telemetry so the dashboard can show which
 // profile is actually feeding the account.
+/**
+ * Canonical filesystem-path comparison. A substring test is not good enough for deciding which
+ * profile we are allowed to read: `C:\wh-profile` would match `C:\wh-profile-old`, and a
+ * case/slash/trailing-separator difference would spuriously refuse the right one. Both failures are
+ * silent in opposite directions — one syncs the wrong session, the other stops syncing entirely.
+ * Windows paths are case-insensitive, so compare case-folded, separator-normalised, de-trailed.
+ */
+function canonicalPath(p) {
+  if (!p) return '';
+  let s = String(p).trim().replace(/[\\/]+/g, '/').replace(/\/+$/, '');
+  if (process.platform === 'win32') s = s.toLowerCase();
+  return s;
+}
+function samePath(a, b) {
+  const x = canonicalPath(a), y = canonicalPath(b);
+  return !!x && !!y && x === y;
+}
+
 async function getAllCookiesViaCDP(cdpUrl, state) {
+  // CDP must never be reached over anything but loopback. The debug port is unauthenticated: every
+  // cookie in the profile is readable by whoever can connect, so a non-loopback endpoint would mean
+  // the session is exposed to the network. Refuse rather than warn.
+  const host = (() => { try { return new URL(cdpUrl).hostname; } catch (_) { return ''; } })();
+  if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) {
+    throw new Error('cdp_not_loopback');
+  }
+
   const verRes = await fetch(cdpUrl + '/json/version', { signal: AbortSignal.timeout(8000) });
   if (!verRes.ok) throw new Error('cdp_version_http_' + verRes.status);
   const ver = await verRes.json();
-  // Chrome reports the profile path in the browser target's `userDataDir` (newer builds) — keep
-  // only the leaf so a full filesystem path is never logged or sent to the server.
+
+  // Protocol compatibility: Storage.getCookies on the BROWSER target needs a modern Chrome. An old
+  // build fails deep inside the websocket with an opaque error; naming it here saves the diagnosis.
+  const proto = String(ver['Protocol-Version'] || '');
+  const major = Number(String(ver.Browser || '').match(/\/(\d+)\./)?.[1] || 0);
+  if (state) { state.cdpProtocol = proto || null; state.chromeMajor = major || null; }
+  if (major && major < 90) throw new Error('cdp_chrome_too_old_' + major);
+
+  // Chrome reports the profile path in the browser target's `userDataDir` (newer builds).
   const dir = ver.userDataDir || ver['user-data-dir'] || '';
+  // Only the last two segments are kept for telemetry — a full filesystem path is never logged,
+  // reported, or sent to the server.
   if (state) state.profile = dir ? String(dir).split(/[\\/]/).filter(Boolean).slice(-2).join('/') : null;
-  if (CFG.chromeProfile && dir && !String(dir).toLowerCase().includes(CFG.chromeProfile.toLowerCase())) {
-    throw new Error('wrong_chrome_profile');
+  if (CFG.chromeProfile) {
+    if (!dir) throw new Error('cdp_profile_unknown');       // cannot prove it is the right one
+    if (!samePath(dir, CFG.chromeProfile)) throw new Error('wrong_chrome_profile');
   }
+
   const wsUrl = ver.webSocketDebuggerUrl;
   if (!wsUrl) throw new Error('cdp_no_ws_url');
   if (typeof WebSocket === 'undefined') throw new Error('no_global_websocket_need_node22');
@@ -491,6 +528,6 @@ async function run() {
   loop(); // run once immediately, then self-reschedule
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, AGENT_VERSION, CFG };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG };
 
 if (require.main === module) start();

@@ -171,6 +171,60 @@ test('every deploy script produces a tree that resolves all its own modules', (t
     '"Cannot find module" and the whole API goes down');
 });
 
+/**
+ * The ATOMIC manifest must stand on its own.
+ *
+ * The incremental tests above model a server that already holds a good tree. For this rollout that
+ * assumption cannot be checked — the production file inventory was not available — so the atomic
+ * script exists precisely so the deploy does not depend on the server's prior state. This proves
+ * that claim the only way it can be proved: build a TRULY empty room, copy in nothing but what the
+ * script ships, and resolve every require from the entry point through that alone.
+ */
+test('the atomic manifest is self-sufficient on an empty server', () => {
+  const { closure } = require(path.join(__dirname, '..', 'scripts', 'backend-closure.js'));
+  const files = closure();
+  assert.ok(files.length >= 50, `sanity: closure is populated (${files.length})`);
+  assert.ok(files.includes('server-crm.js'), 'the entry point ships');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-atomic-'));
+  try {
+    for (const rel of files) {
+      const dest = path.join(tmp, rel);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(path.join(BACKEND, rel), dest);
+    }
+
+    const missing = [];
+    const seen = new Set();
+    const queue = ['server-crm.js'];
+    while (queue.length) {
+      const rel = queue.shift();
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      const deps = requiresIn(tmp, rel);
+      if (deps === null) { missing.push(`${rel} is absent from the shipped set`); continue; }
+      for (const d of deps) {
+        if (!d.resolved) missing.push(`${rel} requires '${d.spec}' which was not shipped`);
+        else if (!seen.has(d.resolved)) queue.push(d.resolved);
+      }
+    }
+    assert.deepStrictEqual(missing, [], 'the atomic deploy would leave an unresolvable require');
+    assert.strictEqual(seen.size, files.length,
+      'every shipped file is reachable from the entry point — no dead weight, nothing missing');
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('the atomic manifest never ships tests, env files or node_modules', () => {
+  const { closure } = require(path.join(__dirname, '..', 'scripts', 'backend-closure.js'));
+  for (const f of closure()) {
+    assert.ok(!/\.test\.js$/.test(f), 'a test file would be deployed: ' + f);
+    assert.ok(!/(^|\/)\.env/.test(f), 'an env file would be deployed: ' + f);
+    assert.ok(!/^node_modules\//.test(f), 'node_modules would be deployed: ' + f);
+  }
+});
+
 test('the clean-room harness actually detects a missing module', () => {
   // A guard for the guard: if the resolver silently resolved everything, the test above would pass
   // no matter what was shipped. Prove it fails when a required module is absent.
