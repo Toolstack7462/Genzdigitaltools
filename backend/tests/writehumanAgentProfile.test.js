@@ -23,7 +23,7 @@ const agent = require(AGENT);
 
 test('the agent package version is the one the backend expects', () => {
   assert.match(agent.AGENT_VERSION, /^\d+\.\d+\.\d+$/);
-  assert.strictEqual(agent.AGENT_VERSION, '3.0.0');
+  assert.strictEqual(agent.AGENT_VERSION, '3.1.0');
 });
 
 test('canonical path comparison accepts the same profile written differently', () => {

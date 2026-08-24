@@ -52,11 +52,6 @@ const AdminWriteHuman = () => {
   const [alert, setAlert] = useState(null);       // { emailMasked, emailSet, enabled, source, smtpConfigured }
   const [alertEmail, setAlertEmail] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
-  // Pairing: the code is returned ONCE by the server and is never retrievable again, so it lives
-  // in component state only until the operator dismisses it. It is never persisted or logged.
-  const [pairCode, setPairCode] = useState(null);   // { code, name, expiresAt }
-  const [pairName, setPairName] = useState('');
-  const [pairing, setPairing] = useState(false);
   const timer = useRef(null);
   const logTick = useRef(0);
 
@@ -109,23 +104,6 @@ const AdminWriteHuman = () => {
     timer.current = setInterval(tick, 30000);
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
   }, [loadState, loadLogs]);
-
-  const createPairCode = async () => {
-    try {
-      setPairing(true);
-      const r = await writeHumanV2Admin.createPairCode(pairName.trim() || undefined);
-      setPairCode(r.data); setPairName('');
-    } catch (e) { showError(e.response?.data?.error || 'Failed to create a pairing code'); }
-    finally { setPairing(false); }
-  };
-  const makeActive = async (d) => {
-    const name = d.name || d.deviceId;
-    try {
-      const r = await writeHumanV2Admin.makeActive(d.deviceId);
-      showSuccess(r.data?.note || `${name} will become the active source on its next verified sync`);
-      loadState();
-    } catch (e) { showError(e.response?.data?.error || e.response?.data?.code || 'Failed to set the active source'); }
-  };
 
   const revokeDevice = async (d) => {
     const name = d.name || d.deviceId;
@@ -246,29 +224,16 @@ const AdminWriteHuman = () => {
           </div>
 
           {/* Paired devices — any of them may supply cookies; the newest VERIFIED bundle wins. */}
+          {/* Read-only in normal operation. Agents enrol themselves on first sync, so there is
+              nothing to click here to get a machine syncing - only things to look at, plus Revoke
+              for taking a machine's access away. Manual pairing still exists server-side for
+              rollback; it is deliberately not surfaced, because an admin control that is never
+              needed is an admin control that gets pressed by mistake. */}
           <Panel icon={Server} title="Sync devices" tint="text-indigo-500" right={
-            <div className="flex items-center gap-2">
-              <input value={pairName} onChange={(e) => setPairName(e.target.value)} placeholder="Device name (e.g. LOCAL-PC)" maxLength={32}
-                className="px-3 py-1.5 rounded-lg border border-slate-200 text-[13px] w-52 focus:outline-none focus:ring-2 focus:ring-indigo-200" />
-              <button onClick={createPairCode} disabled={pairing}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-indigo-500 to-blue-600 disabled:opacity-50">
-                {pairing ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />} Pair device
-              </button>
-            </div>
+            <span className="text-[12px] text-slate-500">agents enrol automatically &middot; no pairing needed</span>
           }>
-            {pairCode && (
-              <div className="mb-3 rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-                <p className="text-[13px] text-indigo-900 font-semibold mb-1">Pairing code for {pairCode.name}</p>
-                <p className="font-mono text-2xl font-bold tracking-widest text-indigo-700 mb-2">{pairCode.code}</p>
-                <p className="text-xs text-indigo-800/80">
-                  Run the agent once on that machine with <code className="bg-white/70 px-1 py-0.5 rounded">WHV2_PAIR_CODE={pairCode.code}</code>.
-                  Single use, expires {rel(pairCode.expiresAt).replace(' ago', '')} from now. It is shown only once — nothing can retrieve it again.
-                </p>
-                <button onClick={() => setPairCode(null)} className="mt-2 text-xs font-semibold text-indigo-700 hover:underline">Done</button>
-              </div>
-            )}
             {liveDevices.length === 0 ? (
-              <p className="text-sm text-slate-400 py-3">No device paired yet. Pair the machine where you sign in to WriteHuman — you can pair several (local PC, RDP) and whichever has the freshest login takes over on its own.</p>
+              <p className="text-sm text-slate-400 py-3">No agent has checked in yet. Install the Universal Agent on the machine where you sign in to WriteHuman; it registers itself on its first sync. Several machines can run it at once, and whichever has the freshest verified login becomes the source.</p>
             ) : (
               <div className="space-y-2">
                 {liveDevices.map((d) => (

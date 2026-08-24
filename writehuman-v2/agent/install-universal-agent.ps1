@@ -6,8 +6,8 @@
 # ASCII ONLY. Windows PowerShell 5.1 reads this file as ANSI, so a non-ASCII character (an em dash
 # is the usual culprit) is silently mangled into a smart quote and breaks the parse.
 #
-#   Install + pair:   powershell -ExecutionPolicy Bypass -File install-universal-agent.ps1 -PairCode ABCDE-FGHIJ -DeviceName LOCAL-PC
-#   Install only:     powershell -ExecutionPolicy Bypass -File install-universal-agent.ps1 -DeviceName RDP-01
+#   Install:          powershell -ExecutionPolicy Bypass -File install-universal-agent.ps1 -SyncKey <PROXY_AGENT_SYNC_KEY>
+#   (legacy pairing:   ... -PairCode ABCDE-FGHIJ   - still supported, no longer required)
 #   Status:           powershell -File install-universal-agent.ps1 -Status
 #   Uninstall:        powershell -File install-universal-agent.ps1 -Uninstall
 #
@@ -17,6 +17,7 @@
 
 [CmdletBinding()]
 param(
+  [string]$SyncKey = '',
   [string]$PairCode = '',
   [string]$DeviceName = $env:COMPUTERNAME,
   [string]$InstallDir = "$env:LOCALAPPDATA\WriteHumanAgent",
@@ -123,11 +124,33 @@ $cfg = [ordered]@{
   chromeProfile   = $ChromeProfile
   deviceStateFile = (Join-Path $InstallDir 'agent-device.json') -replace '\\','/'
   lockFile        = (Join-Path $InstallDir 'agent.lock') -replace '\\','/'
-  pollMs          = 120000
+  agentKeyDpapiFile = (Join-Path $InstallDir 'agent.key.dpapi') -replace '\\','/'
+  pollMs          = 300000
 }
 # Set-Content -Encoding Ascii: a UTF-8/BOM file makes cmd and JSON.parse fail in ways that produce
 # no error output at all. This has cost hours before.
 $cfg | ConvertTo-Json | Set-Content -Path (Join-Path $InstallDir 'config.json') -Encoding Ascii
+
+# ---- shared sync key, protected with DPAPI (CurrentUser) -------------------
+# ConvertFrom-SecureString encrypts with the Windows user's own DPAPI master key, so the file is
+# useless to any other account on this machine and useless if copied to another machine - strictly
+# better than a plaintext file whose only defence is an ACL. The key is never echoed, never written
+# into config.json, and never placed on a command line.
+if ($SyncKey) {
+  $keyPath = Join-Path $InstallDir 'agent.key.dpapi'
+  ConvertTo-SecureString -String $SyncKey -AsPlainText -Force | ConvertFrom-SecureString |
+    Set-Content -Path $keyPath -Encoding Ascii
+  icacls $keyPath /inheritance:r /grant:r "$($env:USERNAME):R" | Out-Null
+  Write-Step "Sync key stored DPAPI-protected at $keyPath"
+  # Prove it round-trips NOW, rather than finding out at the first poll that it cannot be decrypted.
+  $chk  = ConvertTo-SecureString ((Get-Content -Raw $keyPath).Trim())
+  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($chk)
+  if ([Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) -eq $SyncKey) { Write-Host '    verified: decrypts back correctly' }
+  else { Fail 'the DPAPI key file did not round-trip - refusing to continue' }
+} elseif (-not (Test-Path (Join-Path $InstallDir 'agent.key.dpapi'))) {
+  Write-Host '    NOTE: no -SyncKey given and none stored, so the agent cannot sync yet.' -ForegroundColor Yellow
+  Write-Host '          Re-run with -SyncKey <PROXY_AGENT_SYNC_KEY> (from hPanel).'
+}
 
 $runCmd = @"
 @echo off
@@ -174,7 +197,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 
 Write-Host ''
 Write-Host 'Installed.' -ForegroundColor Green
-Write-Host "  agent version : 3.0.0"
+Write-Host "  agent version : 3.1.0"
 Write-Host "  directory     : $InstallDir"
 Write-Host "  log           : $InstallDir\agent.log"
 Write-Host "  identity      : $InstallDir\agent-device.json (device key, owner-only)"
@@ -185,7 +208,7 @@ Write-Host 'Next:'
 Write-Host '  1. Start Chrome with a debug port:  -ShowChromeCommand'
 Write-Host '  2. Sign in to WriteHuman in that window.'
 Write-Host "  3. Start the agent now:  schtasks /run /tn $TaskName"
-Write-Host '  4. Check the admin panel: the device should appear online and become the active source.'
+Write-Host '  4. It registers itself on first sync - no pairing code and no approval step.'
 Write-Host ''
 Write-Host 'The agent never signs in for you and never launches Chrome. It reads only the WriteHuman'
 Write-Host 'auth cookies from the profile you point it at, and nothing else.'

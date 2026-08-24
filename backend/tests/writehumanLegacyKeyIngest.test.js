@@ -118,7 +118,7 @@ test('the legacy shared key is adopted as a real device row, not a bypass', asyn
     assert.strictEqual(r.status, 200);
     const devices = deviceSync.getDevices(acct);
     assert.strictEqual(devices.length, 1, 'it appears in the device registry like any other machine');
-    assert.strictEqual(devices[0].deviceId, 'dev_legacy');
+    assert.strictEqual(devices[0].deviceId, 'agent_legacy_shared');
     assert.ok(devices[0].keyHash, 'stored as a hash');
     assert.ok(!JSON.stringify(devices).includes(LEGACY_KEY), 'the raw key is never persisted');
   } finally { server.close(); }
@@ -146,7 +146,7 @@ test('once revoked, the legacy agent fails closed and the session is untouched',
   const { server, post } = await serve();
   try {
     await post('/api/crm/proxy/agent/writehuman/cookies', { heartbeat: true }, { 'x-agent-key': LEGACY_KEY });
-    deviceSync.revokeDevice(acct, 'dev_legacy', { force: true });
+    deviceSync.revokeDevice(acct, 'agent_legacy_shared', { force: true });
     const before = acct.sessionEncrypted;
 
     const r = await post('/api/crm/proxy/agent/writehuman/cookies', { cookies: cookies(9500) }, { 'x-agent-key': LEGACY_KEY });

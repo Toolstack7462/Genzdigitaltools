@@ -77,8 +77,9 @@ test('with nothing paired and no key, ingest fails closed with a diagnosable cod
     assert.strictEqual(r.status, 503);
     assert.strictEqual(r.body.code, 'agent_sync_not_configured');
     // The hint is the whole point: the old 503 said nothing, and an operator could not tell it
-    // apart from a bad key. This one names the remedy.
-    assert.match(r.body.hint || '', /pair/i);
+    // apart from a bad key. This one names the remedy - now that enrolment is automatic, the only
+    // thing an operator can be missing is the server-side key.
+    assert.match(r.body.hint || '', /PROXY_AGENT_SYNC_KEY/);
   } finally { server.close(); }
 });
 

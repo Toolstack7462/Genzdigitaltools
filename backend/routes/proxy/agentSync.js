@@ -29,7 +29,8 @@ const deviceSync = require('../../utils/proxy/deviceSync');
 const { ingestCandidate, markDeviceLoggedOut, recordAttempt } = require('../../utils/proxy/candidateSync');
 
 const { CODES } = deviceSync;
-const LEGACY_KEY = process.env.PROXY_AGENT_SYNC_KEY || '';
+// The shared agent-ingest key. Set in hPanel, never in git and never returned by any route.
+const SHARED_KEY = process.env.PROXY_AGENT_SYNC_KEY || '';
 // Optional. Deliberately EMPTY by default: with per-device keys an IP pin adds little and breaks
 // roaming/residential devices (a changed egress IP silently 403s every push).
 const ALLOW_IPS = (process.env.PROXY_AGENT_SYNC_ALLOW_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -68,6 +69,18 @@ function sanitizeReport(r) {
     lastCommand: s(r.lastCommand, 40), lastCommandAt: s(r.lastCommandAt, 40),
     profile: s(r.profile, 80), receivedAt: new Date(),
   };
+}
+
+/**
+ * Attach a freshly issued per-agent key to the enrolment response, and ONLY that response. The key
+ * is stored as a hash, so this single reply is the one chance the agent has to keep it.
+ */
+function withIssuedKey(req, body) {
+  if (req._issuedDeviceKey) {
+    body.issuedDeviceKey = req._issuedDeviceKey;
+    body.deviceId = req._issuedDeviceId || null;
+  }
+  return body;
 }
 
 function activeSourceView(account) {
@@ -138,28 +151,55 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
     const deviceId = req.headers['x-device-id'] ? String(req.headers['x-device-id']).slice(0, 64) : null;
 
     // -- authenticate -------------------------------------------------------
+    // Two ways in, in priority order:
+    //   1. A PAIRED device presenting its own key (`x-device-id`). Kept fully working so a
+    //      rollback to the manual-pairing workflow needs no code change.
+    //   2. The NORMAL path: the shared ingest key plus a self-generated `x-agent-id`. The agent
+    //      registers itself on first contact - no code to fetch, no approval to click, and
+    //      installing on a new machine is just "give it the key once".
+    // Self-registration relaxes only the ENROLMENT step. Everything that protects the live session
+    // is downstream and unchanged: one-time activation claim, candidate verification before any
+    // promotion, per-device revocation, replay and idempotency.
     let device = null;
+    const agentId = req.headers['x-agent-id'] ? String(req.headers['x-agent-id']).slice(0, 64) : null;
+    const sharedKeyOk = SHARED_KEY && timingEq(presentedKey, SHARED_KEY);
+
     if (deviceId) {
       const a = deviceSync.authenticateDevice(account, deviceId, presentedKey);
       if (!a.ok) return res.status(403).json({ ok: false, code: a.code });
       device = a.device;
-    } else if (LEGACY_KEY && timingEq(presentedKey, LEGACY_KEY)) {
-      device = deviceSync.findDevice(account, 'dev_legacy');
-      if (!device) {
-        device = {
-          deviceId: 'dev_legacy', name: 'RDP-LEGACY', hostname: (report && report.host) || null,
-          agentVersion: (report && report.version) || null, keyHash: deviceSync.sha256(LEGACY_KEY),
-          pairedAt: new Date(), revoked: false, lastSeq: 0, syncCount: 0, promotionCount: 0, legacy: true,
-        };
-        account.syncDevices = deviceSync.getDevices(account).concat([device]);
+    } else if (sharedKeyOk && agentId) {
+      const r = deviceSync.autoRegisterDevice(account, agentId, {
+        hostname: (report && report.host) || null,
+        agentVersion: (report && report.version) || null,
+      });
+      if (!r.ok) return res.status(403).json({ ok: false, code: r.code });
+      device = r.device;
+      if (r.created) {
+        // Non-secret: an id the agent generated and the hostname it reported. No key material.
+        console.log('[agent-sync] device self-registered', JSON.stringify({ tool, deviceId: device.deviceId, name: device.name }));
+        // Handed back ONCE, on the enrolment response only. Stored as a hash; never retrievable.
+        req._issuedDeviceKey = r.issuedKey;
+        req._issuedDeviceId = device.deviceId;
       }
-      if (device.revoked) return res.status(403).json({ ok: false, code: CODES.DEVICE_REVOKED });
+    } else if (sharedKeyOk) {
+      // Shared key but no agent id: the pre-multi-device agent. Adopt it under a stable id so it
+      // still goes through the candidate pipeline rather than getting a bypass.
+      const r = deviceSync.autoRegisterDevice(account, 'agent_legacy_shared', {
+        hostname: (report && report.host) || null,
+        agentVersion: (report && report.version) || null,
+      });
+      if (!r.ok) return res.status(403).json({ ok: false, code: r.code });
+      device = r.device;
     } else {
-      // No device header and no usable legacy key. Distinguish "nothing is paired yet" from "you
-      // presented bad credentials" so the operator can tell those apart at a glance.
+      // Tell "nothing is configured" apart from "your credentials are wrong" - the 38-day outage
+      // was a 503 that said neither.
       const anyDevice = deviceSync.getDevices(account).some(d => d && !d.revoked);
-      if (!anyDevice && !LEGACY_KEY) {
-        return res.status(503).json({ ok: false, code: 'agent_sync_not_configured', hint: 'No device is paired yet. Create a pairing code in Admin -> WriteHuman -> Devices.' });
+      if (!anyDevice && !SHARED_KEY) {
+        return res.status(503).json({
+          ok: false, code: 'agent_sync_not_configured',
+          hint: 'PROXY_AGENT_SYNC_KEY is not set on the server, so no agent can sync. Set it in hPanel and restart the app.',
+        });
       }
       return res.status(403).json({ ok: false, code: CODES.AUTH_INVALID });
     }
@@ -198,7 +238,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       recordAttempt(account, device, 'HEARTBEAT', meta);
       clearPending();
       await account.save();
-      return res.json({ ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, command: pending, activeSource: activeSourceView(account), isActiveSource: isActive(account, device) });
+      return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, command: pending, activeSource: activeSourceView(account), isActiveSource: isActive(account, device) }));
     }
 
     // -- explicit logout signal from this device ----------------------------
@@ -206,7 +246,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       const r = await markDeviceLoggedOut(account, tool, device, meta);
       clearPending();
       await account.save();
-      return res.json({ ok: true, code: r.code, loggedOut: true, downgraded: r.downgraded, changed: r.downgraded, command: pending });
+      return res.json(withIssuedKey(req, { ok: true, code: r.code, loggedOut: true, downgraded: r.downgraded, changed: r.downgraded, command: pending }));
     }
 
     // -- cookie candidate ---------------------------------------------------
@@ -215,7 +255,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
     await account.save();
 
     const httpCode = (r.code === CODES.PROMOTED || r.code === CODES.COOKIE_BUNDLE_UNCHANGED) ? 200 : 409;
-    return res.status(httpCode).json({
+    return res.status(httpCode).json(withIssuedKey(req, {
       ok: httpCode === 200,
       code: r.code,
       changed: r.changed,
@@ -225,7 +265,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       activeSource: activeSourceView(account),
       isActiveSource: isActive(account, device),
       command: pending,
-    });
+    }));
   } catch (err) {
     console.error('[agent-sync] ingest error:', err && err.message);
     return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });

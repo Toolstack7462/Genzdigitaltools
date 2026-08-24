@@ -154,6 +154,7 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     promotionCount: dev.promotionCount || 0,
     cdp: (dev.report && dev.report.cdp) || null,
     profile: (dev.report && dev.report.profile) || null,
+    autoRegistered: !!dev.autoRegistered,
     authState: dev.authState || null,
     activationClaimAt: dev.activationClaimAt || null,
     activationClaimUsed: !!dev.activationClaimUsedAt,
@@ -213,6 +214,69 @@ function redeemPairingCode(account, code, meta) {
   account.pairingCodes = list;
   account.syncDevices = devices.concat([dev]);
   return { ok: true, code: CODES.OK, deviceId: dev.deviceId, deviceKey, name: dev.name };
+}
+
+/**
+ * Self-registration: an agent holding the shared ingest key introduces itself with an id it
+ * generated locally, and is recorded without any approval step.
+ *
+ * This is the normal path now. Manual pairing still exists underneath (createPairingCode /
+ * redeemPairingCode / per-device keys) and still works, so a rollback needs no code change - but
+ * an operator installing the agent on a new machine should not have to go and fetch a code first.
+ *
+ * What self-registration deliberately does NOT relax: the device row is still created, so every
+ * later guarantee is unchanged - one-time activation claim on first verified sync, candidate
+ * verification before promotion, per-device revocation, replay and idempotency tracking. The row
+ * carries no keyHash because the shared key is what authenticated it; `autoRegistered` records
+ * that, so the admin can tell a self-registered agent from a hand-paired one.
+ *
+ * The trust boundary is honest about itself: anyone holding the shared key can register an agent
+ * and OFFER a candidate. They cannot replace the live session with it - the candidate still has to
+ * authenticate as the expected account - so the worst case is a rejected upload, not a takeover.
+ */
+function autoRegisterDevice(account, agentId, meta) {
+  const m = meta || {};
+  const id = String(agentId || '').trim();
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) return { ok: false, code: CODES.AUTH_INVALID };
+
+  const existing = findDevice(account, id);
+  if (existing) {
+    if (existing.revoked) return { ok: false, code: CODES.DEVICE_REVOKED };
+    // Keep the cosmetic fields current - a machine may be renamed or the agent upgraded.
+    if (m.hostname) existing.hostname = cleanName(m.hostname, existing.hostname || '') || existing.hostname;
+    if (m.agentVersion) existing.agentVersion = cleanName(m.agentVersion, existing.agentVersion || '') || existing.agentVersion;
+    if (!existing.name && m.hostname) existing.name = cleanName(m.hostname, id.slice(0, 12));
+    putDevice(account, existing);
+    return { ok: true, code: CODES.OK, device: existing, created: false };
+  }
+
+  const live = getDevices(account).filter(d => d && !d.revoked).length;
+  if (live >= MAX_DEVICES) return { ok: false, code: CODES.DEVICE_LIMIT_REACHED };
+
+  // Issue this agent its OWN key at enrolment and hand it back exactly once.
+  //
+  // The shared key is then only a BOOTSTRAP credential: it gets an agent through the door, and
+  // from the next request onward the agent authenticates as itself. That matters for the property
+  // the shared key cannot give on its own - revoking one machine without rotating the secret every
+  // other machine is using. It also shrinks the blast radius of a leaked shared key to "someone
+  // could enrol an agent", which still cannot replace the live session because a candidate must
+  // pass account verification regardless.
+  const issuedKey = newDeviceKey();
+  const dev = {
+    deviceId: id,
+    name: cleanName(m.hostname, id.slice(0, 12)),
+    hostname: cleanName(m.hostname, '') || null,
+    agentVersion: cleanName(m.agentVersion, '') || null,
+    keyHash: sha256(issuedKey),
+    autoRegistered: true,
+    pairedAt: new Date(),
+    revoked: false,
+    lastSeq: 0,
+    syncCount: 0,
+    promotionCount: 0,
+  };
+  account.syncDevices = getDevices(account).concat([dev]);
+  return { ok: true, code: CODES.OK, device: dev, created: true, issuedKey };
 }
 
 /** Authenticate a push. Returns { ok, code, device }. */
@@ -325,7 +389,7 @@ module.exports = {
   CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES, ACTIVATION_TTL_MS, ACTIVE_INTENT_TTL_MS,
   sha256, timingEqHex, cleanName, bundleTokenIat, bundleTokenClaims,
   getDevices, findDevice, publicDevice, putDevice,
-  createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice,
+  createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice, autoRegisterDevice,
   noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
   setActiveSourceIntent, activeSourceIntentFor, clearActiveSourceIntent,
 };

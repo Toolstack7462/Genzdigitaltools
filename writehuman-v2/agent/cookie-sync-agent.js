@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '3.0.0';
+const AGENT_VERSION = '3.1.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -46,7 +46,50 @@ const AGENT_VERSION = '3.0.0';
 // shared config.json — so the secret isn't sitting in a world-readable launcher/config.
 function readJsonFile(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } }
 function readKeyFile(p) { if (!p) return ''; try { return fs.readFileSync(p, 'utf8').trim(); } catch (_) { return ''; } }
-const CONFIG_PATH = process.env.WHV2_CONFIG || path.join(__dirname, '..', 'config.json');
+
+/**
+ * Read a DPAPI-protected key file (Windows, CurrentUser scope).
+ *
+ * The installer encrypts the shared ingest key with the Windows user's own DPAPI master key, so the
+ * file on disk is useless to any other account on the machine and useless if copied elsewhere -
+ * strictly better than a plaintext file whose only protection is an ACL. Node cannot call DPAPI
+ * without a native module, so this shells out to PowerShell exactly ONCE at startup and keeps the
+ * key in memory. Never per request, and never logged.
+ *
+ * Returns '' if the file is absent or cannot be decrypted (wrong user, corrupt, no PowerShell), and
+ * the caller then falls back to the plaintext key file.
+ */
+function readDpapiKeyFile(p) {
+  if (!p || process.platform !== 'win32') return '';
+  try {
+    if (!fs.existsSync(p)) return '';
+    const { execFileSync } = require('child_process');
+    const ps = 'try{$s=Get-Content -Raw -Path ' + JSON.stringify(p) +
+      ';$ss=ConvertTo-SecureString $s.Trim();' +
+      '$b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($ss);' +
+      '[Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)}catch{""}';
+    const out = execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { encoding: 'utf8', timeout: 15000, windowsHide: true });
+    return String(out || '').trim();
+  } catch (_) { return ''; }
+}
+/**
+ * Where config.json lives, in order: an explicit WHV2_CONFIG (what run-agent.cmd sets), then
+ * BESIDE this file, then one directory up.
+ *
+ * The sibling lookup is not cosmetic. The installer copies the agent and its config into the SAME
+ * directory, while the original repo layout kept config one level up - so without it, launching the
+ * agent directly (no WHV2_CONFIG) silently loads NO config at all: default poll interval, default
+ * paths, no key file, and the identity written to the wrong directory. It then dies with "no sync
+ * key configured" while a perfectly good config.json sits next to the script. Found by running it.
+ */
+function resolveConfigPath() {
+  if (process.env.WHV2_CONFIG) return process.env.WHV2_CONFIG;
+  const sibling = path.join(__dirname, 'config.json');
+  try { if (fs.existsSync(sibling)) return sibling; } catch (_) {}
+  return path.join(__dirname, '..', 'config.json');
+}
+const CONFIG_PATH = resolveConfigPath();
 const FILE_CFG = readJsonFile(CONFIG_PATH) || {};
 const CONFIG_SOURCE = readJsonFile(CONFIG_PATH) ? CONFIG_PATH : 'env-only';
 function pick(env, fileKey, dflt) {
@@ -58,11 +101,17 @@ function pick(env, fileKey, dflt) {
 
 const CFG = {
   ingestUrl: pick('WHV2_INGEST_URL', 'ingestUrl', 'http://127.0.0.1:3100/v2/cookies/ingest'),
-  agentKey: process.env.WHV2_AGENT_KEY || readKeyFile(process.env.WHV2_AGENT_KEY_FILE) || readKeyFile(FILE_CFG.agentKeyFile) || '',
+  // Shared ingest key, in order of preference: env (service manager), DPAPI-protected file
+  // (what the installer writes), then a plaintext key file (fallback for non-Windows or when
+  // PowerShell is unavailable). Never read from config.json - that file is not a secret store.
+  agentKey: process.env.WHV2_AGENT_KEY
+    || readDpapiKeyFile(process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile)
+    || readKeyFile(process.env.WHV2_AGENT_KEY_FILE) || readKeyFile(FILE_CFG.agentKeyFile) || '',
   cdpUrl: pick('WHV2_CDP_URL', 'cdpUrl', 'http://127.0.0.1:9222').replace(/\/$/, ''),
   domain: pick('WHV2_TARGET_DOMAIN', 'domain', 'writehuman.ai'),
   ref: pick('WHV2_SUPABASE_REF', 'ref', 'hicfsbrfkzsxbwayibfm'),
-  pollMs: Math.max(15000, parseInt(pick('WHV2_POLL_MS', 'pollMs', ''), 10) || 300000),
+  // How often we ASK CHROME (local, cheap - no server traffic unless something changed).
+  pollMs: Math.max(15000, parseInt(pick('WHV2_POLL_MS', 'pollMs', ''), 10) || 45000),
   // Consecutive empty (no-auth) polls before we treat it as a real logout and signal V2.
   logoutDebounce: Math.max(1, parseInt(pick('WHV2_LOGOUT_DEBOUNCE', 'logoutDebounce', ''), 10) || 2),
   // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
@@ -93,6 +142,14 @@ const CFG = {
   // by more activity, and this catches the follow-up promptly without ever becoming busy-polling.
   quickPollMs: Math.max(5000, parseInt(pick('WHV2_QUICK_POLL_MS', 'quickPollMs', ''), 10) || 8000),
   quickPollFor: Math.max(0, parseInt(pick('WHV2_QUICK_POLL_COUNT', 'quickPollFor', ''), 10) || 4),
+  // How often we TALK TO THE SERVER when nothing has changed. Decoupled from the Chrome poll on
+  // purpose: checking cookies is a loopback call costing nothing, whereas a heartbeat is a request
+  // to a shared, process-limited host. Polling Chrome every 45s while heartbeating every 3 minutes
+  // gives fast detection at a quarter of the server traffic a 45s heartbeat would cause.
+  heartbeatMs: Math.max(60000, parseInt(pick('WHV2_HEARTBEAT_MS', 'heartbeatMs', ''), 10) || 180000),
+  // Never launch Chrome by default. On a personal machine an agent that opens browser windows is
+  // obnoxious; on any machine it risks a second instance fighting over the profile lock.
+  autoLaunchChrome: String(pick('WHV2_AUTO_LAUNCH_CHROME', 'autoLaunchChrome', '0')) === '1',
 };
 
 // ── device state (deviceId + deviceKey + monotonic seq) ──────────────────────
@@ -101,9 +158,29 @@ const CFG = {
 function loadDeviceState() {
   try {
     const s = JSON.parse(fs.readFileSync(CFG.deviceStateFile, 'utf8'));
+    // A PAIRED device (has its own key) or a SELF-REGISTERED agent (id only, shared key).
     if (s && s.deviceId && s.deviceKey) return { deviceId: s.deviceId, deviceKey: s.deviceKey, seq: Number(s.seq) || 0, name: s.name || null };
-  } catch (_) { /* not paired yet */ }
+    if (s && s.agentId) return { agentId: s.agentId, seq: Number(s.seq) || 0, name: s.name || null };
+  } catch (_) { /* first run */ }
   return null;
+}
+
+/**
+ * This machine's own identity, created on first run and kept forever after.
+ *
+ * There is no enrolment step: the agent invents a random id, and the server records it the first
+ * time it sees it. That id is what per-device state hangs off server-side - the one-time activation
+ * claim, the sequence number for replay rejection, revocation - so it has to be STABLE across
+ * restarts and reinstalls of the same machine, and it must not be guessable by another machine.
+ * 128 bits of randomness, written once.
+ */
+function ensureAgentIdentity() {
+  const existing = loadDeviceState();
+  if (existing) return existing;
+  const st = { agentId: 'agent_' + crypto.randomBytes(16).toString('hex'), name: CFG.deviceName, seq: 0, createdAt: new Date().toISOString() };
+  saveDeviceState(st);
+  log('agent_identity_created', { agent_id: st.agentId, name: st.name });
+  return st;
 }
 function saveDeviceState(st) {
   try {
@@ -281,8 +358,11 @@ async function postToServer(state, payload) {
   // retry of the SAME request (a lost ack, not a new state) be recognised and answered from the
   // previous outcome instead of being applied twice.
   const dev = state.device || null;
+  // A paired device sends its OWN key; a self-registered agent sends the shared ingest key plus the
+  // id it generated. The server tells them apart by which header is present.
   const headers = { 'content-type': 'application/json', 'x-agent-key': (dev && dev.deviceKey) || CFG.agentKey };
   if (dev && dev.deviceId) headers['x-device-id'] = dev.deviceId;
+  else if (dev && dev.agentId) headers['x-agent-id'] = dev.agentId;
   const envelope = Object.assign({ agent: buildReport(state) }, payload);
   if (dev) {
     dev.seq = (dev.seq || 0) + 1;
@@ -304,6 +384,14 @@ async function postToServer(state, payload) {
   let body = null; try { body = await resp.json(); } catch (_) {}
   if (resp.ok) {
     state.ingestFails = 0;                                    // reachable again -> clear backoff
+    // Enrolment reply: the server issued this agent its own key. Persist it and use it from now
+    // on, so the shared bootstrap key is never sent again and this machine can be revoked alone.
+    if (body && body.issuedDeviceKey && body.deviceId && state.device) {
+      state.device.deviceId = body.deviceId;
+      state.device.deviceKey = body.issuedDeviceKey;
+      delete state.device.agentId;
+      if (saveDeviceState(state.device)) log('device_key_issued', { device_id: body.deviceId });
+    }
     if (body && body.command) handleCommand(state, body.command);
     return body || {};
   }
@@ -354,7 +442,7 @@ async function pushIfChanged(state) {
     // AUTO-RECOVERY: after N consecutive CDP failures the debug Chrome is likely dead/closed —
     // relaunch it via its task (faster than the 5-min watchdog). Cooldown-gated so it can't
     // relaunch-spam while Chrome is still coming back up.
-    if (state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+    if (CFG.autoLaunchChrome && state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
       state.lastRelaunchAt = Date.now();
       log('cdp_auto_relaunch', { after_fails: state.cdpFails, task: CFG.chromeTask });
       try { const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true }); p.on('error', (er) => log('cdp_auto_relaunch_failed', { error: er.message })); p.unref(); } catch (_) {}
@@ -371,11 +459,13 @@ async function pushIfChanged(state) {
       if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
         const r = await postToServer(state, { loggedOut: true, reason: 'auth_cookie_absent' });
         if (r && !r._err && r._status == null) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
-      } else {
+      } else if (!state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs) {
+        state.lastHeartbeatAt = Date.now();
         await postToServer(state, { heartbeat: true, hash: null });
         log('browser_not_authenticated', { auth_cookies: 0, empty_polls: state.emptyPolls });
       }
-    } else {
+    } else if (!state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs) {
+      state.lastHeartbeatAt = Date.now();
       await postToServer(state, { heartbeat: true, hash: null });
       log('browser_not_authenticated', { auth_cookies: 0 });
     }
@@ -384,6 +474,13 @@ async function pushIfChanged(state) {
   state.emptyPolls = 0; state.loggedOutSent = false;
   const forced = !!state.forceNext;
   if (!forced && hash === state.lastHash) {
+    // Nothing changed. Asking Chrome was free (loopback); telling the SERVER so is not, and this
+    // runs on a host that has hit its process ceiling. So a no-change poll only reaches the network
+    // when a heartbeat is actually due - at a 45s poll and a 3-minute heartbeat that is one request
+    // in four. Liveness is unaffected: the dashboard's staleness window is far wider than 3 minutes.
+    const due = !state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs;
+    if (!due) return;
+    state.lastHeartbeatAt = Date.now();
     const r = await postToServer(state, { heartbeat: true, hash: hash.slice(0, 8) });
     if (r && r._err) log('heartbeat_failed', { error: r._err });
     else if (r && r._status) log('heartbeat_rejected', { status: r._status });
@@ -402,6 +499,7 @@ async function pushIfChanged(state) {
     return;
   }
   state.lastHash = hash; state.forceNext = false;
+  state.lastHeartbeatAt = Date.now();   // a push IS contact; no extra beat needed right after
   // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
   state.quickPollsLeft = CFG.quickPollFor;
   log('cookie_synchronized', {
@@ -472,24 +570,32 @@ function start() {
 async function run() {
   // Identity resolution, in order: an existing pairing on this machine, else redeem a pairing code
   // if one was supplied, else fall back to the pre-multi-device single global key.
+  // Optional legacy path: an explicit pairing code still works and yields a per-device key.
   let device = loadDeviceState();
   if (!device && CFG.pairCode) {
     try { device = await pairDevice(CFG.pairCode); } catch (e) { log('pairing_error', { error: e.message }); }
   }
-  if (!device && !CFG.agentKey) {
-    const kf = process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile;
+  // NORMAL path: no code, no approval. The agent invents its own id on first run and the server
+  // records it the first time it authenticates with the shared ingest key.
+  if (!device) device = ensureAgentIdentity();
+
+  if (!device.deviceKey && !CFG.agentKey) {
     log('fatal', {
-      reason: kf ? 'agent key file configured but empty/unreadable' : 'this device is not paired and no agent key is configured',
-      remedy: 'Create a pairing code in Admin -> WriteHuman -> Devices, then start the agent once with WHV2_PAIR_CODE=<code>',
-      key_file: kf || null, device_state: CFG.deviceStateFile,
+      reason: 'no sync key configured',
+      remedy: 'Re-run install-universal-agent.ps1 with -SyncKey <PROXY_AGENT_SYNC_KEY>, or set WHV2_AGENT_KEY.',
+      dpapi_file: process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile || null,
+      key_file: process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile || null,
+      device_state: CFG.deviceStateFile,
     });
     process.exit(1);
   }
   if (!/^https:/i.test(CFG.ingestUrl) && !/(127\.0\.0\.1|localhost)/i.test(CFG.ingestUrl)) {
     log('warn_insecure_ingest', { note: 'ingest URL is not https — the device key would travel in cleartext' });
   }
-  const keySource = device ? 'device' : (process.env.WHV2_AGENT_KEY ? 'env' : 'file');
-  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile, device_id: device ? device.deviceId : null, device_name: device ? device.name : null });
+  const keySource = device && device.deviceKey ? 'paired-device-key'
+    : (process.env.WHV2_AGENT_KEY ? 'env'
+      : (readDpapiKeyFile(process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile) ? 'dpapi' : 'file'));
+  log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile, device_id: (device && (device.deviceId || device.agentId)) || null, device_name: device ? device.name : null, self_registered: !!(device && device.agentId) });
 
   const state = { device, lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
   let timer = null;
