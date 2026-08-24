@@ -27,6 +27,7 @@ const tools = require('../../utils/proxy/tools');
 const { selectAccount } = require('../../utils/proxy/accountSelect');
 const deviceSync = require('../../utils/proxy/deviceSync');
 const { ingestCandidate, markDeviceLoggedOut, recordAttempt } = require('../../utils/proxy/candidateSync');
+const agentEnroll = require('../../utils/proxy/agentEnroll');
 
 const { CODES } = deviceSync;
 // The shared agent-ingest key. Set in hPanel, never in git and never returned by any route.
@@ -125,6 +126,80 @@ router.post('/:tool/pair', express.json({ limit: '8kb' }), async (req, res) => {
     return res.json({ ok: true, code: CODES.OK, deviceId: r.deviceId, deviceKey: r.deviceKey, name: r.name, tool: req.proxyTool });
   } catch (err) {
     console.error('[agent-sync] pair error:', err && err.message);
+    return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });
+  }
+});
+
+// -- Browser-authorized enrolment --------------------------------------------
+// Two unauthenticated endpoints, both inert without an admin's approval in between. A fresh agent
+// has no credential by definition, so requiring one here would be circular; what actually gates
+// enrolment is that a signed-in admin must click Authorize on that specific pending request.
+const ENROLL_RL_MAX = Number(process.env.PROXY_AGENT_ENROLL_RATE_PER_MIN || 12);
+
+/** Step 1: the agent registers its intent and gets back a URL for the admin to open. */
+router.post('/:tool/enroll/start', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    const ip = clientIp(req);
+    if (!rateOk('enroll', ip, ENROLL_RL_MAX)) return res.status(429).json({ ok: false, code: 'rate_limited' });
+    const account = await primaryFor(req.proxyTool);
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+
+    const b = req.body || {};
+    const r = agentEnroll.start(account, {
+      agentId: b.agentId, challenge: b.codeChallenge,
+      name: b.name, hostname: b.hostname, agentVersion: b.agentVersion,
+    });
+    if (!r.ok) return res.status(400).json({ ok: false, code: r.code });
+    await account.save();
+
+    // Built from a server-side constant, never from request input - a URL assembled from what the
+    // caller sent is how open redirects happen.
+    const base = (process.env.FRONTEND_URL || 'https://app.genzdigitalstore.com').replace(/\/+$/, '');
+    return res.json({
+      ok: true, code: 'OK', enrollId: r.enrollId, expiresAt: r.expiresAt, pollIntervalMs: r.pollIntervalMs,
+      authorizeUrl: base + '/admin/writehuman/agent-authorize?e=' + encodeURIComponent(r.enrollId),
+    });
+  } catch (err) {
+    console.error('[agent-sync] enroll start error:', err && err.message);
+    return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });
+  }
+});
+
+/**
+ * Step 3: the agent redeems an authorized enrolment for its own credential. Answers 202 while the
+ * admin has not clicked yet, so the agent keeps polling, and returns a credential exactly once -
+ * redeem() marks the record consumed before any key is minted.
+ */
+router.post('/:tool/enroll/poll', express.json({ limit: '8kb' }), async (req, res) => {
+  try {
+    const ip = clientIp(req);
+    if (!rateOk('enrollpoll', ip, ENROLL_RL_MAX * 20)) return res.status(429).json({ ok: false, code: 'rate_limited' });
+    const account = await primaryFor(req.proxyTool);
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+
+    const b = req.body || {};
+    const r = agentEnroll.redeem(account, { enrollId: b.enrollId, agentId: b.agentId, verifier: b.codeVerifier });
+    if (!r.ok) {
+      await account.save();
+      // Still waiting on the human is not an error - it is this endpoint's normal state.
+      if (r.code === 'ENROLLMENT_PENDING') return res.status(202).json({ ok: false, code: r.code });
+      return res.status(403).json({ ok: false, code: r.code });
+    }
+    const reg = deviceSync.autoRegisterDevice(account, r.record.agentId, {
+      hostname: r.record.hostname, agentVersion: r.record.agentVersion,
+    });
+    if (!reg.ok) return res.status(403).json({ ok: false, code: reg.code });
+    if (r.record.name) reg.device.name = r.record.name;
+    reg.device.enrolledVia = 'browser';
+    deviceSync.putDevice(account, reg.device);
+    await account.save();
+
+    console.log('[agent-sync] agent enrolled via browser authorization',
+      JSON.stringify({ tool: req.proxyTool, deviceId: reg.device.deviceId, name: reg.device.name }));
+    // The one and only time this credential is transmitted.
+    return res.json({ ok: true, code: 'OK', deviceId: reg.device.deviceId, deviceKey: reg.issuedKey, name: reg.device.name });
+  } catch (err) {
+    console.error('[agent-sync] enroll poll error:', err && err.message);
     return res.status(500).json({ ok: false, code: 'INTERNAL_ERROR' });
   }
 });

@@ -108,7 +108,7 @@ test('every utils/proxy module required by deployed code is itself deployed', ()
  * closure would flag every script and a test that cries wolf gets ignored. A NEW module is the
  * case that actually breaks a deploy, and it is the case every past incident had in common.
  */
-const NEW_MODULES = ['utils/proxy/deviceSync.js', 'utils/proxy/candidateSync.js'];
+const NEW_MODULES = ['utils/proxy/deviceSync.js', 'utils/proxy/candidateSync.js', 'utils/proxy/agentEnroll.js'];
 
 function deployScripts() {
   return fs.readdirSync(ROOT).filter(f => /^deploy.*\.sh$/.test(f));

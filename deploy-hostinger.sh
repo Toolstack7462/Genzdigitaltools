@@ -146,6 +146,7 @@ curl --fail-with-body --ftp-create-dirs \
   `# module" and takes the whole API down — see backend/tests/deployManifest.test.js.` \
   -T backend/utils/proxy/deviceSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
+  -T backend/utils/proxy/agentEnroll.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentEnroll.js" \
   -T backend/utils/proxy/healthAlerts.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/healthAlerts.js" \
   -T backend/utils/proxy/usageSearch.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/usageSearch.js" \
   -T backend/utils/proxy/validationResponse.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/validationResponse.js" \

@@ -29,6 +29,7 @@ const { unavailableReason, selectAccount } = require('../../utils/proxy/accountS
 const { rankAssignableClients, escapeRegex } = require('../../utils/proxy/assignableClients');
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
 const deviceSync = require('../../utils/proxy/deviceSync');
+const agentEnroll = require('../../utils/proxy/agentEnroll');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
@@ -1051,7 +1052,7 @@ const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
 const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.1.0';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.2.0';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1292,6 +1293,66 @@ router.post('/:tool/devices/pair-code', async (req, res) => {
   } catch (err) {
     console.error('Proxy pair-code error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to create pairing code' });
+  }
+});
+
+// -- Agent enrolment: the browser half ---------------------------------------
+// The agent starts a request and shows the operator a URL; these routes are what an authenticated
+// admin uses to look at that request and approve it. All inherit requireAuth + requireAdmin from
+// the router; the mutation additionally takes CSRF, because it is a state change driven from a
+// browser and that is precisely the shape CSRF exists to protect.
+//
+// None of them ever returns the credential. The agent collects it by polling with its PKCE
+// verifier, so the secret never travels through a browser, a URL, or an admin's screen.
+router.get('/:tool/enrollments', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.json({ ok: true, enrollments: [] });
+    const now = Date.now();
+    return res.json({
+      ok: true,
+      enrollments: agentEnroll.list(account).map(r => agentEnroll.publicEnrollment(r, now)),
+      ttlMinutes: Math.round(agentEnroll.ENROLL_TTL_MS / 60000),
+    });
+  } catch (err) {
+    console.error('Proxy enrollments list error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load enrolment requests' });
+  }
+});
+
+router.get('/:tool/enrollments/:enrollId', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+    const rec = agentEnroll.find(account, req.params.enrollId);
+    if (!rec) return res.status(404).json({ ok: false, code: 'ENROLLMENT_UNKNOWN' });
+    return res.json({ ok: true, enrollment: agentEnroll.publicEnrollment(rec) });
+  } catch (err) {
+    console.error('Proxy enrollment get error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load the enrolment request' });
+  }
+});
+
+router.post('/:tool/enrollments/:enrollId/authorize', requireCsrf, async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.status(404).json({ ok: false, code: 'no_account' });
+    const r = agentEnroll.authorize(account, req.params.enrollId, req.userId);
+    if (!r.ok) return res.status(409).json({ ok: false, code: r.code });
+    await account.save();
+    // Audited without secrets: which request, which machine, approved by whom.
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_AGENT_ENROLLMENT_AUTHORIZED', {
+      tool: req.proxyTool, accountId: account._id, enrollId: req.params.enrollId,
+      name: r.record.name, hostname: r.record.hostname, ip: getClientIp(req),
+    });
+    return res.json({
+      ok: true, code: r.code,
+      enrollment: agentEnroll.publicEnrollment(r.record),
+      note: 'The agent picks up its credential within a few seconds. Nothing needs to be copied.',
+    });
+  } catch (err) {
+    console.error('Proxy enrollment authorize error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to authorize the device' });
   }
 });
 

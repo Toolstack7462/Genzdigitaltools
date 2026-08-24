@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '3.1.0';
+const AGENT_VERSION = '3.2.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -188,6 +188,81 @@ function saveDeviceState(st) {
     return true;
   } catch (e) { log('device_state_write_failed', { error: e.message }); return false; }
 }
+/**
+ * Browser-authorized enrolment (PKCE device flow).
+ *
+ * No key to copy. The agent proves it started the flow by holding a verifier whose hash it sent up
+ * front, an admin approves the request in a browser they are already signed into, and the agent
+ * then collects a credential that belongs to this machine alone.
+ *
+ * Polling rather than a localhost callback, deliberately: a callback means binding a port, parsing
+ * a request from the browser, and accepting a redirect target - three attack surfaces (callback
+ * injection, open redirect, code interception via the URL) that polling simply does not have. The
+ * credential never touches a URL.
+ */
+function enrollUrl(kind) { return CFG.ingestUrl.replace(/\/cookies\/?$/, '/enroll/' + kind); }
+
+function openInBrowser(url) {
+  try {
+    // `start` needs an empty title argument first, or a quoted URL is treated as the window title.
+    if (process.platform === 'win32') spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    else spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  } catch (_) { return false; }
+}
+
+async function enrollViaBrowser(agentId) {
+  const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const verifier = b64url(crypto.randomBytes(48));
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+
+  const startRes = await fetch(enrollUrl('start'), {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ agentId, codeChallenge: challenge, name: CFG.deviceName, hostname: os.hostname(), agentVersion: AGENT_VERSION }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const start = await startRes.json().catch(() => null);
+  if (!startRes.ok || !start || !start.enrollId) {
+    log('enroll_start_failed', { status: startRes.status, code: (start && start.code) || null });
+    return null;
+  }
+
+  // Printed as well as opened: on a headless RDP session there may be no browser to open, and the
+  // operator can paste this into a browser anywhere they can sign in as admin.
+  log('enroll_waiting', { authorize_url: start.authorizeUrl, expires_at: start.expiresAt });
+    console.log('');
+    console.log('  Authorize this device by opening:');
+    console.log('    ' + start.authorizeUrl);
+    console.log('');
+  openInBrowser(start.authorizeUrl);
+
+  const interval = Math.max(2000, Number(start.pollIntervalMs) || 3000);
+  const deadline = Date.parse(start.expiresAt) || (Date.now() + 10 * 60 * 1000);
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, interval));
+    let res, body;
+    try {
+      res = await fetch(enrollUrl('poll'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enrollId: start.enrollId, agentId, codeVerifier: verifier }),
+        signal: AbortSignal.timeout(20000),
+      });
+      body = await res.json().catch(() => null);
+    } catch (e) { continue; }                       // transient network - keep waiting
+    if (res.status === 202) continue;               // admin has not clicked yet
+    if (res.ok && body && body.deviceKey) {
+      const st = { deviceId: body.deviceId, deviceKey: body.deviceKey, name: body.name || CFG.deviceName, seq: 0 };
+      if (!saveDeviceState(st)) return null;
+      log('enrolled', { device_id: st.deviceId, name: st.name, via: 'browser' });
+      return st;
+    }
+    log('enroll_failed', { status: res.status, code: (body && body.code) || null });
+    return null;                                    // consumed / expired / PKCE mismatch: do not retry
+  }
+  log('enroll_timeout', { note: 'nobody authorized the request in time; it will retry on next start' });
+  return null;
+}
+
 /** The pairing endpoint that matches the configured ingest URL (…/cookies -> …/pair). */
 function pairUrl() { return CFG.ingestUrl.replace(/\/cookies\/?$/, '/pair'); }
 
@@ -579,10 +654,19 @@ async function run() {
   // records it the first time it authenticates with the shared ingest key.
   if (!device) device = ensureAgentIdentity();
 
+  // No credential yet: enrol through the browser. Preferred over the shared bootstrap key, which is
+  // now only used if one was explicitly configured (rollback / already-deployed agents).
+  if (!device.deviceKey && !CFG.agentKey) {
+    try {
+      const enrolled = await enrollViaBrowser(device.agentId || device.deviceId);
+      if (enrolled) device = enrolled;
+    } catch (e) { log('enroll_error', { error: e.message }); }
+  }
+
   if (!device.deviceKey && !CFG.agentKey) {
     log('fatal', {
-      reason: 'no sync key configured',
-      remedy: 'Re-run install-universal-agent.ps1 with -SyncKey <PROXY_AGENT_SYNC_KEY>, or set WHV2_AGENT_KEY.',
+      reason: 'not enrolled and no sync key configured',
+      remedy: 'Start the agent again and click Authorize in the browser page it opens. (Legacy: -SyncKey <PROXY_AGENT_SYNC_KEY>.)',
       dpapi_file: process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile || null,
       key_file: process.env.WHV2_AGENT_KEY_FILE || FILE_CFG.agentKeyFile || null,
       device_state: CFG.deviceStateFile,

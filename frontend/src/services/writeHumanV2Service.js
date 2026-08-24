@@ -26,6 +26,11 @@ export const writeHumanV2Admin = {
   createPairCode: (name) => api.post(`/admin/proxy-tools/${TOOL}/devices/pair-code`, { name }),
   // Revokes a device's write access. Never deletes the stored cookie bundle.
   revokeDevice: (deviceId, force = false) => api.delete(`/admin/proxy-tools/${TOOL}/devices/${deviceId}${force ? '?force=1' : ''}`),
+  // Browser-authorized agent enrolment. The credential is NEVER returned to the browser - the
+  // agent collects it by polling with its PKCE verifier, so nothing secret crosses this boundary.
+  listEnrollments: () => api.get(`/admin/proxy-tools/${TOOL}/enrollments`),
+  getEnrollment: (id) => api.get(`/admin/proxy-tools/${TOOL}/enrollments/${id}`),
+  authorizeEnrollment: (id) => api.post(`/admin/proxy-tools/${TOOL}/enrollments/${id}/authorize`),
   // Queues a deliberate handover. The device becomes the active source on its next VERIFIED sync,
   // so an offline or signed-out machine can never become active in name only.
   makeActive: (deviceId) => api.post(`/admin/proxy-tools/${TOOL}/devices/${deviceId}/make-active`),

@@ -22,6 +22,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/proxy/agentSync.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   -T backend/utils/proxy/deviceSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
+  -T backend/utils/proxy/agentEnroll.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentEnroll.js" \
   -T "$T" "sftp://${HOST}:${PORT}${API_ROOT}/tmp/restart.txt"
 rm -f "$T"; echo "    done."
 echo "==> Verify boot + ingest still gated"
