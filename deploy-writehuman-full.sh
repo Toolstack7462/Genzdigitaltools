@@ -22,7 +22,25 @@
 set -euo pipefail
 
 HOST=147.79.103.253; PORT=65002; USER=u171982351
-API_ROOT="/home/${USER}/domains/api.genzdigitalstore.com/nodejs"
+# EMERGENCY PATH ONLY - READ THIS BEFORE USING.
+#
+# Passenger does NOT serve `domains/api.genzdigitalstore.com/nodejs`. Verified on the server
+# 2026-08-24: the app root holds a `DO_NOT_UPLOAD_HERE` marker, and the running worker is
+#   lsnode:/home/u171982351/domains/api.genzdigitalstore.com/hbuilds/current/...
+# where `hbuilds/current` is a symlink to `versions/<build-uuid>/`. Uploading to `nodejs/` is a
+# SILENT NO-OP: the transfer succeeds, the restart succeeds, and nothing changes. This script
+# originally targeted exactly that dead path.
+#
+# The REAL deploy is Hostinger's build pipeline, which rebuilds `versions/<uuid>` from source and
+# re-points the symlink. Production was byte-identical to origin/main across all 213 backend files
+# when checked, so the pipeline is the source of truth and the normal way to ship is to merge to
+# main and let it deploy.
+#
+# Writing into the live version directory (what this script now does) takes effect immediately but
+# is TRANSIENT: the next pipeline run replaces that directory and silently reverts it, leaving
+# production and git disagreeing. Use this only to restore service in an emergency, and follow it
+# with a proper deploy through the pipeline.
+API_ROOT="/home/${USER}/domains/api.genzdigitalstore.com/hbuilds/current/nodejs"
 API_BASE="https://api.genzdigitalstore.com"
 DRY_RUN="${DRY_RUN:-0}"
 
