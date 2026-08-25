@@ -34,6 +34,53 @@ You are asked to act **only** when the session genuinely fails (see LOGIN_REQUIR
 
 No Node/Git/PowerShell, no sync key, no pairing code, no admin rights.
 
+### What you see while it installs
+
+The installer is a single self-contained `.exe` (Node SEA — no console script that flashes and
+vanishes). It shows a native Windows dialog with a clear result, and prints staged progress to the
+console when run from a terminal:
+
+```
+Verifying installer… → Installing… → Registering auto-start… → Opening WriteHuman Chrome… → Starting Agent…
+```
+
+On success:
+
+```
+WriteHuman Agent installed successfully.
+Agent status: Running        (or "Starting…" if it is still coming up)
+WriteHuman Chrome: Ready
+[ Yes → Open WriteHuman Chrome ]   [ No → Close ]
+```
+
+On failure the window stays open with the failed stage, an error code, and the log path — it never
+just disappears. Standardized exit codes:
+
+| Code | Meaning |
+|---|---|
+| 0  | Installed |
+| 10 | Already installed and healthy (no change) |
+| 11 | Repair / update completed |
+| 20 | Package validation failed |
+| 21 | File installation failed |
+| 22 | Auto-start registration failed |
+| 23 | Agent start failed |
+| 24 | Installed, browser authorization still pending |
+| 25 | Dedicated-Chrome setup failed |
+
+### Re-running the installer is safe
+
+- **Already installed & running** → "already installed" dialog with *Open WriteHuman Chrome /
+  Repair / Close*. No duplicate agent, no duplicate server device.
+- **Damaged or older build** → in-place **repair/update**: it stops the running agent (a running
+  `.exe` is locked on Windows), replaces only the program file (copy-with-retry), keeps `config.json`,
+  the DPAPI/device credential and the dedicated Chrome login, restores auto-start, and starts exactly
+  one agent under the **same** device identity.
+- Reinstalling on a machine that already has a device does **not** mint a second device; a stale
+  duplicate (e.g. an older reinstall) is auto-**superseded** and hidden from the admin device list.
+
+`WHV2_SILENT=1` runs the installer unattended (no dialog) for scripted/mass deployment.
+
 ## The five lifecycle states (admin page)
 
 Derived from separate signals in `backend/utils/proxy/sessionHealth.js`:
