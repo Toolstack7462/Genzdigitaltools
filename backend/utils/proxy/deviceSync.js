@@ -161,6 +161,18 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     chrome: !!(dev.report && dev.report.chrome),
     authCookies: dev.report && typeof dev.report.authCookies === 'number' ? dev.report.authCookies : null,
     reportAt: (dev.report && dev.report.receivedAt) || null,
+    // Report-native aliases so the admin "Agent diagnostics" panel (which reads host/version/
+    // uptimeSec/pollCount/lastError/receivedAt from `state.agent`) renders real values instead of
+    // "—". The panel binds `state.agent` to this active-device view; without these it only saw the
+    // record-level `hostname`/`agentVersion` under different names and had no uptime field at all.
+    host: (dev.report && dev.report.host) || dev.hostname || null,
+    version: (dev.report && dev.report.version) || dev.agentVersion || null,
+    uptimeSec: dev.report && typeof dev.report.uptimeSec === 'number' ? dev.report.uptimeSec : null,
+    pollCount: dev.report && typeof dev.report.pollCount === 'number' ? dev.report.pollCount : null,
+    lastError: (dev.report && dev.report.lastError) || dev.lastError || null,
+    lastErrorAt: (dev.report && dev.report.lastErrorAt) || dev.lastErrorAt || null,
+    errorCount: (dev.report && dev.report.errorCount) || 0,
+    receivedAt: (dev.report && dev.report.receivedAt) || dev.lastSeenAt || null,
   };
 }
 

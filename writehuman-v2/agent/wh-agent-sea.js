@@ -251,30 +251,192 @@ function registerAutoStart() {
 }
 function removeAutoStart() { try { fs.unlinkSync(STARTUP_LNK()); } catch (_) {} }
 
-function install() {
-  log('installing to', INSTALL_DIR);
-  ensureDirs();
-  // Copy the running exe into place. If it is already there (double-clicked from the install dir),
-  // this is a no-op we skip so we do not copy a file onto itself.
-  if (path.resolve(selfPath()).toLowerCase() !== path.resolve(INSTALLED_EXE).toLowerCase()) {
-    fs.copyFileSync(selfPath(), INSTALLED_EXE);
+// ── Visible installer UX ─────────────────────────────────────────────────────
+// A one-click installer must never just flash a console and vanish. The console the OS gives a
+// double-clicked exe closes the instant we exit, so the RELIABLE way to leave something on screen
+// is a native Windows dialog. This shows one via PowerShell + WinForms (present on every Win10/11,
+// no admin, no extra files) and blocks until the user clicks, so the result is always seen. The
+// script is passed as an -EncodedCommand (UTF-16LE base64) so message text needs no quoting.
+// Standardized exit codes so an installing tool/log can tell outcomes apart.
+const EXIT = { SUCCESS: 0, ALREADY: 10, REPAIRED: 11, PKG_INVALID: 20, FILE_FAILED: 21, AUTOSTART_FAILED: 22, AGENT_FAILED: 23, ENROL_PENDING: 24, CHROME_FAILED: 25 };
+
+function messageBox(message, title, buttons /* OK|OKCancel|YesNo|YesNoCancel|RetryCancel */, icon /* Information|Error|Warning|Question */) {
+  // Unattended/silent mode (WHV2_SILENT=1): no dialog, install still completes end-to-end. Used for
+  // automated tests and scripted mass deployment. Interactive double-click keeps the visible dialog.
+  if (process.env.WHV2_SILENT === '1') { try { log('[dialog:silent]', title, '::', String(message).replace(/\n+/g, ' | ')); } catch (_) {} return ''; }
+  const lit = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const ps = [
+    'Add-Type -AssemblyName System.Windows.Forms | Out-Null',
+    '$r=[System.Windows.Forms.MessageBox]::Show(' + lit(message) + ',' + lit(title) +
+      ',[System.Windows.Forms.MessageBoxButtons]::' + buttons +
+      ',[System.Windows.Forms.MessageBoxIcon]::' + (icon || 'Information') + ')',
+    '[Console]::Out.Write($r.ToString())',
+  ].join('\n');
+  try {
+    const enc = Buffer.from(ps, 'utf16le').toString('base64');
+    const r = spawnSync('powershell.exe', ['-NoProfile', '-STA', '-NonInteractive', '-EncodedCommand', enc], { encoding: 'utf8', windowsHide: true, timeout: 5 * 60000 });
+    return (r.stdout || '').trim();  // 'OK' | 'Cancel' | 'Yes' | 'No' | 'Retry'
+  } catch (_) { return ''; }
+}
+
+/** Is a healthy agent already running? Fresh singleton lock (<10 min) whose PID is alive. */
+function isAgentRunning() {
+  try {
+    const lk = JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'agent.lock'), 'utf8'));
+    if (!lk || !lk.pid) return false;
+    const fresh = lk.at && (Date.now() - new Date(lk.at).getTime()) < 10 * 60000;
+    if (!fresh) return false;
+    try { process.kill(lk.pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+  } catch (_) { return false; }
+}
+
+/**
+ * Stop a running installed agent so its exe can be replaced (a running exe is locked on Windows).
+ * Kills ONLY our installed image — the installer itself runs from a different filename
+ * (WriteHuman-Agent-Setup-*.exe), and the dedicated Chrome is a separate process, so neither is
+ * touched. The server keeps serving the last verified bundle while the agent is briefly down; the
+ * 'Starting Agent' stage brings it back with the SAME device identity (creds are never removed).
+ */
+function stopRunningAgent() {
+  try { const lk = JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'agent.lock'), 'utf8')); if (lk && lk.pid) { try { process.kill(lk.pid); } catch (_) {} } } catch (_) {}
+  try { spawnSync('taskkill', ['/f', '/im', 'WriteHumanAgent.exe'], { windowsHide: true, timeout: 15000 }); } catch (_) {}
+}
+
+/**
+ * Synchronous sleep with NO child process. Critical inside the SEA: `process.execPath` is the SEA
+ * exe itself, not node — spawning it to "sleep" would ignore any `-e` and re-run this installer
+ * recursively. Atomics.wait blocks the thread for `ms` without launching anything.
+ */
+function sleepSync(ms) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch (_) {} }
+
+/** Copy with a few retries: after stopping the agent, Windows can take a moment to release the handle. */
+function copyWithRetry(src, dst) {
+  let lastErr = null;
+  for (let i = 0; i < 10; i++) {
+    try { fs.copyFileSync(src, dst); return; }
+    catch (e) { lastErr = e; sleepSync(500); }
   }
-  writeDefaultConfig();
-  const ok = registerAutoStart();
-  log('auto-start at logon', ok ? 'enabled (Startup shortcut)' : 'could not be set - the agent runs now but will not auto-start; re-run the installer');
+  throw lastErr || new Error('copy failed');
+}
 
-  // Dedicated WriteHuman Chrome: make its profile dir + the shortcuts, and open it once so the user
-  // lands on a logged-out writehuman.ai ready to sign in. This never touches everyday Chrome.
-  fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
-  createChromeShortcuts();
-  log('created "WriteHuman Chrome" shortcut (Start Menu + Desktop)');
-  launchChrome().catch(() => {});
+/** Size-match: is the running exe the same build already installed? (cheap version check) */
+function installedSameBuild() {
+  try {
+    if (!fs.existsSync(INSTALLED_EXE)) return false;
+    return fs.statSync(selfPath()).size === fs.statSync(INSTALLED_EXE).size;
+  } catch (_) { return false; }
+}
 
-  // Launch the installed connector detached; it enrols and starts monitoring the dedicated profile.
-  const child = spawn(INSTALLED_EXE, ['--agent'], { detached: true, stdio: 'ignore', cwd: INSTALL_DIR });
-  child.unref();
-  log('connector started. A browser page opens for one-time authorization.');
-  log('after authorizing: sign in to WriteHuman in the "WriteHuman Chrome" window — sync is then automatic.');
+/**
+ * Run the ordered install stages, printing each to the console (for terminal runs) and stopping at
+ * the first failure with its own exit code. Returns { ok, code, stage, error }.
+ */
+function runStages(isRepair) {
+  const stages = [
+    ['Verifying installer', () => {
+      // The exe IS the package (SEA). Confirm the bundled agent asset is present and non-trivial.
+      const src = agentSource();
+      if (!src || src.length < 500) { const e = new Error('bundled agent asset missing'); e.exit = EXIT.PKG_INVALID; throw e; }
+    }],
+    ['Installing WriteHuman Agent', () => {
+      try {
+        ensureDirs();
+        if (path.resolve(selfPath()).toLowerCase() !== path.resolve(INSTALLED_EXE).toLowerCase()) {
+          // Update/repair: a running agent locks its own exe, so stop it before replacing, then
+          // copy with retries while the handle releases. Fresh install: nothing to stop.
+          if (fs.existsSync(INSTALLED_EXE)) stopRunningAgent();
+          copyWithRetry(selfPath(), INSTALLED_EXE);
+        }
+        writeDefaultConfig();   // preserves an existing config + device identity (early-returns if present)
+      } catch (e) { e.exit = EXIT.FILE_FAILED; throw e; }
+    }],
+    ['Registering auto-start', () => {
+      // Non-fatal: a machine where the Startup folder is locked can still run now; we only warn.
+      const ok = registerAutoStart();
+      if (!ok) log('auto-start could not be set (Startup folder locked?) - the agent runs now but will not auto-start.');
+    }],
+    ['Opening WriteHuman Chrome', () => {
+      try {
+        fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+        createChromeShortcuts();
+      } catch (e) { e.exit = EXIT.CHROME_FAILED; throw e; }
+      launchChrome().catch(() => {});   // idempotent; no-op if CDP already up
+    }],
+    ['Starting Agent', () => {
+      try {
+        const child = spawn(INSTALLED_EXE, ['--agent'], { detached: true, stdio: 'ignore', cwd: INSTALL_DIR });
+        child.unref();
+      } catch (e) { e.exit = EXIT.AGENT_FAILED; throw e; }
+    }],
+  ];
+  for (const [name, fn] of stages) {
+    log((isRepair ? 'repair: ' : '') + name + '…');
+    try { fn(); }
+    catch (e) { return { ok: false, code: e.exit || EXIT.FILE_FAILED, stage: name, error: e.message }; }
+  }
+  return { ok: true, code: isRepair ? EXIT.REPAIRED : EXIT.SUCCESS, stage: null, error: null };
+}
+
+/** Confirm the agent process actually came up within a short window (visible pending vs. failed). */
+function waitForAgent(timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 30000);
+  while (Date.now() < deadline) {
+    if (isAgentRunning()) return true;
+    sleepSync(750);   // real sleep, no child process (see sleepSync)
+  }
+  return isAgentRunning();
+}
+
+function runInstaller() {
+  const fresh = !fs.existsSync(INSTALLED_EXE);
+  const healthy = !fresh && isAgentRunning() && installedSameBuild();
+
+  // Re-run on a healthy, current install: don't reinstall or spawn a duplicate — offer choices.
+  if (healthy) {
+    log('WriteHuman Agent is already installed and running.');
+    const r = messageBox(
+      'WriteHuman Agent is already installed and running.\n\n' +
+      'Yes  →  Open WriteHuman Chrome\n' +
+      'No   →  Repair installation\n' +
+      'Cancel →  Close',
+      'WriteHuman Agent', 'YesNoCancel', 'Information');
+    if (r === 'Yes') { launchChrome().catch(() => {}); process.exit(EXIT.ALREADY); }
+    if (r === 'No') { return finishInstall(true); }   // user asked for a repair
+    process.exit(EXIT.ALREADY);
+  }
+
+  return finishInstall(!fresh);   // fresh install, or repair/update of a damaged/old copy
+}
+
+function finishInstall(isRepair) {
+  const res = runStages(isRepair);
+  if (!res.ok) {
+    const codeName = Object.keys(EXIT).find(k => EXIT[k] === res.code) || 'FILE_FAILED';
+    log('installation FAILED at:', res.stage, '-', res.error, '(exit', res.code + ')');
+    messageBox(
+      'Installation failed while: ' + res.stage + '.\n\n' +
+      'Error code: ' + codeName + '\n' +
+      'Log: ' + path.join(INSTALL_DIR, 'logs', 'agent.log') + '\n\n' +
+      'Double-click the installer again to retry or repair.',
+      'WriteHuman Agent — Installation failed', 'OK', 'Error');
+    process.exit(res.code);
+  }
+
+  // Success path: confirm the agent actually started so we show a truthful message. A cold SEA
+  // (~90 MB) plus first enrolment/CDP handshake can take >12s, so give it a real window.
+  const up = waitForAgent(30000);
+  log('installation complete. agent', up ? 'running' : 'starting (pending)');
+  const statusLine = up ? 'Agent status: Running' : 'Agent status: Starting…';
+  const pendingNote = up
+    ? 'Sign in to WriteHuman in the "WriteHuman Chrome" window — cookie sync is then automatic.'
+    : 'The agent is starting and finishes one-time authorization in the background. If it does not come online shortly, double-click the installer again to repair.';
+  const r = messageBox(
+    'WriteHuman Agent installed successfully.\n\n' +
+    statusLine + '\nWriteHuman Chrome: Ready\n\n' + pendingNote + '\n\n' +
+    'Yes → Open WriteHuman Chrome now      No → Close',
+    'WriteHuman Agent — ' + (isRepair ? 'Repair complete' : 'Installed'), 'YesNo', 'Information');
+  if (r === 'Yes') launchChrome().catch(() => {});
+  process.exit(up ? res.code : EXIT.ENROL_PENDING);
 }
 
 function main() {
@@ -292,7 +454,7 @@ function main() {
   }
   if (arg === '--launch-chrome') { launchChrome().then(ok => process.exit(ok ? 0 : 1)); return; }
   if (arg === '--agent' || alreadyInstalledAndCurrent()) { runAgent(); return; }
-  install();
+  runInstaller();
 }
 
 main();
