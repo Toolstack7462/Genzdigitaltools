@@ -1080,7 +1080,20 @@ router.get('/:tool/agent-state', async (req, res) => {
     const devices = deviceSync.getDevices(account);
     const activeSource = account.activeSource || null;
     const activeDeviceId = activeSource && activeSource.deviceId;
-    const deviceViews = devices.map(d => deviceSync.publicDevice(d, activeDeviceId, staleMsThreshold));
+    const deviceViewsAll = devices.map(d => deviceSync.publicDevice(d, activeDeviceId, staleMsThreshold));
+    // Auto-supersede a stale duplicate: reinstalling the agent enrols a NEW device id, so the same
+    // machine can show twice. A device is superseded when another NON-revoked device shares its name,
+    // was seen more recently, and this one is offline and not the active source. Superseded rows are
+    // kept for history but hidden from the default list, so the operator sees one row per machine.
+    const isSuperseded = (dv) => {
+      if (!dv || dv.revoked || dv.isActiveSource || dv.online) return false;
+      return deviceViewsAll.some(o => o && !o.revoked && o.deviceId !== dv.deviceId
+        && (o.name || '') === (dv.name || '')
+        && o.lastSeenAt && dv.lastSeenAt && new Date(o.lastSeenAt) > new Date(dv.lastSeenAt));
+    };
+    deviceViewsAll.forEach(dv => { if (dv) dv.superseded = isSuperseded(dv); });
+    const deviceViews = deviceViewsAll.filter(dv => dv && !dv.superseded);
+    const supersededDevices = deviceViewsAll.filter(dv => dv && dv.superseded);
     const onlineDevices = deviceViews.filter(d => d && !d.revoked && d.online);
     const activeDeviceView = deviceViews.find(d => d && d.deviceId === activeDeviceId) || null;
 
@@ -1171,6 +1184,7 @@ router.get('/:tool/agent-state', async (req, res) => {
       telemetryFrozen,
       // Multi-device view: who is paired, who is online, and who is currently supplying cookies.
       devices: deviceViews,
+      supersededDevices,
       deviceCount: deviceViews.filter(d => d && !d.revoked).length,
       onlineDeviceCount: onlineDevices.length,
       activeSource: activeSource ? {

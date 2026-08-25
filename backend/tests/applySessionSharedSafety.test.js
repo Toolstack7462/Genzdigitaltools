@@ -113,3 +113,19 @@ test('a bundle with no auth cookie still stores, and WriteHuman records a null h
   assert.ok(a.sessionEncrypted, 'the bundle is still stored');
   assert.strictEqual(a.cookieHash, null, 'no auth cookie means no hash — not a stale one');
 });
+
+test('WriteHuman: re-capturing the SAME account is a refresh, not a warning', async () => {
+  const a = account('writehuman');
+  a.verification = { result: 'working', maskedId: 'op***@example.com', httpStatus: 200 };
+  const r = await applyAccountSession(a, bundle(tools.targetHost('writehuman')), { tool: 'writehuman', prevMaskedId: 'op***@example.com' });
+  assert.notStrictEqual(r.warning, 'cookies_match_previous_account',
+    'a live-agent tool refreshing its own account must not scare the operator with a switch-account warning');
+});
+
+test('a STATIC-vault tool still warns on a same-account re-capture (switch-account guard kept)', async () => {
+  const a = account('hix');
+  a.verification = { result: 'working', maskedId: 'op***@example.com', httpStatus: 200 };
+  // hix has no live agent; verify is stubbed to return the same maskedId, so the guard should fire.
+  const r = await applyAccountSession(a, bundle(tools.targetHost('hix')), { tool: 'hix', prevMaskedId: 'op***@example.com' });
+  assert.strictEqual(r.warning, 'cookies_match_previous_account', 'static-vault tools keep the switch-account guard');
+});

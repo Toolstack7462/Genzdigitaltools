@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-function getApiBaseUrl() {
+export function getApiBaseUrl() {
   const envUrl = process.env.REACT_APP_BACKEND_URL;
   if (envUrl) {
     try {

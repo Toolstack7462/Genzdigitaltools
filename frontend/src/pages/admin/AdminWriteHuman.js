@@ -6,6 +6,7 @@ import {
   Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save, Download,
 } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
+import { getApiBaseUrl } from '../../services/api';
 import { useToast } from '../../components/Toast';
 
 // ── small presentational helpers ──────────────────────────────────────────────
@@ -186,7 +187,7 @@ const AdminWriteHuman = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <a href="/api/crm/downloads/writehuman-agent/windows/latest" download
+          <a href={`${getApiBaseUrl()}/downloads/writehuman-agent/windows/latest`} download
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-90"
             title={agentBuild ? `v${agentBuild.version} · ${agentBuild.size ? Math.round(agentBuild.size/1048576) : '?'} MB · SHA-256 ${agentBuild.sha256?.slice(0,16)}…` : 'Windows agent installer'}>
             <Download size={15} /> Download Windows Agent{agentBuild ? ` v${agentBuild.version}` : ''}

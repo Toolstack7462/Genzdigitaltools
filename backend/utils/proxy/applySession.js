@@ -92,7 +92,11 @@ async function applyAccountSession(account, bundle, opts = {}) {
     // (cookieCount/updatedAt) rebuilt, stale leases revoked and the session re-verified above, so
     // the outcome falls through to the real verify result (working / needs_login / session_expired
     // / unknown). Every other tool keeps the "same account as before" guard for account switches.
-    if (tool !== 'claude' && v && v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
+    // Same-account cookies are a REFRESH, not a mistake, for tools whose whole model is keeping one
+    // account's session fresh (claude and every live-agent tool incl. WriteHuman). Only static-vault
+    // tools, where re-capturing the same account usually means the operator grabbed the OLD account
+    // by mistake while trying to switch, keep the warning.
+    if (tool !== 'claude' && !tools.hasLiveAgent(tool) && v && v.maskedId && prevMaskedId && v.maskedId === prevMaskedId) warning = 'cookies_match_previous_account';
     else if (r.result === 'wrong_account') warning = 'cookies_wrong_account';
     else if (r.result === 'needs_login' || r.result === 'session_expired') warning = r.result;
     else if (r.result === 'missing_required_session_cookie') warning = 'missing_required_session_cookie';
