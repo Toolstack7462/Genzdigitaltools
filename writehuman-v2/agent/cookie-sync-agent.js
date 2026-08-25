@@ -38,7 +38,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '3.2.0';
+const AGENT_VERSION = '3.3.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -117,6 +117,10 @@ const CFG = {
   // The scheduled task that (re)launches the debug Chrome IN THE INTERACTIVE USER SESSION. The
   // agent runs as SYSTEM (session 0), so relaunch must go through this task, never a direct spawn.
   chromeTask: pick('WHV2_CHROME_TASK', 'chromeTask', 'WriteHumanChromeDebug'),
+  // The dedicated-Chrome launcher exe (the installed WriteHumanAgent.exe run with --launch-chrome).
+  // When set (the one-click install path), relaunch goes through it instead of a scheduled task -
+  // it manages ONLY our dedicated profile and never the user's everyday Chrome.
+  chromeLauncher: pick('WHV2_CHROME_LAUNCHER', 'chromeLauncher', ''),
   // Auto-recovery: relaunch Chrome after this many consecutive CDP failures (faster than the 5-min
   // watchdog), rate-limited by a cooldown so it never relaunch-spams.
   cdpRelaunchAfter: Math.max(1, parseInt(pick('WHV2_CDP_RELAUNCH_AFTER', 'cdpRelaunchAfter', ''), 10) || 3),
@@ -149,7 +153,7 @@ const CFG = {
   heartbeatMs: Math.max(60000, parseInt(pick('WHV2_HEARTBEAT_MS', 'heartbeatMs', ''), 10) || 180000),
   // Never launch Chrome by default. On a personal machine an agent that opens browser windows is
   // obnoxious; on any machine it risks a second instance fighting over the profile lock.
-  autoLaunchChrome: String(pick('WHV2_AUTO_LAUNCH_CHROME', 'autoLaunchChrome', '0')) === '1',
+  autoLaunchChrome: /^(1|true|yes)$/i.test(String(pick('WHV2_AUTO_LAUNCH_CHROME', 'autoLaunchChrome', '0'))),
 };
 
 // ── device state (deviceId + deviceKey + monotonic seq) ──────────────────────
@@ -386,14 +390,16 @@ async function getAllCookiesViaCDP(cdpUrl, state) {
   if (state) { state.cdpProtocol = proto || null; state.chromeMajor = major || null; }
   if (major && major < 90) throw new Error('cdp_chrome_too_old_' + major);
 
-  // Chrome reports the profile path in the browser target's `userDataDir` (newer builds).
+  // Chrome USED to report the profile path in /json/version `userDataDir`, but Chrome 151 dropped
+  // it (confirmed live: the field is simply absent). The dedicated-profile model does not depend on
+  // it: WE launch our own Chrome on a DEDICATED debug port that only our --user-data-dir listens on,
+  // so the port itself is the pin. So an ABSENT userDataDir is fine — proceed. Only a userDataDir
+  // that is PRESENT and points somewhere else is a real wrong-profile signal (older Chrome, or an
+  // operator attaching to a shared port), and that still refuses.
   const dir = ver.userDataDir || ver['user-data-dir'] || '';
-  // Only the last two segments are kept for telemetry — a full filesystem path is never logged,
-  // reported, or sent to the server.
-  if (state) state.profile = dir ? String(dir).split(/[\\/]/).filter(Boolean).slice(-2).join('/') : null;
-  if (CFG.chromeProfile) {
-    if (!dir) throw new Error('cdp_profile_unknown');       // cannot prove it is the right one
-    if (!samePath(dir, CFG.chromeProfile)) throw new Error('wrong_chrome_profile');
+  if (state) state.profile = dir ? String(dir).split(/[\\/]/).filter(Boolean).slice(-2).join('/') : 'dedicated-port';
+  if (CFG.chromeProfile && dir && !samePath(dir, CFG.chromeProfile)) {
+    throw new Error('wrong_chrome_profile');
   }
 
   const wsUrl = ver.webSocketDebuggerUrl;
@@ -494,6 +500,22 @@ async function postToServer(state, payload) {
 }
 
 // Execute a whitelisted remote command from the dashboard. Best-effort; never throws.
+// Relaunch the dedicated WriteHuman Chrome: prefer the exe launcher (dedicated-profile safe),
+// fall back to the RDP scheduled task for the legacy provisioning.
+function relaunchChrome(reason) {
+  try {
+    if (CFG.chromeLauncher) {
+      log('relaunch_chrome', { via: 'launcher', reason });
+      const p = spawn(CFG.chromeLauncher, ['--launch-chrome'], { detached: true, stdio: 'ignore', windowsHide: true });
+      p.on('error', (e) => log('relaunch_failed', { error: e.message })); p.unref();
+    } else {
+      log('relaunch_chrome', { via: 'task', task: CFG.chromeTask, reason });
+      const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true });
+      p.on('error', (e) => log('relaunch_failed', { error: e.message })); p.unref();
+    }
+  } catch (e) { log('relaunch_failed', { error: e.message }); }
+}
+
 function handleCommand(state, cmd) {
   try {
     state.lastCommand = cmd; state.lastCommandAt = Date.now();
@@ -507,9 +529,7 @@ function handleCommand(state, cmd) {
       // Run the ChromeDebug SCHEDULED TASK (registered in the interactive user session). The agent
       // runs as SYSTEM (session 0) — a direct chrome spawn would launch invisibly in session 0 and
       // collide with the user-session profile lock, so it must go through the task.
-      log('command_relaunch_chrome', { task: CFG.chromeTask });
-      const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true });
-      p.on('error', (e) => log('command_relaunch_failed', { error: e.message }));
+      relaunchChrome('command');
       p.unref();
       return;
     }
@@ -533,8 +553,7 @@ async function pushIfChanged(state) {
     // relaunch-spam while Chrome is still coming back up.
     if (CFG.autoLaunchChrome && state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
       state.lastRelaunchAt = Date.now();
-      log('cdp_auto_relaunch', { after_fails: state.cdpFails, task: CFG.chromeTask });
-      try { const p = spawn('schtasks', ['/run', '/tn', CFG.chromeTask], { detached: true, stdio: 'ignore', windowsHide: true }); p.on('error', (er) => log('cdp_auto_relaunch_failed', { error: er.message })); p.unref(); } catch (_) {}
+      relaunchChrome('cdp_auto');
     }
     await postToServer(state, { heartbeat: true, hash: null }); // report CDP-down so the dashboard sees it live
     return;
