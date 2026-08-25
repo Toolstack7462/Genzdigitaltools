@@ -136,6 +136,19 @@ const AdminWriteHuman = () => {
     finally { setBusy(''); }
   };
 
+  // Hand a device the active-source role on its NEXT verified sync (a short-lived intent, not a
+  // permanent pin). This handler was referenced by the "Make active" button but never defined, so
+  // every click threw `makeActive is not defined` and did nothing — which is why operators resorted
+  // to revoking the current source to switch machines. The endpoint returns 409 DEVICE_REVOKED for a
+  // revoked device; act() surfaces that to the user.
+  const makeActive = async (d) => {
+    const name = d.name || d.deviceId;
+    await act(
+      () => writeHumanV2Admin.makeActive(d.deviceId),
+      `${name} will become the active source on its next verified sync`,
+    );
+  };
+
   const a = state?.account || {};
   const ag = state?.agent || null;
   const v = a.verification || {};
