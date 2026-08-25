@@ -204,9 +204,23 @@ const AdminWriteHuman = () => {
       {conn === 'offline' && !firstLoad && (
         <div className="ds-card rounded-xl p-4 mb-5 border border-red-200 bg-red-50 text-red-700 text-sm flex items-center gap-2"><AlertTriangle size={16} /> Can't reach the WriteHuman V2 service right now. Retrying…</div>
       )}
-      {conn === 'live' && !firstLoad && health !== 'up' && health !== 'unknown' && state?.statusReason && (
-        <div className={`ds-card rounded-xl p-4 mb-5 border text-sm flex items-start gap-2 ${health === 'down' ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
-          <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" /><span><strong>Needs attention:</strong> {state.statusReason}</span>
+      {/* Lifecycle banner: the ONE clear state the operator acts on. LOGIN_REQUIRED is the only one
+          that asks for action — everything else is informational and self-recovering. */}
+      {conn === 'live' && !firstLoad && state?.lifecycleState && state.lifecycleState !== 'HEALTHY' && (
+        <div className={`ds-card rounded-xl p-4 mb-5 border text-sm flex items-start justify-between gap-3 ${
+          state.lifecycleState === 'LOGIN_REQUIRED' || state.lifecycleState === 'ERROR' ? 'border-red-200 bg-red-50 text-red-700'
+          : state.lifecycleState === 'OFFLINE' ? 'border-slate-200 bg-slate-50 text-slate-700'
+          : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+          <span className="flex items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+            <span><strong>{state.lifecycleState === 'LOGIN_REQUIRED' ? 'WriteHuman login required' : state.lifecycleState.replace('_', ' ')}:</strong> {state.lifecycleReason || state.statusReason}</span>
+          </span>
+          {state.loginRequired && (
+            <button onClick={() => act(() => writeHumanV2Admin.command('relaunch-chrome'), 'Opening WriteHuman Chrome…')}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600">
+              <Chrome size={14} /> Open WriteHuman Chrome
+            </button>
+          )}
         </div>
       )}
 

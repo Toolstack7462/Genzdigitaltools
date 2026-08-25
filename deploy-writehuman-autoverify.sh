@@ -47,6 +47,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   `# reason on agentSync.js. Re-uploading a module the server already has is a harmless no-op.` \
   -T backend/utils/proxy/deviceSync.js     "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js  "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
+  -T backend/utils/proxy/sessionHealth.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/sessionHealth.js" \
   -T backend/utils/proxy/agentEnroll.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentEnroll.js" \
   -T backend/cron/proxyVerifyScheduler.js  "sftp://${HOST}:${PORT}${API_ROOT}/cron/proxyVerifyScheduler.js" \
   -T backend/routes/proxy/agentDownload.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentDownload.js" \

@@ -31,6 +31,7 @@ const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/app
 const deviceSync = require('../../utils/proxy/deviceSync');
 const agentEnroll = require('../../utils/proxy/agentEnroll');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
+const { deriveLifecycle } = require('../../utils/proxy/sessionHealth');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
@@ -1166,6 +1167,19 @@ router.get('/:tool/agent-state', async (req, res) => {
       else if (agentStale) { health = 'degraded'; statusReason = onlineDevices.length ? 'Working, but cookie sync is behind — current state is unverified.' : 'Working from the last verified bundle, but no paired device is reporting — it cannot refresh until one comes back online.'; }
       else { health = 'up'; statusReason = 'Working — signed in, ' + (onlineDevices.length === 1 ? 'source device online' : onlineDevices.length + ' devices online') + ', access token valid.'; }
     } else { health = 'degraded'; statusReason = 'Verification pending — not yet confirmed working.'; }
+    // ── Clear lifecycle state, derived from the SEPARATE signals ────────────────
+    // One of HEALTHY / RECONNECTING / LOGIN_REQUIRED / OFFLINE / ERROR — the label the operator
+    // acts on. The whole point: LOGIN_REQUIRED means a GENUINE auth failure, never a late heartbeat,
+    // an offline PC, a closed Chrome, an ordinary token rotation, or a single timed-out verify.
+    // Those are OFFLINE / RECONNECTING, and the last verified bundle keeps serving until the session
+    // genuinely fails.
+    const cdpConnected = activeRep ? String(activeRep.cdp) === '200' : null;
+    const lc = deriveLifecycle({
+      hasBundle: !!account.sessionEncrypted, sessionStatus: ss, browserAuthCookies,
+      tokenExpired, agentStale, onlineDeviceCount: onlineDevices.length, cdpConnected, ingestConfigured,
+    });
+    const lifecycleState = lc.state, lifecycleReason = lc.reason, loginRequired = lc.loginRequired;
+
     // A 'working' that is only degraded (not confidently up) is surfaced as unverified so cards
     // don't render a confident green.
     const working = ss === 'working';
@@ -1178,6 +1192,9 @@ router.get('/:tool/agent-state', async (req, res) => {
       ...base,
       health,
       statusReason,
+      lifecycleState,
+      lifecycleReason,
+      loginRequired,
       expectedAgentVersion: EXPECTED_AGENT_VERSION,
       agentOutdated,
       ingestConfigured,
