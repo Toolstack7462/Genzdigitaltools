@@ -13,10 +13,21 @@ export const writeHumanV2Admin = {
   getState: () => api.get(`/admin/proxy-tools/${TOOL}/agent-state`),
   // Derived recent telemetry (sync / verify / agent report) for the live-log panel.
   getLogs: (limit = 120) => api.get(`/admin/proxy-tools/${TOOL}/agent-logs?limit=${limit}`),
-  // "Verify now" reuses the existing per-account verify route (forceLive server-side).
+  // VERIFY SESSION — entirely server-side. It reads the stored bundle, checks its cookies and
+  // proves it with one real authenticated call. It does NOT open Chrome, does NOT start or message
+  // an agent, does NOT pick a device, and works while the source machine is switched off.
+  verifySession: () => api.post(`/admin/proxy-tools/${TOOL}/verify-session`, {}),
+  // The per-account verify, kept for the embedded Proxy-Tools table.
   verify: (accountId) => api.post(`/admin/proxy-tools/${TOOL}/accounts/${accountId}/verify`),
-  // Queue a remote command (relaunch-chrome / reverify) for the agent's next poll.
-  command: (command) => api.post(`/admin/proxy-tools/${TOOL}/agent-command`, { command }),
+  // OPEN WRITEHUMAN CHROME — the only action that launches a browser, and it goes to
+  // `activeSourceId` and nowhere else. Never falls back to another device. CSRF-gated.
+  openChromeOnActiveSource: (headers = {}, opts = {}) =>
+    api.post(`/admin/proxy-tools/${TOOL}/open-chrome`, opts, { headers }),
+  // Addressed agent command ('resync' | 'rotate-token'). Defaults to the ACTIVE SOURCE; a device
+  // may be named explicitly. Browser-launching commands are refused here on purpose — they have
+  // their own action, so a Chrome window can never open as a side effect of something else.
+  command: (command, headers = {}, deviceId) =>
+    api.post(`/admin/proxy-tools/${TOOL}/agent-command`, { command, deviceId }, { headers }),
   // Health-alert email (masked read; write to set/change/clear the recipient or toggle alerts).
   getAlertConfig: () => api.get(`/admin/proxy-tools/${TOOL}/alert-config`),
   setAlertConfig: (payload) => api.post(`/admin/proxy-tools/${TOOL}/alert-config`, payload),

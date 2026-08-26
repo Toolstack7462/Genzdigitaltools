@@ -6,6 +6,7 @@ import {
   Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save, Download,
 } from 'lucide-react';
 import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
+import { withCsrfRetry } from '../../services/launchService';
 import { getApiBaseUrl } from '../../services/api';
 import { useToast } from '../../components/Toast';
 
@@ -149,33 +150,107 @@ const AdminWriteHuman = () => {
     );
   };
 
+  // VERIFY SESSION — server-side only. No Chrome opens anywhere, no agent is contacted, and it
+  // works while the source machine is switched off. The toast says what was actually proven.
+  const verifySession = async () => {
+    try {
+      setBusy('Verifying the stored session…');
+      const r = await writeHumanV2Admin.verifySession();
+      const d = r.data || {};
+      showSuccess(
+        d.result === 'working'
+          ? `Session verified server-side${d.canary === 'passed' ? ' (live check passed)' : ''}${d.maskedId ? ` — ${d.maskedId}` : ''}. No Chrome was opened.`
+          : `Verify returned ${d.result}. No Chrome was opened.`,
+      );
+      loadState();
+    } catch (e) { showError(e.response?.data?.error || e.response?.data?.code || 'Verification failed'); }
+    finally { setBusy(''); }
+  };
+
+  // OPEN WRITEHUMAN CHROME — addressed to the ACTIVE SOURCE and nowhere else. If that machine is
+  // offline the server refuses and says so; it never picks a different device, and it never falls
+  // back to whatever computer the admin happens to be sitting at.
+  const openChromeOnActiveSource = async (loginRequired = false) => {
+    try {
+      setBusy('Opening WriteHuman Chrome on the active source…');
+      const r = await withCsrfRetry((headers) => writeHumanV2Admin.openChromeOnActiveSource(headers, { loginRequired }));
+      const d = r.data || {};
+      showSuccess(`Queued for ${d.targetDeviceName || d.targetDeviceId} only — no other machine can pick it up.`);
+      loadState();
+    } catch (e) {
+      // The server's message is the operator-facing sentence, including the two exact wordings for
+      // an offline active source. Surfaced verbatim rather than replaced with a generic failure.
+      showError(e.response?.data?.error || 'Could not open Chrome on the active source');
+    } finally { setBusy(''); }
+  };
+
+  const sendCommand = async (command, okMsg) => {
+    try {
+      setBusy(okMsg);
+      const r = await withCsrfRetry((headers) => writeHumanV2Admin.command(command, headers));
+      const d = r.data || {};
+      showSuccess(`${okMsg} — addressed to ${d.targetDeviceName || d.targetDeviceId}`);
+      loadState();
+    } catch (e) { showError(e.response?.data?.error || e.response?.data?.code || 'Action failed'); }
+    finally { setBusy(''); }
+  };
+
   const a = state?.account || {};
   const ag = state?.agent || null;
   const v = a.verification || {};
-  // Reconciled health drives EVERY status card so they can't contradict each other.
   const health = state?.health || 'unknown';
   const healthTone = health === 'up' ? 'ok' : health === 'degraded' ? 'warn' : health === 'down' ? 'bad' : 'mut';
-  const loggedOut = a.browserAuthCookies === 0;          // agent reports the RDP browser has no auth cookie
-  const stTone = healthTone;                             // Session tone follows health, not the lagging raw status
-  const agTone = !ag ? 'mut' : a.agentStale ? 'warn' : 'ok';
-  const cdpUp = ag && ag.cdp === '200';
-  const cdpTone = !ag ? 'mut' : cdpUp ? 'ok' : 'bad';
-  // Cookie freshness and agent liveness are deliberately different readings: an agent can be alive
-  // while cookies are behind, and cookies can be current while every agent is offline.
-  const syncTone = loggedOut ? 'bad' : a.syncStale == null ? 'mut' : a.syncStale ? 'warn' : 'ok';
-  const syncLabel = loggedOut ? 'logged out' : a.syncStale == null ? 'never' : a.syncStale ? 'behind' : 'fresh';
+
+  // ── FIVE SEPARATE SIGNALS ───────────────────────────────────────────────────
+  // Session / verification / agent / Chrome / cookie sync each come from the server with their own
+  // state and their own reason, and are rendered independently. They are ALLOWED to disagree,
+  // because in reality they do: an offline agent with a working session is normal, not an alarm.
+  //
+  // What is gone: the single tone that drove every card from one `health` value. An access token
+  // that had aged out — which happens for part of every hour, because WriteHuman's token lives ~1h
+  // and a backgrounded Chrome rotates it late — turned Session, Verification, Sync agent and
+  // Cookie sync all amber at once and read as "working · unverified". Nothing was wrong. Token
+  // rotation now shows up as "Verification: due" and the Session card stays green.
+  const hs = state?.healthSignals || null;
+  const sess = hs?.session?.state || null;
+  const ver = hs?.verification?.state || null;
+  const agentState = hs?.agent?.state || null;
+  const chromeState = hs?.chrome?.state || null;
+  const syncState = hs?.cookieSync?.state || null;
+
+  const sessionLabel = sess === 'HEALTHY' ? 'healthy'
+    : sess === 'REFRESHING' ? 'refreshing'
+    : sess === 'LOGIN_REQUIRED' ? 'login required'
+    : sess === 'ERROR' ? 'no session'
+    : (a.sessionStatus || a.status || '—');
+  const stTone = sess === 'HEALTHY' ? 'ok' : sess === 'REFRESHING' ? 'warn' : sess ? 'bad' : healthTone;
+
+  const verLabel = ver === 'recent' ? `verified ${rel(a.lastVerifiedAt)}`
+    : ver === 'due' ? 'verification due' : ver === 'failed' ? 'verification failed' : '—';
+  const verTone = ver === 'recent' ? 'ok' : ver === 'due' ? 'mut' : ver === 'failed' ? 'bad' : 'mut';
+
+  const agLabel = agentState === 'ONLINE' ? 'online' : agentState === 'RECONNECTING' ? 'reconnecting'
+    : agentState === 'OFFLINE' ? 'offline' : 'unknown';
+  const agTone = agentState === 'ONLINE' ? 'ok' : agentState === 'OFFLINE' ? 'warn' : agentState === 'RECONNECTING' ? 'warn' : 'mut';
+
+  const cdpUp = chromeState === 'CONNECTED';
+  const chromeLabel = chromeState === 'CONNECTED' ? 'connected' : chromeState === 'DISCONNECTED' ? 'disconnected' : 'unknown';
+  const cdpTone = chromeState === 'CONNECTED' ? 'ok' : chromeState === 'DISCONNECTED' ? 'warn' : 'mut';
+
+  const syncLabel = syncState === 'FRESH' ? 'fresh' : syncState === 'BEHIND' ? 'behind'
+    : syncState === 'NEVER_SYNCED' ? 'never synced' : syncState === 'FAILED' ? 'failed' : '—';
+  const syncTone = syncState === 'FRESH' ? 'ok' : syncState === 'FAILED' ? 'bad' : syncState ? 'warn' : 'mut';
+
+  const loggedOut = sess === 'LOGIN_REQUIRED';
+  const showBanner = !!sess && sess !== 'HEALTHY';
   // Multi-device view.
   const devices = state?.devices || [];
   const liveDevices = devices.filter((d) => !d.revoked);
   const activeSource = state?.activeSource || null;
+  const activeSourceOnline = !!activeSource?.online;
   const frozen = state?.agentFrozenReport || null;   // last telemetry, known to be out of date
   const srcTone = !activeSource ? 'mut' : activeSource.online ? 'ok' : 'warn';
-  // One honest session label: logged-out / working / unverified / the raw down-state.
-  const sessionLabel = loggedOut ? 'logged out'
-    : health === 'up' ? 'working'
-    : health === 'down' ? (a.sessionStatus || 'down')
-    : a.workingUnverified ? 'working · unverified'
-    : (a.sessionStatus || a.status || '—');
+  const pendingCommands = state?.pendingCommands || [];
 
   return (
     <AdminLayoutEnhanced>
@@ -219,21 +294,43 @@ const AdminWriteHuman = () => {
       )}
       {/* Lifecycle banner: the ONE clear state the operator acts on. LOGIN_REQUIRED is the only one
           that asks for action — everything else is informational and self-recovering. */}
-      {conn === 'live' && !firstLoad && state?.lifecycleState && state.lifecycleState !== 'HEALTHY' && (
+      {/* The banner fires on SESSION health only. It used to fire on a combined lifecycle value, so
+          an aged access token — routine, hourly, harmless — raised an amber "Refreshing the
+          session…" alert on a perfectly healthy account. Verification being due is shown on its own
+          card, quietly, where it belongs. */}
+      {conn === 'live' && !firstLoad && showBanner && (
         <div className={`ds-card rounded-xl p-4 mb-5 border text-sm flex items-start justify-between gap-3 ${
-          state.lifecycleState === 'LOGIN_REQUIRED' || state.lifecycleState === 'ERROR' ? 'border-red-200 bg-red-50 text-red-700'
-          : state.lifecycleState === 'OFFLINE' ? 'border-slate-200 bg-slate-50 text-slate-700'
+          sess === 'LOGIN_REQUIRED' || sess === 'ERROR' ? 'border-red-200 bg-red-50 text-red-700'
           : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
           <span className="flex items-start gap-2">
             <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
-            <span><strong>{state.lifecycleState === 'LOGIN_REQUIRED' ? 'WriteHuman login required' : state.lifecycleState.replace('_', ' ')}:</strong> {state.lifecycleReason || state.statusReason}</span>
+            <span>
+              <strong>{sess === 'LOGIN_REQUIRED' ? 'WriteHuman login required' : sess === 'ERROR' ? 'No session saved' : 'Session refreshing'}:</strong> {hs?.session?.reason}
+              {sess === 'LOGIN_REQUIRED' && !activeSourceOnline && (
+                <em className="block mt-1 not-italic font-semibold">Login required, but the active source is currently offline.</em>
+              )}
+            </span>
           </span>
-          {state.loginRequired && (
-            <button onClick={() => act(() => writeHumanV2Admin.command('relaunch-chrome'), 'Opening WriteHuman Chrome…')}
-              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600">
-              <Chrome size={14} /> Open WriteHuman Chrome
+          {sess === 'LOGIN_REQUIRED' && (
+            <button disabled={!!busy || !activeSourceOnline} onClick={() => openChromeOnActiveSource(true)}
+              title={activeSourceOnline
+                ? `Opens Chrome on ${activeSource?.name || 'the active source'} only`
+                : 'Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.'}
+              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 disabled:opacity-50">
+              <Chrome size={14} /> Open Chrome on {activeSource?.name || 'active source'}
             </button>
           )}
+        </div>
+      )}
+
+      {/* An OFFLINE agent is information, not an alarm — the stored session keeps working. It gets
+          a quiet grey note instead of the red/amber banner it used to share with real failures. */}
+      {conn === 'live' && !firstLoad && sess === 'HEALTHY' && (agentState === 'OFFLINE' || syncState === 'BEHIND') && (
+        <div className="ds-card rounded-xl p-3.5 mb-5 border border-slate-200 bg-slate-50 text-slate-600 text-[13px] flex items-start gap-2">
+          <Server size={15} className="mt-0.5 flex-shrink-0" />
+          <span>
+            <strong>Session is healthy.</strong> {agentState === 'OFFLINE' ? 'The source agent is offline' : 'Cookie sync is behind'} — WriteHuman continues on the last verified session and refreshes on its own when the source returns. Nothing to do.
+          </span>
         </div>
       )}
 
@@ -255,13 +352,19 @@ const AdminWriteHuman = () => {
       ) : (
         <>
           {/* Big status stats */}
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
-            <StatCard icon={Server} label="Active source" value={<Badge tone={srcTone}>{activeSource ? activeSource.name || activeSource.deviceId : 'none yet'}</Badge>} color="from-indigo-500 to-blue-600" />
+          {/* Six independent readings. Each shows ONE fact, and the wording says which fact it is:
+              "Verification due" and "Agent telemetry stale" never claim the account has expired. */}
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
             <StatCard icon={ShieldCheck} label="Session" value={<Badge tone={stTone}>{sessionLabel}</Badge>} color="from-blue-500 to-cyan-500" />
-            <StatCard icon={Activity} label="Sync agent" value={<Badge tone={agTone}>{!ag ? 'no report' : a.agentStale ? 'stale' : 'live'}</Badge>} color="from-emerald-500 to-teal-500" />
-            <StatCard icon={Chrome} label="Chrome / CDP" value={<Badge tone={cdpTone}>{!ag ? 'unknown' : cdpUp ? 'connected' : 'down'}</Badge>} color="from-violet-500 to-fuchsia-500" />
+            <StatCard icon={CheckCircle2} label="Verification" value={<Badge tone={verTone}>{verLabel}</Badge>} color="from-emerald-500 to-green-600" />
+            <StatCard icon={Server} label="Active source" value={<Badge tone={srcTone}>{activeSource ? activeSource.name || activeSource.deviceId : 'none yet'}</Badge>} color="from-indigo-500 to-blue-600" />
+            <StatCard icon={Activity} label="Agent" value={<Badge tone={agTone}>{agLabel}</Badge>} color="from-emerald-500 to-teal-500" />
+            <StatCard icon={Chrome} label="Chrome / CDP" value={<Badge tone={cdpTone}>{chromeLabel}</Badge>} color="from-violet-500 to-fuchsia-500" />
             <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{syncLabel}</Badge>} color="from-amber-500 to-orange-500" />
           </div>
+          {hs?.summary && (
+            <p className="text-[12.5px] text-slate-500 -mt-2 mb-5">{hs.summary}. <span className="text-slate-400">{hs.session?.reason}</span></p>
+          )}
 
           {/* Paired devices — any of them may supply cookies; the newest VERIFIED bundle wins. */}
           {/* Read-only in normal operation. Agents enrol themselves on first sync, so there is
@@ -328,21 +431,31 @@ const AdminWriteHuman = () => {
 
             <Panel icon={ShieldCheck} title="Session & account" tint="text-blue-500">
               <Row k="Account">{a.label || '—'}</Row>
-              <Row k="Health"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
+              <Row k="Overall"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
+              <Row k="Session"><Badge tone={stTone}>{sessionLabel}</Badge></Row>
               <Row k="Sign-in">{a.browserAuthCookies == null
                 ? <Badge tone="mut">{a.telemetryFrozen ? 'unknown · no device reporting' : 'unknown'}</Badge>
                 : loggedOut ? <Badge tone="bad">signed out</Badge> : <Badge tone="ok">signed in</Badge>}</Row>
               <Row k="Stored status">{a.status || '—'} / {a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>
-              <Row k="Access token valid">{a.accessTokenExpiresInSec == null ? '—' : a.accessTokenExpiresInSec <= 0 ? <Badge tone="warn">expired</Badge> : `~${dur(a.accessTokenExpiresInSec)}`}</Row>
+              {/* An aged access token is ROUTINE — the token lives ~1h and rotates. What actually
+                  matters is whether the refresh half is still there, so both are shown and the
+                  aged case reads "rotating", not "expired". */}
+              <Row k="Access token">{a.accessTokenExpiresInSec == null ? '—'
+                : a.accessTokenExpiresInSec <= 0 ? <Badge tone="mut">rotating</Badge>
+                : `valid ~${dur(a.accessTokenExpiresInSec)}`}</Row>
+              <Row k="Refresh session">{state?.refreshTokenPresent == null ? '—'
+                : state.refreshTokenPresent ? <Badge tone="ok">present</Badge> : <Badge tone="bad">missing</Badge>}</Row>
             </Panel>
 
             <Panel icon={CheckCircle2} title="Verification" tint="text-emerald-500">
-              <Row k="Result">{v.result ? <Badge tone={v.result === 'working' ? (a.workingUnverified ? 'warn' : 'ok') : v.result === 'session_expired' ? 'bad' : 'mut'}>{v.result === 'working' && a.workingUnverified ? 'working · unverified' : v.result}</Badge> : '—'}</Row>
+              <Row k="Freshness"><Badge tone={verTone}>{verLabel}</Badge></Row>
+              <Row k="Result">{v.result ? <Badge tone={v.result === 'working' ? 'ok' : v.result === 'session_expired' ? 'bad' : 'mut'}>{v.result}</Badge> : '—'}</Row>
               <Row k="Account (masked)">{v.maskedId || '—'}</Row>
               <Row k="HTTP">{v.httpStatus ?? '—'}</Row>
               <Row k="Last verification">{rel(a.lastVerifiedAt)}</Row>
+              {hs?.verification?.reason && <p className="text-[11.5px] text-slate-400 mt-2">{hs.verification.reason}</p>}
             </Panel>
 
             <Panel icon={Cookie} title="Cookie sync" tint="text-amber-500">
@@ -405,13 +518,38 @@ const AdminWriteHuman = () => {
             </Panel>
 
             <Panel icon={Zap} title="Actions" tint="text-cyan-500">
-              <p className="text-[12px] text-slate-400 mb-3">Diagnostics &amp; remote control. Account vault and client assignment are managed below.</p>
+              <p className="text-[12px] text-slate-400 mb-3">
+                <strong className="text-slate-500">Verify Session</strong> checks the stored session on the server — it opens no browser anywhere and works while the source machine is off.
+                Only <strong className="text-slate-500">Open WriteHuman Chrome</strong> starts a browser, and only on the active source.
+              </p>
               <div className="flex flex-wrap gap-2">
-                <button disabled={!!busy || conn !== 'live' || !a.id} onClick={() => act(() => writeHumanV2Admin.verify(a.id), 'Verify triggered')} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-blue-600 to-cyan-500 disabled:opacity-50"><CheckCircle2 size={15} /> Verify now</button>
-                <button disabled={!!busy || conn !== 'live'} onClick={() => act(() => writeHumanV2Admin.command('reverify'), 'Re-sync queued')} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RotateCw size={15} /> Re-sync</button>
-                <button disabled={!!busy || conn !== 'live'} onClick={() => act(() => writeHumanV2Admin.command('relaunch-chrome'), 'Chrome relaunch queued')} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><Play size={15} /> Relaunch Chrome</button>
+                <button disabled={!!busy || conn !== 'live'} onClick={verifySession}
+                  title="Server-side check of the stored bundle. No Chrome opens on any machine."
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-blue-600 to-cyan-500 disabled:opacity-50"><ShieldCheck size={15} /> Verify Session</button>
+                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => sendCommand('resync', 'Re-sync queued')}
+                  title={activeSourceOnline ? 'Ask the active source to re-read and push its cookies' : 'The active source is offline.'}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RotateCw size={15} /> Re-sync</button>
+                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => sendCommand('rotate-token', 'Token rotation requested')}
+                  title="Ask the active source's browser to rotate the access token now. No browser is launched."
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={15} /> Rotate token</button>
+                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => openChromeOnActiveSource(false)}
+                  title={activeSourceOnline
+                    ? `Opens Chrome on ${activeSource?.name || 'the active source'} — and nowhere else`
+                    : 'Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.'}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-cyan-700 bg-white border border-cyan-200 hover:bg-cyan-50 disabled:opacity-50"><Play size={15} /> Open WriteHuman Chrome on Active Source</button>
               </div>
-              {state?.pendingCommand && <p className="text-[12px] text-amber-600 mt-3 flex items-center gap-1"><Clock size={12} /> pending: {state.pendingCommand} (agent will pick it up next poll)</p>}
+              {!activeSourceOnline && activeSource && (
+                <p className="text-[12px] text-slate-500 mt-3">Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.</p>
+              )}
+              {pendingCommands.length > 0 && (
+                <div className="mt-3 space-y-1">
+                  {pendingCommands.map((c) => (
+                    <p key={c.id} className="text-[12px] text-amber-600 flex items-center gap-1">
+                      <Clock size={12} /> {c.type} → <strong>{c.targetDeviceName || c.targetDeviceId}</strong> only · expires {rel(c.expiresAt)}
+                    </p>
+                  ))}
+                </div>
+              )}
             </Panel>
           </div>
 
