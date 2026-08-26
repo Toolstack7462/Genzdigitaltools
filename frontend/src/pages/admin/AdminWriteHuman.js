@@ -21,6 +21,16 @@ const Badge = ({ tone = 'mut', children }) => (
   <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-bold ${TONE[tone]}`}>{children}</span>
 );
 const rel = (iso) => { if (!iso) return 'never'; let s = (Date.now() - new Date(iso).getTime()) / 1000; if (s < 0) s = 0; return s < 60 ? `${Math.round(s)}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`; };
+// Time UNTIL a future instant. `rel()` clamps negatives to zero and appends "ago", so using it on
+// an expiry rendered a command that dies in ten minutes as "expires 0s ago".
+const until = (iso) => { if (!iso) return '—'; const s = (new Date(iso).getTime() - Date.now()) / 1000; if (s <= 0) return 'expired'; return s < 60 ? `in ${Math.round(s)}s` : s < 3600 ? `in ${Math.round(s / 60)}m` : `in ${Math.round(s / 3600)}h`; };
+// Numeric semver compare — "3.10.0" must beat "3.4.0", which a string compare gets backwards.
+const atLeast = (v, min) => {
+  const p = (x) => String(x || '0').split('.').map((n) => parseInt(n, 10) || 0);
+  const a = p(v); const b = p(min);
+  for (let i = 0; i < 3; i++) { if ((a[i] || 0) > (b[i] || 0)) return true; if ((a[i] || 0) < (b[i] || 0)) return false; }
+  return true;
+};
 const dur = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.round(sec / 60)}m` : `${Math.round(sec / 3600)}h`;
 
 const StatCard = ({ icon: Icon, label, value, color }) => (
@@ -251,6 +261,20 @@ const AdminWriteHuman = () => {
   const frozen = state?.agentFrozenReport || null;   // last telemetry, known to be out of date
   const srcTone = !activeSource ? 'mut' : activeSource.online ? 'ok' : 'warn';
   const pendingCommands = state?.pendingCommands || [];
+  // Can the active source actually ACCEPT a command? Addressed commands need an agent new enough to
+  // validate their addressing, and the server refuses anything older. Checking it here means the
+  // buttons are disabled with a reason, instead of looking available and then failing on click —
+  // which is what happened when the backend demanded 3.4.0 while every field agent still ran 3.3.0.
+  const activeDevice = devices.find((d) => d.deviceId === activeSource?.deviceId) || null;
+  const activeAgentVersion = activeDevice?.agentVersion || (ag && ag.version) || null;
+  const minCmdVersion = state?.commandMinAgentVersion || null;
+  const commandsSupported = !minCmdVersion || atLeast(activeAgentVersion, minCmdVersion);
+  const cmdBlockedReason = !activeSourceOnline
+    ? 'Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.'
+    : !commandsSupported
+      ? `${activeSource?.name || 'The active source'} runs agent ${activeAgentVersion || 'an unknown version'}. Commands need ${minCmdVersion} or newer — update the agent on that machine.`
+      : null;
+  const canCommand = activeSourceOnline && commandsSupported;
 
   return (
     <AdminLayoutEnhanced>
@@ -312,10 +336,8 @@ const AdminWriteHuman = () => {
             </span>
           </span>
           {sess === 'LOGIN_REQUIRED' && (
-            <button disabled={!!busy || !activeSourceOnline} onClick={() => openChromeOnActiveSource(true)}
-              title={activeSourceOnline
-                ? `Opens Chrome on ${activeSource?.name || 'the active source'} only`
-                : 'Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.'}
+            <button disabled={!!busy || !canCommand} onClick={() => openChromeOnActiveSource(true)}
+              title={cmdBlockedReason || `Opens Chrome on ${activeSource?.name || 'the active source'} only`}
               className="flex-shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 disabled:opacity-50">
               <Chrome size={14} /> Open Chrome on {activeSource?.name || 'active source'}
             </button>
@@ -526,26 +548,24 @@ const AdminWriteHuman = () => {
                 <button disabled={!!busy || conn !== 'live'} onClick={verifySession}
                   title="Server-side check of the stored bundle. No Chrome opens on any machine."
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white bg-gradient-to-r from-blue-600 to-cyan-500 disabled:opacity-50"><ShieldCheck size={15} /> Verify Session</button>
-                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => sendCommand('resync', 'Re-sync queued')}
-                  title={activeSourceOnline ? 'Ask the active source to re-read and push its cookies' : 'The active source is offline.'}
+                <button disabled={!!busy || conn !== 'live' || !canCommand} onClick={() => sendCommand('resync', 'Re-sync queued')}
+                  title={cmdBlockedReason || 'Ask the active source to re-read and push its cookies'}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RotateCw size={15} /> Re-sync</button>
-                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => sendCommand('rotate-token', 'Token rotation requested')}
-                  title="Ask the active source's browser to rotate the access token now. No browser is launched."
+                <button disabled={!!busy || conn !== 'live' || !canCommand} onClick={() => sendCommand('rotate-token', 'Token rotation requested')}
+                  title={cmdBlockedReason || "Ask the active source's browser to rotate the access token now. No browser is launched."}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 disabled:opacity-50"><RefreshCw size={15} /> Rotate token</button>
-                <button disabled={!!busy || conn !== 'live' || !activeSourceOnline} onClick={() => openChromeOnActiveSource(false)}
-                  title={activeSourceOnline
-                    ? `Opens Chrome on ${activeSource?.name || 'the active source'} — and nowhere else`
-                    : 'Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.'}
+                <button disabled={!!busy || conn !== 'live' || !canCommand} onClick={() => openChromeOnActiveSource(false)}
+                  title={cmdBlockedReason || `Opens Chrome on ${activeSource?.name || 'the active source'} — and nowhere else`}
                   className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-cyan-700 bg-white border border-cyan-200 hover:bg-cyan-50 disabled:opacity-50"><Play size={15} /> Open WriteHuman Chrome on Active Source</button>
               </div>
-              {!activeSourceOnline && activeSource && (
-                <p className="text-[12px] text-slate-500 mt-3">Active source is offline. WriteHuman continues using the last verified session. Reconnect that source before opening Chrome.</p>
+              {cmdBlockedReason && activeSource && (
+                <p className={`text-[12px] mt-3 ${commandsSupported ? 'text-slate-500' : 'text-amber-700'}`}>{cmdBlockedReason}</p>
               )}
               {pendingCommands.length > 0 && (
                 <div className="mt-3 space-y-1">
                   {pendingCommands.map((c) => (
                     <p key={c.id} className="text-[12px] text-amber-600 flex items-center gap-1">
-                      <Clock size={12} /> {c.type} → <strong>{c.targetDeviceName || c.targetDeviceId}</strong> only · expires {rel(c.expiresAt)}
+                      <Clock size={12} /> {c.type} → <strong>{c.targetDeviceName || c.targetDeviceId}</strong> only · expires {until(c.expiresAt)}
                     </p>
                   ))}
                 </div>

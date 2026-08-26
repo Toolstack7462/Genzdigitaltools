@@ -40,6 +40,25 @@ function agentSource() {
   return fs.readFileSync(path.join(__dirname, AGENT_ASSET), 'utf8');
 }
 
+/** The agent version carried INSIDE this exe, read from the bundled asset. */
+function selfAgentVersion() {
+  try { return (agentSource().match(/AGENT_VERSION\s*=\s*'([^']+)'/) || [])[1] || null; }
+  catch (_) { return null; }
+}
+/** The version recorded by whichever installer last wrote INSTALLED_EXE. */
+function installedAgentVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'installed.json'), 'utf8')).agentVersion || null; }
+  catch (_) { return null; }
+}
+/** Stamp what we just installed, so the next run can compare versions instead of guessing. */
+function writeInstalledMarker() {
+  try {
+    fs.writeFileSync(path.join(INSTALL_DIR, 'installed.json'),
+      JSON.stringify({ agentVersion: selfAgentVersion(), installedAt: new Date().toISOString() }, null, 2),
+      { encoding: 'ascii' });
+  } catch (_) { /* non-fatal: worst case the next run treats this as an upgrade and repairs */ }
+}
+
 /**
  * Tee console output to logs\agent.log. In SEA agent mode there is no run-agent.cmd wrapper to
  * redirect stdout, and the logon shortcut launches the exe detached, so without this the agent's
@@ -319,11 +338,25 @@ function copyWithRetry(src, dst) {
   throw lastErr || new Error('copy failed');
 }
 
-/** Size-match: is the running exe the same build already installed? (cheap version check) */
+/**
+ * Is the installed copy the SAME BUILD as this installer?
+ *
+ * This used to compare file SIZE. A SEA exe is ~91 MB of node runtime plus a few KB of embedded
+ * agent, so two different agent versions can easily land on the same byte count - and when they do,
+ * re-running the installer reports "already installed and running" and refuses to upgrade. That is
+ * a silent no-op upgrade: the operator sees success and keeps running the old agent. Compare the
+ * VERSION the exe actually carries instead.
+ *
+ * An install with no marker (written by an older installer) is treated as NOT current, so the first
+ * run of a new installer always upgrades rather than assuming.
+ */
 function installedSameBuild() {
   try {
     if (!fs.existsSync(INSTALLED_EXE)) return false;
-    return fs.statSync(selfPath()).size === fs.statSync(INSTALLED_EXE).size;
+    const mine = selfAgentVersion();
+    const theirs = installedAgentVersion();
+    if (!mine || !theirs) return false;
+    return mine === theirs;
   } catch (_) { return false; }
 }
 
@@ -348,6 +381,7 @@ function runStages(isRepair) {
           copyWithRetry(selfPath(), INSTALLED_EXE);
         }
         writeDefaultConfig();   // preserves an existing config + device identity (early-returns if present)
+        writeInstalledMarker();  // records the agent version just installed, for upgrade detection
       } catch (e) { e.exit = EXIT.FILE_FAILED; throw e; }
     }],
     ['Registering auto-start', () => {
