@@ -129,6 +129,29 @@ function findDevice(account, deviceId) {
   if (!deviceId) return null;
   return getDevices(account).find(x => x && x.deviceId === deviceId) || null;
 }
+/** Is a device seen recently enough to count as online? Single definition, used everywhere. */
+function isOnline(dev, staleMs) {
+  if (!dev || !dev.lastSeenAt) return false;
+  return (Date.now() - new Date(dev.lastSeenAt).getTime()) <= staleMs;
+}
+/**
+ * Superseded = the SAME machine enrolled again under a new device id (reinstalling the agent mints
+ * a fresh id), leaving an older row behind. The old row is kept for history but must never receive
+ * a command or be treated as a real target.
+ *
+ * This used to live inline in the admin agent-state route, which meant the COMMAND path had no
+ * concept of "superseded" at all and would happily dispatch to a dead duplicate. One definition,
+ * shared by the dashboard and the router, is the fix.
+ */
+function isSupersededDevice(account, dev, staleMs) {
+  if (!dev || dev.revoked) return false;
+  const activeId = account && account.activeSource && account.activeSource.deviceId;
+  if (dev.deviceId === activeId) return false;
+  if (isOnline(dev, staleMs)) return false;
+  return getDevices(account).some(o => o && !o.revoked && o.deviceId !== dev.deviceId
+    && (o.name || '') === (dev.name || '')
+    && o.lastSeenAt && dev.lastSeenAt && new Date(o.lastSeenAt) > new Date(dev.lastSeenAt));
+}
 /** Safe public projection - never exposes keyHash or any secret. */
 function publicDevice(dev, activeDeviceId, staleMs) {
   if (!dev) return null;
@@ -148,8 +171,9 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     lastSyncAttemptAt: dev.lastSyncAttemptAt || null,
     lastSyncSuccessAt: dev.lastSyncSuccessAt || null,
     lastResultCode: dev.lastResultCode || null,
-    lastError: dev.lastError || null,
-    lastErrorAt: dev.lastErrorAt || null,
+    // NOTE: `lastError` / `lastErrorAt` are defined ONCE, below, as report-first with a fallback to
+    // the record-level value. They used to appear twice in this literal — the record-level pair
+    // here and the report-native pair below — so the record-level values were silently dead.
     syncCount: dev.syncCount || 0,
     promotionCount: dev.promotionCount || 0,
     cdp: (dev.report && dev.report.cdp) || null,
@@ -400,7 +424,7 @@ function revokeDevice(account, deviceId, opts) {
 module.exports = {
   CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES, ACTIVATION_TTL_MS, ACTIVE_INTENT_TTL_MS,
   sha256, timingEqHex, cleanName, bundleTokenIat, bundleTokenClaims,
-  getDevices, findDevice, publicDevice, putDevice,
+  getDevices, findDevice, publicDevice, putDevice, isOnline, isSupersededDevice,
   createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice, autoRegisterDevice,
   noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
   setActiveSourceIntent, activeSourceIntentFor, clearActiveSourceIntent,

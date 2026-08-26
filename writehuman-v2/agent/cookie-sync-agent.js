@@ -38,7 +38,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const AGENT_VERSION = '3.3.0';
+// 3.4.0 — ADDRESSED commands (this agent refuses anything not addressed to its own device id),
+// stand-down on revoke (a revoked agent no longer keeps relaunching Chrome forever), and the
+// token-rotation nudge that stops the dedicated Chrome rotating late.
+const AGENT_VERSION = '3.4.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -426,6 +429,68 @@ async function getAllCookiesViaCDP(cdpUrl, state) {
   });
 }
 
+/**
+ * Ask the dedicated Chrome to rotate the Supabase access token NOW, by reloading its WriteHuman
+ * tab. The app's own client does the refresh on load, so the BROWSER stays the sole rotator and
+ * nothing here ever touches the refresh token — which is what keeps Supabase reuse-detection out
+ * of the picture entirely.
+ *
+ * WHY THIS EXISTS. WriteHuman's access token lives ~1 hour, and Chrome heavily throttles timers in
+ * a backgrounded window, so the SDK's auto-refresh fires late: measured on the real source machine,
+ * rotations landed 63, 67, 68 and 86 minutes apart on a 60-minute token. For those extra minutes
+ * the stored token was expired, the dashboard called the session stale, and the only cure anyone
+ * had was to go and refresh the RDP browser by hand — every hour, forever. Reloading the tab a few
+ * minutes BEFORE expiry removes the chore without changing who rotates.
+ *
+ * Never launches Chrome. If Chrome is not running, or there is no WriteHuman tab and one cannot be
+ * opened, this does nothing and says so.
+ */
+async function nudgeTokenRotation(state, reason) {
+  const cdpUrl = CFG.cdpUrl;
+  const host = (() => { try { return new URL(cdpUrl).hostname; } catch (_) { return ''; } })();
+  if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) return false;
+  try {
+    const listRes = await fetch(cdpUrl + '/json/list', { signal: AbortSignal.timeout(6000) });
+    if (!listRes.ok) return false;
+    const targets = await listRes.json();
+    const page = (Array.isArray(targets) ? targets : []).find(t =>
+      t && t.type === 'page' && typeof t.url === 'string' && t.url.includes(CFG.domain));
+
+    if (!page) {
+      // No WriteHuman tab open. Opening one is a tab, not a browser — and without it an idle
+      // dedicated Chrome would never rotate at all. Chrome 111+ requires PUT on /json/new.
+      const newRes = await fetch(cdpUrl + '/json/new?url=' + encodeURIComponent('https://' + CFG.domain + '/'),
+        { method: 'PUT', signal: AbortSignal.timeout(6000) }).catch(() => null);
+      log('token_nudge', { reason, action: newRes && newRes.ok ? 'opened_tab' : 'no_tab' });
+      return !!(newRes && newRes.ok);
+    }
+    if (!page.webSocketDebuggerUrl || typeof WebSocket === 'undefined') return false;
+
+    const ok = await new Promise((resolve) => {
+      let settled = false;
+      const ws = new WebSocket(page.webSocketDebuggerUrl);
+      const done = (v) => { if (settled) return; settled = true; clearTimeout(t); try { ws.close(); } catch (_) {} resolve(v); };
+      const t = setTimeout(() => done(false), 8000);
+      ws.onopen = () => { try { ws.send(JSON.stringify({ id: 1, method: 'Page.reload', params: { ignoreCache: false } })); } catch (_) { done(false); } };
+      ws.onmessage = (ev) => {
+        try { const m = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString()); if (m.id === 1) done(!m.error); }
+        catch (_) { /* ignore */ }
+      };
+      ws.onerror = () => done(false);
+      ws.onclose = () => done(false);
+    });
+    state.lastNudgeAt = Date.now();
+    log('token_nudge', { reason, action: ok ? 'reloaded' : 'reload_failed' });
+    // A rotation lands a moment later; poll fast for a short burst so the new cookie reaches the
+    // server in seconds rather than at the next 45-second tick.
+    if (ok) state.quickPollsLeft = Math.max(state.quickPollsLeft || 0, CFG.quickPollFor || 4);
+    return ok;
+  } catch (e) {
+    log('token_nudge_failed', { reason, error: e && e.message });
+    return false;
+  }
+}
+
 // Diagnostics report attached to EVERY server call (drives the dashboard).
 function buildReport(state) {
   return {
@@ -459,6 +524,9 @@ async function postToServer(state, payload) {
   if (dev && dev.deviceId) headers['x-device-id'] = dev.deviceId;
   else if (dev && dev.agentId) headers['x-agent-id'] = dev.agentId;
   const envelope = Object.assign({ agent: buildReport(state) }, payload);
+  // Report what happened to the last command we were given, so the dashboard can say "RDP-01 ran
+  // it" rather than only "we queued it". Purely observational — it grants nothing.
+  if (state.pendingAck) { envelope.commandAck = state.pendingAck; state.pendingAck = null; }
   if (dev) {
     dev.seq = (dev.seq || 0) + 1;
     envelope.seq = dev.seq;
@@ -487,8 +555,26 @@ async function postToServer(state, payload) {
       delete state.device.agentId;
       if (saveDeviceState(state.device)) log('device_key_issued', { device_id: body.deviceId });
     }
+    // Am I the machine currently supplying the session? Everything that touches the BROWSER is
+    // gated on this: a standby must never open Chrome or nudge a token.
+    state.isActiveSource = body && body.isActiveSource === true;
+    state.superseded = !!(body && body.superseded);
+    // How long until the stored access token expires, as the SERVER sees it. Only the active
+    // source is ever told. This is what lets rotation happen ON TIME instead of whenever a
+    // throttled background timer in Chrome eventually gets round to it.
+    state.rotateTokenIn = (body && typeof body.rotateTokenIn === 'number') ? body.rotateTokenIn : null;
     if (body && body.command) handleCommand(state, body.command);
     return body || {};
+  }
+  // STAND DOWN. A revoked device used to log its 403 and carry right on — polling every 45 seconds
+  // and auto-relaunching the dedicated Chrome on that machine indefinitely, which is exactly how
+  // WriteHuman Chrome kept appearing on a computer that was no longer the source. When the server
+  // says the credential is gone, stop touching the browser and go quiet.
+  if (resp.status === 403 && body && (body.standDown === true || body.code === 'DEVICE_REVOKED')) {
+    if (!state.standDown) log('stand_down', { code: body.code, reason: 'revoked_by_server' });
+    state.standDown = true;
+    recordError(state, 'revoked: ' + (body.code || 'DEVICE_REVOKED'));
+    return { _status: resp.status, body, code: body.code, standDown: true };
   }
   // A 4xx is the server ANSWERING us — the candidate was judged and refused (stale, wrong account,
   // replayed). That is not unreachability, so it must not drive the backoff that exists to stop us
@@ -516,29 +602,81 @@ function relaunchChrome(reason) {
   } catch (e) { log('relaunch_failed', { error: e.message }); }
 }
 
+/**
+ * Execute a command from the dashboard — but ONLY if it is addressed to THIS device.
+ *
+ * The server already refuses to address a revoked / superseded / non-active-source machine, and it
+ * only ever hands a command to the device named in it. This check is the second, independent lock:
+ * a server bug, a shared response, or a replayed body must not be able to move a browser on the
+ * wrong computer. Two independent guards, because the failure mode is a Chrome window opening on
+ * someone's desk.
+ *
+ * Accepts the 3.4.0 ADDRESSED object. The pre-3.4.0 bare string carried no target at all and is
+ * deliberately refused rather than obeyed.
+ */
 function handleCommand(state, cmd) {
+  const myId = state.device && (state.device.deviceId || state.device.agentId);
   try {
-    state.lastCommand = cmd; state.lastCommandAt = Date.now();
-    if (cmd === 'reverify') {
+    if (typeof cmd === 'string') {
+      // Unaddressed legacy command. This is the shape that landed on the wrong machine.
+      log('command_rejected', { reason: 'unaddressed_legacy_command', command: cmd });
+      return;
+    }
+    if (!cmd || typeof cmd !== 'object' || !cmd.id || !cmd.type) {
+      log('command_rejected', { reason: 'malformed' }); return;
+    }
+    if (!cmd.targetDeviceId || cmd.targetDeviceId !== myId) {
+      log('command_rejected', { reason: 'not_addressed_to_me', command_id: cmd.id, target: cmd.targetDeviceId, me: myId });
+      return;
+    }
+    if (cmd.tool && cmd.tool !== 'writehuman') {
+      log('command_rejected', { reason: 'wrong_tool_scope', command_id: cmd.id, tool: cmd.tool }); return;
+    }
+    if (cmd.expiresAt && new Date(cmd.expiresAt).getTime() <= Date.now()) {
+      log('command_rejected', { reason: 'expired', command_id: cmd.id }); return;
+    }
+    if (state.standDown) { log('command_rejected', { reason: 'stood_down', command_id: cmd.id }); return; }
+
+    state.lastCommand = cmd.type; state.lastCommandAt = Date.now();
+    state.pendingAck = { commandId: cmd.id, nonce: cmd.nonce, ok: true, result: null };
+
+    if (cmd.type === 'resync') {
       // Force a real re-sync + server-side re-verify on the next poll: clear lastHash AND set the
       // force flag so the push is honoured even if the cookie hash is unchanged (the server no-ops
       // an unchanged hash otherwise, which made "Re-sync" a silent no-op).
-      state.lastHash = null; state.forceNext = true; log('command_reverify', {}); return;
-    }
-    if (cmd === 'relaunch-chrome') {
-      // Run the ChromeDebug SCHEDULED TASK (registered in the interactive user session). The agent
-      // runs as SYSTEM (session 0) — a direct chrome spawn would launch invisibly in session 0 and
-      // collide with the user-session profile lock, so it must go through the task.
-      relaunchChrome('command');
-      p.unref();
+      state.lastHash = null; state.forceNext = true;
+      log('command_resync', { command_id: cmd.id });
+      state.pendingAck.result = 'resync_queued';
       return;
     }
-    log('command_unknown', { command: cmd });
-  } catch (e) { log('command_failed', { command: cmd, error: e.message }); }
+    if (cmd.type === 'rotate-token') {
+      // Nudge the WriteHuman tab so Supabase rotates the access token now rather than late. No
+      // browser is launched; if Chrome is not there this simply does nothing.
+      nudgeTokenRotation(state, 'command').then((r) => { state.pendingAck = { commandId: cmd.id, nonce: cmd.nonce, ok: !!r, result: r ? 'rotated' : 'no_tab' }; }).catch(() => {});
+      return;
+    }
+    if (cmd.type === 'open-chrome') {
+      // The ONE command that starts a browser process. It reached here only because the server
+      // addressed it to this device AND this device confirmed the address above.
+      relaunchChrome('command:' + cmd.id);
+      state.pendingAck.result = 'chrome_launch_requested';
+      return;
+    }
+    log('command_unknown', { command: cmd.type, command_id: cmd.id });
+  } catch (e) { log('command_failed', { command: cmd && cmd.type, error: e.message }); }
 }
 
 async function pushIfChanged(state) {
   state.pollCount = (state.pollCount || 0) + 1;
+  // Stood down by the server (this device was revoked). Keep checking in occasionally — a
+  // reinstall re-enrols and clears this — but touch NOTHING: no cookie read, no Chrome launch.
+  if (state.standDown) {
+    if (!state.lastStandDownPingAt || (Date.now() - state.lastStandDownPingAt) >= 15 * 60000) {
+      state.lastStandDownPingAt = Date.now();
+      await postToServer(state, { heartbeat: true, hash: null });
+    }
+    return;
+  }
   let cookies;
   try {
     cookies = await getAllCookiesViaCDP(CFG.cdpUrl, state);
@@ -551,12 +689,29 @@ async function pushIfChanged(state) {
     // AUTO-RECOVERY: after N consecutive CDP failures the debug Chrome is likely dead/closed —
     // relaunch it via its task (faster than the 5-min watchdog). Cooldown-gated so it can't
     // relaunch-spam while Chrome is still coming back up.
-    if (CFG.autoLaunchChrome && state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+    //
+    // ONLY ON THE ACTIVE SOURCE. This loop is what actually put WriteHuman Chrome on the wrong
+    // computer: every machine with the agent installed relaunched its own dedicated Chrome every
+    // couple of minutes, forever, whether or not it was supplying the session — a revoked box on
+    // the operator's desk did it for hours. A standby has no reason to have Chrome running at all,
+    // so it no longer starts one. `isActiveSource` is undefined until the first reply, and that
+    // first poll is a heartbeat, so a fresh agent simply waits to be told.
+    if (CFG.autoLaunchChrome && state.isActiveSource === true
+        && state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
       state.lastRelaunchAt = Date.now();
       relaunchChrome('cdp_auto');
     }
     await postToServer(state, { heartbeat: true, hash: null }); // report CDP-down so the dashboard sees it live
     return;
+  }
+
+  // TOKEN ROTATION, ON TIME. The server tells the ACTIVE SOURCE (and only it) how long the stored
+  // access token has left; when that is short, reload the WriteHuman tab so the app rotates now
+  // instead of whenever a throttled background timer gets round to it. Cooldown-gated so a run of
+  // polls inside the same window cannot reload in a loop.
+  if (state.isActiveSource === true && state.rotateTokenIn != null
+      && (Date.now() - (state.lastNudgeAt || 0)) > Math.max(120000, CFG.relaunchCooldownMs)) {
+    await nudgeTokenRotation(state, 'token_ttl_' + state.rotateTokenIn + 's');
   }
   const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
   state.authCount = auth.length;
@@ -759,6 +914,6 @@ async function run() {
   loop(); // run once immediately, then self-reschedule
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand };
 
 if (require.main === module) start();

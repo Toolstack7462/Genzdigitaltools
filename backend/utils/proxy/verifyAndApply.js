@@ -8,6 +8,13 @@
  * opts:
  *   forceLive - do the live refresh-token exchange (static-vault tools; the server is the rotator).
  *   readOnly  - NEVER exchange (live-agent tools like WriteHuman; the browser is the sole rotator).
+ *   canary    - with a still-valid access token, prove the session with a REAL non-rotating
+ *               authenticated call instead of trusting a local JWT decode. Cheap, and the only way
+ *               a read-only check can distinguish "alive" from "revoked but the JWT hasn't expired
+ *               yet". Used by the manual Verify Session, the scheduler, and post-promotion.
+ *   allowServerRefresh - read-only break-glass: rotate server-side when the access token has
+ *               already expired AND the source cannot rotate it. Also requires
+ *               WRITEHUMAN_SERVER_REFRESH=1 (see verify.js). Default off.
  *   bundle    - pre-decrypted bundle, to avoid a redundant decrypt when the caller already has it.
  *   skipSave  - don't persist (caller will save).
  *
@@ -47,6 +54,8 @@ async function verifyAndApply(account, tool, opts = {}) {
   }
 
   const vopts = opts.forceLive ? { forceLive: true } : (opts.readOnly ? { readOnly: true } : {});
+  if (opts.canary) vopts.canary = true;
+  if (opts.allowServerRefresh) vopts.allowServerRefresh = true;
   const v = await verifyAccountCookies(tool, cookieHeader, account.expectedIdentifier, vopts);
 
   // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
@@ -79,22 +88,47 @@ async function verifyAndApply(account, tool, opts = {}) {
     if (account.session_status === 'session_expired') account.session_status = 'pending_verification';
   }
 
-  // forceLive success ROTATED the tokens -> persist them so the account stays live. readOnly never
-  // sets refreshedSession, so this is a no-op for live-agent tools (no rotation, no competition).
-  if (opts.forceLive && v.result === 'working' && v.refreshedSession && bundle) {
+  // A successful exchange ROTATED the tokens -> persist them, or the account is left holding a
+  // refresh token that has just been consumed. Two callers can reach here:
+  //   forceLive              static-vault tools, where the server IS the rotator (unchanged);
+  //   allowServerRefresh     the gated WriteHuman break-glass, where we have deliberately taken
+  //                          over rotation because the source machine could not do it.
+  // In BOTH cases the write is atomic (encrypt-then-assign, previous kept as rollback) and it
+  // updates the verification timestamps, so the dashboard reads HEALTHY rather than "expired".
+  let refreshPersisted = false;
+  if ((opts.forceLive || opts.allowServerRefresh) && v.result === 'working' && v.refreshedSession && bundle) {
     try {
       const ref = (tools.supabaseConfig(tool) || {}).projectRef;
       const updated = applySupabaseRefresh(bundle, ref, v.refreshedSession);
       if (updated) {
+        // Keep the outgoing bundle so a bad rotation can be undone, exactly as the agent-sync
+        // promotion path does. Bounded, because encrypted session copies are sensitive at rest.
+        if (account.sessionEncrypted) {
+          const rolls = Array.isArray(account.rollbackBundles) ? account.rollbackBundles : [];
+          rolls.push({
+            encrypted: account.sessionEncrypted,
+            hash: account.cookieHash ? String(account.cookieHash).slice(0, 12) : null,
+            bundleVersion: account.bundleVersion || 0,
+            savedAt: now,
+            deviceId: (account.activeSource && account.activeSource.deviceId) || null,
+            reason: opts.allowServerRefresh ? 'server_refresh' : 'force_live_refresh',
+          });
+          account.rollbackBundles = rolls.slice(-2);
+        }
         account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(updated));
         account.sessionMeta = Object.assign({}, account.sessionMeta || {}, { updatedAt: now });
+        if (opts.allowServerRefresh) {
+          account.bundleVersion = (account.bundleVersion || 0) + 1;
+          account.lastServerRefreshAt = now;
+        }
+        refreshPersisted = true;
       }
     } catch (_) { /* persist is best-effort; the verify result still stands */ }
   }
 
   if (!opts.skipSave) await account.save();
   alertTransition(account, tool, prevSs);
-  return { result: effResult, effResult, v, cookieNames: names, cookieCount };
+  return { result: effResult, effResult, v, cookieNames: names, cookieCount, refreshPersisted };
 }
 
 module.exports = { verifyAndApply };

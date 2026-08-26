@@ -28,6 +28,10 @@ const { selectAccount } = require('../../utils/proxy/accountSelect');
 const deviceSync = require('../../utils/proxy/deviceSync');
 const { ingestCandidate, markDeviceLoggedOut, recordAttempt } = require('../../utils/proxy/candidateSync');
 const agentEnroll = require('../../utils/proxy/agentEnroll');
+const agentCommands = require('../../utils/proxy/agentCommands');
+const vaultCrypto = require('../../utils/proxy/vaultCrypto');
+const { extractSupabaseSession, jwtExp } = require('../../utils/proxy/verify');
+const { buildCookieHeader } = require('../../utils/proxy/cookies');
 
 const { CODES } = deviceSync;
 // The shared agent-ingest key. Set in hPanel, never in git and never returned by any route.
@@ -36,7 +40,14 @@ const SHARED_KEY = process.env.PROXY_AGENT_SYNC_KEY || '';
 // roaming/residential devices (a changed egress IP silently 403s every push).
 const ALLOW_IPS = (process.env.PROXY_AGENT_SYNC_ALLOW_IPS || '').split(',').map(s => s.trim()).filter(Boolean);
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
-const ALLOWED_COMMANDS = ['relaunch-chrome', 'reverify'];
+// Heartbeat window, shared with the dashboard and the command router.
+const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
+// How close to expiry the stored access token has to be before we ask the ACTIVE SOURCE's browser
+// to rotate it. WriteHuman's token lives ~1h and a backgrounded Chrome rotates late — measured at
+// 63-86 minutes on a 60-minute token — which is what made the dashboard read "stale" every hour and
+// forced the operator to refresh the RDP browser by hand. Nudging at ~10 minutes out keeps the
+// BROWSER the sole rotator (no Supabase reuse-detection risk) and simply stops it being late.
+const TOKEN_NUDGE_SEC = Math.max(120, Number(process.env.PROXY_TOKEN_NUDGE_SEC || 600));
 
 function clientIp(req) {
   const xff = req.headers['x-forwarded-for'];
@@ -92,6 +103,47 @@ function activeSourceView(account) {
 function isActive(account, device) {
   const a = account.activeSource;
   return !!(a && device && a.deviceId === device.deviceId);
+}
+
+/**
+ * Seconds until the stored access token expires (negative once it has). Decoded server-side only;
+ * the token itself never leaves this process. The agent uses it to know WHEN the browser should
+ * rotate, so rotation stops being late — the fix for the hourly "stale" reading.
+ */
+function accessTokenTtlSec(account, tool) {
+  try {
+    if (!account.sessionEncrypted) return null;
+    const b = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted));
+    const ref = (tools.supabaseConfig(tool) || {}).projectRef;
+    const { accessToken } = extractSupabaseSession(buildCookieHeader(b, tools.targetHost(tool)), ref);
+    const exp = jwtExp(accessToken);
+    return exp ? Math.round(exp - Date.now() / 1000) : null;
+  } catch (_) { return null; }
+}
+
+/**
+ * The reply every ingest response carries. Two fields matter beyond bookkeeping:
+ *
+ *   command       the ADDRESSED command for THIS device, or null. Never another device's. This is
+ *                 the replacement for the old global `pendingCommand` string, which was handed to
+ *                 whichever agent polled first and is why "Open Chrome" landed on the wrong box.
+ *   rotateTokenIn seconds until the token should be rotated, and only ever sent to the ACTIVE
+ *                 SOURCE. A standby is explicitly told `null` so it never touches its browser.
+ */
+function agentDirectives(account, tool, device) {
+  const staleMs = AGENT_STALE_MIN * 60000;
+  // A superseded record is a dead duplicate of a machine that re-enrolled. It must not act.
+  if (deviceSync.isSupersededDevice(account, device, staleMs)) {
+    return { command: null, rotateTokenIn: null, superseded: true, isActiveSource: false };
+  }
+  const active = isActive(account, device);
+  const command = agentCommands.takeFor(account, device, { tool, agentVersion: device.agentVersion });
+  let rotateTokenIn = null;
+  if (active) {
+    const ttl = accessTokenTtlSec(account, tool);
+    if (ttl != null && ttl <= TOKEN_NUDGE_SEC) rotateTokenIn = Math.max(0, ttl);
+  }
+  return { command, rotateTokenIn, superseded: false, isActiveSource: active };
 }
 
 router.param('tool', (req, res, next, tool) => {
@@ -241,14 +293,34 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
 
     if (deviceId) {
       const a = deviceSync.authenticateDevice(account, deviceId, presentedKey);
-      if (!a.ok) return res.status(403).json({ ok: false, code: a.code });
+      if (!a.ok) {
+        // STAND DOWN. A revoked agent used to just log the 403 and carry on — polling every 45s and
+        // auto-relaunching the dedicated Chrome on that machine indefinitely. That is precisely how
+        // WriteHuman Chrome kept opening on a computer that was no longer the source. The refusal
+        // now says so explicitly so the agent can stop touching the browser and go quiet.
+        return res.status(403).json({
+          ok: false, code: a.code,
+          standDown: a.code === CODES.DEVICE_REVOKED,
+          hint: a.code === CODES.DEVICE_REVOKED
+            ? 'This device is revoked. Stop syncing and stop launching Chrome. Reinstall the agent to enrol again.'
+            : undefined,
+        });
+      }
       device = a.device;
     } else if (sharedKeyOk && agentId) {
       const r = deviceSync.autoRegisterDevice(account, agentId, {
         hostname: (report && report.host) || null,
         agentVersion: (report && report.version) || null,
       });
-      if (!r.ok) return res.status(403).json({ ok: false, code: r.code });
+      if (!r.ok) {
+        return res.status(403).json({
+          ok: false, code: r.code,
+          standDown: r.code === CODES.DEVICE_REVOKED,
+          hint: r.code === CODES.DEVICE_REVOKED
+            ? 'This device is revoked. Stop syncing and stop launching Chrome. Reinstall the agent to enrol again.'
+            : undefined,
+        });
+      }
       device = r.device;
       if (r.created) {
         // Non-secret: an id the agent generated and the hostname it reported. No key material.
@@ -298,8 +370,9 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
     }
     meta.idempotencyKey = idem;
 
-    const pending = account.pendingCommand && ALLOWED_COMMANDS.includes(account.pendingCommand) ? account.pendingCommand : null;
-    const clearPending = () => { if (pending) account.pendingCommand = null; };
+    // An agent may acknowledge the command it was last given. Purely observational — it never
+    // grants anything — but it is what turns "we queued a Chrome launch" into "RDP-01 ran it".
+    if (body.commandAck) { agentCommands.ack(account, device, body.commandAck); }
 
     // -- heartbeat: liveness + telemetry only -------------------------------
     if (body.heartbeat === true && body.cookies == null) {
@@ -311,22 +384,22 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
         deviceSync.noteDeviceAuthState(device, report.authCookies > 0, new Date());
       }
       recordAttempt(account, device, 'HEARTBEAT', meta);
-      clearPending();
+      const d = agentDirectives(account, tool, device);
       await account.save();
-      return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, command: pending, activeSource: activeSourceView(account), isActiveSource: isActive(account, device) }));
+      return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, ...d, activeSource: activeSourceView(account) }));
     }
 
     // -- explicit logout signal from this device ----------------------------
     if (body.loggedOut === true) {
       const r = await markDeviceLoggedOut(account, tool, device, meta);
-      clearPending();
+      const d = agentDirectives(account, tool, device);
       await account.save();
-      return res.json(withIssuedKey(req, { ok: true, code: r.code, loggedOut: true, downgraded: r.downgraded, changed: r.downgraded, command: pending }));
+      return res.json(withIssuedKey(req, { ok: true, code: r.code, loggedOut: true, downgraded: r.downgraded, changed: r.downgraded, ...d }));
     }
 
     // -- cookie candidate ---------------------------------------------------
     const r = await ingestCandidate(account, tool, device, body.cookies, Object.assign({ force: body.force === true }, meta));
-    clearPending();
+    const d = agentDirectives(account, tool, device);
     await account.save();
 
     const httpCode = (r.code === CODES.PROMOTED || r.code === CODES.COOKIE_BUNDLE_UNCHANGED) ? 200 : 409;
@@ -338,8 +411,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       sourceSwitched: !!r.sourceSwitched,
       bundleVersion: r.bundleVersion,
       activeSource: activeSourceView(account),
-      isActiveSource: isActive(account, device),
-      command: pending,
+      ...d,
     }));
   } catch (err) {
     console.error('[agent-sync] ingest error:', err && err.message);

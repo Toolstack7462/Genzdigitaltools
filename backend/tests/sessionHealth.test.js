@@ -39,8 +39,12 @@ test('LOGIN_REQUIRED does NOT fire for transient conditions', () => {
   assert.strictEqual(S({ cdpConnected: false }), 'RECONNECTING');
   assert.strictEqual(L({ cdpConnected: false }), false);
 
-  // Ordinary token rotation (aged token, browser still logged in) — the browser rotates it.
-  assert.strictEqual(S({ tokenExpired: true }), 'RECONNECTING');
+  // Ordinary token rotation (aged token, browser still logged in). This used to report
+  // RECONNECTING, which the aggregator turned into `degraded` and the page rendered as
+  // "working · unverified" — the ONE-HOUR FALSE STALE, since WriteHuman's access token lives ~1h
+  // and the browser rotates it late. An aged token is verification freshness, not session health,
+  // so the lifecycle label now stays HEALTHY and only `verification` moves to "due".
+  assert.strictEqual(S({ tokenExpired: true }), 'HEALTHY');
   assert.strictEqual(L({ tokenExpired: true }), false);
 
   // Stale/unknown telemetry (null auth cookies) is NOT proof of logout — must not demand a login.

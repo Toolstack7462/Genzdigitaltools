@@ -26,6 +26,7 @@ const tools = require('../utils/proxy/tools');
 const { selectAccount } = require('../utils/proxy/accountSelect');
 const { verifyAndApply } = require('../utils/proxy/verifyAndApply');
 const healthAlerts = require('../utils/proxy/healthAlerts');
+const deviceSync = require('../utils/proxy/deviceSync');
 
 const INTERVAL_MS   = Math.max(60_000, Number(process.env.PROXY_VERIFY_INTERVAL_MS || 7 * 60_000));
 const RETRY_MS      = Math.max(5_000,  Number(process.env.PROXY_VERIFY_RETRY_MS   || 45_000));
@@ -37,6 +38,8 @@ const MAX_RETRIES   = Math.max(0,      Number(process.env.PROXY_VERIFY_MAX_RETRI
 const STALE_MS      = Math.max(60_000, Number(process.env.PROXY_VERIFY_STALE_MS   || 5 * 60_000));
 // Alert when the Cookie Sync Agent hasn't reported for this long (RDP/agent likely down).
 const AGENT_STALE_ALERT_MIN = Math.max(5, Number(process.env.PROXY_AGENT_STALE_ALERT_MIN || 15));
+// Same heartbeat window the dashboard uses, so "online" means one thing across the system.
+const AGENT_STALE_MIN = Math.max(1, Number(process.env.PROXY_AGENT_STALE_MIN || 10));
 const SELECTION_MODE = process.env.PROXY_ACCOUNT_SELECTION_MODE || 'auto_failover';
 const ENABLED = process.env.PROXY_VERIFY_SCHEDULER !== '0';
 
@@ -61,8 +64,30 @@ async function verifyOne(tool) {
   const last = account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : 0;
   if (Date.now() - last < STALE_MS) return;                          // not stale yet -> skip
 
+  // Can the SOURCE still rotate the token itself? If a paired device is online and its Chrome is
+  // reachable, the browser is the rotator and the server must stay out of it. Only when nothing
+  // can rotate does the gated server-side refresh become the last resort — and even then it needs
+  // WRITEHUMAN_SERVER_REFRESH=1, so the default deployment never rotates from here.
+  const canSourceRotate = (() => {
+    try {
+      const activeId = account.activeSource && account.activeSource.deviceId;
+      const devs = deviceSync.getDevices(account);
+      const active = activeId ? devs.find(d => d && d.deviceId === activeId) : null;
+      const cand = active || devs.find(d => d && !d.revoked);
+      if (!cand) return false;
+      if (!deviceSync.isOnline(cand, AGENT_STALE_MIN * 60_000)) return false;
+      const cdp = cand.report && cand.report.cdp;
+      return cdp == null || String(cdp) === '200';   // unknown CDP: assume the browser is fine
+    } catch (_) { return true; }                     // never rotate on our own bookkeeping error
+  })();
+
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const r = await verifyAndApply(account, tool, { readOnly: true });
+    // `canary` is what makes this schedule worth running: with a live access token it PROVES the
+    // session with one lightweight authenticated call (no browser, no rotation), so the dashboard
+    // stays current without anyone touching the RDP.
+    const r = await verifyAndApply(account, tool, {
+      readOnly: true, canary: true, allowServerRefresh: !canSourceRotate,
+    });
     if (!r.v) break;                                                 // missing-cookie: applied, stop
     if (r.result !== 'unknown') break;                              // definitive result, stop
     if (r.v.reason === 'readonly_no_exchange') break;              // aged token, not transient

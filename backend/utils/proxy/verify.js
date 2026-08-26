@@ -264,34 +264,118 @@ function applySupabaseRefresh(bundle, projectRef, newSession) {
   } catch (_) { return null; }
 }
 
+/**
+ * A REAL, authenticated, NON-ROTATING capability check.
+ *
+ * GoTrue's `/auth/v1/user` validates the access token against the SERVER's session record, so a
+ * 200 is genuine proof the session is alive — unlike decoding the JWT locally, which keeps saying
+ * "valid" for the token's full ~1h even after the session was revoked or signed out (the flaw the
+ * old fast-path documented but could not fix). Crucially it does NOT touch the refresh token, so
+ * it cannot rotate anything and cannot compete with the browser.
+ *
+ * This is the "lightweight authenticated capability/session check" the scheduler and the manual
+ * Verify Session both run. Bounded timeout; never logs or returns the token.
+ */
+async function supabaseUserCheck(cfg, accessToken) {
+  if (!accessToken) return { ok: false, status: 0, inconclusive: true, email: null };
+  let resp;
+  try {
+    resp = await fetch(cfg.url + '/auth/v1/user', {
+      method: 'GET',
+      headers: { apikey: cfg.anonKey, authorization: 'Bearer ' + accessToken, 'user-agent': UA },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch (_) {
+    return { ok: false, status: 0, inconclusive: true, email: null };   // network — never a verdict
+  }
+  let body = '';
+  try { body = (await resp.text()).slice(0, 20000); } catch (_) {}
+  if (resp.status >= 200 && resp.status < 300) {
+    const em = body.match(/"email":"([^"]+)"/i);
+    return { ok: true, status: resp.status, inconclusive: false, email: em ? em[1] : null };
+  }
+  // 401 with a structurally valid, unexpired JWT = the session itself is gone (signed out, revoked,
+  // user deleted). That IS proof, and it is the case a local JWT decode can never see.
+  //
+  // 403 is deliberately NOT proof. GoTrue answers 403 for apikey / permission problems as well as
+  // for the session, so a rotated or mistyped anon key would otherwise mark every account
+  // needs_login at once — a self-inflicted outage dressed up as a verification result. Anything
+  // that is not an unambiguous 401 stays inconclusive and cannot downgrade a live session.
+  if (resp.status === 401) {
+    return { ok: false, status: resp.status, inconclusive: false, email: null };
+  }
+  return { ok: false, status: resp.status, inconclusive: true, email: null };
+}
+
+/**
+ * opts:
+ *   forceLive           always do the rotating refresh exchange (static-vault tools).
+ *   readOnly            NEVER rotate (live-agent tools; the browser is the sole rotator).
+ *   canary              with a still-valid access token, PROVE the session with a real
+ *                       non-rotating /auth/v1/user call instead of trusting the local JWT decode.
+ *   allowServerRefresh  a read-only caller may, as an explicit last resort, do the rotating
+ *                       exchange once the access token has already expired. Gated a second time by
+ *                       WRITEHUMAN_SERVER_REFRESH=1 — see the block below for why.
+ */
 async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opts = {}) {
   const cfg = tools.supabaseConfig(tool);
   if (!cfg) return { result: 'unknown', httpStatus: 0, finalPath: null, redirectedToSignIn: false, maskedId: null };
 
   const { refreshToken, accessToken, email: cookieEmail } = extractSupabaseSession(cookieHeader, cfg.projectRef);
+  const cookieMasked = cookieEmail ? maskEmail(cookieEmail) : null;
 
   // STABLE / NON-DESTRUCTIVE fast-path: if the stored access-token JWT is still within its
   // lifetime, report working WITHOUT exchanging (and thereby ROTATING) the refresh token. This
   // keeps the AUTOMATED callers (gateway /account-expired, save-time liveProbe) idempotent so
   // they never consume the token on every trigger.
   //
-  // BUT a Supabase access token is a STATELESS JWT that stays exp-valid (~1h) even after the
-  // session is revoked/logged-out server-side — so this local-only check would report "working"
-  // for a session that is actually dead. A manual admin Verify passes opts.forceLive to SKIP
-  // this short-circuit and always do the live refresh-token exchange below (true state).
+  // A Supabase access token is a STATELESS JWT that stays exp-valid (~1h) even after the session
+  // is revoked server-side, so the local decode alone can report "working" for a dead session.
+  // Callers that want the truth pass `canary` and get a real /auth/v1/user check — still with no
+  // rotation. `forceLive` (static-vault tools) skips both and does the exchange.
   const exp = jwtExp(accessToken);
-  if (!opts.forceLive && exp && exp * 1000 > Date.now() + 120000) {
-    return { result: 'working', httpStatus: 200, finalPath: '/auth (jwt)', redirectedToSignIn: false, maskedId: cookieEmail ? maskEmail(cookieEmail) : null };
+  const tokenLive = !!(exp && exp * 1000 > Date.now() + 120000);
+  if (!opts.forceLive && tokenLive) {
+    if (opts.canary) {
+      const c = await supabaseUserCheck(cfg, accessToken);
+      if (c.ok) {
+        const email = c.email || cookieEmail || null;
+        const maskedId = email ? maskEmail(email) : null;
+        if (expectedIdentifier && email && String(expectedIdentifier).trim().toLowerCase() !== email.toLowerCase()) {
+          return { result: 'wrong_account', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+        }
+        return { result: 'working', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+      }
+      if (!c.inconclusive) {
+        // Proven dead while the JWT still looks valid — exactly the case the local decode misses.
+        return { result: 'session_expired', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, loggedOut: true, maskedId: cookieMasked, canary: 'failed' };
+      }
+      // Network / 429 / 5xx: inconclusive, so fall back to the local answer rather than
+      // downgrading a session because of our own connectivity.
+      return { result: 'working', httpStatus: 200, finalPath: '/auth (jwt)', redirectedToSignIn: false, maskedId: cookieMasked, canary: 'inconclusive' };
+    }
+    return { result: 'working', httpStatus: 200, finalPath: '/auth (jwt)', redirectedToSignIn: false, maskedId: cookieMasked };
   }
 
-  // READ-ONLY mode (RDP Cookie Sync Agent): the BROWSER is the sole token rotator. A server-side
-  // refresh exchange here would rotate the refresh token and can trip Supabase reuse-detection,
-  // revoking the LIVE browser session. So in read-only mode we NEVER exchange: a still-valid
-  // access token already returned 'working' above; anything else is 'unknown' (do not rotate, do
-  // not expire) and left for the browser to refresh + the agent to re-push. Opt-in — only the
-  // agent sync path passes readOnly, so admin/gateway callers are byte-identical.
-  if (opts.readOnly) {
-    return { result: 'unknown', httpStatus: 0, finalPath: '/auth (readonly)', redirectedToSignIn: false, reason: 'readonly_no_exchange', maskedId: cookieEmail ? maskEmail(cookieEmail) : null };
+  // READ-ONLY mode (WriteHuman source agents): the BROWSER is the sole token rotator. A
+  // server-side refresh exchange here rotates the refresh token and can trip Supabase
+  // reuse-detection, revoking the LIVE browser session. So read-only NEVER exchanges by default:
+  // a still-valid access token already returned 'working' above; an aged one is 'unknown' (do not
+  // rotate, do not expire) and left for the browser to refresh and the agent to re-push.
+  //
+  // THE ONE EXCEPTION, off unless deliberately switched on. When the source machine cannot rotate
+  // (offline, Chrome closed, CDP down) an aged token can never be renewed by the browser, and the
+  // session would eventually die of neglect. `allowServerRefresh` lets the SERVER rotate instead —
+  // but because that revokes the browser's copy, it needs BOTH a caller asking for it AND
+  // WRITEHUMAN_SERVER_REFRESH=1 in the environment. Default OFF: the browser nudge (rotate-token)
+  // is the normal, risk-free path and this is the break-glass.
+  const serverRefreshEnabled = process.env.WRITEHUMAN_SERVER_REFRESH === '1';
+  if (opts.readOnly && !(opts.allowServerRefresh && serverRefreshEnabled)) {
+    return {
+      result: 'unknown', httpStatus: 0, finalPath: '/auth (readonly)', redirectedToSignIn: false,
+      reason: 'readonly_no_exchange', maskedId: cookieMasked,
+      serverRefreshAvailable: serverRefreshEnabled,
+    };
   }
 
   if (!refreshToken) {
@@ -330,7 +414,9 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
     if (expectedIdentifier && email && String(expectedIdentifier).trim().toLowerCase() !== email.toLowerCase()) {
       return { result: 'wrong_account', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId, refreshedSession };
     }
-    return { result: 'working', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId, refreshedSession };
+    // `serverRefreshed` tells the caller this rotation was OURS (the gated read-only fallback), so
+    // it knows it MUST persist the new bundle — the browser's copy is now the stale one.
+    return { result: 'working', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId, refreshedSession, serverRefreshed: !!opts.readOnly };
   }
   // 400/401/403 → the refresh token is invalid/expired/revoked → truly can't log in.
   if (httpStatus === 400 || httpStatus === 401 || httpStatus === 403) {
@@ -340,4 +426,4 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
   return { result: 'unknown', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId: null };
 }
 
-module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh, jwtExp, extractSupabaseSession };
+module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh, jwtExp, extractSupabaseSession, supabaseUserCheck };

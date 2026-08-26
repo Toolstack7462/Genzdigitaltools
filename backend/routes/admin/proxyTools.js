@@ -31,7 +31,8 @@ const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/app
 const deviceSync = require('../../utils/proxy/deviceSync');
 const agentEnroll = require('../../utils/proxy/agentEnroll');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
-const { deriveLifecycle } = require('../../utils/proxy/sessionHealth');
+const { deriveLifecycle, deriveHealth } = require('../../utils/proxy/sessionHealth');
+const agentCommands = require('../../utils/proxy/agentCommands');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
 const claudeQuota = require('../../utils/proxy/claudeQuota');
@@ -1051,9 +1052,13 @@ const AGENT_STALE_MIN = Number(process.env.PROXY_AGENT_STALE_MIN || 10);
 // How old the stored cookie bundle may get before cookie sync is reported as behind. Separate from
 // AGENT_STALE_MIN (agent liveness) on purpose — see the note where syncStale is computed.
 const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
+// How old a successful verification may get before the page says a re-check is DUE. Comfortably
+// wider than the scheduler's 7-minute cadence, so a normally-running system reads "recent" and the
+// word "due" keeps meaning something. This is freshness of the CHECK — never session health.
+const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.3.0';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.4.0';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1072,7 +1077,7 @@ router.get('/:tool/agent-state', async (req, res) => {
       verifyExchange: tools.verifyMode(tool) === 'supabase_refresh' && !isLive,
       scheduler: { running: isLive && sched.running, intervalMin: isLive ? sched.intervalMin : 0 },
       clientsCount };
-    if (!account) return res.json({ ...base, account: null, agent: null, pendingCommand: null, health: 'unknown' });
+    if (!account) return res.json({ ...base, account: null, agent: null, pendingCommands: [], health: 'unknown' });
     // MULTI-DEVICE liveness. `lastSyncedAt` keeps its original meaning (last SUCCESSFUL cookie
     // write) for backwards compatibility, but freshness is now a property of the FLEET: as long as
     // any paired device is reporting, the sync pipeline is alive. A device going offline must not
@@ -1086,13 +1091,14 @@ router.get('/:tool/agent-state', async (req, res) => {
     // machine can show twice. A device is superseded when another NON-revoked device shares its name,
     // was seen more recently, and this one is offline and not the active source. Superseded rows are
     // kept for history but hidden from the default list, so the operator sees one row per machine.
-    const isSuperseded = (dv) => {
-      if (!dv || dv.revoked || dv.isActiveSource || dv.online) return false;
-      return deviceViewsAll.some(o => o && !o.revoked && o.deviceId !== dv.deviceId
-        && (o.name || '') === (dv.name || '')
-        && o.lastSeenAt && dv.lastSeenAt && new Date(o.lastSeenAt) > new Date(dv.lastSeenAt));
-    };
-    deviceViewsAll.forEach(dv => { if (dv) dv.superseded = isSuperseded(dv); });
+    // One shared definition (deviceSync.isSupersededDevice) so the COMMAND ROUTER and this page
+    // agree on which rows are dead duplicates. It used to be computed only here, which is why a
+    // superseded row could still be handed a command.
+    deviceViewsAll.forEach(dv => {
+      if (!dv) return;
+      const raw = deviceSync.findDevice(account, dv.deviceId);
+      dv.superseded = deviceSync.isSupersededDevice(account, raw, staleMsThreshold);
+    });
     const deviceViews = deviceViewsAll.filter(dv => dv && !dv.superseded);
     const supersededDevices = deviceViewsAll.filter(dv => dv && dv.superseded);
     const onlineDevices = deviceViews.filter(d => d && !d.revoked && d.online);
@@ -1118,14 +1124,19 @@ router.get('/:tool/agent-state', async (req, res) => {
 
     // Access-token age — decode the JWT exp SERVER-SIDE only; the token itself is NEVER returned.
     // Gives the admin an "attention ETA" (how long the current session's access token is valid).
+    // `refreshTokenPresent` is decoded at the same time and matters far more: it is the difference
+    // between "the short-lived half aged out, which is routine" and "this bundle can never renew
+    // itself", and only the second is a login problem.
     let accessTokenExpiresInSec = null;
+    let refreshTokenPresent = null;
     try {
       if (account.sessionEncrypted) {
         const b = JSON.parse(vaultCrypto.decrypt(account.sessionEncrypted));
         const ref = (tools.supabaseConfig(tool) || {}).projectRef;
-        const { accessToken } = extractSupabaseSession(buildCookieHeader(b, tools.targetHost(tool)), ref);
+        const { accessToken, refreshToken } = extractSupabaseSession(buildCookieHeader(b, tools.targetHost(tool)), ref);
         const exp = jwtExp(accessToken);
         if (exp) accessTokenExpiresInSec = Math.round(exp - Date.now() / 1000);
+        refreshTokenPresent = !!refreshToken;
       }
     } catch (_) { /* best-effort; never expose or log the token */ }
 
@@ -1134,10 +1145,14 @@ router.get('/:tool/agent-state', async (req, res) => {
     //  - browserAuthCookies (agent report) = ground truth for "is the browser logged in RIGHT NOW";
     //    0 means the RDP browser has no auth cookie -> it is logged out (even if the stored status
     //    still reads 'working', because read-only verify won't downgrade a not-yet-expired JWT).
-    //  - tokenExpired (vault access-token exp, decoded above) = a hard local fact.
     //  - agentStale = the agent isn't reporting, so freshness/liveness can't be trusted.
-    // A stored 'working' is only shown as truly UP when the browser is logged in, the agent is
-    // fresh, and the access token is still valid — otherwise it degrades (or goes down).
+    //
+    // THE ONE THING THIS NO LONGER DOES: degrade on `tokenExpired`. WriteHuman's access token lives
+    // ~1h and the dedicated Chrome rotates it LATE (measured: 63-86 min apart on a 60-minute
+    // token, because Chrome throttles timers in a backgrounded window), so for part of EVERY hour
+    // the stored token is expired while the refresh session is perfectly alive. Treating that as
+    // "degraded / unverified" is what turned five cards amber every hour and sent the operator to
+    // refresh the RDP browser by hand. It is verification FRESHNESS, and it lives there now.
     const ss = account.session_status;
     // Device telemetry is only ground truth while it is FRESH. The pre-multi-device dashboard read
     // `account.agentReport` unconditionally, so after the ingest outage it kept rendering a
@@ -1152,38 +1167,59 @@ router.get('/:tool/agent-state', async (req, res) => {
       : (legacyFresh && typeof legacyRep.authCookies === 'number' ? legacyRep.authCookies : null);
     const telemetryFrozen = !activeRep && !legacyFresh && !!(activeDeviceView || legacyRep);
     const tokenExpired = accessTokenExpiresInSec != null && accessTokenExpiresInSec <= 0;
-    const DOWN_STATES = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'];
 
-    let health, statusReason;
-    if (!account.sessionEncrypted) { health = 'down'; statusReason = 'No session bundle saved.'; }
-    else if (DOWN_STATES.includes(ss)) { health = 'down'; statusReason = ss === 'needs_login' ? 'Logged out — sign back into WriteHuman in Chrome on any paired device.' : 'Session ' + ss.replace(/_/g, ' ') + '.'; }
-    else if (browserAuthCookies === 0) { health = 'down'; statusReason = 'The active source device has no auth cookie right now — it is signed out. Sign back in on that device (or any paired device); cached cookies may still be served briefly.'; }
-    else if (ss === 'working') {
-      // A stored 'working' session stays USABLE when its source device goes offline — the last
-      // verified bundle is still the bundle. Losing the device is a sync-pipeline warning, not a
-      // session outage, so it degrades rather than going down, and only when nothing can refresh.
-      if (!ingestConfigured) { health = 'degraded'; statusReason = 'Working, but no device is paired — nothing can refresh this session when it ages out. Pair a device to restore automatic sync.'; }
-      else if (tokenExpired) { health = 'degraded'; statusReason = 'Access token has expired and no fresh cookie arrived — the browser may be signed out or idle. Unverified.'; }
-      else if (agentStale) { health = 'degraded'; statusReason = onlineDevices.length ? 'Working, but cookie sync is behind — current state is unverified.' : 'Working from the last verified bundle, but no paired device is reporting — it cannot refresh until one comes back online.'; }
-      else { health = 'up'; statusReason = 'Working — signed in, ' + (onlineDevices.length === 1 ? 'source device online' : onlineDevices.length + ' devices online') + ', access token valid.'; }
-    } else { health = 'degraded'; statusReason = 'Verification pending — not yet confirmed working.'; }
-    // ── Clear lifecycle state, derived from the SEPARATE signals ────────────────
-    // One of HEALTHY / RECONNECTING / LOGIN_REQUIRED / OFFLINE / ERROR — the label the operator
-    // acts on. The whole point: LOGIN_REQUIRED means a GENUINE auth failure, never a late heartbeat,
-    // an offline PC, a closed Chrome, an ordinary token rotation, or a single timed-out verify.
-    // Those are OFFLINE / RECONNECTING, and the last verified bundle keeps serving until the session
-    // genuinely fails.
+    // ── The FIVE separate health signals ───────────────────────────────────────
+    // Session / verification / agent / Chrome / cookie-sync are computed independently and are
+    // allowed to disagree, because in reality they do. "Session HEALTHY · Agent OFFLINE · Cookie
+    // sync BEHIND · using the last verified bundle" is a correct, non-alarming state, and the old
+    // single `stale` value could not express it.
     const cdpConnected = activeRep ? String(activeRep.cdp) === '200' : null;
-    const lc = deriveLifecycle({
-      hasBundle: !!account.sessionEncrypted, sessionStatus: ss, browserAuthCookies,
-      tokenExpired, agentStale, onlineDeviceCount: onlineDevices.length, cdpConnected, ingestConfigured,
-    });
+    const lastVerifyResult = (account.verification && account.verification.result) || null;
+    const verifiedAt = account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : null;
+    const verificationAgeSec = verifiedAt ? Math.round((Date.now() - verifiedAt) / 1000) : null;
+    const lastSyncFailed = !!(account.lastSyncResultCode
+      && !['PROMOTED', 'COOKIE_BUNDLE_UNCHANGED', 'HEARTBEAT', 'STANDBY_ROUTINE_REFRESH', 'OK'].includes(account.lastSyncResultCode));
+
+    const signals = {
+      hasBundle: !!account.sessionEncrypted,
+      sessionStatus: ss,
+      browserAuthCookies,
+      tokenExpired,
+      refreshTokenPresent,
+      lastVerifyResult,
+      verificationAgeSec,
+      verificationDueSec: VERIFY_DUE_MIN * 60,
+      agentStale,
+      agentSeenSec: agentSeenMs != null ? Math.round(agentSeenMs / 1000) : null,
+      agentStaleSec: AGENT_STALE_MIN * 60,
+      devicesPaired: deviceViews.filter(d => d && !d.revoked).length,
+      onlineDeviceCount: onlineDevices.length,
+      cdpConnected,
+      ingestConfigured,
+      cookieSyncAgeSec: staleMs != null ? Math.round(staleMs / 1000) : null,
+      cookieSyncStaleSec: SYNC_STALE_MIN * 60,
+      lastSyncFailed,
+    };
+    const hs = deriveHealth(signals);
+    const lc = deriveLifecycle(signals);
     const lifecycleState = lc.state, lifecycleReason = lc.reason, loginRequired = lc.loginRequired;
 
-    // A 'working' that is only degraded (not confidently up) is surfaced as unverified so cards
-    // don't render a confident green.
+    // Legacy tri-state, kept for the embedded Proxy-Tools view and any cached bundle that still
+    // reads it. Derived from the same signals so it can never contradict them — and, critically,
+    // an aged access token is no longer a reason to degrade.
+    let health, statusReason;
+    if (hs.session.state === 'ERROR') { health = 'down'; statusReason = hs.session.reason; }
+    else if (hs.session.state === 'LOGIN_REQUIRED') { health = 'down'; statusReason = hs.session.reason; }
+    else if (!ingestConfigured) { health = 'degraded'; statusReason = 'Working, but no device is paired — nothing can refresh this session when it ages out. Pair a device to restore automatic sync.'; }
+    else if (hs.verification.state === 'failed') { health = 'degraded'; statusReason = hs.verification.reason; }
+    else if (hs.agent.state === 'OFFLINE') { health = 'degraded'; statusReason = 'Working from the last verified bundle, but no paired device is reporting — it cannot refresh until one comes back online.'; }
+    else if (hs.cookieSync.state === 'BEHIND' || hs.cookieSync.state === 'FAILED') { health = 'degraded'; statusReason = 'Working — cookie sync is behind. The stored session is still valid.'; }
+    else { health = 'up'; statusReason = hs.summary; }
+
+    // Retained for API compatibility. It now means what its name says — the session is working but
+    // the last check could not CONFIRM it — and is no longer set merely because a token aged.
     const working = ss === 'working';
-    const workingUnverified = working && health !== 'up';
+    const workingUnverified = working && hs.verification.state === 'failed';
 
     const reportedVersion = (activeDeviceView && activeDeviceView.agentVersion) || (legacyRep && legacyRep.version) || null;
     const agentOutdated = reportedVersion ? (reportedVersion !== EXPECTED_AGENT_VERSION) : null;
@@ -1195,6 +1231,12 @@ router.get('/:tool/agent-state', async (req, res) => {
       lifecycleState,
       lifecycleReason,
       loginRequired,
+      // THE five separate signals the dashboard renders. Each carries its own state and its own
+      // human reason, so the page never has to invent one label that covers all of them.
+      healthSignals: hs,
+      accessTokenExpiresInSec,
+      refreshTokenPresent,
+      serverRefreshEnabled: process.env.WRITEHUMAN_SERVER_REFRESH === '1',
       expectedAgentVersion: EXPECTED_AGENT_VERSION,
       agentOutdated,
       ingestConfigured,
@@ -1260,7 +1302,11 @@ router.get('/:tool/agent-state', async (req, res) => {
       // when frozen so the UI can render "last seen" instead of a stale "connected".
       agent: activeRep || (legacyFresh ? legacyRep : null),
       agentFrozenReport: telemetryFrozen ? (activeDeviceView || legacyRep) : null,
-      pendingCommand: account.pendingCommand || null,
+      // ADDRESSED command queue — every entry names the one device allowed to run it. The old
+      // untargeted `pendingCommand` string is gone; it was handed to whichever agent polled first.
+      pendingCommands: agentCommands.publicCommands(account),
+      commandLog: (Array.isArray(account.commandLog) ? account.commandLog : []).slice(-8),
+      commandMinAgentVersion: agentCommands.MIN_AGENT_VERSION,
     });
   } catch (err) {
     console.error('Proxy agent-state error:', err.message);
@@ -1268,17 +1314,147 @@ router.get('/:tool/agent-state', async (req, res) => {
   }
 });
 
-router.post('/:tool/agent-command', async (req, res) => {
+// ── Verify Session — PURELY SERVER-SIDE ───────────────────────────────────────
+// Reads the active stored bundle, checks it still carries the cookies a session needs, and proves
+// it with ONE real authenticated WriteHuman/Supabase call. It does NOT open Chrome, does NOT start
+// or message any agent, does NOT pick a device, does NOT require the active source to be online,
+// and does NOT alter which device is the active source. A stored session must be verifiable while
+// the source RDP is switched off — that is the whole point of storing it.
+router.post('/:tool/verify-session', async (req, res) => {
   try {
     const tool = req.proxyTool;
-    const command = req.body && req.body.command;
-    if (!['relaunch-chrome', 'reverify'].includes(command)) return res.status(400).json({ ok: false, error: 'Unknown command' });
+    const account = primaryAccount(await ProxyAccount.find({ tool }));
+    if (!account) return res.status(404).json({ ok: false, code: 'NO_ACCOUNT', error: 'No account' });
+    if (!account.sessionEncrypted) return res.status(400).json({ ok: false, code: 'NO_BUNDLE', error: 'No cookie bundle saved for this account' });
+
+    const isLive = tools.hasLiveAgent(tool);
+    // Live-agent tools stay read-only: the browser is the rotator. `canary` is what makes this a
+    // REAL check rather than a local JWT decode — it authenticates against Supabase without
+    // touching the refresh token. `allowServerRefresh` only does anything when the operator has
+    // switched WRITEHUMAN_SERVER_REFRESH on AND the token has already expired.
+    const opts = isLive
+      ? { readOnly: true, canary: true, allowServerRefresh: req.body && req.body.allowRefresh === true }
+      : { forceLive: true };
+    const r = await verifyAndApply(account, tool, opts);
+
+    console.log('[proxy] ' + JSON.stringify({
+      evt: 'verify_session', tool, account_id: account._id, result: r.result,
+      upstream_status: r.v ? r.v.httpStatus : 0, canary: r.v ? (r.v.canary || null) : null,
+      refresh_persisted: !!r.refreshPersisted, chrome_launched: false,
+    }));
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_SESSION_VERIFIED', { tool, accountId: account._id, result: r.result, serverSide: true, ip: getClientIp(req) });
+
+    return res.json({
+      ok: true,
+      result: r.result,
+      canary: r.v ? (r.v.canary || null) : null,
+      httpStatus: r.v ? r.v.httpStatus : 0,
+      maskedId: r.v ? (r.v.maskedId || null) : null,
+      cookieCount: r.cookieCount,
+      refreshed: !!r.refreshPersisted,
+      bundleVersion: account.bundleVersion || 0,
+      sessionStatus: account.session_status,
+      lastVerifiedAt: account.lastVerifiedAt,
+      // Stated explicitly in the response so the UI can never imply otherwise.
+      chromeLaunched: false,
+      deviceContacted: null,
+    });
+  } catch (err) {
+    console.error('Proxy verify-session error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to verify the stored session' });
+  }
+});
+
+// ── Open WriteHuman Chrome on the ACTIVE SOURCE ───────────────────────────────
+// The ONLY action that may launch a browser, and it is addressed to exactly one device:
+// `account.activeSource.deviceId`. There is no fallback. A revoked, superseded, inactive, standby
+// or merely more-recently-seen device is never chosen, and if the active source is offline the
+// operator is told so rather than having Chrome opened somewhere else.
+router.post('/:tool/open-chrome', requireCsrf, async (req, res) => {
+  try {
+    const tool = req.proxyTool;
+    const account = primaryAccount(await ProxyAccount.find({ tool }));
+    if (!account) return res.status(404).json({ ok: false, code: 'NO_ACCOUNT', error: 'No account' });
+
+    const activeId = account.activeSource && account.activeSource.deviceId;
+    if (!activeId) {
+      return res.status(409).json({
+        ok: false, code: agentCommands.CODES.NO_ACTIVE_SOURCE,
+        error: 'No device is the active source yet, so there is nowhere to open Chrome.',
+      });
+    }
+    const staleMs = AGENT_STALE_MIN * 60000;
+    const t = agentCommands.validateTarget(account, activeId, {
+      requireActiveSource: true, requireOnline: true, requireCommandSupport: true, staleMs,
+    });
+    if (!t.ok) {
+      // The message is the operator-facing sentence, including the two exact wordings required
+      // when the active source is offline.
+      const loginRequired = !!(req.body && req.body.loginRequired);
+      const message = (t.code === agentCommands.CODES.ACTIVE_SOURCE_OFFLINE && loginRequired)
+        ? 'Login required, but the active source is currently offline.'
+        : t.message;
+      return res.status(409).json({ ok: false, code: t.code, error: message, activeSourceDeviceId: activeId, chromeLaunched: false });
+    }
+
+    const q = agentCommands.enqueue(account, {
+      type: 'open-chrome', tool, device: t.device, issuedBy: String(req.userId || ''),
+      reason: (req.body && req.body.reason) ? String(req.body.reason).slice(0, 80) : 'admin_open_chrome',
+    });
+    if (!q.ok) return res.status(400).json({ ok: false, code: q.code });
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_OPEN_CHROME_QUEUED', {
+      tool, accountId: account._id, deviceId: t.device.deviceId, commandId: q.command.id, ip: getClientIp(req),
+    });
+    return res.json({
+      ok: true, commandId: q.command.id, targetDeviceId: t.device.deviceId,
+      targetDeviceName: t.device.name || null, expiresAt: q.command.expiresAt,
+      note: 'Queued for ' + (t.device.name || t.device.deviceId) + ' only. No other machine can pick this up.',
+    });
+  } catch (err) {
+    console.error('Proxy open-chrome error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to queue the Chrome launch' });
+  }
+});
+
+// ── Addressed agent command ───────────────────────────────────────────────────
+// Replaces the old `account.pendingCommand` string, which carried no target and was consumed by
+// whichever agent POSTed first — the reason actions landed on the wrong computer. `deviceId` is
+// REQUIRED; there is deliberately no "pick a sensible device" branch to fall into.
+router.post('/:tool/agent-command', requireCsrf, async (req, res) => {
+  try {
+    const tool = req.proxyTool;
+    const body = req.body || {};
+    const command = body.command;
+    if (!agentCommands.TYPES.includes(command)) {
+      return res.status(400).json({ ok: false, code: agentCommands.CODES.UNKNOWN_COMMAND, error: 'Unknown command' });
+    }
+    if (agentCommands.LAUNCHES_BROWSER.includes(command)) {
+      return res.status(400).json({
+        ok: false, code: 'USE_OPEN_CHROME',
+        error: 'Launching Chrome has its own action so it can never happen by accident. Use Open WriteHuman Chrome on Active Source.',
+      });
+    }
     const account = primaryAccount(await ProxyAccount.find({ tool }));
     if (!account) return res.status(404).json({ ok: false, error: 'No account' });
-    account.pendingCommand = command;
+
+    // Default the target to the ACTIVE SOURCE — the only sensible default — but validate it like
+    // any other, and let the caller name a device explicitly.
+    const deviceId = body.deviceId || (account.activeSource && account.activeSource.deviceId);
+    if (!deviceId) return res.status(409).json({ ok: false, code: agentCommands.CODES.NO_ACTIVE_SOURCE, error: 'No active source to send this to.' });
+    const t = agentCommands.validateTarget(account, deviceId, {
+      requireActiveSource: !body.deviceId, requireOnline: true, requireCommandSupport: true,
+      staleMs: AGENT_STALE_MIN * 60000,
+    });
+    if (!t.ok) return res.status(409).json({ ok: false, code: t.code, error: t.message });
+
+    const q = agentCommands.enqueue(account, { type: command, tool, device: t.device, issuedBy: String(req.userId || '') });
+    if (!q.ok) return res.status(400).json({ ok: false, code: q.code });
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_AGENT_COMMAND_QUEUED', { tool, accountId: account._id, command, ip: getClientIp(req) });
-    return res.json({ ok: true, queued: command });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_AGENT_COMMAND_QUEUED', {
+      tool, accountId: account._id, command, deviceId: t.device.deviceId, commandId: q.command.id, ip: getClientIp(req),
+    });
+    return res.json({ ok: true, queued: command, commandId: q.command.id, targetDeviceId: t.device.deviceId, targetDeviceName: t.device.name || null });
   } catch (err) {
     console.error('Proxy agent-command error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to queue command' });
@@ -1435,9 +1611,21 @@ router.delete('/:tool/devices/:deviceId', async (req, res) => {
     const force = req.query.force === '1' || req.query.force === 'true';
     const r = deviceSync.revokeDevice(account, req.params.deviceId, { force });
     if (!r.ok) return res.status(r.code === deviceSync.CODES.DEVICE_UNKNOWN ? 404 : 409).json({ ok: false, code: r.code, error: r.message || r.code });
+    // A machine that has just lost the right to write must not still be holding an instruction —
+    // drop its queued commands in the same breath as the revoke.
+    const purged = agentCommands.purgeForDevice(account, req.params.deviceId, 'device_revoked');
+    // ...and the account must not go on naming it as the active source. That contradiction is
+    // exactly what happened when an operator revoked the source to switch machines: the pointer
+    // stayed, so the dashboard showed a revoked device as "active source" while its heartbeats
+    // 403'd. The stored BUNDLE is untouched — revoking a device never signs anyone out.
+    let activeSourceCleared = false;
+    if (account.activeSource && account.activeSource.deviceId === req.params.deviceId) {
+      account.activeSource = Object.assign({}, account.activeSource, { revokedAt: new Date(), stale: true });
+      activeSourceCleared = true;
+    }
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_REVOKED', { tool: req.proxyTool, accountId: account._id, deviceId: req.params.deviceId, force, ip: getClientIp(req) });
-    return res.json({ ok: true, code: r.code, bundlePreserved: true });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_REVOKED', { tool: req.proxyTool, accountId: account._id, deviceId: req.params.deviceId, force, purgedCommands: purged, activeSourceCleared, ip: getClientIp(req) });
+    return res.json({ ok: true, code: r.code, bundlePreserved: true, purgedCommands: purged, activeSourceCleared });
   } catch (err) {
     console.error('Proxy device revoke error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to revoke device' });
