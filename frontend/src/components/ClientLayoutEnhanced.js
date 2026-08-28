@@ -92,7 +92,7 @@ const ClientLayoutEnhanced = ({ children }) => {
     { to: '/client/dashboard',       icon: LayoutDashboard, label: 'Dashboard'   },
     { to: '/client/tools',           icon: Package,         label: 'My Tools'    },
     { to: '/client/activity',        icon: Activity,        label: 'Activity'    },
-    { to: '/client/extension-guide', icon: PlayCircle,      label: 'Setup Guide' },
+    { to: '/client/extension-guide', icon: PlayCircle,      label: 'Extension Video' },
     { to: '/client/profile',         icon: User,            label: 'Profile'     },
   ];
 
