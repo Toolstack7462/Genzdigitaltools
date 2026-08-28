@@ -9,6 +9,15 @@ import {
 } from 'lucide-react';
 
 const WHATSAPP_URL = 'https://wa.me/923027467462';
+
+/* --- Extension setup video --------------------------------------------------
+   The SAME destination this dashboard has always used behind "Watch setup guide":
+   the Setup Guide page, which hosts the existing video embed. Both the CTA button
+   and the one-time prompt below reuse this single constant -- there is no second
+   video URL anywhere. */
+const EXT_SETUP_VIDEO_PATH = '/client/extension-guide';
+/* Versioned key: bump the suffix to re-show the prompt for a new setup video. */
+const EXT_VIDEO_PROMPT_KEY = 'gds_extension_setup_video_prompt_v1';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
@@ -207,6 +216,9 @@ const ClientDashboardEnhanced = () => {
   const [softSnoozeUntil, setSoftSnoozeUntil] = useState(0);       // optional-update snooze (timestamp)
   const [softSnoozeVersion, setSoftSnoozeVersion] = useState(null); // version the optional snooze applies to
   const [showMandatoryModal, setShowMandatoryModal] = useState(false); // one-time blocking modal (mandatory update only)
+  const [showVideoPrompt, setShowVideoPrompt] = useState(false);       // one-time, non-blocking setup-video prompt
+  const videoPromptRef = useRef(null);      // dialog node (focus trap)
+  const videoPromptFocusRef = useRef(null); // element focused before the dialog opened
   // Refs used by the lightweight notification poll so its identity stays stable
   // (the extension bridge updates its version frequently during detection — we
   // must not tear down/recreate the poll interval on every heartbeat).
@@ -336,6 +348,56 @@ const ClientDashboardEnhanced = () => {
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [showMandatoryModal]);
+
+  /* --- One-time "watch the setup video" prompt -------------------------------
+     Shown once per browser for the current video version (versioned localStorage
+     key), only on this page, only after the dashboard has finished loading, and
+     only while the existing video destination exists. Purely a signpost to the
+     video that is already there -- it never autoplays anything and never blocks. */
+  const dismissVideoPrompt = useCallback(() => {
+    try { localStorage.setItem(EXT_VIDEO_PROMPT_KEY, '1'); } catch (_) { /* storage off -> in-memory only */ }
+    setShowVideoPrompt(false);
+  }, []);
+
+  useEffect(() => {
+    if (loading) return;               // wait for the dashboard to render first
+    if (!EXT_SETUP_VIDEO_PATH) return; // no video destination -> no prompt
+    if (showMandatoryModal) return;    // never stack on the blocking update modal
+    try {
+      if (localStorage.getItem(EXT_VIDEO_PROMPT_KEY)) return; // already seen
+    } catch (_) { return; }            // storage unavailable -> stay quiet
+    const t = setTimeout(() => setShowVideoPrompt(true), 900); // let first paint settle
+    return () => clearTimeout(t);
+  }, [loading, showMandatoryModal]);
+
+  /* Dialog behaviour: Esc closes, Tab is trapped inside, the background cannot
+     scroll while it is open, and focus returns where it came from on close. */
+  useEffect(() => {
+    if (!showVideoPrompt) return;
+    videoPromptFocusRef.current = document.activeElement;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const focusables = () => Array.from(
+      videoPromptRef.current?.querySelectorAll('a[href], button:not([disabled])') || []
+    );
+    focusables()[0]?.focus();
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); dismissVideoPrompt(); return; }
+      if (e.key !== 'Tab') return;
+      const f = focusables();
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+      const prev = videoPromptFocusRef.current;
+      if (prev && typeof prev.focus === 'function') prev.focus();
+    };
+  }, [showVideoPrompt, dismissVideoPrompt]);
 
   // De-duplication: the extension update banner above is the single source of truth
   // for "please update the extension". When it is showing, suppress any admin
@@ -775,6 +837,64 @@ const ClientDashboardEnhanced = () => {
         </div>
       )}
 
+      {/* ── One-time setup-video prompt ── non-blocking, once per browser per video
+          version. Points at the SAME Setup Guide video the CTA above opens; nothing
+          plays here, so no audio or video ever starts on its own. Every exit path
+          (Watch / Maybe Later / X / Esc / backdrop) marks it seen. ── */}
+      {showVideoPrompt && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+             onClick={dismissVideoPrompt}
+             style={{ background: 'rgba(2,8,20,0.72)', backdropFilter: 'blur(6px)', WebkitBackdropFilter: 'blur(6px)' }}>
+          <div ref={videoPromptRef}
+               role="dialog" aria-modal="true"
+               aria-labelledby="ext-video-prompt-title" aria-describedby="ext-video-prompt-desc"
+               data-testid="ext-video-prompt"
+               onClick={(e) => e.stopPropagation()}
+               className="relative w-full max-w-md rounded-2xl overflow-hidden"
+               style={{
+                 background: 'linear-gradient(150deg, rgba(13,30,54,0.98), rgba(7,20,38,0.98))',
+                 border: '1px solid rgba(6,182,212,0.40)',
+                 boxShadow: '0 30px 80px -30px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.06)',
+               }}>
+            <div className="absolute -top-16 -right-12 w-64 h-40 pointer-events-none opacity-70"
+                 style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.30), transparent 70%)' }} />
+            <button onClick={dismissVideoPrompt} aria-label="Close"
+                    data-testid="ext-video-prompt-close"
+                    className="absolute top-3 right-3 z-10 text-white/45 hover:text-white transition-colors rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/80">
+              <X size={18} />
+            </button>
+            <div className="relative p-6">
+              <div className="w-12 h-12 rounded-xl flex items-center justify-center mb-4"
+                   style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 10px 24px -8px rgba(6,182,212,0.7)' }}>
+                <PlayCircle size={22} className="text-white" />
+              </div>
+              <h2 id="ext-video-prompt-title" className="font-heading text-[18px] font-extrabold text-white leading-tight pr-6">
+                Watch the Extension Setup Video
+              </h2>
+              <p id="ext-video-prompt-desc" className="text-[13px] text-white/70 mt-2 leading-relaxed">
+                See how to install and use the browser extension in a few simple steps.
+              </p>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 mt-6">
+                <Link to={EXT_SETUP_VIDEO_PATH}
+                      onClick={dismissVideoPrompt}
+                      data-testid="ext-video-prompt-watch"
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/80"
+                      style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 12px 26px -10px rgba(37,99,235,0.8)' }}>
+                  <PlayCircle size={15} className="flex-shrink-0" /> Watch Extension Setup Video
+                </Link>
+                <button onClick={dismissVideoPrompt}
+                        data-testid="ext-video-prompt-later"
+                        className="px-4 py-2.5 rounded-xl text-[13px] font-semibold text-white/70 hover:text-white transition-colors whitespace-nowrap focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/80"
+                        style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)' }}>
+                  Maybe Later
+                </button>
+              </div>
+              <p className="text-[11px] text-white/40 mt-3">You can open this video any time from the banner below or the Setup Guide.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
 
         {/* ── Expiry Warning Banner (slim, dark-glass amber) ── */}
@@ -1093,7 +1213,7 @@ const ClientDashboardEnhanced = () => {
                  style={{ background: 'radial-gradient(closest-side, rgba(6,182,212,0.35), transparent 70%)' }} />
             <div className="absolute -bottom-16 left-1/4 w-64 h-32 pointer-events-none opacity-50"
                  style={{ background: 'radial-gradient(closest-side, rgba(37,99,235,0.28), transparent 70%)' }} />
-            <div className="relative z-10 flex flex-col sm:flex-row sm:items-center gap-3.5">
+            <div className="relative z-10 flex flex-col xl:flex-row xl:items-center gap-3.5">
               {/* icon */}
               <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0"
                    style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 8px 20px -8px rgba(6,182,212,0.75), inset 0 1px 0 rgba(255,255,255,0.25)' }}>
@@ -1115,7 +1235,7 @@ const ClientDashboardEnhanced = () => {
                 </p>
               </div>
               {/* action */}
-              <div className="flex-shrink-0 sm:self-center flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <div className="flex-shrink-0 xl:self-center flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 {!extConnStatus?.checking ? (
                   <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                      onClick={verifyExtensionDownload}
@@ -1130,12 +1250,26 @@ const ClientDashboardEnhanced = () => {
                     <Loader2 size={14} className="animate-spin" /> Detecting…
                   </span>
                 )}
-                {/* Secondary action: watch the step-by-step setup video (the Setup Guide page). */}
-                <Link to="/client/extension-guide"
+                {/* Secondary action, deliberately high-contrast: the setup video is the
+                    fastest path to a working install, so it has to be easy to spot beside
+                    the primary Install button without outranking it. Same destination as
+                    before -- the Setup Guide page and its existing video. */}
+                {/* py-[9px] (not 2.5) on purpose: this button has a 1px border and the
+                    Install button does not, so 9+1 keeps both exactly the same height. */}
+                <Link to={EXT_SETUP_VIDEO_PATH}
                       data-testid="ext-banner-guide"
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-semibold text-white/85 hover:text-white transition-all"
-                      style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)' }}>
-                  <PlayCircle size={14} /> Watch setup guide
+                      className="w-full sm:w-auto inline-flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 px-4 py-[9px] rounded-xl text-[12.5px] font-bold text-white text-center whitespace-normal sm:whitespace-nowrap transition-all duration-200 hover:-translate-y-0.5 hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/80"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(6,182,212,0.26), rgba(37,99,235,0.20))',
+                        border: '1px solid rgba(6,182,212,0.60)',
+                        boxShadow: '0 8px 22px -12px rgba(6,182,212,0.80), inset 0 1px 0 rgba(255,255,255,0.10)',
+                      }}>
+                  <PlayCircle size={15} className="text-genz-cyan flex-shrink-0" />
+                  <span>Watch Extension Setup Video</span>
+                  <span className="inline-flex items-center px-1.5 py-[2px] rounded-md text-[9.5px] font-bold uppercase tracking-wide leading-none flex-shrink-0"
+                        style={{ background: 'rgba(251,191,36,0.16)', border: '1px solid rgba(251,191,36,0.45)', color: '#FCD34D' }}>
+                    Recommended
+                  </span>
                 </Link>
               </div>
             </div>
