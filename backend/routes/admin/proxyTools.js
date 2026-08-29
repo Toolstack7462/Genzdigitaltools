@@ -29,6 +29,8 @@ const { unavailableReason, selectAccount } = require('../../utils/proxy/accountS
 const { rankAssignableClients, escapeRegex } = require('../../utils/proxy/assignableClients');
 const { applyAccountSession, buildSessionMeta } = require('../../utils/proxy/applySession');
 const deviceSync = require('../../utils/proxy/deviceSync');
+const deviceState = require('../../utils/proxy/deviceState');
+const activation = require('../../utils/proxy/activation');
 const agentEnroll = require('../../utils/proxy/agentEnroll');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const { deriveLifecycle, deriveHealth } = require('../../utils/proxy/sessionHealth');
@@ -1058,7 +1060,7 @@ const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.4.0';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.0';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1094,10 +1096,18 @@ router.get('/:tool/agent-state', async (req, res) => {
     // One shared definition (deviceSync.isSupersededDevice) so the COMMAND ROUTER and this page
     // agree on which rows are dead duplicates. It used to be computed only here, which is why a
     // superseded row could still be handed a command.
+    // Every row carries its ONE canonical operational state, from the same function the command
+    // router and the promotion policy use. The dashboard can no longer show a device as available
+    // while the router considers it unaddressable — they are literally reading the same answer.
     deviceViewsAll.forEach(dv => {
       if (!dv) return;
       const raw = deviceSync.findDevice(account, dv.deviceId);
-      dv.superseded = deviceSync.isSupersededDevice(account, raw, staleMsThreshold);
+      const st = deviceState.stateOf(account, raw, { staleMs: staleMsThreshold });
+      dv.state = st.state;
+      dv.stateReason = st.reason;
+      dv.terminal = st.terminal;
+      dv.canActivate = deviceState.canActivate(st.state);
+      dv.superseded = st.state === 'SUPERSEDED';
     });
     const deviceViews = deviceViewsAll.filter(dv => dv && !dv.superseded);
     const supersededDevices = deviceViewsAll.filter(dv => dv && dv.superseded);
@@ -1265,12 +1275,20 @@ router.get('/:tool/agent-state', async (req, res) => {
         expectedMaskedId: cand.expectedMaskedId || null,
       } : null,
       bundleVersion: account.bundleVersion || 0,
-      // A queued "Make active" that has not taken effect yet — the device must still prove a
-      // working session before it gets the title.
-      pendingActiveDeviceId: (account.activeSourceIntent && new Date(account.activeSourceIntent.expiresAt) > new Date())
-        ? account.activeSourceIntent.deviceId : null,
-      pendingActiveExpiresAt: (account.activeSourceIntent && new Date(account.activeSourceIntent.expiresAt) > new Date())
-        ? account.activeSourceIntent.expiresAt : null,
+      // The live Mark Active transaction with its REAL stage, so the page never has to render an
+      // open-ended "syncing". Terminal transactions stay visible briefly with their outcome.
+      activation: (() => {
+        const live = activation.current(account);
+        const target = live ? deviceViewsAll.find(d => d && d.deviceId === live.targetDeviceId) : null;
+        return activation.publicView(account, { deviceOffline: target ? !target.online : false });
+      })(),
+      activationLog: activation.publicLog(account),
+      // Retained for API compatibility with an older bundle that reads these two; they now derive
+      // from the transaction rather than from the removed intent field.
+      pendingActiveDeviceId: (() => { const a = activation.inFlight(account); return a ? a.targetDeviceId : null; })(),
+      pendingActiveExpiresAt: (() => { const a = activation.inFlight(account); return a ? a.expiresAt : null; })(),
+      // The invariant, checked on every read rather than assumed: at most one ACTIVE device.
+      activeConflicts: deviceState.activeConflicts(account, { staleMs: staleMsThreshold }),
       rollbackAvailable: Array.isArray(account.rollbackBundles) ? account.rollbackBundles.length : 0,
       lastAgentSeenAt,
       lastSyncAttemptAt: account.lastSyncAttemptAt || null,
@@ -1474,9 +1492,16 @@ router.get('/:tool/devices', async (req, res) => {
     const activeId = account.activeSource && account.activeSource.deviceId;
     return res.json({
       ok: true,
-      devices: deviceSync.getDevices(account).map(d => deviceSync.publicDevice(d, activeId, staleMs)),
+      devices: deviceSync.getDevices(account).map((d) => {
+        const st = deviceState.stateOf(account, d, { staleMs });
+        return Object.assign(deviceSync.publicDevice(d, activeId, staleMs), {
+          state: st.state, stateReason: st.reason, terminal: st.terminal,
+          canActivate: deviceState.canActivate(st.state),
+        });
+      }),
       activeSource: account.activeSource || null,
       maxDevices: deviceSync.MAX_DEVICES,
+      states: deviceState.STATES,
     });
   } catch (err) {
     console.error('Proxy devices list error:', err.message);
@@ -1563,41 +1588,139 @@ router.post('/:tool/enrollments/:enrollId/authorize', requireCsrf, async (req, r
   }
 });
 
-// "Make active" — hand the active-source title to a paired device deliberately.
+// ── "Mark active" — ONE transaction that actually moves the session ───────────
 //
-// The active source is otherwise STICKY (see the promotion policy in candidateSync): a standby
-// quietly refreshing its own copy must not seize it, or two signed-in machines would trade it back
-// and forth. This is the operator's override for the cases policy cannot infer — "I am about to
-// shut the RDP down, move to my laptop".
+// WHAT THIS USED TO BE, AND WHY IT DID NOTHING
+// --------------------------------------------
+// It set a single field, `account.activeSourceIntent`, and returned. Nothing was ever sent to the
+// device. The server then waited for that machine to push cookies of its own accord and, if it
+// ever did, spent the intent. Two failures followed directly from that design:
 //
-// It does NOT promote anything by itself, because the server holds no bundle from that device yet;
-// it records the intent, and the device's NEXT push is verified and promoted like any other
-// candidate. So an offline or signed-out device cannot be made active in name only — the switch
-// happens when, and only when, that device actually proves a working session.
-router.post('/:tool/devices/:deviceId/make-active', async (req, res) => {
+//   • On a newly installed RDP the click had no visible effect whatsoever, and the request expired
+//     15 minutes later. The UI, having no stage to show, showed "syncing" indefinitely.
+//   • In the commonest case of all — the same WriteHuman login already signed in on the new
+//     machine — it could NEVER work: the candidate's cookie hash equalled the live bundle's, so the
+//     ingest answered COOKIE_BUNDLE_UNCHANGED before the intent was consulted at all.
+//
+// WHAT IT IS NOW
+// --------------
+// A transaction with an id, a one-time nonce, an expiry and observable stages. It validates the
+// target, opens the transaction, and mints a `capture-and-activate` command addressed to that ONE
+// device — which is what makes the device go and capture its own session instead of the server
+// hoping it will. The switch still only happens after that capture VERIFIES against the expected
+// account, so an offline or signed-out machine can never become active in name only.
+//
+// CSRF-gated, like every other state change driven from a browser. It was not, which was an
+// inconsistency with open-chrome and agent-command rather than a deliberate exemption.
+router.post('/:tool/devices/:deviceId/make-active', requireCsrf, async (req, res) => {
   try {
-    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    const tool = req.proxyTool;
+    const account = primaryAccount(await ProxyAccount.find({ tool }));
     if (!account) return res.status(404).json({ ok: false, error: 'No account' });
-    const dev = deviceSync.findDevice(account, req.params.deviceId);
-    if (!dev) return res.status(404).json({ ok: false, code: deviceSync.CODES.DEVICE_UNKNOWN });
-    if (dev.revoked) return res.status(409).json({ ok: false, code: deviceSync.CODES.DEVICE_REVOKED, error: 'That device is revoked.' });
 
-    // A one-time intent with a short TTL, not a permanent pin: a request made and forgotten must
-    // not hijack the source days later, the first time that device happens to sync.
-    const intent = deviceSync.setActiveSourceIntent(account, dev.deviceId);
+    const staleMs = AGENT_STALE_MIN * 60000;
+    const dev = deviceSync.findDevice(account, req.params.deviceId);
+    if (!dev) return res.status(404).json({ ok: false, code: deviceSync.CODES.DEVICE_UNKNOWN, error: 'That device is not paired with this account.' });
+
+    // 1. The device must be in a state that can BE activated: READY or STANDBY. Every other state
+    //    gets its own reason rather than a generic refusal, because "why can I not activate this"
+    //    is the question the operator is actually asking.
+    const st = deviceState.stateOf(account, dev, { staleMs });
+    if (st.state === 'ACTIVE') {
+      return res.status(409).json({ ok: false, code: 'ALREADY_ACTIVE', error: (dev.name || 'That device') + ' is already the active source.' });
+    }
+    if (!deviceState.canActivate(st.state)) {
+      return res.status(409).json({ ok: false, code: 'DEVICE_' + st.state, state: st.state, error: st.reason });
+    }
+
+    // 2. …and it must be addressable: online, holding a per-agent credential, not superseded, and
+    //    running an agent new enough to actually run the capture. `validateTarget` deliberately
+    //    does NOT require the active source here — activating a non-active device is the point.
+    const t = agentCommands.validateTarget(account, dev.deviceId, {
+      requireActiveSource: false, requireOnline: true, requireCommandSupport: true,
+      requireActivationSupport: true, staleMs,
+    });
+    if (!t.ok) return res.status(409).json({ ok: false, code: t.code, error: t.message, state: st.state });
+
+    // 3. Open the transaction, then address the capture command to that device and nobody else.
+    const act = activation.create(account, {
+      device: t.device, issuedBy: String(req.userId || ''),
+    });
+    if (!act.ok) return res.status(409).json({ ok: false, code: act.code, error: 'Could not start the activation.' });
+
+    const q = agentCommands.enqueue(account, {
+      type: 'capture-and-activate', tool, device: t.device, issuedBy: String(req.userId || ''),
+      reason: 'admin_mark_active',
+      activationId: act.activation.activationId,
+      activationNonce: act.activation.nonce,
+      // The command must outlive a slow Chrome start, so it shares the activation's window rather
+      // than the shorter default command TTL.
+      ttlMs: Math.max(60000, new Date(act.activation.expiresAt).getTime() - Date.now()),
+    });
+    if (!q.ok) {
+      activation.fail(account, { activationId: act.activation.activationId, code: q.code, message: 'Could not queue the capture command.' });
+      await account.save();
+      return res.status(400).json({ ok: false, code: q.code, error: 'Could not queue the capture command.' });
+    }
+    activation.attachCommand(account, act.activation.activationId, q.command.id);
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_MAKE_ACTIVE', { tool: req.proxyTool, accountId: account._id, deviceId: dev.deviceId, expiresAt: intent.expiresAt, ip: getClientIp(req) });
+
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_MAKE_ACTIVE', {
+      tool, accountId: account._id, deviceId: dev.deviceId,
+      activationId: act.activation.activationId, commandId: q.command.id,
+      previousDeviceId: act.activation.previousDeviceId, ip: getClientIp(req),
+    });
+
     return res.json({
       ok: true,
-      pendingDeviceId: dev.deviceId,
-      name: dev.name || null,
-      expiresAt: intent.expiresAt,
-      ttlMinutes: Math.round(deviceSync.ACTIVE_INTENT_TTL_MS / 60000),
-      note: 'This device becomes the active source on its next successfully verified sync. The current session keeps serving until then, and the request expires on its own if that sync never happens.',
+      activation: activation.publicView(account, { deviceOffline: false }),
+      targetDeviceId: dev.deviceId,
+      targetDeviceName: dev.name || null,
+      commandId: q.command.id,
+      note: 'Queued for ' + (dev.name || dev.deviceId) + ' only. That machine captures and verifies its own WriteHuman session; the current session keeps serving until the capture passes.',
     });
   } catch (err) {
     console.error('Proxy make-active error:', err.message);
-    return res.status(500).json({ ok: false, error: 'Failed to set the active source' });
+    return res.status(500).json({ ok: false, error: 'Failed to start the activation' });
+  }
+});
+
+// Live activation progress. The dashboard polls this so it can render the REAL stage — waiting for
+// the agent, opening Chrome, waiting for a signed-in session, capturing, verifying, promoting —
+// instead of an indefinite "syncing".
+router.get('/:tool/activation', async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.json({ ok: true, activation: null, log: [] });
+    const staleMs = AGENT_STALE_MIN * 60000;
+    const live = activation.current(account);
+    const target = live ? deviceSync.findDevice(account, live.targetDeviceId) : null;
+    const view = activation.publicView(account, { deviceOffline: target ? !deviceSync.isOnline(target, staleMs) : false });
+    // `current()` expires a stale transaction in place, so a read can legitimately need to persist.
+    if (live && live.stage === 'EXPIRED' && !live.persisted) { live.persisted = true; await account.save(); }
+    return res.json({ ok: true, activation: view, log: activation.publicLog(account) });
+  } catch (err) {
+    console.error('Proxy activation status error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to load the activation status' });
+  }
+});
+
+// Abandon a running activation. Nothing is promoted, the previous source keeps the session, and the
+// queued capture command is dropped so the target machine does not act on it later.
+router.post('/:tool/activation/cancel', requireCsrf, async (req, res) => {
+  try {
+    const account = primaryAccount(await ProxyAccount.find({ tool: req.proxyTool }));
+    if (!account) return res.status(404).json({ ok: false, error: 'No account' });
+    const live = activation.inFlight(account);
+    if (!live) return res.status(409).json({ ok: false, code: activation.CODES.NO_ACTIVATION, error: 'No activation is running.' });
+    agentCommands.purgeForDevice(account, live.targetDeviceId, 'activation_cancelled');
+    activation.fail(account, { activationId: live.activationId, code: 'CANCELLED_BY_ADMIN', message: 'Cancelled by an admin. The previous active source and session are unchanged.' });
+    await account.save();
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACTIVATION_CANCELLED', { tool: req.proxyTool, accountId: account._id, activationId: live.activationId, ip: getClientIp(req) });
+    return res.json({ ok: true, activation: activation.publicView(account) });
+  } catch (err) {
+    console.error('Proxy activation cancel error:', err.message);
+    return res.status(500).json({ ok: false, error: 'Failed to cancel the activation' });
   }
 });
 
@@ -1612,8 +1735,11 @@ router.delete('/:tool/devices/:deviceId', async (req, res) => {
     const r = deviceSync.revokeDevice(account, req.params.deviceId, { force });
     if (!r.ok) return res.status(r.code === deviceSync.CODES.DEVICE_UNKNOWN ? 404 : 409).json({ ok: false, code: r.code, error: r.message || r.code });
     // A machine that has just lost the right to write must not still be holding an instruction —
-    // drop its queued commands in the same breath as the revoke.
+    // drop its queued commands in the same breath as the revoke. That includes a live
+    // capture-and-activate: a revoked device sitting on an activation capability could otherwise
+    // still promote a bundle after losing the right to write anything at all.
     const purged = agentCommands.purgeForDevice(account, req.params.deviceId, 'device_revoked');
+    const activationCancelled = activation.cancelForDevice(account, req.params.deviceId, 'The target device was revoked.');
     // ...and the account must not go on naming it as the active source. That contradiction is
     // exactly what happened when an operator revoked the source to switch machines: the pointer
     // stayed, so the dashboard showed a revoked device as "active source" while its heartbeats
@@ -1624,8 +1750,8 @@ router.delete('/:tool/devices/:deviceId', async (req, res) => {
       activeSourceCleared = true;
     }
     await account.save();
-    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_REVOKED', { tool: req.proxyTool, accountId: account._id, deviceId: req.params.deviceId, force, purgedCommands: purged, activeSourceCleared, ip: getClientIp(req) });
-    return res.json({ ok: true, code: r.code, bundlePreserved: true, purgedCommands: purged, activeSourceCleared });
+    await ActivityLog.log('ADMIN', req.userId, 'PROXY_DEVICE_REVOKED', { tool: req.proxyTool, accountId: account._id, deviceId: req.params.deviceId, force, purgedCommands: purged, activeSourceCleared, activationCancelled, ip: getClientIp(req) });
+    return res.json({ ok: true, code: r.code, bundlePreserved: true, purgedCommands: purged, activeSourceCleared, activationCancelled });
   } catch (err) {
     console.error('Proxy device revoke error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to revoke device' });

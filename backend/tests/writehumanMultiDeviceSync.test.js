@@ -108,30 +108,6 @@ test('the device key is stored only as a hash, and authenticates timing-safely',
 });
 
 // --- scenario 1-3: the source follows a fresh SIGN-IN, not merely a newer token ---------------
-test('scenario 1-3: a fresh sign-in on any device makes that device the active source', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-
-  // 1. Operator signs in on the Local PC -> a NEW GoTrue session -> Local becomes active.
-  let r = await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-LOCAL').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-  assert.strictEqual(a.bundleVersion, 2);
-
-  // 2. Later the operator signs in on the RDP -> another new session -> the RDP takes over.
-  r = await ingestCandidate(a, TOOL, rdp.row, bundle(3000, null, null, 'sess-RDP').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(r.sourceSwitched, true);
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-
-  // 3. Signs in on the Local PC again -> it takes the title back. No server reconfiguration.
-  r = await ingestCandidate(a, TOOL, local.row, bundle(4000, null, null, 'sess-LOCAL2').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-  assert.strictEqual(a.bundleVersion, 4);
-});
 
 test('the active source keeps its own session fresh without any handover', async () => {
   reset();
@@ -149,70 +125,8 @@ test('the active source keeps its own session fresh without any handover', async
   assert.strictEqual(deviceSync.bundleTokenIat(activeBundleOf(a), TOOL), 2600, 'the rotation was stored');
 });
 
-test('a standby rotating its OWN copy never steals the source — the ping-pong case', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
 
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-LOCAL').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
 
-  // The RDP is also signed in, on a session the server has never seen. Its FIRST push adopts it
-  // once — the server cannot tell a just-signed-in machine from a long-idle one, and adopting a
-  // verified working session is the safe reading.
-  const first = await ingestCandidate(a, TOOL, rdp.row, bundle(2100, null, null, 'sess-RDP-OLD').cookies, {});
-  assert.strictEqual(first.code, CODES.PROMOTED, 'an unseen session is adopted once');
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-
-  // From here the session is KNOWN, so the RDP's continued rotations are routine. This is the
-  // property that matters: adoption happens once, not on every rotation.
-  const settled = a.sessionEncrypted;
-  const version = a.bundleVersion;
-  for (const iat of [2200, 2300, 2400]) {
-    const r = await ingestCandidate(a, TOOL, local.row, bundle(iat, null, null, 'sess-LOCAL').cookies, {});
-    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH, 'the standby cannot take the title back');
-    assert.strictEqual(r.promoted, false);
-  }
-  assert.strictEqual(a.activeSource.name, 'RDP-01', 'the title stopped moving');
-  assert.strictEqual(a.sessionEncrypted, settled, 'and the served bundle stopped churning');
-  assert.strictEqual(a.bundleVersion, version, 'no lease-revoking version bumps');
-});
-
-test('admin "Make active" hands over on that device\'s next verified sync', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-LOCAL').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-
-  // Without the override this would be a standby routine refresh and change nothing.
-  deviceSync.setActiveSourceIntent(a, rdp.deviceId, new Date());
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2400, null, null, 'sess-RDP-OLD').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-  assert.strictEqual(a.activeSourceIntent, null, 'the override is one-shot, not a permanent pin');
-});
-
-test('failover: when the active session has died, a verified standby takes over', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-LOCAL').cookies, {});
-
-  // The Local PC signs out; the account is down and nothing is serving.
-  await markDeviceLoggedOut(a, TOOL, local.row, {});
-  assert.strictEqual(a.session_status, 'needs_login');
-
-  // The RDP still holds a working session. It must be allowed to rescue the account even though
-  // its session is not "fresh" — this is failover, not a takeover.
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2400, null, null, 'sess-RDP-OLD').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-  assert.strictEqual(a.session_status, 'working');
-});
 
 // --- scenario 4: bad candidates never touch the working session --------------
 test('scenario 4: wrong-account cookies are rejected and the active bundle is preserved', async () => {
@@ -298,38 +212,7 @@ test('scenario 5: a device going offline leaves the last verified bundle in plac
   assert.strictEqual(view.isActiveSource, true, 'it is still the source of the bundle in use');
 });
 
-test('scenario 6: two devices holding the SAME session never ping-pong the active source', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
 
-  await ingestCandidate(a, TOOL, local.row, bundle(5000).cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-  const versionAfterFirst = a.bundleVersion;
-
-  // The RDP is signed into the same account and reports the identical token — same `iat`.
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(5000).cookies, {});
-  assert.strictEqual(r.code, CODES.COOKIE_BUNDLE_UNCHANGED);
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC', 'an identical bundle must not hand over the title');
-  assert.strictEqual(a.bundleVersion, versionAfterFirst, 'and must not burn a version');
-});
-
-test('a device replaying an OLDER session is rejected by trusted ordering', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-
-  await ingestCandidate(a, TOOL, local.row, bundle(9000).cookies, {});
-  const current = a.sessionEncrypted;
-
-  // The RDP has been asleep and still holds a much older token.
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(3000).cookies, {});
-  assert.strictEqual(r.code, CODES.STALE_BUNDLE);
-  assert.strictEqual(a.sessionEncrypted, current, 'an older session must not overwrite a newer one');
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-});
 
 test('concurrent pushes from two devices serialize — one source, no interleaved write', async () => {
   reset();
@@ -371,15 +254,6 @@ test('scenario 8: re-pushing unchanged cookies is a cheap no-op, not a re-promot
   assert.ok(d.row.lastSyncSuccessAt, 'but it still counts as the device being alive and in sync');
 });
 
-test('a forced re-sync re-applies and re-verifies even when the hash is unchanged', async () => {
-  reset();
-  const b = bundle(2000);
-  const a = account(b);
-  const d = pair(a, 'LOCAL-PC');
-  const r = await ingestCandidate(a, TOOL, d.row, b.cookies, { force: true });
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(verifyCalls, 1);
-});
 
 test('every attempt is recorded on the device row — including refusals', async () => {
   reset();
@@ -450,196 +324,17 @@ test('the ACTIVE source signing out does downgrade the account', async () => {
 });
 
 // --- cross-device activation: the copied-session case ------------------------
-test('a device that signs in after being signed OUT can take over, even on a known session', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
 
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
 
-  // The RDP is signed out, then the operator signs in there — landing on the SAME session (the
-  // copied-cookie case). Session-id comparison alone can never authorise this: the session is
-  // already known. The per-device transition is the only signal that survives.
-  deviceSync.noteDeviceAuthState(rdp.row, false, new Date());
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
 
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'RDP-01', 'the transition authorised the handover');
-});
 
-test('an activation claim is single-use — a second push does not re-take the source', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-
-  deviceSync.noteDeviceAuthState(rdp.row, false, new Date());
-  await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-
-  // Local signs in again on the shared session. Its claim was never minted (it never went out),
-  // so it must NOT be able to bounce the title back.
-  const r = await ingestCandidate(a, TOOL, local.row, bundle(2900, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH);
-  assert.strictEqual(a.activeSource.name, 'RDP-01', 'no ping-pong without a real transition');
-});
-
-test('an expired activation claim is not honoured', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-
-  // A transition that happened long ago must not sit around as a permanent right to take over.
-  deviceSync.noteDeviceAuthState(rdp.row, false, new Date());
-  deviceSync.noteDeviceAuthState(rdp.row, true, new Date());
-  rdp.row.activationClaimAt = new Date(Date.now() - deviceSync.ACTIVATION_TTL_MS - 60000);
-  assert.strictEqual(deviceSync.hasActivationClaim(rdp.row, new Date()), false, 'the claim has expired');
-
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH);
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-});
-
-test('the admin activation intent expires on its own', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-
-  // Both devices must first SPEND their one-time pairing activation, or that claim - not the admin
-  // intent - would be what promotes, and this test would pass for the wrong reason.
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-  await ingestCandidate(a, TOOL, rdp.row, bundle(2100, null, null, 'sess-SHARED').cookies, {});
-  deviceSync.setActiveSourceIntent(a, local.deviceId, new Date());
-  await ingestCandidate(a, TOOL, local.row, bundle(2200, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC', 'set-up: LOCAL-PC holds the source');
-  assert.strictEqual(deviceSync.hasActivationClaim(rdp.row, new Date()), false, 'set-up: RDP claim is spent');
-
-  // Now the only thing that could promote RDP-01 is an admin intent - and this one has expired.
-  deviceSync.setActiveSourceIntent(a, rdp.deviceId, new Date());
-  assert.strictEqual(deviceSync.activeSourceIntentFor(a, rdp.deviceId, new Date()), true);
-  a.activeSourceIntent.expiresAt = new Date(Date.now() - 1000);
-  assert.strictEqual(deviceSync.activeSourceIntentFor(a, rdp.deviceId, new Date()), false, 'expired');
-
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH, 'a forgotten request must not hijack the source later');
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
-});
-
-test('a live admin intent is consumed by the handover, not left standing', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-
-  deviceSync.setActiveSourceIntent(a, rdp.deviceId, new Date());
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED);
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-  assert.strictEqual(a.activeSourceIntent, null, 'the intent is spent, not sticky');
-});
 
 // --- newly paired device, copied cookies (the case that had no path to activation) ----------
-test('a NEWLY PAIRED device with COPIED cookies can activate once', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
 
-  // RDP-01 is paired NOW and the operator copies the existing cookies onto it. Everything the
-  // policy normally keys on is identical: same session id (already known), same login, and the
-  // hash only differs because the token rotated. Only the pairing itself distinguishes it.
-  const rdp = pair(a, 'RDP-01');
-  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r.code, CODES.PROMOTED, 'a freshly paired device gets exactly one activation');
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
-  assert.strictEqual(a.bundleVersion > 0, true);
-});
 
-test('...and that activation is spent — the demoted device cannot bounce it back', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, rdp.row, bundle(2500, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(a.activeSource.name, 'RDP-01');
 
-  // LOCAL-PC keeps rotating the same session. Its claim was spent on its own first activation, so
-  // it is now a standby and must stay one.
-  const settled = a.sessionEncrypted;
-  for (const iat of [2600, 2700, 2800]) {
-    const r = await ingestCandidate(a, TOOL, local.row, bundle(iat, null, null, 'sess-SHARED').cookies, {});
-    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH);
-  }
-  assert.strictEqual(a.activeSource.name, 'RDP-01', 'no ping-pong');
-  assert.strictEqual(a.sessionEncrypted, settled, 'and no churn of the served bundle');
-});
-
-test('the ACTIVE device keeps updating its own bundle while standbys are ignored', async () => {
-  reset();
-  const a = account(bundle(1000));
-  const local = pair(a, 'LOCAL-PC');
-  const rdp = pair(a, 'RDP-01');
-  await ingestCandidate(a, TOOL, local.row, bundle(2000, null, null, 'sess-SHARED').cookies, {});
-  await ingestCandidate(a, TOOL, rdp.row, bundle(2100, null, null, 'sess-SHARED').cookies, {});
-  const activeName = a.activeSource.name;
-  const activeRow = activeName === 'LOCAL-PC' ? local.row : rdp.row;
-  const standbyRow = activeName === 'LOCAL-PC' ? rdp.row : local.row;
-
-  const v0 = a.bundleVersion;
-  const r1 = await ingestCandidate(a, TOOL, activeRow, bundle(3000, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r1.code, CODES.PROMOTED, 'the active device may refresh the live bundle');
-  assert.strictEqual(a.bundleVersion, v0 + 1);
-  assert.strictEqual(a.activeSource.name, activeName, 'without any handover');
-
-  const r2 = await ingestCandidate(a, TOOL, standbyRow, bundle(3100, null, null, 'sess-SHARED').cookies, {});
-  assert.strictEqual(r2.code, CODES.STANDBY_ROUTINE_REFRESH, 'the standby is recorded, not promoted');
-  assert.strictEqual(a.activeSource.name, activeName);
-});
-
-test('the admin activation intent expires in the 10-15 minute band', () => {
-  assert.ok(deviceSync.ACTIVE_INTENT_TTL_MS >= 10 * 60 * 1000 && deviceSync.ACTIVE_INTENT_TTL_MS <= 15 * 60 * 1000,
-    'a forgotten Make-active request must not stay armed for hours');
-});
 
 // --- no device is special: names are labels, never roles ---------------------
-test('arbitrary device names all behave identically — nothing is hard-coded', async () => {
-  reset();
-  const a = account(bundle(1000));
-  // Deliberately NOT the names used elsewhere in this file. If any logic ever keys on a name like
-  // LOCAL-PC or RDP-01, this test fails, which is the point: the operator must be able to pair a
-  // machine called anything and have it behave the same.
-  const names = ['NOUMAN-ALI6', 'OFFICE-PC', 'kiosk-7'];
-  const devs = names.map(n => ({ name: n, ...pair(a, n) }));
-
-  // Each device in turn signs in and takes the source, using only its one-time pairing claim.
-  let iat = 2000;
-  for (const d of devs) {
-    iat += 500;
-    const r = await ingestCandidate(a, TOOL, d.row, bundle(iat, null, null, 'sess-SHARED').cookies, {});
-    assert.strictEqual(r.code, CODES.PROMOTED, `${d.name} must be able to become the active source`);
-    assert.strictEqual(a.activeSource.name, d.name);
-  }
-  assert.strictEqual(a.activeSource.name, 'kiosk-7', 'the last to activate holds it');
-
-  // And now that every claim is spent, none of them can take it back by routine rotation.
-  const held = a.sessionEncrypted;
-  for (const d of devs.slice(0, 2)) {
-    iat += 100;
-    const r = await ingestCandidate(a, TOOL, d.row, bundle(iat, null, null, 'sess-SHARED').cookies, {});
-    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH, `${d.name} is a standby now`);
-  }
-  assert.strictEqual(a.activeSource.name, 'kiosk-7');
-  assert.strictEqual(a.sessionEncrypted, held);
-});
 
 test('a device name is cosmetic — it never appears in an authorisation decision', () => {
   const a = account(bundle(1000));
@@ -672,4 +367,222 @@ test('revoking the only device that supplies the session is refused, and never d
   const allowed = deviceSync.revokeDevice(a, local.deviceId, {});
   assert.strictEqual(allowed.ok, true);
   assert.strictEqual(a.sessionEncrypted, before, 'revoking a device removes its write access, not the session');
+});
+
+// ── THE SOURCE POLICY, AFTER THE AUTO-HANDOVERS WERE REMOVED ─────────────────
+//
+// The tests that used to sit here asserted that the active-source title moved BY ITSELF: on a
+// fresh sign-in, on a signed-out→signed-in transition, on an unseen GoTrue session, and as
+// automatic failover when the live session looked dead. Each of those was a guess about operator
+// intent, and each of them could fire when no human had asked for anything — a browser dropping
+// and restoring its cookies was enough to move the live session onto a machine nobody had chosen,
+// and to revoke every client lease on the way past.
+//
+// Moving the session is now one explicit, addressed, verified transaction: `activation.js` plus a
+// `capture-and-activate` command aimed at exactly one device. These tests pin what replaced them.
+// The full transaction — stages, expiry, nonce, wrong-device refusal — lives in
+// tests/writehumanActivation.test.js.
+const deviceState = require('../utils/proxy/deviceState');
+const activation = require('../utils/proxy/activation');
+const agentCommands = require('../utils/proxy/agentCommands');
+
+/** Mark Active for real: validate, open the transaction, address the command, spend it. */
+async function activate(a, dev, cookieBundle) {
+  dev.row.lastSeenAt = new Date();
+  dev.row.agentVersion = dev.row.agentVersion || '3.5.0';
+  const t = agentCommands.validateTarget(a, dev.deviceId, {
+    requireOnline: true, requireCommandSupport: true, requireActivationSupport: true, staleMs: 10 * 60 * 1000,
+  });
+  assert.strictEqual(t.ok, true, 'the target must be addressable: ' + (t.message || ''));
+  const act = activation.create(a, { device: t.device, issuedBy: 'admin1' });
+  const q = agentCommands.enqueue(a, {
+    type: 'capture-and-activate', tool: TOOL, device: t.device,
+    activationId: act.activation.activationId, activationNonce: act.activation.nonce,
+  });
+  activation.attachCommand(a, act.activation.activationId, q.command.id);
+  const cmd = agentCommands.takeFor(a, dev.row, { tool: TOOL, agentVersion: '3.5.0' });
+  assert.ok(cmd, 'the addressed device must receive its own capture command');
+  const v = activation.validate(a, { activationId: cmd.activationId, deviceId: dev.deviceId, nonce: cmd.activationNonce });
+  assert.strictEqual(v.ok, true, 'the capability must validate for the addressed device');
+  return ingestCandidate(a, TOOL, dev.row, cookieBundle.cookies, { activation: v.activation });
+}
+
+test('the active source keeps its own session fresh — rotation is not a handover', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  await activate(a, local, bundle(2000, null, null, 'sess-LOCAL'));
+  const versionAfterSignIn = a.bundleVersion;
+
+  const r = await ingestCandidate(a, TOOL, local.row, bundle(2600, null, null, 'sess-LOCAL').cookies, {});
+  assert.strictEqual(r.code, CODES.PROMOTED);
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
+  assert.strictEqual(a.bundleVersion, versionAfterSignIn + 1);
+  assert.strictEqual(deviceSync.bundleTokenIat(activeBundleOf(a), TOOL), 2600, 'the rotation was stored');
+});
+
+test('the session moves ONLY when an admin moves it', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, local, bundle(2000, null, null, 'sess-LOCAL'));
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
+
+  // Every signal that used to hand the title over, fired in turn on the standby: an unseen
+  // session, a newer token, a signed-out→signed-in transition. None of them may move anything.
+  const settled = a.sessionEncrypted;
+  const version = a.bundleVersion;
+  for (const [iat, sid] of [[2100, 'sess-RDP-NEW'], [2200, 'sess-RDP-NEW'], [2300, 'sess-RDP-OTHER']]) {
+    deviceSync.noteDeviceAuthState(rdp.row, false, new Date());
+    deviceSync.noteDeviceAuthState(rdp.row, true, new Date());
+    const r = await ingestCandidate(a, TOOL, rdp.row, bundle(iat, null, null, sid).cookies, {});
+    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH, 'a standby is recorded, never promoted');
+  }
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC', 'the title did not move on its own');
+  assert.strictEqual(a.sessionEncrypted, settled, 'and the served bundle did not churn');
+  assert.strictEqual(a.bundleVersion, version, 'no lease-revoking version bumps');
+
+  // The admin moves it deliberately, and only then does it move.
+  const r = await activate(a, rdp, bundle(2400, null, null, 'sess-RDP-NEW'));
+  assert.strictEqual(r.code, CODES.PROMOTED);
+  assert.strictEqual(r.sourceSwitched, true);
+  assert.strictEqual(a.activeSource.name, 'RDP-01');
+  assert.strictEqual(a.activeSource.via, 'activation');
+});
+
+test('a dead active session is NOT rescued by promoting a standby behind the operator’s back', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, local, bundle(2000, null, null, 'sess-LOCAL'));
+
+  // The active machine signs out; the account is down.
+  await markDeviceLoggedOut(a, TOOL, local.row, {});
+  assert.strictEqual(a.session_status, 'needs_login');
+
+  // The RDP still holds a working session. Automatic failover used to hand it the title here.
+  // It must not: "the session looks dead" is often transient, and the cure was letting a machine
+  // nobody chose start supplying the session.
+  const r = await ingestCandidate(a, TOOL, rdp.row, bundle(2400, null, null, 'sess-RDP').cookies, {});
+  assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH);
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC', 'no automatic fallback source');
+
+  // Recovery is one deliberate click, and then it works.
+  const promoted = await activate(a, rdp, bundle(2400, null, null, 'sess-RDP'));
+  assert.strictEqual(promoted.code, CODES.PROMOTED);
+  assert.strictEqual(a.activeSource.name, 'RDP-01');
+  assert.strictEqual(a.session_status, 'working');
+});
+
+test('two devices holding the SAME session never ping-pong, and an activation still switches once', async () => {
+  reset();
+  const shared = bundle(2000, null, null, 'sess-SHARED');
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, local, shared);
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
+
+  // The RDP holds the identical session. Left alone it never takes over…
+  for (let i = 0; i < 3; i++) {
+    const r = await ingestCandidate(a, TOOL, rdp.row, shared.cookies, {});
+    assert.strictEqual(r.code, CODES.STANDBY_ROUTINE_REFRESH);
+    assert.strictEqual(a.activeSource.name, 'LOCAL-PC');
+  }
+  // …and when the admin does move it, it switches exactly once, without rewriting the bundle.
+  const version = a.bundleVersion;
+  const encrypted = a.sessionEncrypted;
+  const r = await activate(a, rdp, shared);
+  assert.strictEqual(r.code, CODES.PROMOTED);
+  assert.strictEqual(a.activeSource.name, 'RDP-01');
+  assert.strictEqual(a.bundleVersion, version, 'an identical bundle is not rewritten');
+  assert.strictEqual(a.sessionEncrypted, encrypted);
+});
+
+test('the ACTIVE source replaying an OLDER session is rejected by trusted ordering', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  await activate(a, local, bundle(5000, null, null, 'sess-LOCAL'));
+  const stored = a.sessionEncrypted;
+
+  const r = await ingestCandidate(a, TOOL, local.row, bundle(3000, null, null, 'sess-LOCAL').cookies, {});
+  assert.strictEqual(r.code, CODES.STALE_BUNDLE, 'a lagging replay cannot drag the account backwards');
+  assert.strictEqual(a.sessionEncrypted, stored);
+});
+
+test('an activation is exempt from trusted ordering, because it answers a different question', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, local, bundle(5000, null, null, 'sess-LOCAL'));
+
+  // The RDP's token was issued EARLIER, which is normal — it has simply been idle. Recency does
+  // not decide which machine supplies the session; the operator does, and verification gates it.
+  const r = await activate(a, rdp, bundle(3000, null, null, 'sess-RDP'));
+  assert.strictEqual(r.code, CODES.PROMOTED);
+  assert.strictEqual(a.activeSource.name, 'RDP-01');
+});
+
+test('an activation still refuses a candidate that fails verification', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, local, bundle(2000, null, null, 'sess-LOCAL'));
+  const stored = a.sessionEncrypted;
+
+  nextVerify = { result: 'session_expired', httpStatus: 401, maskedId: null };
+  const r = await activate(a, rdp, bundle(3000, null, null, 'sess-RDP'));
+  assert.strictEqual(r.code, CODES.SESSION_EXPIRED);
+  assert.strictEqual(a.activeSource.name, 'LOCAL-PC', 'a failed capture never moves the session');
+  assert.strictEqual(a.sessionEncrypted, stored, 'and never touches the bundle');
+  assert.strictEqual(activation.publicView(a).stage, 'FAILED', 'the transaction ends, stated');
+});
+
+test('the ACTIVE device keeps updating its own bundle while standbys are ignored', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const local = pair(a, 'LOCAL-PC');
+  const rdp = pair(a, 'RDP-01');
+  await activate(a, rdp, bundle(2000, null, null, 'sess-RDP'));
+
+  for (const iat of [2100, 2200, 2300]) {
+    const active = await ingestCandidate(a, TOOL, rdp.row, bundle(iat, null, null, 'sess-RDP').cookies, {});
+    assert.strictEqual(active.code, CODES.PROMOTED, 'the source refreshes its own session');
+    const standby = await ingestCandidate(a, TOOL, local.row, bundle(iat + 10, null, null, 'sess-LOCAL').cookies, {});
+    assert.strictEqual(standby.code, CODES.STANDBY_ROUTINE_REFRESH);
+  }
+  assert.strictEqual(a.activeSource.name, 'RDP-01');
+  assert.strictEqual(deviceSync.bundleTokenIat(activeBundleOf(a), TOOL), 2300);
+});
+
+test('the activation window sits in the 10-15 minute band', () => {
+  assert.ok(activation.DEFAULT_TTL_MS >= 10 * 60 * 1000 && activation.DEFAULT_TTL_MS <= 15 * 60 * 1000,
+    'long enough for a cold RDP and a human sign-in, short enough that a forgotten click cannot fire later');
+});
+
+test('arbitrary device names all behave identically — nothing is hard-coded', async () => {
+  reset();
+  const a = account(bundle(1000));
+  const names = ['OFFICE-PC', 'rdp-02', 'Nouman-Ali6', 'VM_7'];
+  const devs = names.map(n => pair(a, n));
+
+  // Each machine in turn is handed the session by an explicit activation, and each takes it.
+  let iat = 2000;
+  for (const d of devs) {
+    iat += 100;
+    const r = await activate(a, d, bundle(iat, null, null, 'sess-' + d.row.name));
+    assert.strictEqual(r.code, CODES.PROMOTED, d.row.name + ' must be able to become the active source');
+    assert.strictEqual(a.activeSource.deviceId, d.deviceId);
+    assert.strictEqual(deviceState.stateOf(a, d.row, { staleMs: 10 * 60 * 1000 }).state, 'ACTIVE');
+  }
+  // …and every machine it was taken FROM is a standby afterwards, never a second active source.
+  assert.deepStrictEqual(deviceState.activeConflicts(a, { staleMs: 10 * 60 * 1000 }), []);
+  for (const d of devs.slice(0, -1)) {
+    assert.strictEqual(deviceState.stateOf(a, d.row, { staleMs: 10 * 60 * 1000 }).state, 'STANDBY');
+  }
 });

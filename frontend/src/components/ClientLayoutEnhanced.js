@@ -56,7 +56,7 @@ const PAGE_TITLES = [
   { match: (p) => p === '/client/tools',                title: 'My Tools',      sub: 'All tools assigned to you' },
   { match: (p) => p === '/client/activity',             title: 'Activity',      sub: 'Your sign-ins & tool usage' },
   { match: (p) => p === '/client/profile',              title: 'Profile',       sub: 'Account & security settings' },
-  { match: (p) => p === '/client/extension-guide',      title: 'Extension Setup Guide', sub: 'Install & configure the browser extension' },
+  { match: (p) => p === '/client/extension-guide',      title: 'Extension Video', sub: 'Watch how to install & use the browser extension' },
 ];
 const getPageMeta = (path) =>
   PAGE_TITLES.find((r) => r.match(path)) || { title: 'Member Portal', sub: '' };

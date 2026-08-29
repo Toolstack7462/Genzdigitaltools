@@ -49,13 +49,36 @@ test('the agent source version is a real semver', () => {
   assert.match(sourceVersion(), /^\d+\.\d+\.\d+$/);
 });
 
-test('the version the COMMAND ROUTER demands matches the agent source', () => {
-  const { MIN_AGENT_VERSION } = require('../utils/proxy/agentCommands');
+/**
+ * There are TWO floors, and conflating them is a bug in either direction.
+ *
+ *   MIN_AGENT_VERSION             the ADDRESSING protocol floor. 3.4.0 introduced addressed
+ *                                 commands (id / targetDeviceId / nonce) and validated them
+ *                                 agent-side; that protocol has not changed since. Raising this
+ *                                 floor on every release would strand every field agent — no Open
+ *                                 Chrome, no re-sync, no rotate-token — until each machine happened
+ *                                 to be updated, which is a self-inflicted outage for a capability
+ *                                 they already have. It must be allowed to sit BELOW the source.
+ *   MIN_ACTIVATION_AGENT_VERSION  the CAPABILITY floor for `capture-and-activate`. An older agent
+ *                                 receives that command and silently does nothing — indistinguish-
+ *                                 able from the old dead Mark Active button — so this one must
+ *                                 track the source exactly, and the artifact carrying it must
+ *                                 actually be published.
+ *
+ * Neither may exceed the version that has been built and shipped: demanding a version that was
+ * never published is the 2026-08-26 failure this file exists to prevent.
+ */
+test('the ACTIVATION floor matches the agent source, and the addressing floor never exceeds it', () => {
+  const { MIN_AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION, atLeast } = require('../utils/proxy/agentCommands');
   assert.strictEqual(
-    MIN_AGENT_VERSION, sourceVersion(),
-    'agentCommands.MIN_AGENT_VERSION must equal the agent source AGENT_VERSION — otherwise the '
-    + 'server refuses commands to the very agent it ships (COMMAND_VERSION_UNSUPPORTED), or accepts '
-    + 'commands from an agent too old to validate their addressing.');
+    MIN_ACTIVATION_AGENT_VERSION, sourceVersion(),
+    'agentCommands.MIN_ACTIVATION_AGENT_VERSION must equal the agent source AGENT_VERSION — Mark '
+    + 'Active is executed BY the agent, so demanding a version that was never built makes the '
+    + 'button refuse, and accepting an older one makes it silently do nothing.');
+  assert.strictEqual(
+    atLeast(sourceVersion(), MIN_AGENT_VERSION), true,
+    'agentCommands.MIN_AGENT_VERSION must not exceed the agent source AGENT_VERSION — otherwise the '
+    + 'server refuses commands to the very agent it ships (COMMAND_VERSION_UNSUPPORTED).');
 });
 
 test('the version the DASHBOARD advertises matches the agent source', () => {

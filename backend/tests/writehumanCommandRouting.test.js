@@ -249,11 +249,29 @@ test('every command carries id, target, credential identity, expiry, nonce, type
   assert.strictEqual(agentCommands.publicCommands(acct).some(p => p.nonce), false);
 });
 
-test('only open-chrome is allowed to launch a browser', () => {
-  assert.deepStrictEqual(agentCommands.LAUNCHES_BROWSER, ['open-chrome']);
-  for (const t of agentCommands.TYPES.filter(x => x !== 'open-chrome')) {
+test('only the two explicitly-asked-for commands may launch a browser', () => {
+  // `capture-and-activate` joins `open-chrome` deliberately: an operator pressing Mark Active on a
+  // named machine is asking for exactly that machine's Chrome, so opening it is the requested
+  // action rather than a side effect. Everything else must be guaranteed not to move a browser.
+  assert.deepStrictEqual(agentCommands.LAUNCHES_BROWSER, ['open-chrome', 'capture-and-activate']);
+  for (const t of agentCommands.TYPES.filter(x => !['open-chrome', 'capture-and-activate'].includes(x))) {
     assert.strictEqual(agentCommands.LAUNCHES_BROWSER.includes(t), false, t);
   }
+  // …and a browser-launching command still only ever reaches the ONE device it names.
+  const { rdp, local, acct } = fleet();
+  agentCommands.enqueue(acct, { type: 'capture-and-activate', device: rdp, tool: 'writehuman', activationId: 'act_1', activationNonce: 'n'.repeat(64) });
+  assert.strictEqual(agentCommands.takeFor(acct, local, { tool: 'writehuman' }), null);
+  const got = agentCommands.takeFor(acct, rdp, { tool: 'writehuman', agentVersion: '3.5.0' });
+  assert.strictEqual(got.launchesBrowser, true);
+  assert.strictEqual(got.activationNonce, 'n'.repeat(64), 'the capability reaches the addressed device');
+});
+
+test('the activation capability is only ever attached to capture-and-activate', () => {
+  const { rdp, acct } = fleet();
+  agentCommands.enqueue(acct, { type: 'resync', device: rdp, tool: 'writehuman', activationId: 'act_1', activationNonce: 'n'.repeat(64) });
+  const got = agentCommands.takeFor(acct, rdp, { tool: 'writehuman', agentVersion: '3.5.0' });
+  assert.strictEqual(got.activationId, null, 'a resync can never carry a promotion capability');
+  assert.strictEqual(got.activationNonce, null);
 });
 
 test('version comparison is numeric, not lexicographic', () => {

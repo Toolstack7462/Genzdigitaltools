@@ -35,19 +35,34 @@
 const crypto = require('crypto');
 const deviceSync = require('./deviceSync');
 
-// Command vocabulary. Deliberately small, and split so the two dangerous verbs are distinct:
+// Command vocabulary. Deliberately small, and split so the dangerous verbs are distinct:
 //   open-chrome   launches the dedicated WriteHuman Chrome. Only ever for a genuine login/cookie
 //                 refresh, only ever on the ACTIVE SOURCE, only ever when explicitly asked for.
 //   resync        re-read cookies and push them. Never launches a browser.
 //   rotate-token  nudge the WriteHuman tab so Supabase rotates the access token ON TIME. This is
 //                 what removes the hourly "go and refresh the RDP browser" chore: the browser
 //                 stays the sole rotator, it is just no longer allowed to be late.
-const TYPES = ['open-chrome', 'resync', 'rotate-token'];
+//   capture-and-activate
+//                 the Mark Active transaction. Addressed to a device that is NOT currently the
+//                 active source — that is the entire point — it tells that ONE machine to bring
+//                 its own dedicated Chrome up, read its own WriteHuman cookies and upload them
+//                 under an activation id + nonce. It is the only command that carries a
+//                 capability, and the only one deliberately sent to a non-active-source device.
+const TYPES = ['open-chrome', 'resync', 'rotate-token', 'capture-and-activate'];
 // Types that may launch a browser process. Everything else is guaranteed not to.
-const LAUNCHES_BROWSER = ['open-chrome'];
+// `capture-and-activate` is here deliberately: an operator who has just pressed Mark Active on a
+// named machine is asking for exactly that machine's browser, so opening it is the requested
+// action rather than a side effect — and it still can only ever happen on the addressed device.
+const LAUNCHES_BROWSER = ['open-chrome', 'capture-and-activate'];
+// Commands that carry an activation capability (id + one-time nonce) in their payload.
+const CARRIES_ACTIVATION = ['capture-and-activate'];
 // The agent release that understands addressed commands (id/target/nonce) and validates them.
 // Older agents receive nothing at all rather than an unaddressed instruction.
 const MIN_AGENT_VERSION = process.env.PROXY_COMMAND_MIN_AGENT_VERSION || '3.4.0';
+// `capture-and-activate` needs an agent that knows how to run the capture and report its stages.
+// A 3.4.0 agent would silently ignore it, which is precisely the "click does nothing" failure this
+// work exists to remove — so the server refuses to address it and says why.
+const MIN_ACTIVATION_AGENT_VERSION = process.env.PROXY_ACTIVATION_MIN_AGENT_VERSION || '3.5.0';
 
 const DEFAULT_TTL_MS = Math.max(60_000, Number(process.env.PROXY_COMMAND_TTL_MS || 10 * 60_000));
 const MAX_QUEUE = 8;
@@ -63,6 +78,9 @@ const CODES = {
   DEVICE_OFFLINE: 'DEVICE_OFFLINE',
   DEVICE_NO_CREDENTIAL: 'DEVICE_NO_CREDENTIAL',
   COMMAND_VERSION_UNSUPPORTED: 'COMMAND_VERSION_UNSUPPORTED',
+  ACTIVATION_VERSION_UNSUPPORTED: 'ACTIVATION_VERSION_UNSUPPORTED',
+  DEVICE_UNINSTALLED: 'DEVICE_UNINSTALLED',
+  DEVICE_NOT_ACTIVATABLE: 'DEVICE_NOT_ACTIVATABLE',
   UNKNOWN_COMMAND: 'UNKNOWN_COMMAND',
 };
 
@@ -115,7 +133,10 @@ function validateTarget(account, deviceId, opts) {
   const dev = deviceSync.findDevice(account, deviceId);
   if (!dev) return { ok: false, code: CODES.DEVICE_UNKNOWN, message: 'That device is not paired with this account.' };
   if (dev.revoked) return { ok: false, code: CODES.DEVICE_REVOKED, message: 'That device is revoked and can no longer be given commands.' };
-  if (deviceSync.isSupersededDevice(account, dev, staleMs)) {
+  if (dev.uninstalledAt) {
+    return { ok: false, code: CODES.DEVICE_UNINSTALLED, message: 'The agent has been uninstalled on that machine. Install it again to bring the device back.' };
+  }
+  if (dev.supersededBy || deviceSync.isSupersededDevice(account, dev, staleMs)) {
     return { ok: false, code: CODES.DEVICE_SUPERSEDED, message: 'That device record has been superseded by a newer enrolment of the same machine.' };
   }
   if (!dev.keyHash) return { ok: false, code: CODES.DEVICE_NO_CREDENTIAL, message: 'That device has no per-agent credential, so a command could not be addressed to it.' };
@@ -145,6 +166,15 @@ function validateTarget(account, deviceId, opts) {
       device: dev,
     };
   }
+  // A capture-and-activate on a 3.4.0 agent would be received and silently ignored, which looks
+  // exactly like the old "Mark Active does nothing". Refuse it up front and name the remedy.
+  if (o.requireActivationSupport && !atLeast(dev.agentVersion, MIN_ACTIVATION_AGENT_VERSION)) {
+    return {
+      ok: false, code: CODES.ACTIVATION_VERSION_UNSUPPORTED,
+      message: 'That device runs agent ' + (dev.agentVersion || 'an unknown version') + '. Mark Active captures the session on the device itself, which needs agent ' + MIN_ACTIVATION_AGENT_VERSION + ' or newer — update the agent on that machine.',
+      device: dev,
+    };
+  }
   return { ok: true, code: CODES.OK, device: dev };
 }
 
@@ -168,7 +198,11 @@ function enqueue(account, opts) {
     targetDeviceName: device.name || null,
     targetKeyFingerprint: keyFingerprint(device),
     nonce: crypto.randomBytes(16).toString('hex'),
-    minAgentVersion: MIN_AGENT_VERSION,
+    // The activation capability, for `capture-and-activate` only. Held here so the ONE device this
+    // command is addressed to is also the only device that can ever learn the nonce.
+    activationId: CARRIES_ACTIVATION.includes(o.type) ? (o.activationId || null) : null,
+    activationNonce: CARRIES_ACTIVATION.includes(o.type) ? (o.activationNonce || null) : null,
+    minAgentVersion: CARRIES_ACTIVATION.includes(o.type) ? MIN_ACTIVATION_AGENT_VERSION : MIN_AGENT_VERSION,
     createdAt: now,
     expiresAt: new Date(now.getTime() + (o.ttlMs || DEFAULT_TTL_MS)),
     issuedBy: o.issuedBy || null,
@@ -218,6 +252,11 @@ function takeFor(account, device, opts) {
     targetDeviceId: delivered.targetDeviceId, nonce: delivered.nonce,
     expiresAt: delivered.expiresAt, minAgentVersion: delivered.minAgentVersion,
     launchesBrowser: LAUNCHES_BROWSER.includes(delivered.type),
+    // Only ever populated for `capture-and-activate`, and only in the reply to the ONE device the
+    // command names. This pair is the capability that lets that device's upload bypass the
+    // unchanged-hash and same-session short-circuits — so it must never reach anyone else.
+    activationId: delivered.activationId || null,
+    activationNonce: delivered.activationNonce || null,
   };
 }
 
@@ -263,6 +302,7 @@ function publicCommands(account, now) {
 }
 
 module.exports = {
-  TYPES, LAUNCHES_BROWSER, CODES, MIN_AGENT_VERSION, DEFAULT_TTL_MS,
+  TYPES, LAUNCHES_BROWSER, CARRIES_ACTIVATION, CODES,
+  MIN_AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION, DEFAULT_TTL_MS,
   validateTarget, enqueue, takeFor, ack, purgeForDevice, publicCommands, prune, keyFingerprint, atLeast,
 };

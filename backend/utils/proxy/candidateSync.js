@@ -32,10 +32,10 @@ const {
   supabaseAuthCookies, authCookieHash, replaceAuthCookies, cookieNames,
 } = require('./cookies');
 const {
-  CODES, MAX_ROLLBACKS, bundleTokenClaims, putDevice,
-  noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
-  activeSourceIntentFor, clearActiveSourceIntent,
+  CODES, MAX_ROLLBACKS, bundleTokenClaims, putDevice, findDevice, noteDeviceAuthState,
 } = require('./deviceSync');
+const deviceState = require('./deviceState');
+const activation = require('./activation');
 
 // -- single-flight: exactly one promotion in flight per account ---------------
 // Two devices pushing at the same instant must not interleave read-modify-write on the vault.
@@ -100,14 +100,31 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     const host = tools.targetHost(tool);
     const now = new Date();
 
+    // -- 0. IS THIS AN ACTIVATION CAPTURE? -----------------------------------
+    // `o.activation` is the already-validated transaction handed down by the route: it exists only
+    // when this exact device presented the activation id AND its one-time nonce, both minted by an
+    // admin pressing Mark Active on this exact device. It is a CAPABILITY, never a client claim —
+    // the route validates it, this module only consumes it.
+    //
+    // Note what is no longer here: `o.force`. That used to be set straight from `body.force === true`
+    // on the ingest request, which meant any agent holding a valid device key could ask the server
+    // to bypass the unchanged-hash check, the trusted-ordering check AND the standby rule, purely
+    // by putting a boolean in its own request body. Forcing is now something only the server can
+    // authorise, and only inside an activation.
+    const act = o.activation || null;
+
     const fail = async (code, error) => {
       recordAttempt(account, device, code, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, error: error || code });
       account.candidate = {
         deviceId: device.deviceId, deviceName: device.name || null,
         receivedAt: now, status: 'rejected', code, hash: null,
       };
+      // An activation must always END. Failing it here is what stops the dashboard sitting on
+      // "syncing" when the capture arrived but could not be promoted — the operator sees the real
+      // reason, and the previous source and bundle are left exactly as they were.
+      if (act) activation.fail(account, { activationId: act.activationId, code, message: error || code, now });
       await account.save();
-      return { code, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId: null, verifyResult: null };
+      return { code, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId: null, verifyResult: null, activationFailed: !!act };
     };
 
     // -- 1. allowlist: ONLY the WriteHuman Supabase auth cookies, nothing else ever leaves a
@@ -130,8 +147,59 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     const candIat = candClaims.iat;
     const activeIat = activeClaims.iat;
 
-    // -- 3. unchanged -> cheap liveness only. No decrypt-verify-write cycle, no source switch.
-    if (candidateHash && activeHash && candidateHash === activeHash && !o.force) {
+    // -- 3. WHO IS THIS DEVICE? Decided BEFORE any short-circuit, because the answer changes what
+    //       every later branch means. Asking "have the cookies changed" first was subtly wrong: a
+    //       standby holding the same session got COOKIE_BUNDLE_UNCHANGED, which reads as "your push
+    //       was accepted and matched", when the truth is "you are not the source and this would not
+    //       have been written whatever it contained".
+    noteDeviceAuthState(device, true, now);
+
+    const activeSource = account.activeSource || null;
+    const isActiveSource = !!activeSource && activeSource.deviceId === device.deviceId;
+    const noActiveSource = !activeSource;
+    const switchSource = noActiveSource || !!act;
+
+    const known = Array.isArray(account.knownSessionIds) ? account.knownSessionIds : [];
+    const rememberSession = () => {
+      if (!candClaims.sessionId || known.includes(candClaims.sessionId)) return;
+      account.knownSessionIds = known.concat([candClaims.sessionId]).slice(-8);
+    };
+
+    if (!isActiveSource && !switchSource) {
+      // STANDBY. Authorized, online, signed in — simply not the machine supplying the session. Its
+      // cookies are recorded as non-promotable standby data and the active bundle is untouched,
+      // whatever their hash, token age or session id says.
+      //
+      // This is the answer to "the previous Local PC/RDP kept syncing after another device became
+      // active": it still talks to the server, and the server still refuses to let it write.
+      rememberSession();
+      device.lastStandbyRefreshAt = now;
+      recordAttempt(account, device, CODES.STANDBY_ROUTINE_REFRESH, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey });
+      await account.save();
+      return {
+        code: CODES.STANDBY_ROUTINE_REFRESH, promoted: false, changed: false,
+        bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null,
+        maskedId: null, verifyResult: null,
+        standby: true,
+        hint: 'Recorded as standby data. Only the active source may update the live session; use Mark Active to hand this machine the session.',
+      };
+    }
+
+    // -- 3b. unchanged -> cheap liveness only. No decrypt-verify-write cycle, no source switch.
+    //
+    // ★ THE `act` EXEMPTION IS THE WHOLE MARK-ACTIVE FIX. This short-circuit is what made moving to
+    //   a new RDP impossible in the most ordinary case there is: the operator signs the new machine
+    //   into the SAME WriteHuman account, so its auth cookies hash IDENTICALLY to the live bundle,
+    //   so every push from it returned COOKIE_BUNDLE_UNCHANGED right here — before the admin's
+    //   "Make active" request was ever consulted, let alone spent. The request then expired unused,
+    //   forever, however many times the button was pressed.
+    //
+    //   An explicit activation is a different question from "have the cookies changed". It asks
+    //   "which machine is supplying this session", and the answer can legitimately change while the
+    //   bytes stay identical. So an activation capture is never short-circuited: it is captured,
+    //   verified and promoted on its own merits. (What it does NOT do is pointlessly rewrite the
+    //   encrypted bundle when the bytes really are the same — see step 7.)
+    if (candidateHash && activeHash && candidateHash === activeHash && !act) {
       recordAttempt(account, device, CODES.COOKIE_BUNDLE_UNCHANGED, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, success: true });
       await account.save();
       return { code: CODES.COOKIE_BUNDLE_UNCHANGED, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId: null, verifyResult: null };
@@ -139,64 +207,47 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
 
     // -- 4. TRUSTED ORDERING. Reject a bundle older than the one already active. This is what
     //       stops a lagging device from dragging the account back to a stale session.
-    if (!o.force && candIat != null && activeIat != null && candIat < activeIat) {
+    //
+    //       An activation capture is exempt for the same reason as step 3: the operator has named
+    //       this machine, and "which machine supplies the session" is not settled by whose token
+    //       was issued most recently. The capture still has to VERIFY before anything is promoted,
+    //       so an activation cannot install a dead session — only a differently-sourced live one.
+    if (!act && candIat != null && activeIat != null && candIat < activeIat) {
       return fail(CODES.STALE_BUNDLE);
     }
 
-    // -- 4b. PROMOTION POLICY. "Newest verified wins" is not good enough: two machines both signed
-    //        in and both rotating would trade the active-source title back and forth forever, and
-    //        every handover revokes client leases. So the ACTIVE SOURCE IS STICKY, and only four
-    //        things move it:
-    //          (a) nothing holds it yet;
-    //          (b) an admin pressed "Make active" for this device;
-    //          (c) the active session has FAILED - failover to a verified standby;
-    //          (d) a genuinely FRESH SIGN-IN happened on this device.
-    //        (d) is the subtle one. A token rotation and a fresh sign-in both produce a newer
-    //        `iat`, so recency cannot tell them apart - but a rotation keeps the GoTrue
-    //        `session_id` and a sign-in mints a new one. "Fresh" therefore means a session id the
-    //        SERVER HAS NEVER SEEN. Every session that arrives is remembered, so an unseen session
-    //        is adopted exactly ONCE and every later rotation of it is routine.
+    // -- 4b. PROMOTION POLICY. Two rules, and deliberately no third.
     //
-    //        Remembering per-account rather than per-device is deliberate. Comparing against what
-    //        a device reported LAST cannot answer the first push from a newly paired machine, and
-    //        comparing against the active session alone re-fires forever: a standby signed into a
-    //        different session would look "fresh" on every single rotation and flip the title back
-    //        and forth, which is precisely the ping-pong being designed out. A one-time adoption
-    //        followed by stability is the behaviour we want, and it still lets the operator sign
-    //        in on any paired machine and have it take over on its own.
-    // This device is demonstrably authenticated right now — it just produced auth cookies. If it
-    // was previously signed OUT, that transition mints a one-time activation claim, which is the
-    // only signal that survives the case where the SAME session is copied onto another paired
-    // device (the session id is already known, so nothing else would ever let that machine take
-    // over however legitimately it was set up).
-    noteDeviceAuthState(device, true, now);
-
-    const activeSource = account.activeSource || null;
-    const isActiveSource = !activeSource || activeSource.deviceId === device.deviceId;
-    const adminIntent = activeSourceIntentFor(account, device.deviceId, now);
-    const activeFailed = ['needs_login', 'session_expired', 'cookies_invalid', 'missing_required_session_cookie'].includes(account.session_status)
-      || !account.sessionEncrypted;
-    const known = Array.isArray(account.knownSessionIds) ? account.knownSessionIds : [];
-    const freshSignIn = !!(candClaims.sessionId && !known.includes(candClaims.sessionId));
-    const activationClaim = hasActivationClaim(device, now);
-
-    const switchSource = !activeSource || adminIntent || activeFailed || freshSignIn || activationClaim;
-
-    // Remember the session either way — including when the push is about to be ignored, so a
-    // standby's own rotations settle into "routine" after first contact instead of re-triggering.
-    const rememberSession = () => {
-      if (!candClaims.sessionId || known.includes(candClaims.sessionId)) return;
-      account.knownSessionIds = known.concat([candClaims.sessionId]).slice(-8);
-    };
-
-    if (!isActiveSource && !switchSource && !o.force) {
-      // A standby quietly keeping its own copy fresh. Nothing to do: promoting it would churn the
-      // vault and revoke leases for a session nobody is serving from.
-      rememberSession();
-      recordAttempt(account, device, CODES.STANDBY_ROUTINE_REFRESH, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey });
-      await account.save();
-      return { code: CODES.STANDBY_ROUTINE_REFRESH, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId: null, verifyResult: null };
-    }
+    //        (a) The ACTIVE SOURCE may refresh the active bundle. That is what being the active
+    //            source means: its browser rotates the Supabase token, and the new cookies are the
+    //            same session moving forward.
+    //        (b) The active-source TITLE moves only through an explicit, addressed, verified
+    //            ACTIVATION — an admin pressing Mark Active on one named machine — or when nothing
+    //            holds the title at all (first ever device, or the holder was uninstalled).
+    //
+    //        WHAT WAS REMOVED, AND WHY. The old policy also handed the title over on:
+    //          • `activeFailed`   — automatic failover to any verified standby when the live
+    //            session looked dead. It reads as helpful and is genuinely dangerous: "the session
+    //            looks dead" is often a transient verification failure, and the cure was to let a
+    //            machine nobody chose start supplying the session — the definition of a fallback
+    //            source being selected automatically.
+    //          • `freshSignIn`    — a session id the server had never seen. A standby signed into a
+    //            different WriteHuman session looked "fresh" and could seize the title.
+    //          • `activationClaim`— a signed-out→signed-in transition on any device. Sign out and
+    //            back in on the old machine and it took the session straight back. That is the
+    //            ping-pong this policy exists to prevent, arriving through a side door.
+    //        All three are auto-handovers. None of them can tell "the operator moved machines"
+    //        from "a browser hiccuped", and every mistaken handover revokes live client leases.
+    //        Moving the session is now a decision a human makes, once, per move — and a device
+    //        that is not the active source can never take the title by uploading anything.
+    //
+    //        The cost is stated plainly: if the active source dies, WriteHuman keeps serving the
+    //        last verified bundle and an operator must press Mark Active on a replacement. That is
+    //        one click, and it is strictly better than a machine silently promoting itself.
+    //
+    //        The roles themselves were resolved in step 3, before any short-circuit could hide
+    //        them. Everything reaching this point is either the active source refreshing its own
+    //        session, an admin-authorised activation, or the bootstrap case.
 
     // -- 5. stage the candidate (encrypted, never served to any client, never returned).
     account.candidate = {
@@ -204,15 +255,26 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
       receivedAt: now, status: 'validating', code: null,
       hash: candidateHash ? candidateHash.slice(0, 12) : null,
       encrypted: vaultCrypto.encrypt(JSON.stringify(candidate)),
+      activationId: act ? act.activationId : null,
     };
+    if (act) activation.advance(account, { activationId: act.activationId, stage: 'VERIFYING_ACCOUNT', now });
     await account.save();
 
     // -- 6. VERIFY THE CANDIDATE IN ISOLATION. Read-only: the browser on the device is the sole
     //       token rotator, so the server must never exchange the refresh token here.
+    //
+    //       An ACTIVATION additionally asks for `canary`, which is the difference between "this
+    //       JWT has not expired yet" (a local decode — all a routine push needs) and "this session
+    //       really does authenticate as this account right now" (one real, non-rotating call to
+    //       WriteHuman's own Supabase `/auth/v1/user`, returning the account's real identity).
+    //       Handing the live session to a different machine is exactly the moment to pay for the
+    //       real check rather than trust a decode, and it is read-only, so it cannot disturb the
+    //       browser that owns the token.
     let v = null;
     try {
       const header = buildCookieHeader(candidate, host);
-      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, { readOnly: true });
+      if (act) activation.advance(account, { activationId: act.activationId, stage: 'TESTING_WRITEHUMAN', now });
+      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, act ? { readOnly: true, canary: true } : { readOnly: true });
     } catch (err) {
       return fail(CODES.VERIFICATION_INCONCLUSIVE, err && err.message);
     }
@@ -238,36 +300,61 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     const prevSource = account.activeSource || null;
     const prevVersion = account.bundleVersion || 0;
 
-    if (prevEncrypted) {
+    // Is this bundle byte-for-byte the session we are already serving? For an activation it very
+    // often is — the operator signed the new machine into the same account, which is the normal way
+    // to move. There is then nothing to replace: rewriting the vault would bump the version, drop a
+    // redundant encrypted copy into the rollback ring and revoke every live client lease, all to
+    // store the identical cookies. So an identical verified bundle switches the SOURCE METADATA and
+    // leaves the encrypted bundle, its version and the client leases alone.
+    const bundleIdentical = !!(candidateHash && activeHash && candidateHash === activeHash && prevEncrypted);
+
+    if (prevEncrypted && !bundleIdentical) {
       const rolls = Array.isArray(account.rollbackBundles) ? account.rollbackBundles : [];
       rolls.push({ encrypted: prevEncrypted, hash: prevHash ? prevHash.slice(0, 12) : null, bundleVersion: prevVersion, savedAt: now, deviceId: prevSource && prevSource.deviceId });
       account.rollbackBundles = rolls.slice(-MAX_ROLLBACKS);
     }
 
-    account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(candidate));
-    account.sessionMeta = buildSessionMeta(tool, candidate);
-    account.cookieHash = candidateHash;
-    account.bundleVersion = prevVersion + 1;
+    if (!bundleIdentical) {
+      account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(candidate));
+      account.sessionMeta = buildSessionMeta(tool, candidate);
+      account.cookieHash = candidateHash;
+      account.bundleVersion = prevVersion + 1;
+    }
     account.lastSyncSuccessAt = now;
     account.lastVerifiedAt = now;
     account.verification = { result: 'working', maskedId, httpStatus: v.httpStatus || 200, checkedAt: now };
     account.session_status = 'working';
     if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
+    if (act) activation.advance(account, { activationId: act.activationId, stage: 'PROMOTING', now });
+
     if (switchSource) {
       account.activeSource = {
         deviceId: device.deviceId, name: device.name || null,
         promotedAt: now, bundleVersion: account.bundleVersion,
         hash: candidateHash ? candidateHash.slice(0, 12) : null, tokenIat: candIat,
+        // How the title was obtained, for the audit trail: an operator's explicit handover, or the
+        // bootstrap case where nothing held it.
+        via: act ? 'activation' : 'bootstrap',
+        activationId: act ? act.activationId : null,
       };
+      // DEMOTE THE PREVIOUS SOURCE explicitly. Being demoted is a fact about that machine, not an
+      // absence, and recording it is what lets the dashboard show it as STANDBY (a machine that
+      // held the session and no longer does) rather than as an anonymous READY device.
+      if (prevSource && prevSource.deviceId && prevSource.deviceId !== device.deviceId) {
+        const prevDev = findDevice(account, prevSource.deviceId);
+        if (prevDev) {
+          prevDev.demotedAt = now;
+          prevDev.demotedInFavourOf = device.deviceId;
+          putDevice(account, prevDev);
+        }
+      }
     } else if (account.activeSource) {
       account.activeSource = Object.assign({}, account.activeSource, { bundleVersion: account.bundleVersion, hash: candidateHash ? candidateHash.slice(0, 12) : null });
     }
     account.candidate = { deviceId: device.deviceId, deviceName: device.name || null, receivedAt: now, status: 'promoted', code: CODES.PROMOTED, hash: candidateHash ? candidateHash.slice(0, 12) : null };
     device.promotionCount = (device.promotionCount || 0) + 1;
+    device.demotedAt = null;
     rememberSession();
-    // Spend the one-time signals so the same event can never promote twice.
-    if (switchSource && activationClaim) consumeActivationClaim(device, now);
-    if (switchSource && adminIntent) clearActiveSourceIntent(account);
     recordAttempt(account, device, CODES.PROMOTED, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, success: true });
     await account.save();
 
@@ -289,25 +376,46 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
       account.session_status = prevSs;
       account.candidate = { deviceId: device.deviceId, deviceName: device.name || null, receivedAt: now, status: 'rejected', code: CODES.ROLLBACK_COMPLETED, hash: candidateHash ? candidateHash.slice(0, 12) : null };
       recordAttempt(account, device, CODES.PROMOTION_FAILED, { error: 'post-promotion readback mismatch' });
+      // The rollback restored the previous source, so the activation did NOT happen. Say so.
+      if (act) {
+        activation.fail(account, {
+          activationId: act.activationId, code: CODES.ROLLBACK_COMPLETED,
+          message: 'The promotion did not read back cleanly and was rolled back. The previous active source and session are unchanged.', now,
+        });
+      }
       await account.save();
-      return { code: CODES.ROLLBACK_COMPLETED, promoted: false, changed: false, bundleVersion: prevVersion, activeSource: prevSource, maskedId, verifyResult: v.result };
+      return { code: CODES.ROLLBACK_COMPLETED, promoted: false, changed: false, bundleVersion: prevVersion, activeSource: prevSource, maskedId, verifyResult: v.result, activationFailed: !!act };
+    }
+
+    // The transaction is only complete once a promotion has actually, verifiably happened.
+    if (act) {
+      activation.complete(account, {
+        activationId: act.activationId, bundleVersion: account.bundleVersion, maskedId, now,
+      });
+      await account.save();
     }
 
     // Cookies were REPLACED -> revoke in-flight leases so the next client open re-fetches the new
-    // bundle instead of riding a gateway cache of the old one.
-    try {
-      await ProxyLease.updateMany(
-        { accountId: account._id, revoked: false },
-        { $set: { revoked: true, revokedReason: 'agent_sync', revokedAt: new Date() } }
-      );
-    } catch (_) { /* non-fatal: a stale lease self-heals within ~60s */ }
+    // bundle instead of riding a gateway cache of the old one. Skipped when the bundle is byte-for-
+    // byte identical: nothing a client is holding has gone stale, so tearing down live sessions
+    // would be pure disruption for a change that did not happen.
+    if (!bundleIdentical) {
+      try {
+        await ProxyLease.updateMany(
+          { accountId: account._id, revoked: false },
+          { $set: { revoked: true, revokedReason: 'agent_sync', revokedAt: new Date() } }
+        );
+      } catch (_) { /* non-fatal: a stale lease self-heals within ~60s */ }
+    }
 
     try { healthAlerts.onVerifyApplied(account, tool, prevSs).catch(() => {}); } catch (_) {}
 
     return {
-      code: CODES.PROMOTED, promoted: true, changed: true,
+      code: CODES.PROMOTED, promoted: true, changed: !bundleIdentical,
       bundleVersion: account.bundleVersion, activeSource: account.activeSource,
       maskedId, verifyResult: 'working', sourceSwitched: switchSource,
+      bundleRewritten: !bundleIdentical,
+      activationCompleted: !!act,
       cookieCount: cookieNames(candidate, host).length,
     };
   });
@@ -330,7 +438,11 @@ async function markDeviceLoggedOut(account, tool, device, opts) {
     noteDeviceAuthState(device, false, now);
     recordAttempt(account, device, 'DEVICE_LOGGED_OUT', { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey });
     const activeId = account.activeSource && account.activeSource.deviceId;
-    const isActiveSource = !activeId || activeId === device.deviceId;
+    // ONLY the active source's logout downgrades the account. This used to also fire when NO device
+    // held the title (`!activeId`), which meant that after an uninstall or a revoke cleared the
+    // pointer, any standby signing out could mark the whole account needs_login — a machine nobody
+    // was serving from taking the session down with it.
+    const isActiveSource = !!activeId && activeId === device.deviceId;
     if (isActiveSource) {
       const prevSs = account.session_status;
       account.status = 'session_expired';

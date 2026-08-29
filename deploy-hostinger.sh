@@ -145,6 +145,8 @@ curl --fail-with-body --ftp-create-dirs \
   `# require these at module load, so a deploy WITHOUT them boots Passenger into "Cannot find` \
   `# module" and takes the whole API down — see backend/tests/deployManifest.test.js.` \
   -T backend/utils/proxy/agentCommands.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
+  -T backend/utils/proxy/deviceState.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceState.js" \
+  -T backend/utils/proxy/activation.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/activation.js" \
   -T backend/utils/proxy/deviceSync.js           "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js        "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T backend/utils/proxy/sessionHealth.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/sessionHealth.js" \

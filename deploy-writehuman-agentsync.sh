@@ -21,6 +21,8 @@ echo "==> Uploading agentSync.js (+ its multi-device modules) + restart"
 curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/proxy/agentSync.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   -T backend/utils/proxy/agentCommands.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
+  -T backend/utils/proxy/deviceState.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceState.js" \
+  -T backend/utils/proxy/activation.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/activation.js" \
   -T backend/utils/proxy/deviceSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceSync.js" \
   -T backend/utils/proxy/candidateSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/candidateSync.js" \
   -T backend/utils/proxy/agentEnroll.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentEnroll.js" \

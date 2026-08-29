@@ -23,7 +23,13 @@ const agent = require(AGENT);
 
 test('the agent package version is the one the backend expects', () => {
   assert.match(agent.AGENT_VERSION, /^\d+\.\d+\.\d+$/);
-  assert.strictEqual(agent.AGENT_VERSION, '3.4.0');
+  // Compared against what the backend actually demands, not a literal pinned in this file. A
+  // hard-coded '3.4.0' here fails on every legitimate version bump and says nothing about whether
+  // the server and the agent agree — which is the only thing worth asserting. The full identity
+  // chain (source == activation floor == dashboard == published artifact) is in
+  // writehumanAgentVersionDrift.test.js.
+  const { MIN_ACTIVATION_AGENT_VERSION } = require('../utils/proxy/agentCommands');
+  assert.strictEqual(agent.AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION);
 });
 
 test('canonical path comparison accepts the same profile written differently', () => {

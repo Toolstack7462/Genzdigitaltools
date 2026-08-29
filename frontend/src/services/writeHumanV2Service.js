@@ -47,7 +47,17 @@ export const writeHumanV2Admin = {
   // requireCsrf-protected: it is a state change driven from a browser, which is exactly what
   // CSRF defends against - so the token is required, not optional.
   authorizeEnrollment: (id, headers = {}) => api.post(`/admin/proxy-tools/${TOOL}/enrollments/${id}/authorize`, {}, { headers }),
-  // Queues a deliberate handover. The device becomes the active source on its next VERIFIED sync,
-  // so an offline or signed-out machine can never become active in name only.
-  makeActive: (deviceId) => api.post(`/admin/proxy-tools/${TOOL}/devices/${deviceId}/make-active`),
+  // MARK ACTIVE — opens an activation TRANSACTION and sends a `capture-and-activate` command to
+  // that ONE device, which then captures and uploads its own WriteHuman session. It used to record
+  // an intent and send nothing at all, so on a freshly installed machine the click did nothing
+  // visible and expired 15 minutes later. CSRF-gated like every other state change.
+  makeActive: (deviceId, headers = {}) =>
+    api.post(`/admin/proxy-tools/${TOOL}/devices/${deviceId}/make-active`, {}, { headers }),
+  // Live activation progress — the real stage (waiting for the agent / opening Chrome / waiting for
+  // a signed-in session / capturing / verifying / promoting), so the UI never shows an open-ended
+  // "syncing". Every transaction ends: ACTIVE, FAILED or EXPIRED.
+  getActivation: () => api.get(`/admin/proxy-tools/${TOOL}/activation`),
+  // Abandon a running activation. Nothing is promoted and the previous source keeps the session.
+  cancelActivation: (headers = {}) =>
+    api.post(`/admin/proxy-tools/${TOOL}/activation/cancel`, {}, { headers }),
 };
