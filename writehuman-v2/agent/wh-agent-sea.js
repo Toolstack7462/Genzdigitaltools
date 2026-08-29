@@ -383,8 +383,30 @@ function removeUninstallEntry() {
  */
 function scheduleSelfDelete() {
   try {
-    const script = 'ping -n 4 127.0.0.1 >nul & rmdir /s /q "' + INSTALL_DIR + '"';
-    spawn('cmd', ['/c', script], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    // Written to a temp .cmd and launched, rather than passed inline as `cmd /c "<script>"`.
+    // Inline was tried first and silently did nothing: the command contains a quoted path, and
+    // cmd.exe's /c quote handling strips the outer quotes of the whole string, so the rmdir
+    // received a mangled argument and failed with no error anybody would ever see. The observable
+    // result was an "uninstall complete" message with a 91 MB exe still sitting on disk.
+    //
+    // The retry loop matters too: Windows can hold the image of a just-exited process briefly, and
+    // one attempt at t+3s is a coin flip. Five attempts over ~15s is not.
+    const bat = path.join(os.tmpdir(), 'wh-uninstall-' + process.pid + '.cmd');
+    const lines = [
+      '@echo off',
+      'setlocal',
+      'set TARGET=' + INSTALL_DIR,
+      'for /L %%i in (1,1,5) do (',
+      '  timeout /t 3 /nobreak >nul 2>&1',
+      '  rmdir /s /q "%TARGET%" >nul 2>&1',
+      '  if not exist "%TARGET%" goto done',
+      ')',
+      ':done',
+      'del /f /q "%~f0" >nul 2>&1',
+      '',
+    ].join('\r\n');
+    fs.writeFileSync(bat, lines, { encoding: 'ascii' });
+    spawn('cmd', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() }).unref();
     return true;
   } catch (e) { log('self-delete could not be scheduled:', e.message); return false; }
 }
@@ -408,9 +430,16 @@ async function doUninstall(opts) {
   const steps = [];
 
   const server = await reportUninstallToServer();
-  steps.push('server: ' + (server.reported
-    ? 'device marked UNINSTALLED' + (server.body && server.body.activeSourceCleared ? ' (active source cleared, nothing auto-selected)' : '')
-    : 'not reported (' + (server.reason || server.error || ('HTTP ' + server.status)) + ')'));
+  // Three distinct outcomes, said as three distinct sentences. Collapsing them into "device marked
+  // UNINSTALLED" reads as a successful write even when the server had already retired this row (or
+  // never knew it), and during an incident that is the difference between "done" and "check it".
+  steps.push('server: ' + (
+    server.reported && server.body && server.body.alreadyRetired
+      ? 'device was already retired server-side (' + server.body.code + '); nothing further to close'
+      : server.reported
+        ? 'device marked UNINSTALLED' + (server.body && server.body.activeSourceCleared ? ' (active source cleared, nothing auto-selected)' : '')
+        : 'NOT reported (' + (server.reason || server.error || ('HTTP ' + server.status)) + ') — revoke this device in the admin panel'
+  ));
 
   stopRunningAgent();
   steps.push('agent: stopped');
