@@ -490,3 +490,69 @@ together — they must not be split; the overlay calls `/__genz/usage/*`, which 
 
 `ensureTables()` creates `stealth_usage_operations` on boot: additive, idempotent, and it
 touches no existing table.
+
+---
+
+## Why long humanizations were not charged (2026-08-31)
+
+A second defect, found only because the audit sink below existed. Sanitized trail:
+
+```
+bytes  21759 json_keys ["d","s"] -> success   -> COMMITTED
+bytes 207235 json_keys null      -> ambiguous -> CANCELLED
+bytes 210015 json_keys null      -> ambiguous -> CANCELLED
+```
+
+The classifier observed the first `CLASSIFY_MAX_BYTES` (64 KB) of the response. A humanized
+result is ONE envelope whose `d` value is the entire encoded payload, so a long result is a
+200 KB+ body with `"s"` at the very END. `JSON.parse` failed on the truncated text and the
+partial fallback required BOTH `"d"` and `"s"` inside the window, which a long result can
+never satisfy. Short humanizations charged; long ones silently did not. Detector responses
+(~42 KB) always fit, which is why only Humanizer showed it.
+
+It presented as "the first Humanize counts, later ones do not" — but the real variable was
+never order, it was OUTPUT SIZE.
+
+**Fix.** Classification is independent of result size: a non-empty `d` opener
+(`ENVELOPE_OPENER_RE`) within the first `CLASSIFY_PREFIX_BYTES` (2 KB) of a 2xx JSON body, on
+a stream that reaches its end, is proof a result was produced. The prefix is held separately
+from the classification window, so how much of the body is observed can no longer change the
+verdict. Still no decoding, and the member's text is never held.
+
+**Verified in production** over 40 operations: 18/18 results from 114 KB to 314 KB committed;
+11/11 upstream 502/503 cancelled; 1 client abort cancelled; 40 reserves, 40 distinct
+operation ids, zero duplicate commits, zero commit retries needed.
+
+### Widget sync
+
+The credit is committed when the upstream response ENDS — after `fetch()` has already
+resolved (fetch resolves on headers). The browser therefore cannot learn the outcome from its
+own response object. The gateway records each operation's settled state plus the authoritative
+counters the backend returned at commit; the overlay shows `Syncing...` in place of the stale
+number, polls read-only `POST /__genz/usage/status` with bounded backoff (~11.5 s), paints the
+server's counters, and falls back to `/validate` on a miss (another Passenger worker, or a
+restart). The status endpoint is bound to the asking lease and can only REPORT — refreshing it
+cannot cause a commit, so a failed UI refresh can never double-charge.
+
+### The audit sink
+
+`tmp/usage-audit.log`, one JSON line per stage (`reserve`, `tagged`/`untagged`, `classified`,
+`settled`). It exists because the gateway's console goes to Passenger's log, which is NOT
+reachable over the account's SFTP — so "did the gateway see this request, and how did it
+classify the response?" had no answer in production. Bounded (256 KB, then truncated),
+sanitized to ids/paths/status/content-type/byte counts/JSON KEY NAMES. Disable with
+`STEALTH_USAGE_AUDIT=0`. Read it with:
+
+```bash
+curl -u u171982351:PASS sftp://147.79.103.253:65002/home/u171982351/stealth-gateway/tmp/usage-audit.log
+```
+
+### Known residual: untagged retries
+
+The overlay tags the first mutating request after a recognised main-button click. When
+StealthWriter retries a failed humanize on its own, that retry carries no new click, so it
+goes out untagged and — if it succeeds — is NOT charged. Seen 4 times in one lease during a
+502/503 burst. This under-charges; it can never over-charge. Closing it means re-arming the
+intent for a short window after a cancelled attempt, or enabling `STEALTH_METERED_PATHS`
+(`^/api/(humanize|scan)(/|$)` - the paths are now confirmed from the trail) so an untagged
+mutating request to a metered path is refused rather than served free.
