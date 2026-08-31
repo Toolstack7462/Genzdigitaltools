@@ -481,6 +481,100 @@ test('an ambiguous outcome logs the response SHAPE only — key names, never val
 });
 
 
+
+// ── Long results: the defect the production audit trail exposed ─────────────────────────
+// Humanized output is ONE envelope whose `d` value is the entire encoded payload, so a long
+// result is a ~200 KB body with `"s"` at the very end — past any bounded observation window.
+// Classification therefore has to be independent of result size, or short humanizations
+// charge and long ones silently do not. These sizes are the real ones from the trail.
+
+const envelope = (payloadBytes) => JSON.stringify({ d: 'A'.repeat(payloadBytes), s: 'k3y' });
+
+test('a 200 KB result commits — a long humanization is still a humanization', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: envelope(207235) };
+
+  await metered(cookie, op, 'humanizer');
+  const hits = await settleOf(op);
+
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, 'commit', 'this is the case that was being cancelled in production');
+  assert.equal(hits[0].outcomeCode, 'result_envelope_stream');
+});
+
+test('results either side of the observation window behave identically', async () => {
+  const cookie = await openSession();
+  for (const size of [1024, 21759, 65535, 65537, 131072, 210015]) {
+    const op = OP();
+    plan = { status: 200, ct: 'application/json', body: envelope(size) };
+    await metered(cookie, op, 'humanizer');
+    const hits = await settleOf(op);
+    assert.equal(hits[0].kind, 'commit', size + ' B result must commit');
+  }
+});
+
+test('a huge NON-envelope 2xx body is still not proof of a result', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ log: 'x'.repeat(300000) }) };
+  await metered(cookie, op, 'humanizer');
+  const hits = await settleOf(op);
+  assert.equal(hits[0].kind, 'cancel', 'size alone never means success');
+});
+
+test('a large error body is still a failure, however long', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 503, ct: 'application/json', body: JSON.stringify({ error: 'high demand', detail: 'y'.repeat(200000) }) };
+  await metered(cookie, op, 'humanizer');
+  const hits = await settleOf(op);
+  assert.equal(hits[0].kind, 'cancel');
+});
+
+test('a long AI Detector result commits against the detector only', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: envelope(150000) };
+  await metered(cookie, op, 'detector', '/api/scan');
+  const hits = await settleOf(op);
+  assert.equal(hits[0].kind, 'commit');
+  assert.equal(hits[0].action, 'detector');
+});
+
+test('THREE consecutive long humanizations on ONE session commit three times', async () => {
+  const cookie = await openSession();
+  const ops = [];
+  for (let i = 0; i < 3; i++) {
+    const op = OP();
+    ops.push(op);
+    plan = { status: 200, ct: 'application/json', body: envelope(200000 + i * 1000) };
+    await metered(cookie, op, 'humanizer');
+    await settleOf(op);
+  }
+  const commits = settles.filter(s => s.kind === 'commit' && ops.includes(s.operationId));
+  assert.equal(commits.length, 3, 'the reported sequence: every success charges, not just the first');
+  assert.equal(new Set(commits.map(c => c.operationId)).size, 3, 'three distinct operations');
+});
+
+test('success → failure → success on one session charges exactly twice', async () => {
+  const cookie = await openSession();
+  const seq = [
+    { body: envelope(200000), expect: 'commit' },
+    { status: 503, body: JSON.stringify({ error: 'high demand' }), expect: 'cancel' },
+    { body: envelope(180000), expect: 'commit' },
+  ];
+  const seen = [];
+  for (const step of seq) {
+    const op = OP();
+    plan = { status: step.status || 200, ct: 'application/json', body: step.body };
+    await metered(cookie, op, 'humanizer');
+    const hits = await settleOf(op);
+    seen.push(hits[0].kind);
+  }
+  assert.deepEqual(seen, ['commit', 'cancel', 'commit']);
+});
+
 // ── Widget sync: the outcome the overlay polls for ──────────────────────────────────────
 
 const statusOf = (cookie, op) => postJson('/__genz/usage/status', { operationId: op }, { cookie })

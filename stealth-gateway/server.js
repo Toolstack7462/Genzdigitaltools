@@ -164,8 +164,26 @@ const METERED_PATHS_RE = (() => {
   try { return new RegExp(raw, 'i'); } catch (_) { return null; }
 })();
 
+// The envelope OPENER. This is what makes classification independent of result size.
+//
+// PRODUCTION EVIDENCE (audit trail, 2026-08-31): humanized results are one JSON envelope
+// whose `d` value is the whole encoded payload, so a long result is a ~200 KB body with
+// `"s"` at the very END. Classifying from a bounded observation window therefore could not
+// see `"s"` at all, JSON.parse failed on the truncated text, and every result larger than
+// the window was scored 'ambiguous' and cancelled — short humanizations charged, long ones
+// silently did not. Detector responses (~42 KB) always fit, which is why only Humanizer
+// showed it.
+//
+// A non-empty `d` at the START of a 2xx body that then streams to a clean end IS the proof,
+// and it costs no more of the body than we already look at. Error bodies are the opposite
+// shape entirely: non-2xx with `{"error": "..."}`, 45-100 bytes (also from the trail).
+const ENVELOPE_OPENER_RE = /"d"\s*:\s*"[A-Za-z0-9+/=_-]{16,}/;
+// Held separately from the classification window so the opener test can never be affected
+// by how much of the body we chose to observe.
+const CLASSIFY_PREFIX_BYTES = 2048;
+
 /** Cheap, allocation-light scan of the first bytes of a JSON body. */
-function classifyJsonHead(text) {
+function classifyJsonHead(text, ev) {
   let parsed = null;
   try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
 
@@ -196,10 +214,18 @@ function classifyJsonHead(text) {
     return { outcome: 'ambiguous', code: 'json_no_result_field' };
   }
 
-  // A body we could not parse — either genuinely malformed, or simply longer than the
-  // window we observed. Either way it is not proof of a result.
-  if (/"\s*d\s*"\s*:\s*"[^"]/.test(text) && /"\s*s\s*"\s*:\s*"[^"]/.test(text)) {
-    return { outcome: 'success', code: 'result_envelope_partial' };
+  // The body did not parse. That is the NORMAL case for a long result: the payload is
+  // bigger than the window, so what we hold is a valid envelope cut off mid-value. A
+  // non-empty `d` opener plus a stream that reached its end is proof a result was produced
+  // — without decoding, or even holding, the member's text.
+  // A stream torn mid-payload never reaches here: uRes 'aborted'/'error' settle the
+  // operation as a failure before the 'end' that triggers classification. The completed
+  // check below is a belt-and-braces guard for any future caller.
+  const prefix = (ev && ev.prefix) || text;
+  if (ENVELOPE_OPENER_RE.test(prefix)) {
+    return (!ev || ev.completed)
+      ? { outcome: 'success', code: 'result_envelope_stream' }
+      : { outcome: 'failure', code: 'result_truncated' };
   }
   if (/"\s*(error|errors|detail)\s*"\s*:/.test(text)) {
     return { outcome: 'failure', code: 'upstream_error_payload' };
@@ -222,7 +248,7 @@ function classifyUpstreamOutcome(ev) {
   const ct = String(ev.contentType || '').toLowerCase();
   const head = String(ev.head || '');
 
-  if (ct.includes('application/json') || ct.includes('+json')) return classifyJsonHead(head);
+  if (ct.includes('application/json') || ct.includes('+json')) return classifyJsonHead(head, ev);
 
   if (ct.includes('text/event-stream')) {
     // A stream that carried data and ended cleanly, with no error frame in the window.
@@ -798,7 +824,8 @@ function settleOperation(op, outcome, code, upstreamStatus, extra) {
         recordOutcome(op, commit && committed ? 'committed' : 'cancelled', r.body && r.body.remaining);
         usageAudit('settled', {
           lease_id: op.leaseId || null, action: op.action, op_ref: opRef(op.operationId),
-          intent: commit ? 'commit' : 'cancel', response_status: r.status, committed,
+          intent: commit ? 'commit' : 'cancel', outcome_code: payload.outcomeCode,
+          response_status: r.status, committed,
           code: (r.body && r.body.code) || null,
           remaining_present: !!(r.body && r.body.remaining), attempts: attempt + 1,
         });
@@ -1051,15 +1078,16 @@ function proxy(req, res, isHtmlNav, session, ctx) {
       // first CLASSIFY_MAX_BYTES to tell a produced result from an error, and we never
       // decode or log a byte of it.
       if (usageOp) {
-        let bytes = 0, head = '';
+        let bytes = 0, head = '', prefix = '';
         uRes.on('data', (c) => {
           bytes += c.length;
+          if (prefix.length < CLASSIFY_PREFIX_BYTES) prefix += c.toString('utf8', 0, Math.min(c.length, CLASSIFY_PREFIX_BYTES - prefix.length));
           if (head.length < CLASSIFY_MAX_BYTES) head += c.toString('utf8', 0, Math.min(c.length, CLASSIFY_MAX_BYTES - head.length));
         });
         uRes.on('aborted', () => settleOperation(usageOp, 'failure', 'upstream_aborted', uRes.statusCode || null));
         uRes.on('error', () => settleOperation(usageOp, 'failure', 'upstream_stream_error', uRes.statusCode || null));
         uRes.on('end', () => {
-          const ev = { status: uRes.statusCode, contentType: ct, bytes, head, completed: true };
+          const ev = { status: uRes.statusCode, contentType: ct, bytes, head, prefix, completed: true };
           const verdict = classifyUpstreamOutcome(ev);
           const evidence = { content_type: ct.split(';')[0] || null, bytes };
           usageAudit('classified', {
