@@ -130,6 +130,7 @@
         '<div class="genz-sw-row genz-sw-acct" id="genz-sw-acct-row" style="display:none"><span>Account</span><b id="genz-sw-acct"></b></div>' +
         '<div class="genz-sw-row"><span>Humanizer</span><b><i id="genz-h-rem">–</i> / <i id="genz-h-total">–</i></b></div>' +
         '<div class="genz-sw-row"><span>AI Detector</span><b><i id="genz-d-rem">–</i> / <i id="genz-d-total">–</i></b></div>' +
+        '<div class="genz-sw-row genz-sw-sync" id="genz-sw-sync" style="display:none"><span>Usage</span><b>Syncing\u2026</b></div>' +
         '<div class="genz-sw-row genz-sw-cd"><span>Session</span><b id="genz-sw-time">--:--</b></div>' +
         '<div class="genz-sw-msg" id="genz-sw-msg"></div>' +
         '<a class="genz-sw-support" href="' + SUPPORT_URL + '" target="_blank" rel="noopener" title="Contact support">Contact support</a>' +
@@ -138,6 +139,7 @@
     el.widget = w; el.time = w.querySelector('#genz-sw-time'); el.msg = w.querySelector('#genz-sw-msg');
     el.hTotal = w.querySelector('#genz-h-total'); el.hRem = w.querySelector('#genz-h-rem');
     el.dTotal = w.querySelector('#genz-d-total'); el.dRem = w.querySelector('#genz-d-rem');
+    el.sync = w.querySelector('#genz-sw-sync');
     el.min = w.querySelector('.genz-sw-min'); el.head = w.querySelector('.genz-sw-head');
     if (ACCOUNT_LABEL) {                                     // show which account is in use (safe label)
       var acctRow = w.querySelector('#genz-sw-acct-row');
@@ -161,6 +163,74 @@
     if (el.dRem) el.dRem.textContent = fmtLimit(rem.detector);
   }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
+
+  // ── Post-request usage sync ────────────────────────────────────────────────
+  // The credit is committed by the GATEWAY when the upstream response ENDS — which is
+  // after fetch() has already resolved (fetch resolves on headers, not on the last byte).
+  // So the browser cannot know the outcome from its own response object, and guessing
+  // locally would be exactly the false count this widget must never show.
+  //
+  // Instead: show 'Syncing\u2026' in place of the stale number, then poll the gateway's
+  // read-only /__genz/usage/status until it reports the settled outcome, and paint the
+  // AUTHORITATIVE remaining counts the backend returned from the commit itself.
+  //
+  // This retries only the REFRESH. It can never repeat the commit (that endpoint refuses a
+  // browser caller outright), so no amount of polling here can double-charge.
+  var SYNC_DELAYS = [250, 400, 700, 1200, 2000, 3000, 4000]; // bounded: ~11.5s, then /validate
+  var syncState = { action: null, prev: null };
+
+  function setSyncing(action, on) {
+    if (!el.widget) return;
+    var cell = action === 'detector' ? el.dRem : el.hRem;
+    if (on) {
+      if (el.sync) el.sync.style.display = '';
+      if (cell) { syncState.action = action; syncState.prev = cell.textContent; cell.textContent = '\u2026'; }
+    } else {
+      if (el.sync) el.sync.style.display = 'none';
+      // Only restore if nothing authoritative arrived to replace the placeholder.
+      if (cell && cell.textContent === '\u2026' && syncState.prev != null) cell.textContent = syncState.prev;
+      syncState.action = null; syncState.prev = null;
+    }
+  }
+
+  // Paint the counters the SERVER just returned. Returns false if there was nothing to paint.
+  function applyRemaining(rem) {
+    if (!rem || typeof rem !== 'object') return false;
+    var painted = false;
+    if (el.hRem && rem.humanizer !== undefined) { el.hRem.textContent = fmtLimit(rem.humanizer); painted = true; }
+    if (el.dRem && rem.detector !== undefined) { el.dRem.textContent = fmtLimit(rem.detector); painted = true; }
+    return painted;
+  }
+
+  function settleUi(op, action) {
+    setSyncing(action, true);
+    var i = 0;
+    var finished = false;
+    function done(rem) {
+      if (finished) return; finished = true;
+      var painted = applyRemaining(rem);
+      setSyncing(action, false);
+      // Reconcile against the backend either way — /validate is the authority, and it also
+      // covers the case where this gateway worker never saw the settle.
+      setTimeout(function () { validate(); }, painted ? 600 : 0);
+    }
+    function step() {
+      apiCall('/usage/status', { operationId: op }).then(function (r) {
+        var st = (r.body && r.body.state) || 'unknown';
+        if (st === 'committed') { log('usage_committed', { action_type: action }); return done(r.body.remaining); }
+        if (st === 'cancelled' || st === 'unconfirmed') { log('usage_not_charged', { action_type: action, state: st }); return done(null); }
+        // 'pending' (still settling) or 'unknown' (another Passenger worker, or a restart).
+        // Nudge /validate mid-flight so an unknown still updates quickly.
+        if (st === 'unknown' && i === 3) validate();
+        if (i < SYNC_DELAYS.length) { setTimeout(step, SYNC_DELAYS[i++]); return; }
+        done(null);
+      }).catch(function () {
+        if (i < SYNC_DELAYS.length) { setTimeout(step, SYNC_DELAYS[i++]); return; }
+        done(null); // refresh failed; /validate still has the true persisted count
+      });
+    }
+    setTimeout(step, SYNC_DELAYS[i++]);
+  }
   function clearMessage() { if (el.msg) { el.msg.textContent = ''; el.msg.style.display = 'none'; } }
   // Shown when a raw upstream "Forbidden"/error page slips into the client view.
   function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }
@@ -354,13 +424,6 @@
   var opState = { busy: false };
   function releaseBusy() { opState.busy = false; }
 
-  // The counters are authoritative on the server and are committed only AFTER the response
-  // completes, so re-read them from /validate a moment later rather than guessing locally.
-  // Twice, cheaply, so a slow commit still lands on the widget.
-  function refreshUsageSoon() {
-    setTimeout(function () { validate(); }, 1200);
-    setTimeout(function () { validate(); }, 4000);
-  }
 
   function reserveOp(action) {
     if (opState.busy) { toast(MSG.busy); return Promise.resolve(null); }
@@ -439,10 +502,13 @@
         var tagged = isSameOrigin(url) ? withOpHeaders(input, init, op, action) : null;
         var p = tagged ? origFetch(tagged.input, tagged.init) : origFetch(input, init);
         return p.then(function (resp) {
-          releaseBusy(); refreshUsageSoon(); return resp;
+          // fetch resolves on HEADERS: the gateway is still reading the body and has not
+          // decided yet. settleUi waits for the real outcome instead of assuming one.
+          releaseBusy(); settleUi(op, action); return resp;
         }, function (err) {
           // Network failure / abort seen in the page: release immediately, charge nothing.
-          releaseBusy(); cancelOp(op, action); refreshUsageSoon();
+          releaseBusy(); cancelOp(op, action);
+          setTimeout(function () { validate(); }, 600);
           throw err;
         });
       });
@@ -466,8 +532,8 @@
         function finish(failed) {
           if (done) return; done = true;
           releaseBusy();
-          if (failed) cancelOp(op, action);
-          refreshUsageSoon();
+          if (failed) { cancelOp(op, action); setTimeout(function () { validate(); }, 600); return; }
+          settleUi(op, action);
         }
         self.addEventListener('load', function () { finish(false); });
         self.addEventListener('error', function () { finish(true); });

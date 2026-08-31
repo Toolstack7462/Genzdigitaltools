@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node --test test/launchBootstrap.test.js test/usageLifecycle.test.js test/usageBackstop.test.js",
+    "test": "node --test test/launchBootstrap.test.js test/usageLifecycle.test.js test/usageBackstop.test.js test/overlaySequential.test.js",
     "check": "node --check server.js"
   },
   "dependencies": {}

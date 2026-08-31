@@ -686,6 +686,63 @@ function safeLog(event, fields) {
   try { console.log(`[stealth-gw] ${event} ${JSON.stringify(fields)}`); } catch (_) {}
 }
 
+// ── Sanitized usage audit sink ───────────────────────────────────────────────
+// The gateway's console goes to Passenger's log, which is NOT reachable from the hosting
+// account's own filesystem — so "did the gateway ever see this request, and how did it
+// classify the response?" had no answer an operator could actually read. This appends one
+// JSON line per metering milestone to tmp/usage-audit.log.
+//
+// Sanitized by construction: ids, action, request path, method, HTTP status, content type,
+// byte count and top-level JSON KEY NAMES. Never a value, never submitted text, never
+// generated output, never a cookie, token, session or credential.
+//
+// Bounded: the file is truncated once it passes USAGE_AUDIT_MAX_BYTES. Disable with
+// STEALTH_USAGE_AUDIT=0.
+const USAGE_AUDIT_ON = String(process.env.STEALTH_USAGE_AUDIT || '1') !== '0';
+const USAGE_AUDIT_FILE = path.join(__dirname, 'tmp', 'usage-audit.log');
+const USAGE_AUDIT_MAX_BYTES = parseInt(process.env.STEALTH_USAGE_AUDIT_MAX_BYTES, 10) || 256 * 1024;
+function opRef(id) { return typeof id === 'string' ? id.slice(0, 12) : null; }
+function usageAudit(evt, fields) {
+  if (!USAGE_AUDIT_ON) return;
+  try {
+    let size = 0;
+    try { size = fs.statSync(USAGE_AUDIT_FILE).size; } catch (_) { size = 0; }
+    if (size > USAGE_AUDIT_MAX_BYTES) { try { fs.truncateSync(USAGE_AUDIT_FILE, 0); } catch (_) {} }
+    fs.appendFileSync(USAGE_AUDIT_FILE, JSON.stringify(Object.assign({ ts: new Date().toISOString(), evt }, fields || {})) + '\n');
+  } catch (_) {}
+}
+
+// ── Outcome registry — what the overlay asks about after its request finishes ─
+// The commit happens at the END of the upstream response, so the outcome cannot ride in a
+// header of that same response. The overlay polls /__genz/usage/status instead and gets the
+// AUTHORITATIVE remaining counts the backend returned from the commit — so the widget drops
+// the moment the credit is actually spent, with no page reload and no guessing.
+//
+// In-process and bounded. A miss (other Passenger worker, restart, expiry) answers 'unknown',
+// and the overlay then falls back to /__genz/validate, which is authoritative anyway. That
+// fallback is why a miss can never show a wrong number — only a slightly later right one.
+const OP_OUTCOME_TTL_MS = 5 * 60 * 1000;
+const OP_OUTCOME_MAX = 2000;
+const opOutcomes = new Map(); // operationId -> { state, remaining, leaseId, at }
+function recordOutcome(op, state, remaining) {
+  if (!op || !op.operationId) return;
+  if (opOutcomes.size >= OP_OUTCOME_MAX) {
+    const oldest = opOutcomes.keys().next().value;
+    if (oldest !== undefined) opOutcomes.delete(oldest);
+  }
+  opOutcomes.set(op.operationId, {
+    state,
+    remaining: (remaining && typeof remaining === 'object') ? remaining : null,
+    leaseId: op.leaseId || null,
+    at: Date.now(),
+  });
+}
+const _opOutcomeGc = setInterval(() => {
+  const cutoff = Date.now() - OP_OUTCOME_TTL_MS;
+  for (const [k, v] of opOutcomes) if (!v || v.at <= cutoff) opOutcomes.delete(k);
+}, 60000);
+if (_opOutcomeGc.unref) _opOutcomeGc.unref();
+
 // ── Settling an operation (commit / cancel), with bounded retry ───────────────
 // The upstream leg has already happened by the time we get here, so a backend blip must
 // not turn a genuine result into a lost charge — nor a failure into a charge. Retries
@@ -721,6 +778,8 @@ function settleOperation(op, outcome, code, upstreamStatus, extra) {
     upstream_status: payload.upstreamStatus,
   }, extra || {}));
 
+  recordOutcome(op, 'pending', null);
+
   if (pendingSettles >= MAX_PENDING_SETTLES) {
     safeLog('usage_settle_dropped', { lease_id: op.leaseId || null, action_type: op.action, reason: 'pending_ceiling', warning: true });
     return;
@@ -734,6 +793,15 @@ function settleOperation(op, outcome, code, upstreamStatus, extra) {
       const definitive = r.status >= 200 && r.status < 500;
       if (definitive) {
         pendingSettles--;
+        const committed = !!(r.body && r.body.committed);
+        // The AUTHORITATIVE counters the backend returned from the commit itself.
+        recordOutcome(op, commit && committed ? 'committed' : 'cancelled', r.body && r.body.remaining);
+        usageAudit('settled', {
+          lease_id: op.leaseId || null, action: op.action, op_ref: opRef(op.operationId),
+          intent: commit ? 'commit' : 'cancel', response_status: r.status, committed,
+          code: (r.body && r.body.code) || null,
+          remaining_present: !!(r.body && r.body.remaining), attempts: attempt + 1,
+        });
         if (commit && !(r.body && r.body.committed)) {
           safeLog('usage_commit_refused', {
             lease_id: op.leaseId || null, action_type: op.action,
@@ -746,6 +814,10 @@ function settleOperation(op, outcome, code, upstreamStatus, extra) {
       if (attempt >= COMMIT_RETRY_DELAYS_MS.length) {
         pendingSettles--;
         // Operational warning, not a charge: the reservation expires by itself.
+        // Bounded retry exhausted. The reservation expires by itself, so nothing is
+        // charged; the overlay's /validate fallback still shows the true count.
+        recordOutcome(op, 'unconfirmed', null);
+        usageAudit('settle_unconfirmed', { lease_id: op.leaseId || null, action: op.action, op_ref: opRef(op.operationId), intent: commit ? 'commit' : 'cancel', attempts: attempt });
         safeLog('usage_settle_unconfirmed', {
           lease_id: op.leaseId || null, action_type: op.action, intent: commit ? 'commit' : 'cancel',
           attempts: attempt, response_status: r.status, warning: true,
@@ -990,6 +1062,12 @@ function proxy(req, res, isHtmlNav, session, ctx) {
           const ev = { status: uRes.statusCode, contentType: ct, bytes, head, completed: true };
           const verdict = classifyUpstreamOutcome(ev);
           const evidence = { content_type: ct.split(';')[0] || null, bytes };
+          usageAudit('classified', {
+            lease_id: usageOp.leaseId || null, action: usageOp.action, op_ref: opRef(usageOp.operationId),
+            request_path: String(req.url || '').split('?')[0], method: req.method,
+            response_status: uRes.statusCode, content_type: evidence.content_type, bytes,
+            json_keys: shapeEvidence(head), outcome: verdict.outcome, code: verdict.code,
+          });
           if (verdict.outcome === 'ambiguous') {
             // NO CHARGE + a safe audit warning carrying the response SHAPE (key names,
             // never values) so the classifier can be tightened from real evidence.
@@ -1340,6 +1418,24 @@ const server = http.createServer(async (req, res) => {
   // failure. There is deliberately NO browser-callable commit — see the 403 below.
   // These relay to the GATEWAY-ONLY backend endpoints, adding the gateway key the page
   // cannot hold and the lease the page cannot read.
+  // ── Outcome lookup: what happened to the operation this page just ran? ──────
+  // Read-only and charge-free — it can only REPORT a settled outcome, never cause one.
+  // Answers with the authoritative remaining counts the backend returned at commit, so
+  // the widget updates the instant the credit is actually spent.
+  if (pathName === '/__genz/usage/status') {
+    const jsonHeaders = { 'content-type': 'application/json', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+    if (req.method !== 'POST') { res.writeHead(405, jsonHeaders); return res.end('{"state":"unknown","code":"method_not_allowed"}'); }
+    const body = (await readLaunchBody(req)) || {};
+    const id = String(body.operationId || '').trim().toLowerCase();
+    const rec = /^[0-9a-f]{32}$/.test(id) ? opOutcomes.get(id) : null;
+    // Bound to the asking session: an operation recorded for another lease is invisible here.
+    const mine = rec && (!rec.leaseId || !(local && local.jti) || rec.leaseId === local.jti);
+    res.writeHead(200, jsonHeaders);
+    return res.end(JSON.stringify(mine
+      ? { state: rec.state, remaining: rec.remaining || null }
+      : { state: 'unknown' }));
+  }
+
   if (pathName === '/__genz/usage/reserve' || pathName === '/__genz/usage/cancel' || pathName === '/__genz/usage/commit') {
     const jsonHeaders = { 'content-type': 'application/json', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
     if (req.method !== 'POST') { res.writeHead(405, jsonHeaders); return res.end('{"ok":false,"code":"method_not_allowed"}'); }
@@ -1373,6 +1469,11 @@ const server = http.createServer(async (req, res) => {
     // A confirmed authorization denial also tears down the opaque session, exactly as
     // /__genz/validate does, so a later request cannot ride a session the backend refused.
     const code = String((r.body && r.body.code) || '');
+    usageAudit(reserving ? 'reserve' : 'client_cancel', {
+      lease_id: local && local.jti, action, response_status: r.status,
+      allowed: !!(r.body && (r.body.ok || r.body.allowed)), code: code || null,
+      op_ref: opRef(r.body && r.body.operationId),
+    });
     if (NAV_TERMINAL_CODES.has(code) && sess) { revokeSession(sess.sid); jsonHeaders['set-cookie'] = expireSessionCookie(); }
     res.writeHead(r.status, jsonHeaders);
     return res.end(JSON.stringify(r.body || {}));
@@ -1458,6 +1559,15 @@ const server = http.createServer(async (req, res) => {
   let usageOp = null;
   if (!capture) {
     usageOp = bindUsageOperation(req, token, local && local.jti);
+    // Audit BOTH outcomes. A mutating request that arrives untagged is the signature of
+    // the overlay failing to attach its reservation — without this line that failure is
+    // indistinguishable from the gateway never being asked at all.
+    if (['POST', 'PUT', 'PATCH'].includes(String(req.method || '').toUpperCase())) {
+      usageAudit(usageOp ? 'tagged' : 'untagged', {
+        lease_id: local && local.jti, action: usageOp ? usageOp.action : null,
+        request_path: pathName, method: req.method, op_ref: usageOp ? opRef(usageOp.operationId) : null,
+      });
+    }
     // Post-audit backstop (off until STEALTH_METERED_PATHS is set): once the exact
     // Humanizer/Detector paths are confirmed, a mutating request to one of them without a
     // reservation is refused rather than served for free.

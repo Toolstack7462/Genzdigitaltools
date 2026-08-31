@@ -18,9 +18,12 @@ const assert = require('node:assert');
 const http = require('http');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const { spawn } = require('node:child_process');
 
 const GW = path.resolve(__dirname, '..');
+const AUDIT = path.join(GW, 'tmp', 'usage-audit.log');
+const auditLines = () => { try { return fs.readFileSync(AUDIT, 'utf8').trim().split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return {}; } }); } catch (_) { return []; } };
 const SECRET = 'x'.repeat(48);
 const GATEWAY_KEY = 'k'.repeat(32);
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
@@ -475,6 +478,153 @@ test('an ambiguous outcome logs the response SHAPE only — key names, never val
   assert.ok(/usage_outcome_ambiguous/.test(gwOutput), 'the operator gets the audit warning');
   assert.ok(/metaInfo/.test(gwOutput), 'with the key NAMES, which is what tightens the classifier');
   assert.ok(!gwOutput.includes(SECRETISH), 'and never a value');
+});
+
+
+// ── Widget sync: the outcome the overlay polls for ──────────────────────────────────────
+
+const statusOf = (cookie, op) => postJson('/__genz/usage/status', { operationId: op }, { cookie })
+  .then(r => ({ status: r.status, body: JSON.parse(r.body || '{}') }));
+
+/** Poll /__genz/usage/status the way the overlay does, until it stops saying pending. */
+async function settledStatus(cookie, op, timeoutMs = 6000) {
+  const t0 = Date.now();
+  let last = null;
+  while (Date.now() - t0 < timeoutMs) {
+    last = await statusOf(cookie, op);
+    if (last.body.state && last.body.state !== 'pending') return last.body;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return (last && last.body) || {};
+}
+
+test('after a real result the status endpoint reports COMMITTED with authoritative counters', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ d: 'UkVTVUxU', s: 'k3y' }) };
+
+  await metered(cookie, op, 'humanizer');
+  await settleOf(op);
+  const st = await settledStatus(cookie, op);
+
+  assert.equal(st.state, 'committed', 'this is what makes the widget drop without a reload');
+  assert.deepEqual(st.remaining, { humanizer: 46, detector: 19 },
+    'the counters come from the backend commit itself, not from a client-side guess');
+});
+
+test('after a failure the status endpoint reports CANCELLED and no counters move', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 503, ct: 'application/json', body: JSON.stringify({ error: 'high demand' }) };
+
+  await metered(cookie, op, 'humanizer');
+  await settleOf(op);
+  const st = await settledStatus(cookie, op);
+
+  assert.equal(st.state, 'cancelled');
+  assert.deepEqual(st.remaining, { humanizer: 47, detector: 19 },
+    'repainted with the UNCHANGED authoritative counters — a failure never moves the number');
+});
+
+test('polling the status endpoint can never charge — it only reports', async () => {
+  const cookie = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ d: 'UkVT', s: 'k' }) };
+
+  await metered(cookie, op, 'humanizer');
+  await settleOf(op);
+  for (let i = 0; i < 12; i++) await statusOf(cookie, op);   // a UI refresh that keeps failing
+
+  const commits = settles.filter(s => s.operationId === op && s.kind === 'commit');
+  assert.equal(commits.length, 1, 'still exactly one commit after twelve refreshes');
+});
+
+test('an unknown operation id reports unknown, so the overlay falls back to /validate', async () => {
+  const cookie = await openSession();
+  const st = (await statusOf(cookie, OP())).body;
+  assert.equal(st.state, 'unknown');
+});
+
+test("another session's operation is invisible", async () => {
+  const cookieA = await openSession();
+  const cookieB = await openSession();
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ d: 'UkVT', s: 'k' }) };
+
+  await metered(cookieA, op, 'humanizer');
+  await settleOf(op);
+
+  assert.equal((await settledStatus(cookieA, op)).state, 'committed');
+  assert.equal((await statusOf(cookieB, op)).body.state, 'unknown', 'bound to the lease that reserved it');
+});
+
+test('GET on the status endpoint is refused, not proxied to StealthWriter', async () => {
+  const cookie = await openSession();
+  const before = upstreamRequests.length;
+  const res = await request('GET', '/__genz/usage/status', { cookie });
+  assert.equal(res.status, 405);
+  assert.equal(upstreamRequests.length, before);
+});
+
+test('the status endpoint needs a session', async () => {
+  const res = await postJson('/__genz/usage/status', { operationId: OP() }, {});
+  assert.equal(res.status, 403);
+});
+
+// ── The audit trail that makes a metering question answerable ───────────────────────────
+
+test('the audit sink records every stage — reserve, tagged, classified, settled', async () => {
+  const cookie = await openSession();
+  try { fs.unlinkSync(AUDIT); } catch (_) {}
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ d: 'UkVT', s: 'k' }) };
+
+  await postJson('/__genz/usage/reserve', { action: 'humanizer' }, { cookie });
+  await metered(cookie, op, 'humanizer');
+  await settleOf(op);
+  await new Promise(r => setTimeout(r, 300));
+
+  const evts = auditLines().map(l => l.evt);
+  for (const want of ['reserve', 'tagged', 'classified', 'settled']) {
+    assert.ok(evts.includes(want), 'audit records the ' + want + ' stage (got: ' + evts.join(',') + ')');
+  }
+  const classified = auditLines().find(l => l.evt === 'classified');
+  assert.equal(classified.outcome, 'success');
+  assert.equal(classified.content_type, 'application/json');
+  assert.equal(classified.request_path, '/api/humanize');
+  const settled = auditLines().find(l => l.evt === 'settled');
+  assert.equal(settled.committed, true);
+  assert.equal(settled.remaining_present, true);
+});
+
+test('an UNTAGGED mutating request is recorded — the overlay-failure signature', async () => {
+  const cookie = await openSession();
+  try { fs.unlinkSync(AUDIT); } catch (_) {}
+  plan = { status: 200, ct: 'application/json', body: '{"ok":true}' };
+  await postJson('/api/humanize', { hello: 1 }, { cookie });
+  await new Promise(r => setTimeout(r, 200));
+  const untagged = auditLines().find(l => l.evt === 'untagged');
+  assert.ok(untagged, 'so "never asked" is distinguishable from "asked and refused"');
+  assert.equal(untagged.request_path, '/api/humanize');
+});
+
+test('the audit sink never records submitted text or generated output', async () => {
+  const cookie = await openSession();
+  try { fs.unlinkSync(AUDIT); } catch (_) {}
+  const SUBMITTED = 'GENZ_AUDIT_IN_' + crypto.randomBytes(4).toString('hex');
+  const PRODUCED = 'GENZ_AUDIT_OUT_' + crypto.randomBytes(4).toString('hex');
+  const op = OP();
+  plan = { status: 200, ct: 'application/json', body: JSON.stringify({ result: PRODUCED }) };
+
+  await postJson('/api/humanize', { text: SUBMITTED }, { cookie, 'x-genz-op': op, 'x-genz-action': 'humanizer' });
+  await settleOf(op);
+  await new Promise(r => setTimeout(r, 300));
+
+  const raw = fs.readFileSync(AUDIT, 'utf8');
+  assert.ok(!raw.includes(SUBMITTED), 'no submitted text');
+  assert.ok(!raw.includes(PRODUCED), 'no generated output');
+  assert.ok(!/__Host-stealth_session|sw_lease|VAULT|Bearer /.test(raw), 'no session, cookie or lease material');
+  assert.ok(/"result"/.test(raw), 'only the key NAME is kept, which is what tightens the classifier');
 });
 
 // ── Nothing else changed ────────────────────────────────────────────────────────────────
