@@ -85,6 +85,165 @@ const SESSION_COOKIE = '__Host-stealth_session';
 const EXTRA_HIDE_SELECTORS = String(process.env.STEALTH_HIDE_SELECTORS || '')
   .split(',').map(s => s.trim()).filter(Boolean);
 
+
+// ════════════════════════════════════════════════════════════════════════════
+// USAGE METERING — the gateway, not the browser, decides whether to charge
+// ════════════════════════════════════════════════════════════════════════════
+// The old flow charged on the CLICK: the overlay called /__genz/consume and only then
+// dispatched the humanize request. A StealthWriter "service is temporarily unavailable
+// due to high demand" therefore still cost the member a Humanizer credit.
+//
+// Now the overlay RESERVES capacity before dispatching, tags that one request with an
+// opaque operation id, and THIS server decides the outcome from the real upstream
+// response — committing the credit only when a result was genuinely produced, and
+// cancelling otherwise. The browser cannot declare success: /__genz/usage/commit is
+// refused outright (see the handler), and the backend commit endpoint additionally
+// requires the gateway key, which no browser holds.
+//
+// Internal metering headers are STRIPPED from every request before it is forwarded, so
+// nothing of ours ever reaches StealthWriter.
+const USAGE_OP_HEADER = 'x-genz-op';
+const USAGE_ACTION_HEADER = 'x-genz-action';
+const USAGE_ACTIONS = new Set(['humanizer', 'detector']);
+
+// How much of the response we look at to classify it. The body still streams to the
+// browser untouched and undelayed — this is a bounded observer, not a buffer.
+const CLASSIFY_MAX_BYTES = 64 * 1024;
+
+// Safety net: if nothing has settled an operation by then (socket wedged, tab killed
+// mid-flight, upstream never answers), cancel it. The backend reservation would expire
+// on its own anyway; this just releases it promptly. Always below the backend TTL.
+const OP_SAFETY_TIMEOUT_MS = (() => {
+  const n = parseInt(process.env.STEALTH_OP_SAFETY_TIMEOUT_MS, 10);
+  return Number.isFinite(n) && n >= 5000 && n <= 600000 ? n : 120000;
+})();
+
+// ── Success classification ───────────────────────────────────────────────────
+// Default-deny: a credit is charged ONLY when the response positively proves a result
+// was produced. Anything else — an error status, an error payload, an empty or
+// malformed body, an unrecognised shape — is a no-charge outcome, because falsely
+// charging a member is the failure this whole change exists to stop.
+//
+// AUDITED EVIDENCE (public StealthWriter bundle, landing scanner):
+//   • failures are signalled as a NON-2xx status with a plain `{"error": "..."}` body
+//     (`if (!res.ok) toast.error(json.error ?? "Scan failed.")`);
+//   • successful payloads are returned as an OBFUSCATED ENVELOPE `{"d":"<base64>",
+//     "s":"<salt>"}` and decoded client-side.
+// So a non-empty `d` + `s` envelope on a 2xx IS proof that a payload was produced, and
+// it is proof we can read WITHOUT ever decoding the member's text. That is the primary
+// success signal; the plain result-key list below is the fallback for any endpoint that
+// answers unencoded.
+const SUCCESS_JSON_KEYS = (() => {
+  const base = [
+    'result', 'results', 'output', 'humanized', 'humanizedtext', 'humanized_text',
+    'rewritten', 'rewrite', 'paraphrase', 'paraphrased', 'text', 'content',
+    'score', 'aiscore', 'ai_score', 'humanscore', 'human_score', 'probability',
+    'sentences', 'detection', 'prediction',
+  ];
+  const extra = String(process.env.STEALTH_SUCCESS_JSON_KEYS || '')
+    .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  return new Set(base.concat(extra));
+})();
+
+// Explicit upstream error markers inside a 2xx body.
+const ERROR_JSON_KEYS = new Set(['error', 'errors', 'error_message', 'errormessage', 'detail']);
+
+// Server Actions / RSC flight responses (`text/x-component`) serialize a FAILED action
+// as a perfectly normal 200 too, so "bytes arrived" is not proof of a result there. Left
+// classified as ambiguous (no charge) until a live audit of the authenticated Humanizer
+// endpoint says otherwise; flip with STEALTH_RSC_SUCCESS=1 only once that audit exists.
+const RSC_COUNTS_AS_SUCCESS = String(process.env.STEALTH_RSC_SUCCESS || '0') === '1';
+
+// Optional post-audit backstop: once the exact Humanizer/Detector request paths are
+// confirmed, set STEALTH_METERED_PATHS to a regex and a mutating request that matches it
+// WITHOUT a valid reservation is refused instead of being proxied for free. Unset by
+// default, so behaviour is unchanged until the audit lands.
+const METERED_PATHS_RE = (() => {
+  const raw = String(process.env.STEALTH_METERED_PATHS || '').trim();
+  if (!raw) return null;
+  try { return new RegExp(raw, 'i'); } catch (_) { return null; }
+})();
+
+/** Cheap, allocation-light scan of the first bytes of a JSON body. */
+function classifyJsonHead(text) {
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch (_) { parsed = null; }
+
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    for (const k of Object.keys(parsed)) {
+      const lk = k.toLowerCase();
+      const v = parsed[k];
+      if (ERROR_JSON_KEYS.has(lk) && v !== null && v !== false && v !== '') {
+        return { outcome: 'failure', code: 'upstream_error_payload' };
+      }
+    }
+    if (parsed.success === false || parsed.ok === false) {
+      return { outcome: 'failure', code: 'upstream_error_payload' };
+    }
+    // The audited obfuscated envelope: a real payload was produced. Never decoded.
+    if (typeof parsed.d === 'string' && parsed.d.length > 0 && typeof parsed.s === 'string' && parsed.s.length > 0) {
+      return { outcome: 'success', code: 'result_envelope' };
+    }
+    for (const k of Object.keys(parsed)) {
+      if (!SUCCESS_JSON_KEYS.has(k.toLowerCase())) continue;
+      const v = parsed[k];
+      const nonEmpty = (typeof v === 'string' && v.trim().length > 0)
+        || (typeof v === 'number' && Number.isFinite(v))
+        || (Array.isArray(v) && v.length > 0)
+        || (v && typeof v === 'object' && Object.keys(v).length > 0);
+      if (nonEmpty) return { outcome: 'success', code: 'result_field' };
+    }
+    return { outcome: 'ambiguous', code: 'json_no_result_field' };
+  }
+
+  // A body we could not parse — either genuinely malformed, or simply longer than the
+  // window we observed. Either way it is not proof of a result.
+  if (/"\s*d\s*"\s*:\s*"[^"]/.test(text) && /"\s*s\s*"\s*:\s*"[^"]/.test(text)) {
+    return { outcome: 'success', code: 'result_envelope_partial' };
+  }
+  if (/"\s*(error|errors|detail)\s*"\s*:/.test(text)) {
+    return { outcome: 'failure', code: 'upstream_error_payload' };
+  }
+  return { outcome: 'ambiguous', code: 'json_unparsed' };
+}
+
+/**
+ * Decide the outcome of one metered upstream exchange.
+ * `ev` = { status, contentType, bytes, head, transport, aborted }
+ * Returns { outcome: 'success'|'failure'|'ambiguous', code }.
+ */
+function classifyUpstreamOutcome(ev) {
+  if (ev.aborted) return { outcome: 'failure', code: 'client_aborted' };
+  if (ev.transport) return { outcome: 'failure', code: ev.transport };          // network / DNS / TLS / timeout
+  const status = Number(ev.status) || 0;
+  if (status < 200 || status >= 300) return { outcome: 'failure', code: 'upstream_status' };
+  if (!ev.bytes) return { outcome: 'failure', code: 'empty_response' };
+
+  const ct = String(ev.contentType || '').toLowerCase();
+  const head = String(ev.head || '');
+
+  if (ct.includes('application/json') || ct.includes('+json')) return classifyJsonHead(head);
+
+  if (ct.includes('text/event-stream')) {
+    // A stream that carried data and ended cleanly, with no error frame in the window.
+    if (/\bevent:\s*error\b/i.test(head) || /"\s*error\s*"\s*:/.test(head)) {
+      return { outcome: 'failure', code: 'upstream_error_payload' };
+    }
+    return ev.completed ? { outcome: 'success', code: 'stream_completed' }
+      : { outcome: 'failure', code: 'stream_incomplete' };
+  }
+
+  if (ct.includes('text/x-component')) {
+    if (/"\s*(error|digest)\s*"\s*:/.test(head)) return { outcome: 'failure', code: 'upstream_error_payload' };
+    return RSC_COUNTS_AS_SUCCESS && ev.completed
+      ? { outcome: 'success', code: 'rsc_completed' }
+      : { outcome: 'ambiguous', code: 'rsc_unaudited' };
+  }
+
+  // Anything else (text/plain, octet-stream, …) is not positive proof on its own.
+  return { outcome: 'ambiguous', code: 'unclassified_content_type' };
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // SERVER-SIDE IDENTITY / ACCOUNT / BILLING SHIELD
 // The browser overlay (overlay.js) is now only a cosmetic *backup*. The real
@@ -527,6 +686,102 @@ function safeLog(event, fields) {
   try { console.log(`[stealth-gw] ${event} ${JSON.stringify(fields)}`); } catch (_) {}
 }
 
+// ── Settling an operation (commit / cancel), with bounded retry ───────────────
+// The upstream leg has already happened by the time we get here, so a backend blip must
+// not turn a genuine result into a lost charge — nor a failure into a charge. Retries
+// reuse the SAME operation id, and the backend is idempotent per operation id, so a
+// retry can never double-charge. Bounded: five attempts over ~16s, then a loud sanitized
+// warning and we stop. An operation we never manage to commit simply expires at the
+// backend and costs the member nothing — the direction this whole change prefers.
+const COMMIT_RETRY_DELAYS_MS = [0, 500, 1500, 4000, 10000];
+const MAX_PENDING_SETTLES = 500; // hard ceiling so a backend outage cannot grow the heap
+let pendingSettles = 0;
+
+function settleOperation(op, outcome, code, upstreamStatus, extra) {
+  if (!op || op.settled) return;
+  op.settled = true;
+  if (op.safetyTimer) { clearTimeout(op.safetyTimer); op.safetyTimer = null; }
+
+  const commit = outcome === 'success';
+  const sub = commit ? '/usage/commit' : '/usage/cancel';
+  const payload = {
+    action: op.action,
+    operationId: op.operationId,
+    outcomeCode: code || (commit ? 'result_verified' : 'upstream_failed'),
+    upstreamStatus: (upstreamStatus === undefined || upstreamStatus === null) ? null : upstreamStatus,
+  };
+
+  // Safe outcome log — status, content type, sizes and SHAPE only. Never a byte of the
+  // submitted text or the generated result, and never a cookie, token or header value.
+  safeLog(commit ? 'usage_commit' : 'usage_cancel', Object.assign({
+    lease_id: op.leaseId || null,
+    action_type: op.action,
+    outcome,
+    outcome_code: payload.outcomeCode,
+    upstream_status: payload.upstreamStatus,
+  }, extra || {}));
+
+  if (pendingSettles >= MAX_PENDING_SETTLES) {
+    safeLog('usage_settle_dropped', { lease_id: op.leaseId || null, action_type: op.action, reason: 'pending_ceiling', warning: true });
+    return;
+  }
+  pendingSettles++;
+
+  let attempt = 0;
+  const run = () => {
+    gatewayApiPost(sub, op.token, payload).then((r) => {
+      // 2xx/4xx is a definitive answer; 0 (transport) and 5xx are worth retrying.
+      const definitive = r.status >= 200 && r.status < 500;
+      if (definitive) {
+        pendingSettles--;
+        if (commit && !(r.body && r.body.committed)) {
+          safeLog('usage_commit_refused', {
+            lease_id: op.leaseId || null, action_type: op.action,
+            code: (r.body && r.body.code) || null, response_status: r.status, warning: true,
+          });
+        }
+        return;
+      }
+      attempt++;
+      if (attempt >= COMMIT_RETRY_DELAYS_MS.length) {
+        pendingSettles--;
+        // Operational warning, not a charge: the reservation expires by itself.
+        safeLog('usage_settle_unconfirmed', {
+          lease_id: op.leaseId || null, action_type: op.action, intent: commit ? 'commit' : 'cancel',
+          attempts: attempt, response_status: r.status, warning: true,
+        });
+        return;
+      }
+      const base = COMMIT_RETRY_DELAYS_MS[attempt];
+      const t = setTimeout(run, Math.round(base * (0.8 + Math.random() * 0.4)));
+      if (t.unref) t.unref();
+    }).catch(() => { pendingSettles--; });
+  };
+  run();
+}
+
+/** Sanitized shape evidence for an outcome we could not classify — key NAMES only. */
+function shapeEvidence(head) {
+  try {
+    const parsed = JSON.parse(head);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.keys(parsed).filter(k => /^[A-Za-z0-9_]{1,32}$/.test(k)).slice(0, 12);
+    }
+  } catch (_) {}
+  return null;
+}
+
+/** Bind an operation to one in-flight request, with a safety timer that releases it. */
+function bindUsageOperation(req, token, leaseId) {
+  const rawOp = String(req.headers[USAGE_OP_HEADER] || '').trim().toLowerCase();
+  const rawAction = String(req.headers[USAGE_ACTION_HEADER] || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(rawOp) || !USAGE_ACTIONS.has(rawAction)) return null;
+  const op = { operationId: rawOp, action: rawAction, token, leaseId: leaseId || null, settled: false, safetyTimer: null };
+  op.safetyTimer = setTimeout(() => settleOperation(op, 'failure', 'no_outcome_observed', null), OP_SAFETY_TIMEOUT_MS);
+  if (op.safetyTimer.unref) op.safetyTimer.unref();
+  return op;
+}
+
 // ── Static assets (overlay) served locally under /__genz/ ────────────────────
 const OVERLAY_JS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.js'), 'utf8');
 const OVERLAY_CSS = fs.readFileSync(path.join(__dirname, 'public', 'overlay.css'), 'utf8');
@@ -676,6 +931,13 @@ function injectSessionBootstrap(html, session) {
 // ── Reverse proxy ──────────────────────────────────────────────────────────────
 function proxy(req, res, isHtmlNav, session, ctx) {
   ctx = ctx || {};
+  // Set only when the overlay reserved a Humanizer/Detector credit for THIS request.
+  const usageOp = ctx.usageOp || null;
+  if (usageOp) {
+    // The browser going away mid-request is a no-charge outcome: nothing was delivered.
+    res.on('close', () => { if (!res.writableFinished) settleOperation(usageOp, 'failure', 'client_aborted', null); });
+    req.on('aborted', () => settleOperation(usageOp, 'failure', 'client_aborted', null));
+  }
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
@@ -694,6 +956,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
     }
     delete headers['accept-encoding']; // ask upstream for identity so we can inject
     headers['accept-encoding'] = 'identity';
+    // Internal metering headers are OURS and must never leave this process. Stripped
+    // unconditionally — including on requests we did not bind an operation to — so a page
+    // script cannot smuggle anything to StealthWriter under an X-Genz-* name.
+    for (const hk of Object.keys(headers)) { if (hk.toLowerCase().startsWith('x-genz-')) delete headers[hk]; }
     delete headers.cookie; // never forward our lease cookie upstream
     if (session && session.cookieHeader) {
       // Inject the selected vault account's session cookies (server-side only).
@@ -707,6 +973,37 @@ function proxy(req, res, isHtmlNav, session, ctx) {
 
     const upstream = httpLib.request(`${TARGET_ORIGIN}${req.url}`, { method: req.method, headers, agent: agentFor(TARGET_ORIGIN) }, (uRes) => {
       const ct = String(uRes.headers['content-type'] || '');
+
+      // ── Metered request: observe the real response and decide the charge here. ──
+      // A bounded tee — the body is NOT buffered, delayed or altered; we only look at the
+      // first CLASSIFY_MAX_BYTES to tell a produced result from an error, and we never
+      // decode or log a byte of it.
+      if (usageOp) {
+        let bytes = 0, head = '';
+        uRes.on('data', (c) => {
+          bytes += c.length;
+          if (head.length < CLASSIFY_MAX_BYTES) head += c.toString('utf8', 0, Math.min(c.length, CLASSIFY_MAX_BYTES - head.length));
+        });
+        uRes.on('aborted', () => settleOperation(usageOp, 'failure', 'upstream_aborted', uRes.statusCode || null));
+        uRes.on('error', () => settleOperation(usageOp, 'failure', 'upstream_stream_error', uRes.statusCode || null));
+        uRes.on('end', () => {
+          const ev = { status: uRes.statusCode, contentType: ct, bytes, head, completed: true };
+          const verdict = classifyUpstreamOutcome(ev);
+          const evidence = { content_type: ct.split(';')[0] || null, bytes };
+          if (verdict.outcome === 'ambiguous') {
+            // NO CHARGE + a safe audit warning carrying the response SHAPE (key names,
+            // never values) so the classifier can be tightened from real evidence.
+            const keys = shapeEvidence(head);
+            safeLog('usage_outcome_ambiguous', {
+              lease_id: usageOp.leaseId || null, action_type: usageOp.action,
+              response_status: uRes.statusCode, content_type: evidence.content_type,
+              bytes, json_keys: keys, code: verdict.code, warning: true,
+            });
+          }
+          settleOperation(usageOp, verdict.outcome === 'success' ? 'success' : 'failure',
+            verdict.code, uRes.statusCode || null, evidence);
+        });
+      }
       const isHtml = ct.includes('text/html');
       const rawLoc = String(uRes.headers['location'] || '');
       const redirectedToSignIn = uRes.statusCode >= 300 && uRes.statusCode < 400 && /\/(sign-?in|login|auth\/login)\b/i.test(rawLoc);
@@ -790,7 +1087,11 @@ function proxy(req, res, isHtmlNav, session, ctx) {
         pipeMaybeCompressed(req, res, uRes.statusCode || 200, outHeaders, uRes);
       }
     });
-    upstream.on('error', () => { if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/plain' }); } res.end('Upstream error'); });
+    upstream.on('error', () => {
+      // Network / DNS / TLS / socket failure — never a charge.
+      settleOperation(usageOp, 'failure', 'upstream_transport', null);
+      if (!res.headersSent) { res.writeHead(502, { 'content-type': 'text/plain' }); } res.end('Upstream error');
+    });
     upstream.end(bodyBuf);
   });
 }
@@ -1035,6 +1336,48 @@ const server = http.createServer(async (req, res) => {
     return res.end(JSON.stringify(r.body || {}));
   }
 
+  // ── Same-origin usage lifecycle: RESERVE before the request, CANCEL on a client-side
+  // failure. There is deliberately NO browser-callable commit — see the 403 below.
+  // These relay to the GATEWAY-ONLY backend endpoints, adding the gateway key the page
+  // cannot hold and the lease the page cannot read.
+  if (pathName === '/__genz/usage/reserve' || pathName === '/__genz/usage/cancel' || pathName === '/__genz/usage/commit') {
+    const jsonHeaders = { 'content-type': 'application/json', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' };
+    if (req.method !== 'POST') { res.writeHead(405, jsonHeaders); return res.end('{"ok":false,"code":"method_not_allowed"}'); }
+
+    // A page script must never be able to turn "I think it worked" into a charge. The
+    // commit decision is made from the real upstream response in settleOperation(), and
+    // the backend commit endpoint additionally requires the gateway key. Answered here
+    // (rather than left to fall through) so the path can never be proxied to StealthWriter.
+    if (pathName === '/__genz/usage/commit') {
+      safeLog('usage_commit_refused_from_browser', { lease_id: local && local.jti, response_status: 403 });
+      res.writeHead(403, jsonHeaders);
+      return res.end('{"ok":false,"committed":false,"code":"gateway_decides_outcome"}');
+    }
+    if (capture) { res.writeHead(403, jsonHeaders); return res.end('{"ok":false,"code":"not_metered"}'); }
+
+    const body = (await readLaunchBody(req)) || {};
+    const action = String(body.action || '').toLowerCase();
+    const reserving = pathName === '/__genz/usage/reserve';
+    const payload = reserving
+      ? { action }
+      : { action, operationId: String(body.operationId || ''), outcomeCode: 'client_cancelled' };
+    const r = await gatewayApiPost(reserving ? '/usage/reserve' : '/usage/cancel', token, payload);
+
+    if (r.status === 0) {
+      // FAIL CLOSED. No reservation means the overlay must not dispatch the request, so
+      // this is reported as an explicitly retryable connection problem — never as an
+      // ended session, and never as a silent allow.
+      res.writeHead(200, jsonHeaders);
+      return res.end(JSON.stringify({ ok: false, allowed: false, terminal: false, retryable: true, code: 'backend_unavailable' }));
+    }
+    // A confirmed authorization denial also tears down the opaque session, exactly as
+    // /__genz/validate does, so a later request cannot ride a session the backend refused.
+    const code = String((r.body && r.body.code) || '');
+    if (NAV_TERMINAL_CODES.has(code) && sess) { revokeSession(sess.sid); jsonHeaders['set-cookie'] = expireSessionCookie(); }
+    res.writeHead(r.status, jsonHeaders);
+    return res.end(JSON.stringify(r.body || {}));
+  }
+
   // Capture-mode save: collect the StealthWriter cookies accumulated under this
   // gateway host (server-side) and post them to the backend to (re)fill the account.
   if (pathName === '/__genz/save-session') {
@@ -1107,7 +1450,25 @@ const server = http.createServer(async (req, res) => {
     if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
   }
 
-  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody });
+  // ── Bind the reserved usage operation to THIS request ──────────────────────
+  // The overlay tags exactly the request it reserved for. The id is validated here and
+  // the header is stripped in proxy() before anything is forwarded; the operation itself
+  // is bound at the BACKEND to the client resolved from this lease, so a tagged request
+  // can never touch another client's operation.
+  let usageOp = null;
+  if (!capture) {
+    usageOp = bindUsageOperation(req, token, local && local.jti);
+    // Post-audit backstop (off until STEALTH_METERED_PATHS is set): once the exact
+    // Humanizer/Detector paths are confirmed, a mutating request to one of them without a
+    // reservation is refused rather than served for free.
+    if (!usageOp && METERED_PATHS_RE && ['POST', 'PUT', 'PATCH'].includes(String(req.method || '').toUpperCase()) && METERED_PATHS_RE.test(pathName)) {
+      safeLog('usage_reservation_required', { request_path: pathName, lease_id: local && local.jti, response_status: 409 });
+      res.writeHead(409, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      return res.end('{"error":"usage_reservation_required"}');
+    }
+  }
+
+  return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody, usageOp });
 });
 
 server.listen(PORT, () => {

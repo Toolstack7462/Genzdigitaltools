@@ -4,11 +4,14 @@
  *    "StealthWriter" subtitle, Humanizer remaining/total, AI Detector remaining/total,
  *    session time left and a Contact-support button. Collapsible. No top bar, never
  *    covers the editor/buttons.
- * 2) Intent-driven usage metering: Genz usage is counted ONLY when the user clicks the
- *    MAIN "Humanize" or "Check for AI" button. The action comes from the click (not the
- *    request URL), so AI Detector counts correctly even when it shares an endpoint with
- *    Humanizer. Result-area secondary actions (Humanize More, Rehumanize, Copy, Compare,
- *    Deep Scan, …) never consume usage.
+ * 2) Usage metering — RESERVED then COMMITTED ONLY ON A VERIFIED RESULT. A click on the
+ *    MAIN "Humanize" / "Check for AI" button reserves one credit and tags that one
+ *    request with an opaque operation id; the GATEWAY then commits or cancels it from
+ *    StealthWriter's real response. A high-demand error, a network failure, an abort or
+ *    an empty result therefore costs nothing. The action still comes from the CLICK (not
+ *    the request URL), so AI Detector counts correctly even when it shares an endpoint
+ *    with Humanizer, and result-area secondary actions (Humanize More, Rehumanize, Copy,
+ *    Compare, Deep Scan, …) never meter at all.
  * 3) Account / branding chrome is HIDDEN COMPLETELY (not re-branded). Wherever the
  *    StealthWriter account name / email / initials / avatar / profile-dropdown trigger
  *    is shown (the top account/branding bar AND the bottom-left sidebar account area),
@@ -44,7 +47,7 @@
   // ── How this overlay authenticates ──────────────────────────────────────────
   // SAME-ORIGIN MODE (CFG.sameOrigin, the current gateway): the lease lives ONLY in an
   // HttpOnly `__Host-stealth_session` cookie that page script deliberately cannot read. We
-  // call the gateway's own /__genz/validate and /__genz/consume with credentials:'same-origin'
+  // call the gateway's own /__genz/validate and /__genz/usage/* with credentials:'same-origin'
   // — the cookie rides along automatically and the server attaches the lease on our behalf.
   // Request/response shapes are identical to the direct backend calls, so metering, limits
   // and messages are unchanged.
@@ -69,6 +72,8 @@
     unavailable:     'Access could not be verified. Please refresh or contact support.',
     limit_humanizer: "You've reached today's Humanizer limit. It resets at 5:00 AM PKT.",
     limit_detector:  "You've reached today's AI Detector limit. It resets at 5:00 AM PKT.",
+    busy:            'A Humanize or AI check is already running. Please wait for it to finish.',
+    reserve_offline: "Couldn't reach Gen Z Digital Store. Nothing was used \u2014 please try again in a moment.",
   };
   function friendly(code) {
     if (MSG[code]) return MSG[code];
@@ -272,14 +277,16 @@
     render();
   }
 
-  // ── Usage metering — INTENT-DRIVEN ─────────────────────────────────────────
-  // Genz usage counts ONLY for the MAIN "Humanize" / "Check for AI" actions in the
-  // input area — never for result-area secondary buttons (Humanize More, Rehumanize,
-  // Copy, Compare, Deep Scan, etc.). A recognised MAIN-button click arms a short-lived
-  // intent; the very next real mutating request (POST/PUT/PATCH to StealthWriter, not a
-  // static asset or our own API) consumes ONE unit of that intent's action and clears
-  // it. The action is taken from the CLICK, not from the request URL, so AI Detector is
-  // counted correctly even though Humanizer and Detector share request endpoints.
+  // ── Usage metering — INTENT-DRIVEN, CHARGED ONLY ON A VERIFIED RESULT ──────
+  // Genz usage applies ONLY to the MAIN "Humanize" / "Check for AI" actions in the
+  // input area — never to result-area secondary buttons (Humanize More, Rehumanize,
+  // Copy, Compare, Deep Scan, etc.), which matches StealthWriter's own billing.
+  // A recognised MAIN-button click arms a short-lived intent; the very next real
+  // mutating request (POST/PUT/PATCH to StealthWriter, not a static asset and not our
+  // own /__genz API) RESERVES one unit of that intent's action and carries the
+  // reservation id. Nothing is spent until the gateway has seen StealthWriter answer
+  // with an actual result. The action is taken from the CLICK, not from the request
+  // URL, so AI Detector counts correctly even though the two share request endpoints.
 
   // Map a clicked control's text to a MAIN billable action, or null (not billable).
   // Non-billable controls are checked FIRST so "Humanize More" / "Rehumanize" /
@@ -311,10 +318,11 @@
     intent.action = null; // each main click counts at most once
     return a;
   }
-  // A request that should consume usage: a mutating call to StealthWriter itself,
+  // A request that should meter usage: a mutating call to StealthWriter itself,
   // not our own API and not a static asset.
   function isCountableRequest(method, url) {
     if (!url || url.indexOf(API) === 0) return false;
+    if (/^\/__genz\//.test(String(url)) || /\/__genz\//.test(String(url))) return false; // our own gateway API
     if (['POST', 'PUT', 'PATCH'].indexOf(String(method || 'GET').toUpperCase()) < 0) return false;
     if (/\.(js|css|mjs|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|otf|ico|map)(\?|#|$)/i.test(url)) return false;
     return true;
@@ -329,20 +337,93 @@
     if (action) armIntent(action);
   }, true);
 
-  function consume(action) {
-    return apiCall('/consume', { action: action }).then(function (r) {
-      if (r.body && typeof r.body.secondsRemaining === 'number') { state.secondsRemaining = r.body.secondsRemaining; render(); }
-      // Reflect the new remaining count live for the consumed action.
-      if (r.body && r.body.remaining) {
-        var rem = r.body.remaining;
-        if (action === 'humanizer' && el.hRem) el.hRem.textContent = fmtLimit(rem.humanizer);
-        if (action === 'detector' && el.dRem) el.dRem.textContent = fmtLimit(rem.detector);
-      }
-      var allowed = !!(r.body && r.body.allowed);
-      if (!allowed) { var code = r.body && r.body.code; if (code === 'limit_reached') toast(action === 'humanizer' ? MSG.limit_humanizer : MSG.limit_detector); else showMessage(friendly(code), code !== 'invalid_action'); }
-      return allowed;
-    }).catch(function () { return false; });
+  // ── Reserve → dispatch → the GATEWAY commits or cancels ────────────────────
+  // Usage is no longer spent on the click. A recognised MAIN-button click RESERVES one
+  // credit (capacity is held; the visible counter does not move), the reserved request is
+  // tagged with an opaque operation id, and the gateway decides from StealthWriter's real
+  // response whether that credit is committed or released.
+  //
+  // This overlay never declares success. /__genz/usage/commit refuses a browser caller
+  // outright, so a page script — ours included — cannot turn a loading spinner into a
+  // charge. All it can do is reserve, tag, and release.
+  var OP_HEADER = 'X-Genz-Op';
+  var ACTION_HEADER = 'X-Genz-Action';
+
+  // One billable operation at a time. The backend enforces this too (one in-flight
+  // operation per client + action); this just gives a friendly answer without a round trip.
+  var opState = { busy: false };
+  function releaseBusy() { opState.busy = false; }
+
+  // The counters are authoritative on the server and are committed only AFTER the response
+  // completes, so re-read them from /validate a moment later rather than guessing locally.
+  // Twice, cheaply, so a slow commit still lands on the widget.
+  function refreshUsageSoon() {
+    setTimeout(function () { validate(); }, 1200);
+    setTimeout(function () { validate(); }, 4000);
   }
+
+  function reserveOp(action) {
+    if (opState.busy) { toast(MSG.busy); return Promise.resolve(null); }
+    opState.busy = true;
+    return apiCall('/usage/reserve', { action: action }).then(function (r) {
+      if (r.body && typeof r.body.secondsRemaining === 'number') { state.secondsRemaining = r.body.secondsRemaining; render(); }
+      var op = r.body && r.body.operationId;
+      var allowed = !!(r.body && (r.body.ok || r.body.allowed)) && typeof op === 'string' && op.length > 0;
+      if (!allowed) {
+        releaseBusy();
+        var code = (r.body && r.body.code) || 'unavailable';
+        if (code === 'limit_reached') toast(action === 'humanizer' ? MSG.limit_humanizer : MSG.limit_detector);
+        else if (code === 'operation_in_flight') toast(MSG.busy);
+        else if (code === 'backend_unavailable' || code === 'rate_limited' || code === 'server_error') toast(MSG.reserve_offline);
+        else if (code !== 'invalid_action') showMessage(friendly(code), !!TERMINAL_CODES[code]);
+        log('usage_reserve_denied', { action_type: action, code: code, response_status: r.status });
+        return null;
+      }
+      return op;
+    }).catch(function () {
+      // FAIL CLOSED — no reservation means the request must not be sent at all.
+      releaseBusy();
+      toast(MSG.reserve_offline);
+      log('usage_reserve_failed', { action_type: action, reason: 'network' });
+      return null;
+    });
+  }
+
+  // Best-effort release when the failure is visible here first. The gateway cancels from
+  // its own side too, and an undelivered cancel simply lets the reservation expire — it can
+  // never turn into a charge.
+  function cancelOp(op, action) {
+    if (!op) return;
+    apiCall('/usage/cancel', { action: action, operationId: op }).catch(function () {});
+  }
+
+  function isSameOrigin(url) {
+    try { return new URL(String(url), location.href).origin === location.origin; }
+    catch (_) { return false; }
+  }
+
+  // Attach the metering headers to exactly the reserved request. The gateway validates and
+  // STRIPS every X-Genz-* header before forwarding, so none of this reaches StealthWriter.
+  // If a request shape will not take extra headers we send it untagged: the reservation
+  // then expires unused, which costs the member nothing.
+  function withOpHeaders(input, init, op, action) {
+    try {
+      var isRequestObj = (typeof Request !== 'undefined') && (input instanceof Request);
+      if (!isRequestObj) {
+        var nextInit = {};
+        for (var k in (init || {})) if (Object.prototype.hasOwnProperty.call(init, k)) nextInit[k] = init[k];
+        var h = new Headers((init && init.headers) || {});
+        h.set(OP_HEADER, op); h.set(ACTION_HEADER, action);
+        nextInit.headers = h;
+        return { input: input, init: nextInit };
+      }
+      var req = new Request(input, init || undefined);
+      var hh = new Headers(req.headers);
+      hh.set(OP_HEADER, op); hh.set(ACTION_HEADER, action);
+      return { input: new Request(req, { headers: hh }), init: undefined };
+    } catch (_) { return null; }
+  }
+
   var origFetch = window.fetch ? window.fetch.bind(window) : null;
   if (origFetch) {
     window.fetch = function (input, init) {
@@ -353,7 +434,18 @@
       if (!intent.action || !isCountableRequest(method, url)) return origFetch(input, init);
       var action = takeIntent();
       if (!action) return origFetch(input, init);
-      return consume(action).then(function (ok) { if (!ok) return Promise.reject(new Error('GENZ_LIMIT_BLOCKED')); return origFetch(input, init); });
+      return reserveOp(action).then(function (op) {
+        if (!op) return Promise.reject(new Error('GENZ_LIMIT_BLOCKED'));
+        var tagged = isSameOrigin(url) ? withOpHeaders(input, init, op, action) : null;
+        var p = tagged ? origFetch(tagged.input, tagged.init) : origFetch(input, init);
+        return p.then(function (resp) {
+          releaseBusy(); refreshUsageSoon(); return resp;
+        }, function (err) {
+          // Network failure / abort seen in the page: release immediately, charge nothing.
+          releaseBusy(); cancelOp(op, action); refreshUsageSoon();
+          throw err;
+        });
+      });
     };
   }
   var X = window.XMLHttpRequest;
@@ -365,7 +457,24 @@
       if (!intent.action || !isCountableRequest(self.__genzMethod, self.__genzUrl)) return oSend.apply(self, args);
       var action = takeIntent();
       if (!action) return oSend.apply(self, args);
-      consume(action).then(function (ok) { if (ok) oSend.apply(self, args); else { try { self.abort(); } catch (e) {} } });
+      reserveOp(action).then(function (op) {
+        if (!op) { try { self.abort(); } catch (e) {} return; }
+        if (isSameOrigin(self.__genzUrl)) {
+          try { self.setRequestHeader(OP_HEADER, op); self.setRequestHeader(ACTION_HEADER, action); } catch (e) {}
+        }
+        var done = false;
+        function finish(failed) {
+          if (done) return; done = true;
+          releaseBusy();
+          if (failed) cancelOp(op, action);
+          refreshUsageSoon();
+        }
+        self.addEventListener('load', function () { finish(false); });
+        self.addEventListener('error', function () { finish(true); });
+        self.addEventListener('abort', function () { finish(true); });
+        self.addEventListener('timeout', function () { finish(true); });
+        oSend.apply(self, args);
+      });
     };
   }
 
