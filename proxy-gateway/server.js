@@ -88,6 +88,12 @@ const CAPTCHA_ORIGINS = String(process.env.CAPTCHA_ORIGINS || '')
 // (not a third-party CAPTCHA_ORIGINS host). These also need the `co` origin rewritten and
 // the tool origin presented, and their (minified Google) bodies must be left untouched.
 const CAPTCHA_PATH_RE = /(^|\/)recaptcha\//i;
+// Where a self-proxied /recaptcha/* request is sent. HIX serves reCAPTCHA (enterprise.js) under
+// its own domain, which 404s on TARGET_ORIGIN through the gateway, so it must go to a real
+// reCAPTCHA provider instead. OPT-IN (empty = off, every tool unchanged); hix1 sets
+// CAPTCHA_SELFPROXY_ORIGIN=https://recaptcha.net. Ported 2026-10-03 from the hand edit that
+// had been live on hix-gateway since 2026-07-21 but never existed in git.
+const CAPTCHA_SELFPROXY_ORIGIN = String(process.env.CAPTCHA_SELFPROXY_ORIGIN || '').trim().replace(/\/+$/, '');
 // One indexed list proxied under ASSET_PREFIX/<i>/. Captcha entries get origin-spoofing.
 const PROXIED_ORIGINS = ASSET_ORIGINS.map(o => ({ base: o, captcha: false }))
   .concat(CAPTCHA_ORIGINS.map(o => ({ base: o, captcha: true })));
@@ -1363,6 +1369,12 @@ const server = http.createServer(async (req, res) => {
   } else {
     session = await getSession(token, local && local.jti);
     if (session && session.blocked) return sendBlockPage(res, session.code || 'account_no_session');
+  }
+
+  // Self-proxied /recaptcha/* → a real reCAPTCHA provider (opt-in, see CAPTCHA_SELFPROXY_ORIGIN).
+  // isCaptchaReq in proxy() applies the `co` origin spoof. Only /recaptcha/* paths are affected.
+  if (!capture && CAPTCHA_SELFPROXY_ORIGIN && CAPTCHA_PATH_RE.test(pathName)) {
+    return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody, upstreamOrigin: CAPTCHA_SELFPROXY_ORIGIN });
   }
 
   return proxy(req, res, isHtmlNav, session, { token, jti: local && local.jti, capture, sanitizeBody });
