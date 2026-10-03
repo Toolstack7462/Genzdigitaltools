@@ -25,6 +25,21 @@ const ExtensionToken = createModel('ExtensionToken', {
       });
       return { id: extensionToken._id, token, expiresAt: extensionToken.expiresAt };
     },
+    // Remove tokens that verifyToken() already rejects — expired, or revoked — once they are
+    // more than `graceDays` past that point. dryRun → counts only, nothing deleted.
+    async purgeExpired({ graceDays = 7, dryRun = true } = {}) {
+      const cutoff = new Date(Date.now() - graceDays * 86400000);
+      const rows = await this.find({ $or: [{ expiresAt: { $lt: cutoff } }, { isRevoked: true }] });
+      const ids = (rows || []).filter(r => {
+        if (r.expiresAt && new Date(r.expiresAt) < cutoff) return true;
+        if (r.isRevoked !== true) return false;
+        const at = r.revokedAt || r.updatedAt;
+        return !!at && new Date(at) < cutoff;   // revoked, and no activity since the grace window
+      }).map(r => r._id);
+      if (dryRun || !ids.length) return { candidates: ids.length, deleted: 0 };
+      const r = await this.deleteByIds(ids);
+      return { candidates: ids.length, deleted: r.deletedCount };
+    },
     async verifyToken(token, requestDeviceIdHash = null) {
       const tokenHash = this.hashToken(token);
       const extensionToken = await this.findOne({ tokenHash, isRevoked: false, expiresAt: { $gt: new Date() } });

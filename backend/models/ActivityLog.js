@@ -14,14 +14,17 @@ const ActivityLog = createModel('ActivityLog', {
     },
     // Delete routine activity older than `days` (default 7). Keeps important
     // security/payment/account/credential audit logs regardless of age. Fail-safe.
-    async purgeOld(days = 7) {
+    // Accepts the legacy `purgeOld(days)` call or `purgeOld({ days, dryRun })`.
+    async purgeOld(opts = 7) {
+      const { days = 7, dryRun = false } = typeof opts === 'object' && opts ? opts : { days: opts };
       try {
         const cutoff = new Date(Date.now() - Number(days) * 86400000);
         const old = await this.find({ createdAt: { $lt: cutoff } });
         const ids = (old || []).filter(r => !KEEP_ACTION_RE.test(String(r.action || ''))).map(r => r._id);
-        if (!ids.length) return { deleted: 0 };
-        const r = await this.deleteMany({ _id: { $in: ids } });
-        return { deleted: r.deletedCount || 0 };
+        if (dryRun) return { candidates: ids.length, deleted: 0 };
+        if (!ids.length) return { candidates: 0, deleted: 0 };
+        const r = await this.deleteByIds(ids);
+        return { candidates: ids.length, deleted: r.deletedCount || 0 };
       } catch (err) {
         console.error('ActivityLog.purgeOld failed:', err.message);
         return { deleted: 0 };

@@ -71,7 +71,7 @@ const SecurityAlert = createModel('SecurityAlert', {
     //   • NOT a protected type (authentication-abuse / device-mismatch are retained for audit).
     // Runs in a bounded batch (batchLimit) so a large backlog can never issue one huge delete /
     // overload the DB — it trims up to batchLimit rows per call and returns the count removed.
-    async purgeOld({ maxAgeDays = 7, batchLimit = 500 } = {}) {
+    async purgeOld({ maxAgeDays = 7, batchLimit = 500, dryRun = false } = {}) {
       try {
         const cutoffMs = Date.now() - maxAgeDays * 86400000;
         const cutoff = new Date(cutoffMs);
@@ -93,7 +93,7 @@ const SecurityAlert = createModel('SecurityAlert', {
           if (!(last < cutoffMs)) continue;                              // don't delete something handled recently
           delIds.push(a._id);
         }
-        if (delIds.length) await this.deleteMany({ _id: { $in: delIds } });
+        if (delIds.length && !dryRun) await this.deleteByIds(delIds);
         return delIds.length;
       } catch (err) {
         console.error('[SecurityAlert.purgeOld] failed:', err.message);

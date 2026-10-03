@@ -127,6 +127,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/stealth/gateway.js           "sftp://${HOST}:${PORT}${API_ROOT}/routes/stealth/gateway.js" \
   -T backend/cron/stealthScheduler.js            "sftp://${HOST}:${PORT}${API_ROOT}/cron/stealthScheduler.js" \
   -T backend/cron/proxyVerifyScheduler.js        "sftp://${HOST}:${PORT}${API_ROOT}/cron/proxyVerifyScheduler.js" \
+  -T backend/cron/retentionScheduler.js          "sftp://${HOST}:${PORT}${API_ROOT}/cron/retentionScheduler.js" \
   -T backend/scripts/stealth-reset.js            "sftp://${HOST}:${PORT}${API_ROOT}/scripts/stealth-reset.js" \
   -T backend/utils/proxy/tools.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/tools.js" \
   -T backend/utils/proxy/vaultCrypto.js          "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/vaultCrypto.js" \

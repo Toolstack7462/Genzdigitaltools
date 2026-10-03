@@ -857,6 +857,20 @@ function createModel(name, options = {}) {
       return { acknowledged: true, deletedCount };
     }
 
+    // Delete by primary key in batches (one `DELETE … WHERE id IN (…)` per chunk) instead of
+    // one statement per row. Used by the retention purges, where the per-row loop above made a
+    // large backlog slow enough that the purge itself could never finish.
+    static async deleteByIds(ids = [], chunkSize = 500) {
+      const list = [...new Set((ids || []).map(String).filter(Boolean))];
+      let deletedCount = 0;
+      for (let i = 0; i < list.length; i += chunkSize) {
+        const slice = list.slice(i, i + chunkSize);
+        const [res] = await runQuery(`DELETE FROM \`${table}\` WHERE id IN (${slice.map(() => '?').join(',')})`, slice);
+        deletedCount += res.affectedRows || 0;
+      }
+      return { acknowledged: true, deletedCount };
+    }
+
     static async deleteOne(criteria = {}) {
       const rows = await this._findRaw(criteria);
       const row = rows[0];
