@@ -555,3 +555,45 @@ test('13f. a non-claude overlay stays terminal on resume events (behaviour uncha
   await sb.__advance(5000);
   assert.strictEqual(sb.__t.state.terminal, true, 'proxy-gateway must behave exactly as before');
 });
+
+// ══ 14. WriteHuman: the panel never shows a live-looking countdown beside a terminal message ══
+// Production 2026-10-03: "Your access session ended" next to a countdown frozen at "20:09".
+// WriteHuman now shows "Ended" once access has really ended; transient failures keep counting;
+// every other tool's display is byte-for-byte unchanged.
+const WH = { tool: 'writehuman', toolName: 'WriteHuman' };
+
+test('14a. WriteHuman: a confirmed revocation stops the timer and shows "Ended"', async () => {
+  const f = scriptedFetch([
+    { status: 200, body: liveOkBody(1800) },
+    { status: 403, body: { valid: false, terminal: true, retryable: false, code: 'lease_revoked' } },
+  ]);
+  const sb = boot('proxy-gateway', f, WH);
+  await sb.__advance(1000);
+  assert.match(sb.__t.el.time.textContent, /^\d+:\d\d$/, 'counting while valid');
+  await sb.__advance(600 * 1000);   // past the next validate poll, which is revoked
+  assert.strictEqual(sb.__t.state.terminal, true);
+  assert.strictEqual(sb.__t.el.time.textContent, 'Ended', 'no frozen remaining time beside the terminal message');
+  assert.match(sb.__t.el.msg.textContent, /session ended/i, 'the revocation reason is still shown');
+});
+
+test('14b. WriteHuman: timeouts, 5xx, 429 and malformed bodies are NOT shown as ended', async () => {
+  for (const step of [{ networkError: true }, { status: 500, body: { valid: false, terminal: false, retryable: true, code: 'server_error' } },
+                      { status: 429, body: {} }, { status: 200, malformed: true }]) {
+    const f = scriptedFetch([{ status: 200, body: liveOkBody(1800) }, step, { status: 200, body: liveOkBody(1700) }]);
+    const sb = boot('proxy-gateway', f, WH);
+    await sb.__advance(120 * 1000);
+    assert.strictEqual(sb.__t.state.terminal, false, JSON.stringify(step) + ' must not end WriteHuman access');
+    assert.notStrictEqual(sb.__t.el.time.textContent, 'Ended');
+  }
+});
+
+test('14c. other proxy tools keep their existing terminal display (no "Ended")', async () => {
+  const f = scriptedFetch([
+    { status: 200, body: liveOkBody(1800) },
+    { status: 403, body: { valid: false, terminal: true, retryable: false, code: 'lease_revoked' } },
+  ]);
+  const sb = boot('proxy-gateway', f, { tool: 'ryne', toolName: 'Ryne' });
+  await sb.__advance(600 * 1000);
+  assert.strictEqual(sb.__t.state.terminal, true);
+  assert.match(sb.__t.el.time.textContent, /^\d+:\d\d$/, 'non-WriteHuman tools are unchanged');
+});

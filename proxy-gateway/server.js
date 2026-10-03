@@ -896,10 +896,16 @@ function injectSupabaseBrowserSession(html, session, ctx) {
   if (!sb.length) return html;
   // Safe diagnostic: the COUNT of Supabase auth cookies materialised for this launch and the
   // lease id — never a cookie name beyond the count, never a value/token.
+  // Marker = lease + fingerprint of the vault's Supabase cookie VALUES (a hash, never a value).
+  // Once per lease used to mean: after the live agent rotated the account's tokens (≈hourly), a
+  // member already on the page kept the stale injected session for the rest of the lease. Now the
+  // next document load after a rotation re-injects the current session; same lease + unchanged
+  // cookies is still a no-op, so the SDK keeps managing its own session in between.
+  const fp = crypto.createHash('sha256').update(sb.map(p => p[0] + '=' + p[1]).join(';')).digest('hex').slice(0, 16);
   safeLog('supabase_session_injected', { lease_id: jti, sb_cookie_count: sb.length });
   const data = JSON.stringify(sb);
-  const script = '<script>(function(){try{var K="__genz_sb",J=' + JSON.stringify(jti) + ';'
-    + 'if(localStorage.getItem(K)===J)return;'                                    // once per lease
+  const script = '<script>(function(){try{var K="__genz_sb",J=' + JSON.stringify(jti + ':' + fp) + ';'
+    + 'if(localStorage.getItem(K)===J)return;'                                    // once per lease + session version
     + 'var C=' + data + ';'
     + 'try{document.cookie.split(";").forEach(function(c){var n=c.split("=")[0].trim();'
     + 'if(/^sb-/.test(n)){document.cookie=n+"=; Path=/; Max-Age=0; SameSite=Lax";}});}catch(e){}'  // clear stale

@@ -112,7 +112,11 @@
     el.head.addEventListener('click', function (e) { if (state.collapsed && e.target !== el.min) toggleCollapse(); });
   }
   function toggleCollapse() { state.collapsed = !state.collapsed; el.widget.classList.toggle('genz-sw-collapsed', state.collapsed); el.min.textContent = state.collapsed ? '+' : '–'; }
-  function render() { if (!el.widget) return; el.time.textContent = fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); el.widget.classList.toggle('genz-sw-degraded', !!state.degraded && !state.terminal); }
+  // WriteHuman: once access has really ended, show "Ended" instead of the countdown frozen at its
+  // last value (a live-looking "20:09" beside "Your access session ended" read as access cut short).
+  // Other tools keep their existing display.
+  var SHOW_ENDED = CFG.tool === 'writehuman';
+  function render() { if (!el.widget) return; el.time.textContent = (SHOW_ENDED && state.terminal) ? 'Ended' : fmtTime(state.secondsRemaining); el.widget.classList.toggle('genz-sw-warn', state.secondsRemaining <= 60 && !state.terminal); el.widget.classList.toggle('genz-sw-error', !!state.terminal); el.widget.classList.toggle('genz-sw-degraded', !!state.degraded && !state.terminal); }
   function showMessage(text, terminal) { if (!el.msg) return; el.msg.textContent = text; el.msg.style.display = text ? 'block' : 'none'; if (terminal) { state.terminal = true; if (state.collapsed) toggleCollapse(); } render(); }
   function clearMessage() { if (el.msg) { el.msg.textContent = ''; el.msg.style.display = 'none'; } }
   function showFriendlyError() { if (state.friendlyShown) return; state.friendlyShown = true; showMessage(MSG.unavailable, false); }

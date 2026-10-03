@@ -21,7 +21,6 @@
  *
  * Never logs or returns cookie values, tokens, or the full account email.
  */
-const ProxyLease = require('../../models/proxy/ProxyLease');
 const vaultCrypto = require('./vaultCrypto');
 const tools = require('./tools');
 const healthAlerts = require('./healthAlerts');
@@ -395,18 +394,21 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
       await account.save();
     }
 
-    // Cookies were REPLACED -> revoke in-flight leases so the next client open re-fetches the new
-    // bundle instead of riding a gateway cache of the old one. Skipped when the bundle is byte-for-
-    // byte identical: nothing a client is holding has gone stale, so tearing down live sessions
-    // would be pure disruption for a change that did not happen.
-    if (!bundleIdentical) {
-      try {
-        await ProxyLease.updateMany(
-          { accountId: account._id, revoked: false },
-          { $set: { revoked: true, revokedReason: 'agent_sync', revokedAt: new Date() } }
-        );
-      } catch (_) { /* non-fatal: a stale lease self-heals within ~60s */ }
-    }
+    // A routine cookie promotion does NOT end members' access. Leases are deliberately left alone.
+    //
+    // This used to revoke every in-flight lease on the account ("so the next open re-fetches the
+    // new bundle"). But a revoked lease is a TERMINAL authorization decision: /validate answers
+    // `lease_revoked`, the overlay shows "Your access session ended" and freezes the countdown.
+    // The agent promotes roughly hourly (the provider's access token rotates), so live WriteHuman
+    // sessions were cut off mid-use with time remaining — production, 2026-09-26..10-03: 125 of
+    // 158 WriteHuman leases revoked this way, 44 of them with 1–30 min left, in hourly clusters.
+    //
+    // Revocation was never needed for propagation: the gateway caches a lease's session for only
+    // 60 s (proxy-gateway getSession / SESSION_TTL_MS) and /session re-reads the account's CURRENT
+    // vault bundle, so a live lease picks up the new cookies within a minute; the browser-side
+    // Supabase session is re-injected when its fingerprint changes (injectSupabaseBrowserSession).
+    // Admin revoke, assignment expiry, account revoke/delete and the admin "Refresh session"
+    // action still revoke — those are real access decisions.
 
     try { healthAlerts.onVerifyApplied(account, tool, prevSs).catch(() => {}); } catch (_) {}
 
