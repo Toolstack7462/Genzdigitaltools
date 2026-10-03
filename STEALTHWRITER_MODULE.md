@@ -309,3 +309,250 @@ Setting `STEALTH_GATEWAY_URL` explicitly in production is still recommended.
 Gateway: `stealth-gateway/server.js` + `public/overlay.{js,css}`, then its own restart.
 The stealth gateway requires `utils/proxy/validationResponse.js` on the backend — ship it
 with the routes or `/validate` will throw on boot of the first request.
+
+---
+
+## Usage is charged only after a verified result (2026-08-31)
+
+### The defect
+
+Clicking **Humanize** decremented the Gen Z Humanizer count *before* StealthWriter had
+produced anything. When StealthWriter answered
+
+> The service is temporarily unavailable due to high demand. Please try again in a moment.
+
+the member still lost a credit. Same for a network drop, a timeout, an abort or an empty
+result.
+
+**Root cause (code, not inference).** `public/overlay.js` wrapped `fetch`/`XMLHttpRequest`
+and, on the first mutating request after a recognised main-button click, did:
+
+```js
+return consume(action).then(ok => ok ? origFetch(input, init) : reject())
+```
+
+so `POST /consume` — and therefore `access.consume()`, which does
+`client.usage.humanizerUsed += 1; await client.save()` — ran **before** the upstream request
+was even dispatched. The upstream outcome was never fed back to anything. Charging was a
+function of the *click*, not of the *result*.
+
+### The lifecycle
+
+```
+RESERVE ──────────► (upstream request) ──────────► COMMIT     (verified result)
+   │                                          └──► CANCEL     (any failure)
+   └──────────────────────────────────────────────► EXPIRED   (nothing settled it)
+```
+
+| Step | Who | What it does to the count |
+|---|---|---|
+| `POST /__genz/usage/reserve` | overlay → gateway → backend | **nothing** — holds capacity, mints an operation id |
+| the tagged upstream request | overlay → gateway → StealthWriter | nothing |
+| `POST …/usage/commit` | **gateway only**, from the real response | `+1`, exactly once |
+| `POST …/usage/cancel` | gateway, or the overlay on a client-side failure | nothing |
+
+The credit moves at **commit and nowhere else**. Not on the click, not on request creation,
+not on dispatch, not on connection, not on job acceptance, not on a loading state.
+
+### The gateway decides, never the browser
+
+`/__genz/usage/commit` answers **403 `gateway_decides_outcome`** to any browser caller, and
+the backend's `/usage/commit` additionally requires `X-Gateway-Key`, which no browser holds.
+The overlay's only powers are *reserve*, *tag* and *release*.
+
+The overlay tags exactly the request it reserved for with `X-Genz-Op` (the operation id) and
+`X-Genz-Action`. `proxy()` **strips every `X-Genz-*` request header before forwarding**, on
+every request, so nothing of ours ever reaches StealthWriter. The operation is bound at the
+backend to the client resolved *from the lease*, so a tagged request can never touch another
+client's operation.
+
+### Success classification (default-deny)
+
+Evidence from StealthWriter's own public bundle (landing scanner):
+
+* failures are a **non-2xx status with a plain `{"error": "…"}` body`** —
+  `if (!res.ok) toast.error(json.error ?? "Scan failed.")`;
+* successful payloads come back as an **obfuscated envelope `{"d":"<base64>","s":"<salt>"}`**
+  and are decoded client-side.
+
+So a non-empty `d` + `s` envelope on a 2xx **is** proof that a payload was produced — and it
+is proof the gateway can read *without ever decoding the member's text*. That is the primary
+success signal. `classifyUpstreamOutcome()` in `stealth-gateway/server.js`:
+
+| Observation | Outcome |
+|---|---|
+| non-2xx (429 / 503 / 4xx / 5xx / 502-504) | **cancel** |
+| transport error, DNS/TLS failure, socket destroyed | **cancel** |
+| client aborted / tab closed | **cancel** |
+| 2xx, zero bytes | **cancel** |
+| 2xx JSON with `error` / `errors` / `detail` / `success:false` | **cancel** |
+| 2xx JSON, unparsable or no result field | **cancel** (ambiguous) |
+| 2xx `application/json` with non-empty `{d,s}` envelope | **commit** |
+| 2xx JSON with a non-empty known result field | **commit** |
+| `text/event-stream` that carried data and ended cleanly with no error frame | **commit** |
+| `text/x-component` (Next.js Server Action / RSC) | **ambiguous → cancel** unless `STEALTH_RSC_SUCCESS=1` |
+| any other content type | **ambiguous → cancel** |
+
+Ambiguous outcomes emit a `usage_outcome_ambiguous` warning carrying only the **shape** —
+status, content type, byte count and top-level JSON **key names** — never a value. That log
+is what turns one live QA humanization into the evidence needed to tighten the classifier.
+
+The body is **not buffered**: the observer tees at most 64 KB while the response streams to
+the browser untouched and undelayed.
+
+### Durability and concurrency
+
+`stealth_usage_operations` (new, StealthWriter-only, additive; registered in
+`db/mysqlAdapter.js` and created idempotently by `ensureTables()`) holds two row kinds:
+
+* **reservation** — `_id = 'r' + sha256(clientId|action)[0..30]`. The key is *deterministic
+  per client and action*, so the primary key itself allows at most one active reservation per
+  (client, action). Two racing reserves leave exactly one surviving operation id, and only
+  that one can be committed. `'r'` is not a hex digit, so it can never collide with an
+  operation id.
+* **outcome** — `_id = operationId` (128 random bits). The idempotency ledger: a duplicate
+  commit returns the recorded result, a commit after a cancel is refused, a cancel after a
+  commit reports the commit and reverses nothing.
+
+The claim is a **DELETE by primary key**, exactly as `utils/launchStore.js` does for one-time
+launch codes and for the same reason — `db/mysqlAdapter.js` implements `findOneAndUpdate` as
+read → merge in JS → write, which is *not* safe against concurrent callers. InnoDB serializes
+the row delete and mysql2 reports `affectedRows` exactly, so `deletedCount === 1` is the
+database's own answer to "did I win". No in-memory lock is involved, so this is correct
+across Passenger workers, page reloads and gateway restarts.
+
+Rows carry ids, the action, a status, a short outcome code, an upstream status and
+timestamps. Never text, output, cookies, tokens, headers or request bodies.
+
+### Recovery rules
+
+| Situation | Behaviour |
+|---|---|
+| limit reached at reserve | no upstream request, friendly limit message, count unchanged |
+| backend unreachable at reserve | **fail closed** — request not sent, retryable connection toast, count unchanged |
+| upstream fails | gateway cancels; the genuine StealthWriter error is still shown to the member |
+| commit does not reach the backend | same operation id retried 5× over ~16 s with jittered backoff, then a `usage_settle_unconfirmed` warning; the reservation expires and nothing is charged |
+| cancel does not reach the backend | reservation expires on its own — an undelivered cancel can never become a charge |
+| gateway restarts mid-operation | nothing commits; the reservation expires; count unchanged |
+| another lease already has one in flight | `operation_in_flight`, no upstream request |
+| the *same* lease reserves again (reload, re-click) | supersedes its own reservation; the superseded id can never charge |
+
+Reservation TTL: `STEALTH_USAGE_OP_TTL_SEC`, default **180 s** (StealthWriter advertises a
+result in under 10 s). Outcome retention: `STEALTH_USAGE_OP_RETENTION_SEC`, default 24 h,
+swept lazily.
+
+### Unchanged on purpose
+
+* `/consume` and `access.consume()` are **untouched**, so an overlay cached from before this
+  deploy keeps metering exactly as it did during the rollout.
+* Result-area actions (Humanize More, Rehumanize, Re-humanize Output, Copy, Compare, Deep
+  Scan, Retry, Download, Export) still never meter — which matches StealthWriter's own FAQ:
+  *"Only the initial Humanize action uses your daily humanization."*
+* Daily 5:00 AM PKT reset, lease/countdown, vault sessions, account selection, the visual
+  editor and model/level/output settings are all untouched.
+
+### New environment variables (all optional, all StealthWriter-only)
+
+```bash
+# Gateway (stealth1 .htaccess SetEnv)
+STEALTH_METERED_PATHS=          # regex; when set, a mutating request to a metered path
+                                # WITHOUT a reservation is refused (409) instead of being
+                                # proxied for free. Leave UNSET until the live audit confirms
+                                # the exact Humanizer/Detector paths.
+STEALTH_RSC_SUCCESS=0           # 1 only after a live audit proves a clean text/x-component
+                                # response means a produced result
+STEALTH_SUCCESS_JSON_KEYS=      # extra comma-separated result keys for the classifier
+STEALTH_OP_SAFETY_TIMEOUT_MS=120000
+
+# Backend
+STEALTH_USAGE_OP_TTL_SEC=180
+STEALTH_USAGE_OP_RETENTION_SEC=86400
+```
+
+### Tests
+
+```bash
+cd stealth-gateway && npm test    # launchBootstrap + usageLifecycle + usageBackstop
+cd backend        && npm test     # includes tests/stealthUsageOperations.test.js
+```
+
+### Deploy
+
+Backend: `routes/stealth/gateway.js`, `utils/stealth/access.js`, `db/mysqlAdapter.js` and the
+**new** `models/stealth/StealthUsageOperation.js` → `nodejs/…`, then `tmp/restart.txt`. The
+new model is in `deploy-hostinger.sh`'s upload list — `tests/deployCleanRoom.test.js` fails
+the build if it ever is not, because a missing module boots Passenger into
+"Cannot find module" and takes the whole API down.
+
+Gateway: `bash deploy-stealth-gateway.sh` (ships `server.js` + `public/overlay.{js,css}`
+together — they must not be split; the overlay calls `/__genz/usage/*`, which only the new
+`server.js` serves).
+
+`ensureTables()` creates `stealth_usage_operations` on boot: additive, idempotent, and it
+touches no existing table.
+
+---
+
+## Why long humanizations were not charged (2026-08-31)
+
+A second defect, found only because the audit sink below existed. Sanitized trail:
+
+```
+bytes  21759 json_keys ["d","s"] -> success   -> COMMITTED
+bytes 207235 json_keys null      -> ambiguous -> CANCELLED
+bytes 210015 json_keys null      -> ambiguous -> CANCELLED
+```
+
+The classifier observed the first `CLASSIFY_MAX_BYTES` (64 KB) of the response. A humanized
+result is ONE envelope whose `d` value is the entire encoded payload, so a long result is a
+200 KB+ body with `"s"` at the very END. `JSON.parse` failed on the truncated text and the
+partial fallback required BOTH `"d"` and `"s"` inside the window, which a long result can
+never satisfy. Short humanizations charged; long ones silently did not. Detector responses
+(~42 KB) always fit, which is why only Humanizer showed it.
+
+It presented as "the first Humanize counts, later ones do not" — but the real variable was
+never order, it was OUTPUT SIZE.
+
+**Fix.** Classification is independent of result size: a non-empty `d` opener
+(`ENVELOPE_OPENER_RE`) within the first `CLASSIFY_PREFIX_BYTES` (2 KB) of a 2xx JSON body, on
+a stream that reaches its end, is proof a result was produced. The prefix is held separately
+from the classification window, so how much of the body is observed can no longer change the
+verdict. Still no decoding, and the member's text is never held.
+
+**Verified in production** over 40 operations: 18/18 results from 114 KB to 314 KB committed;
+11/11 upstream 502/503 cancelled; 1 client abort cancelled; 40 reserves, 40 distinct
+operation ids, zero duplicate commits, zero commit retries needed.
+
+### Widget sync
+
+The credit is committed when the upstream response ENDS — after `fetch()` has already
+resolved (fetch resolves on headers). The browser therefore cannot learn the outcome from its
+own response object. The gateway records each operation's settled state plus the authoritative
+counters the backend returned at commit; the overlay shows `Syncing...` in place of the stale
+number, polls read-only `POST /__genz/usage/status` with bounded backoff (~11.5 s), paints the
+server's counters, and falls back to `/validate` on a miss (another Passenger worker, or a
+restart). The status endpoint is bound to the asking lease and can only REPORT — refreshing it
+cannot cause a commit, so a failed UI refresh can never double-charge.
+
+### The audit sink
+
+`tmp/usage-audit.log`, one JSON line per stage (`reserve`, `tagged`/`untagged`, `classified`,
+`settled`). It exists because the gateway's console goes to Passenger's log, which is NOT
+reachable over the account's SFTP — so "did the gateway see this request, and how did it
+classify the response?" had no answer in production. Bounded (256 KB, then truncated),
+sanitized to ids/paths/status/content-type/byte counts/JSON KEY NAMES. Disable with
+`STEALTH_USAGE_AUDIT=0`. Read it with:
+
+```bash
+curl -u u171982351:PASS sftp://147.79.103.253:65002/home/u171982351/stealth-gateway/tmp/usage-audit.log
+```
+
+### Known residual: untagged retries
+
+The overlay tags the first mutating request after a recognised main-button click. When
+StealthWriter retries a failed humanize on its own, that retry carries no new click, so it
+goes out untagged and — if it succeeds — is NOT charged. Seen 4 times in one lease during a
+502/503 burst. This under-charges; it can never over-charge. Closing it means re-arming the
+intent for a short window after a cancelled attempt, or enabling `STEALTH_METERED_PATHS`
+(`^/api/(humanize|scan)(/|$)` - the paths are now confirmed from the trail) so an untagged
+mutating request to a metered path is refused rather than served free.

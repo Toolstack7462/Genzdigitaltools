@@ -51,6 +51,11 @@ const tableNames = {
   StealthUsageLog: 'stealth_usage_logs',
   StealthSettings: 'stealth_settings',
   StealthAccount: 'stealth_accounts',
+  // Durable RESERVED -> COMMITTED/CANCELLED usage operations for StealthWriter, so a
+  // Humanizer/Detector credit is charged only after the gateway verifies a real result.
+  // See models/stealth/StealthUsageOperation.js. StealthWriter-only; additive; no other
+  // tool reads or writes this table.
+  StealthUsageOperation: 'stealth_usage_operations',
   // ── Proxy-Tools module (HIX AI / BypassGPT) — isolated, tool-tagged ─────────
   ProxyClient: 'proxy_clients',
   ProxyLease: 'proxy_leases',
