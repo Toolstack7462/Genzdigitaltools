@@ -42,6 +42,8 @@ const CODES = {
   OK: 'OK',
   DEVICE_UNKNOWN: 'DEVICE_UNKNOWN',
   DEVICE_REVOKED: 'DEVICE_REVOKED',
+  DEVICE_UNINSTALLED: 'DEVICE_UNINSTALLED',
+  DEVICE_SUPERSEDED: 'DEVICE_SUPERSEDED',
   AUTH_INVALID: 'AUTH_INVALID',
   PAIRING_CODE_INVALID: 'PAIRING_CODE_INVALID',
   PAIRING_CODE_EXPIRED: 'PAIRING_CODE_EXPIRED',
@@ -180,8 +182,14 @@ function publicDevice(dev, activeDeviceId, staleMs) {
     profile: (dev.report && dev.report.profile) || null,
     autoRegistered: !!dev.autoRegistered,
     authState: dev.authState || null,
-    activationClaimAt: dev.activationClaimAt || null,
-    activationClaimUsed: !!dev.activationClaimUsedAt,
+    // Terminal-state bookkeeping, so the admin list can tell "an admin revoked this" from "the
+    // software was removed" from "this row is a dead duplicate of a machine that re-enrolled".
+    uninstalledAt: dev.uninstalledAt || null,
+    revokedAt: dev.revokedAt || null,
+    supersededBy: dev.supersededBy || null,
+    supersededAt: dev.supersededAt || null,
+    demotedAt: dev.demotedAt || null,
+    hasCredential: !!dev.keyHash,
     chrome: !!(dev.report && dev.report.chrome),
     authCookies: dev.report && typeof dev.report.authCookies === 'number' ? dev.report.authCookies : null,
     reportAt: (dev.report && dev.report.receivedAt) || null,
@@ -230,7 +238,7 @@ function redeemPairingCode(account, code, meta) {
   if (new Date(entry.expiresAt).getTime() <= Date.now()) return { ok: false, code: CODES.PAIRING_CODE_EXPIRED };
 
   const devices = getDevices(account);
-  if (devices.filter(d => d && !d.revoked).length >= MAX_DEVICES) return { ok: false, code: CODES.DEVICE_LIMIT_REACHED };
+  if (liveDevices(account).length >= MAX_DEVICES) return { ok: false, code: CODES.DEVICE_LIMIT_REACHED };
 
   const deviceKey = newDeviceKey();
   const dev = {
@@ -278,6 +286,11 @@ function autoRegisterDevice(account, agentId, meta) {
   const existing = findDevice(account, id);
   if (existing) {
     if (existing.revoked) return { ok: false, code: CODES.DEVICE_REVOKED };
+    // A reinstall on a machine whose row was retired must not silently reanimate that row. The
+    // agent is expected to have archived its old identity and enrolled a NEW one; refusing here is
+    // what makes "a revoked device is never silently un-revoked" true on the server side as well.
+    if (existing.uninstalledAt) return { ok: false, code: CODES.DEVICE_UNINSTALLED };
+    if (existing.supersededBy) return { ok: false, code: CODES.DEVICE_SUPERSEDED };
     // Keep the cosmetic fields current - a machine may be renamed or the agent upgraded.
     if (m.hostname) existing.hostname = cleanName(m.hostname, existing.hostname || '') || existing.hostname;
     if (m.agentVersion) existing.agentVersion = cleanName(m.agentVersion, existing.agentVersion || '') || existing.agentVersion;
@@ -286,7 +299,7 @@ function autoRegisterDevice(account, agentId, meta) {
     return { ok: true, code: CODES.OK, device: existing, created: false };
   }
 
-  const live = getDevices(account).filter(d => d && !d.revoked).length;
+  const live = liveDevices(account).length;
   if (live >= MAX_DEVICES) return { ok: false, code: CODES.DEVICE_LIMIT_REACHED };
 
   // Issue this agent its OWN key at enrolment and hand it back exactly once.
@@ -315,79 +328,44 @@ function autoRegisterDevice(account, agentId, meta) {
   return { ok: true, code: CODES.OK, device: dev, created: true, issuedKey };
 }
 
-/** Authenticate a push. Returns { ok, code, device }. */
+/**
+ * Authenticate a push. Returns { ok, code, device }.
+ *
+ * `uninstalledAt` is checked alongside `revoked` because they mean the same thing to this gate: the
+ * machine has no standing to write. They are kept as separate states because they are separate
+ * FACTS — an admin took the access away vs. the operator removed the software — and the reinstall
+ * path treats them differently.
+ */
 function authenticateDevice(account, deviceId, presentedKey) {
   const dev = findDevice(account, deviceId);
   if (!dev) return { ok: false, code: CODES.DEVICE_UNKNOWN };
+  // Most specific reason first, so the agent's stand-down message names what actually happened.
+  if (dev.uninstalledAt) return { ok: false, code: CODES.DEVICE_UNINSTALLED };
+  if (dev.supersededBy) return { ok: false, code: CODES.DEVICE_SUPERSEDED };
   if (dev.revoked) return { ok: false, code: CODES.DEVICE_REVOKED };
   if (!timingEqHex(dev.keyHash, sha256(presentedKey || ''))) return { ok: false, code: CODES.AUTH_INVALID };
   return { ok: true, code: CODES.OK, device: dev };
 }
 
 /**
- * Per-device authentication transition -> a one-time ACTIVATION CLAIM.
+ * Record whether this device currently holds a working WriteHuman session.
  *
- * The "unseen session id" rule alone cannot see the case where the same valid session is copied
- * onto another paired device: the session is already known, so that machine could never take over
- * however legitimately it was set up. What IS observable per device is the transition — this
- * machine had no working WriteHuman session, and now it does. That is a real local sign-in event
- * whatever session id it carries.
+ * THIS USED TO MINT A ONE-TIME "ACTIVATION CLAIM" that let a device seize the active source on its
+ * own, the first time it went from signed-out to signed-in. It was well intentioned — it was the
+ * only signal that could see the same session being copied onto a second machine — but it is
+ * exactly the auto-handover the source policy now forbids: signing out and back in on a standby
+ * (or a browser dropping and restoring its cookies) handed that machine the live session with
+ * nobody asking for it, which is source ping-pong through a side door.
  *
- * The transition mints a claim rather than switching anything directly. The claim is single use
- * and short lived, and it is only ever spent by a candidate that PASSES verification, so a device
- * cannot talk its way to the front — it has to prove a working session, once, inside the window.
- * Without both properties a flapping device (sign out, sign in, sign out) would hand the active
- * source back and forth, which is the behaviour this policy exists to prevent.
+ * Moving between machines is now an explicit, addressed, verified transaction (see activation.js).
+ * So this function records a FACT for the dashboard and the health signals, and grants nothing.
  */
-const ACTIVATION_TTL_MS = 15 * 60 * 1000;
-
 function noteDeviceAuthState(device, isAuthenticated, now) {
   const at = now || new Date();
   const prev = device.authState || null;
   device.authState = isAuthenticated ? 'authenticated' : 'unauthenticated';
-  // A claim is minted on any transition INTO an authenticated state, which is two cases:
-  //   - `unauthenticated` -> `authenticated`: the operator signed in on a device that was signed
-  //     out. A real local sign-in event.
-  //   - no recorded state -> `authenticated`: a NEWLY PAIRED device proving a working session for
-  //     the first time. This case matters more than it looks. Pairing a machine and copying the
-  //     existing cookies to it is a normal way to bring it online, and then the session id is
-  //     already known, the hash may be identical, and the token belongs to the same login - so
-  //     nothing else in the policy would ever let that machine take over. The pairing itself is
-  //     the operator's authorisation; the first verified candidate is what redeems it.
-  // Already-`authenticated` -> `authenticated` is a routine rotation and mints nothing, which is
-  // what keeps a standby from repeatedly seizing the source.
-  if (isAuthenticated && prev !== 'authenticated') {
-    device.activationClaimAt = at;
-    device.activationClaimUsedAt = null;
-  }
+  if (device.authState !== prev) device.authStateAt = at;
 }
-
-/** Is there an unspent, unexpired activation claim on this device? */
-function hasActivationClaim(device, now) {
-  if (!device || !device.activationClaimAt || device.activationClaimUsedAt) return false;
-  const age = (now ? now.getTime() : Date.now()) - new Date(device.activationClaimAt).getTime();
-  return age >= 0 && age <= ACTIVATION_TTL_MS;
-}
-function consumeActivationClaim(device, now) { device.activationClaimUsedAt = now || new Date(); }
-
-/**
- * An admin "Make active" is an INTENT with a short TTL, not a permanent pin. It expires on its own,
- * so a request made and forgotten cannot surprise the operator days later by hijacking the source
- * the first time some device happens to sync.
- */
-const ACTIVE_INTENT_TTL_MS = 15 * 60 * 1000;
-
-function setActiveSourceIntent(account, deviceId, now) {
-  const at = now || new Date();
-  account.activeSourceIntent = { deviceId, createdAt: at, expiresAt: new Date(at.getTime() + ACTIVE_INTENT_TTL_MS) };
-  return account.activeSourceIntent;
-}
-function activeSourceIntentFor(account, deviceId, now) {
-  const i = account && account.activeSourceIntent;
-  if (!i || i.deviceId !== deviceId) return false;
-  return new Date(i.expiresAt).getTime() > (now ? now.getTime() : Date.now());
-}
-function clearActiveSourceIntent(account) { account.activeSourceIntent = null; }
 
 /** Persist a mutated device back into the account's registry array. */
 function putDevice(account, dev) {
@@ -404,7 +382,7 @@ function revokeDevice(account, deviceId, opts) {
   if (!dev) return { ok: false, code: CODES.DEVICE_UNKNOWN };
   const activeId = account.activeSource && account.activeSource.deviceId;
   if (dev.deviceId === activeId && !o.force) {
-    const others = getDevices(account).filter(d => d && !d.revoked && d.deviceId !== deviceId);
+    const others = liveDevices(account).filter(d => d.deviceId !== deviceId);
     if (!others.length) {
       return {
         ok: false,
@@ -421,11 +399,91 @@ function revokeDevice(account, deviceId, opts) {
   return { ok: true, code: CODES.OK };
 }
 
+/**
+ * The agent on that machine reported its own uninstall.
+ *
+ * Distinct from revoke on purpose. Revoke is something an admin does TO a machine and is a
+ * statement about trust; uninstall is something the operator did ON the machine and is a statement
+ * about presence. Both stop the device writing, but only uninstall clears `activeSourceId`:
+ *
+ *   - the software is gone, so nothing on that machine will ever refresh the session again, and
+ *     leaving the pointer aimed at it is the exact contradiction ("active source" that cannot act)
+ *     the revoke path had to be fixed for;
+ *   - and NOTHING is auto-selected in its place. The last verified bundle keeps serving, the
+ *     dashboard says there is no active source, and a human picks the next one with Mark Active.
+ *     An automatic fallback here is how a machine nobody chose ends up supplying the session.
+ */
+function markUninstalled(account, deviceId, opts) {
+  const o = opts || {};
+  const dev = findDevice(account, deviceId);
+  if (!dev) return { ok: false, code: CODES.DEVICE_UNKNOWN };
+  const now = o.now || new Date();
+  dev.uninstalledAt = now;
+  dev.uninstallReason = o.reason ? String(o.reason).slice(0, 80) : null;
+  // The credential dies with the installation. A reinstall enrols a NEW identity; it must never be
+  // able to reuse this row's key, which is still sitting in this machine's old creds file until
+  // the uninstaller wipes it (and might not be, if the uninstall was interrupted).
+  dev.keyHash = null;
+  dev.revoked = true;
+  dev.revokedAt = dev.revokedAt || now;
+  putDevice(account, dev);
+
+  let activeSourceCleared = false;
+  if (account.activeSource && account.activeSource.deviceId === deviceId) {
+    account.activeSource = null;
+    activeSourceCleared = true;
+  }
+  // The stored session is untouched: uninstalling the agent does not sign anybody out.
+  return { ok: true, code: CODES.OK, activeSourceCleared, bundlePreserved: !!account.sessionEncrypted };
+}
+
+/**
+ * Mark older rows for the same machine as SUPERSEDED by a new enrolment.
+ *
+ * Reinstalling after a revoke mints a brand-new device id, so the old row would otherwise linger
+ * as a second entry for one physical machine — visible in the list, countable against the device
+ * limit, and (before the shared `isSupersededDevice` rule) addressable by the command router.
+ * Recording the supersession explicitly, rather than inferring it from names and timestamps, means
+ * the fact survives a rename and cannot be un-inferred by a stale heartbeat.
+ */
+function supersedePriorDevices(account, newDeviceId, opts) {
+  const o = opts || {};
+  const now = o.now || new Date();
+  const fresh = findDevice(account, newDeviceId);
+  if (!fresh) return { ok: false, code: CODES.DEVICE_UNKNOWN, superseded: [] };
+  const match = (d) => {
+    if (!d || d.deviceId === newDeviceId || d.supersededBy) return false;
+    const sameHost = (d.hostname || '') && (d.hostname || '') === (fresh.hostname || '');
+    const sameName = (d.name || '') && (d.name || '') === (fresh.name || '');
+    return !!(sameHost || sameName);
+  };
+  const superseded = [];
+  getDevices(account).forEach((d) => {
+    if (!match(d)) return;
+    d.supersededBy = newDeviceId;
+    d.supersededAt = now;
+    // A superseded row keeps its history but loses its credential, so an old agent image still
+    // running somewhere with that key cannot authenticate as it.
+    d.keyHash = null;
+    putDevice(account, d);
+    superseded.push(d.deviceId);
+    if (account.activeSource && account.activeSource.deviceId === d.deviceId) {
+      // Same rule as uninstall: clear the pointer, select nothing automatically.
+      account.activeSource = null;
+    }
+  });
+  return { ok: true, code: CODES.OK, superseded };
+}
+
+/** Rows that still count as real, live registrations (for the device limit and the UI count). */
+function liveDevices(account) {
+  return getDevices(account).filter(d => d && !d.revoked && !d.uninstalledAt && !d.supersededBy);
+}
+
 module.exports = {
-  CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES, ACTIVATION_TTL_MS, ACTIVE_INTENT_TTL_MS,
+  CODES, MAX_ROLLBACKS, PAIRING_TTL_MS, MAX_DEVICES,
   sha256, timingEqHex, cleanName, bundleTokenIat, bundleTokenClaims,
-  getDevices, findDevice, publicDevice, putDevice, isOnline, isSupersededDevice,
+  getDevices, findDevice, publicDevice, putDevice, isOnline, isSupersededDevice, liveDevices,
   createPairingCode, redeemPairingCode, authenticateDevice, revokeDevice, autoRegisterDevice,
-  noteDeviceAuthState, hasActivationClaim, consumeActivationClaim,
-  setActiveSourceIntent, activeSourceIntentFor, clearActiveSourceIntent,
+  markUninstalled, supersedePriorDevices, noteDeviceAuthState,
 };

@@ -33,6 +33,31 @@ const atLeast = (v, min) => {
 };
 const dur = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s` : sec < 3600 ? `${Math.round(sec / 60)}m` : `${Math.round(sec / 3600)}h`;
 
+// The canonical device states, and how each should read at a glance. They come from the server
+// (utils/proxy/deviceState.js) so the page never invents its own idea of what a machine is.
+const STATE_TONE = {
+  ACTIVE: 'ok', READY: 'ok', STANDBY: 'mut', OFFLINE: 'warn',
+  ERROR: 'bad', REVOKED: 'bad', SUPERSEDED: 'mut', UNINSTALLED: 'mut',
+};
+// Result codes that are the system working normally — never worth an amber badge on a device row.
+const QUIET_CODES = ['PROMOTED', 'HEARTBEAT', 'COOKIE_BUNDLE_UNCHANGED', 'STANDBY_ROUTINE_REFRESH', 'OK'];
+
+// The activation stages, in order, with the short label shown in the progress strip. The full
+// sentence for the CURRENT stage comes from the server (activation.stageMessage) so the operator
+// reads one wording, not one written here and a different one written there.
+const ACTIVATION_STEPS = [
+  ['REQUESTING_CAPTURE', 'Requested'],
+  ['WAITING_FOR_AGENT', 'Agent'],
+  ['OPENING_CHROME', 'Chrome'],
+  ['WAITING_FOR_AUTH_COOKIES', 'Sign-in'],
+  ['CAPTURING', 'Capture'],
+  ['UPLOADING', 'Upload'],
+  ['VERIFYING_ACCOUNT', 'Account'],
+  ['TESTING_WRITEHUMAN', 'WriteHuman'],
+  ['PROMOTING', 'Promote'],
+  ['ACTIVE', 'Active'],
+];
+
 const StatCard = ({ icon: Icon, label, value, color }) => (
   <div className="ds-card rounded-xl p-4 flex items-center gap-3">
     <span className={`w-10 h-10 rounded-lg flex items-center justify-center text-white bg-gradient-to-br ${color}`}><Icon size={18} /></span>
@@ -65,13 +90,19 @@ const AdminWriteHuman = () => {
   const [alertEmail, setAlertEmail] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
   const [agentBuild, setAgentBuild] = useState(null);   // { version, sha256, size, downloadUrl }
+  // The live Mark Active transaction and its REAL stage. This is what replaced an indefinite
+  // "syncing": every activation ends, and until it does the operator can see which step it is on
+  // and on which machine.
+  const [activation, setActivation] = useState(null);
   const timer = useRef(null);
+  const actTimer = useRef(null);
   const logTick = useRef(0);
 
   const loadState = useCallback(async () => {
     try {
       const r = await writeHumanV2Admin.getState();
       setState(r.data); setConn('live');
+      if (r.data && r.data.activation !== undefined) setActivation(r.data.activation);
     } catch (e) {
       const code = e.response?.data?.code;
       if (code === 'v2_not_configured') setConn('not_configured');
@@ -124,6 +155,30 @@ const AdminWriteHuman = () => {
     return () => { alive = false; if (timer.current) clearInterval(timer.current); };
   }, [loadState, loadLogs]);
 
+  // While an activation is IN FLIGHT, poll it every 3 seconds. The 30-second dashboard cadence is
+  // right for a system whose state changes every few minutes, but a handover moves through six
+  // stages in well under a minute — at 30s the operator would see two of them and conclude, once
+  // again, that nothing was happening. The fast poll is one small request, stops the moment the
+  // transaction reaches a terminal stage, and never runs when there is no activation.
+  const activationInFlight = !!(activation && activation.inFlight);
+  useEffect(() => {
+    if (!activationInFlight) { if (actTimer.current) { clearInterval(actTimer.current); actTimer.current = null; } return undefined; }
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await writeHumanV2Admin.getActivation();
+        if (!alive) return;
+        const a = r.data?.activation || null;
+        setActivation(a);
+        // A finished transaction changes the device table (new active source, previous demoted),
+        // so pull the full state once at the end rather than on every fast tick.
+        if (a && !a.inFlight) loadState();
+      } catch (_) { /* transient: the next tick retries */ }
+    };
+    actTimer.current = setInterval(poll, 3000);
+    return () => { alive = false; if (actTimer.current) { clearInterval(actTimer.current); actTimer.current = null; } };
+  }, [activationInFlight, loadState]);
+
   const revokeDevice = async (d) => {
     const name = d.name || d.deviceId;
     if (!window.confirm(`Revoke ${name}?\n\nIt loses the right to push cookies. The stored session stays exactly as it is — revoking a device never signs anyone out.`)) return;
@@ -147,17 +202,44 @@ const AdminWriteHuman = () => {
     finally { setBusy(''); }
   };
 
-  // Hand a device the active-source role on its NEXT verified sync (a short-lived intent, not a
-  // permanent pin). This handler was referenced by the "Make active" button but never defined, so
-  // every click threw `makeActive is not defined` and did nothing — which is why operators resorted
-  // to revoking the current source to switch machines. The endpoint returns 409 DEVICE_REVOKED for a
-  // revoked device; act() surfaces that to the user.
+  // MARK ACTIVE — start the activation TRANSACTION for one named machine.
+  //
+  // What this used to do: POST an "intent" and hope that machine happened to push cookies at some
+  // point in the next 15 minutes. On a freshly installed RDP nothing visible happened at all, and
+  // when the new machine held the SAME WriteHuman login (the ordinary case) it could never work,
+  // because the server short-circuited the identical cookie bundle before it ever looked at the
+  // intent. The button now sends a capture command to that device and the panel below shows the
+  // real stage until the transaction ends — ACTIVE, FAILED or EXPIRED.
   const makeActive = async (d) => {
     const name = d.name || d.deviceId;
-    await act(
-      () => writeHumanV2Admin.makeActive(d.deviceId),
-      `${name} will become the active source on its next verified sync`,
-    );
+    if (!window.confirm(
+      `Make ${name} the active WriteHuman source?\n\n`
+      + `${name} will open its own WriteHuman Chrome, capture the session signed in there, and the server will verify it before anything switches.\n\n`
+      + `Until that check passes, the current session keeps serving. ${activeSource?.name ? `${activeSource.name} then becomes a standby and can no longer update the live session.` : ''}`,
+    )) return;
+    try {
+      setBusy(`Starting activation on ${name}…`);
+      const r = await withCsrfRetry((headers) => writeHumanV2Admin.makeActive(d.deviceId, headers));
+      setActivation(r.data?.activation || null);
+      showSuccess(`Capture requested on ${name} only — no other machine can pick it up.`);
+      loadState();
+    } catch (e) {
+      // The server's sentence names the real obstacle (offline, revoked, agent too old, already
+      // active) rather than a generic failure.
+      showError(e.response?.data?.error || e.response?.data?.code || 'Could not start the activation');
+    } finally { setBusy(''); }
+  };
+
+  const cancelActivation = async () => {
+    if (!window.confirm('Cancel this activation?\n\nNothing is promoted and the current active source keeps the session.')) return;
+    try {
+      setBusy('Cancelling…');
+      const r = await withCsrfRetry((headers) => writeHumanV2Admin.cancelActivation(headers));
+      setActivation(r.data?.activation || null);
+      showSuccess('Activation cancelled. The previous active source is unchanged.');
+      loadState();
+    } catch (e) { showError(e.response?.data?.error || 'Could not cancel the activation'); }
+    finally { setBusy(''); }
   };
 
   // VERIFY SESSION — server-side only. No Chrome opens anywhere, no agent is contacted, and it
@@ -255,7 +337,11 @@ const AdminWriteHuman = () => {
   const showBanner = !!sess && sess !== 'HEALTHY';
   // Multi-device view.
   const devices = state?.devices || [];
-  const liveDevices = devices.filter((d) => !d.revoked);
+  // One row per machine that still counts. `terminal` is the server's own verdict (REVOKED,
+  // UNINSTALLED or SUPERSEDED) rather than this page's guess; `!d.revoked` is the fallback for a
+  // cached bundle talking to an older API, and was the whole test before — which meant an
+  // uninstalled machine's dead row sat in the list looking like a device you could still use.
+  const liveDevices = devices.filter((d) => (d.terminal === undefined ? !d.revoked : !d.terminal));
   const activeSource = state?.activeSource || null;
   const activeSourceOnline = !!activeSource?.online;
   const frozen = state?.agentFrozenReport || null;   // last telemetry, known to be out of date
@@ -388,6 +474,80 @@ const AdminWriteHuman = () => {
             <p className="text-[12.5px] text-slate-500 -mt-2 mb-5">{hs.summary}. <span className="text-slate-400">{hs.session?.reason}</span></p>
           )}
 
+          {/* ── Activation progress ──────────────────────────────────────────
+              The answer to "a newly authorized RDP stays stuck at syncing". A Mark Active is a
+              transaction with stages, and this shows which one it is on, on which machine, with the
+              server's own sentence for it. It always ends: ACTIVE, FAILED or EXPIRED — there is no
+              path through this panel that leaves a spinner running. */}
+          {activation && (
+            <div className={`ds-card rounded-xl p-5 mb-5 border-l-4 ${
+              activation.stage === 'ACTIVE' ? 'border-l-emerald-500'
+              : activation.stage === 'FAILED' || activation.stage === 'EXPIRED' ? 'border-l-red-500'
+              : 'border-l-indigo-500'}`}>
+              <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+                <div className="flex items-center gap-2">
+                  {activation.inFlight
+                    ? <Loader2 size={16} className="text-indigo-500 animate-spin" />
+                    : activation.stage === 'ACTIVE'
+                      ? <CheckCircle2 size={16} className="text-emerald-500" />
+                      : <AlertTriangle size={16} className="text-red-500" />}
+                  <h2 className="font-semibold text-slate-700 text-sm">
+                    Making {activation.targetDeviceName || activation.targetDeviceId} the active source
+                  </h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  {activation.inFlight && (
+                    <span className="text-[12px] text-slate-500">expires {until(activation.expiresAt)}</span>
+                  )}
+                  {activation.inFlight && (
+                    <button onClick={cancelActivation} disabled={!!busy}
+                      className="px-3 py-1 rounded-lg text-[12.5px] font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-40">Cancel</button>
+                  )}
+                </div>
+              </div>
+
+              {/* The stage strip. Steps behind the current one are done, the current one pulses,
+                  the rest are pending. On failure the strip stops where it actually stopped. */}
+              <div className="flex items-center gap-1 flex-wrap mb-3">
+                {ACTIVATION_STEPS.map(([key, label], i) => {
+                  const idx = ACTIVATION_STEPS.findIndex(([k]) => k === activation.stage);
+                  const failed = activation.stage === 'FAILED' || activation.stage === 'EXPIRED';
+                  const done = idx > -1 && i < idx;
+                  const now = idx > -1 && i === idx;
+                  return (
+                    <span key={key}
+                      className={`px-2 py-0.5 rounded text-[11px] font-semibold ${
+                        now && !failed ? 'bg-indigo-100 text-indigo-700'
+                        : done ? 'bg-emerald-50 text-emerald-600'
+                        : failed && i === 0 ? 'bg-red-50 text-red-600'
+                        : 'bg-slate-100 text-slate-400'}`}>{label}</span>
+                  );
+                })}
+              </div>
+
+              {/* The one sentence that matters, written by the server: "Waiting for a signed-in
+                  WriteHuman session on this RDP.", "Target RDP agent is offline.", and so on. */}
+              <p className={`text-[13px] ${
+                activation.stage === 'FAILED' || activation.stage === 'EXPIRED' ? 'text-red-600'
+                : activation.stage === 'ACTIVE' ? 'text-emerald-700' : 'text-slate-600'}`}>
+                {activation.message}
+              </p>
+              {activation.failureCode && (
+                <p className="text-[12px] text-slate-400 mt-1">code: {activation.failureCode}</p>
+              )}
+              {activation.stage === 'ACTIVE' && (
+                <p className="text-[12px] text-slate-500 mt-1">
+                  Verified{activation.maskedId ? ` as ${activation.maskedId}` : ''}. The previous source is now a standby and can no longer update the live session.
+                </p>
+              )}
+              {!activation.inFlight && activation.stage !== 'ACTIVE' && (
+                <p className="text-[12px] text-slate-500 mt-1">
+                  The previous active source and the stored session are unchanged. Nothing was promoted.
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Paired devices — any of them may supply cookies; the newest VERIFIED bundle wins. */}
           {/* Read-only in normal operation. Agents enrol themselves on first sync, so there is
               nothing to click here to get a machine syncing - only things to look at, plus Revoke
@@ -406,20 +566,34 @@ const AdminWriteHuman = () => {
                     <div className="min-w-0">
                       <p className="font-semibold text-slate-800 text-sm flex items-center gap-2 flex-wrap">
                         {d.name || d.deviceId}
-                        {d.isActiveSource && <Badge tone="ok">active source</Badge>}
-                        {!d.isActiveSource && state?.pendingActiveDeviceId === d.deviceId && <Badge tone="warn">activating on next sync</Badge>}
-                        {d.online ? <Badge tone="ok">online</Badge> : <Badge tone="warn">offline · {rel(d.lastSeenAt)}</Badge>}
-                        {d.lastResultCode && d.lastResultCode !== 'PROMOTED' && d.lastResultCode !== 'HEARTBEAT' && d.lastResultCode !== 'COOKIE_BUNDLE_UNCHANGED' && <Badge tone="warn">{d.lastResultCode}</Badge>}
+                        {/* ONE canonical state per machine, computed server-side by the same
+                            function the command router and the promotion policy use — so the
+                            dashboard can no longer show a device as available while the router
+                            considers it unaddressable. */}
+                        <Badge tone={STATE_TONE[d.state] || 'mut'}>{(d.state || 'unknown').toLowerCase()}</Badge>
+                        {activation?.inFlight && activation.targetDeviceId === d.deviceId && <Badge tone="warn">activating…</Badge>}
+                        {d.lastResultCode && !QUIET_CODES.includes(d.lastResultCode) && <Badge tone="warn">{d.lastResultCode}</Badge>}
                       </p>
                       <p className="text-xs text-slate-500 mt-0.5 truncate">
                         {d.hostname || '—'} · agent {d.agentVersion || '?'} · {d.promotionCount || 0} promotions · last sync {rel(d.lastSyncSuccessAt)}
                         {d.cdp ? ` · cdp ${d.cdp}` : ''}{d.profile ? ` · profile ${d.profile}` : ''}
                       </p>
+                      {d.stateReason && <p className="text-[11.5px] text-slate-400 mt-0.5">{d.stateReason}</p>}
                     </div>
                     <div className="flex items-center gap-2 flex-shrink-0">
+                      {/* Only READY and STANDBY machines can be activated, and the server says which
+                          those are. Disabling with a reason beats a button that looks available and
+                          then fails on click — which is precisely how the old one behaved. */}
                       {!d.isActiveSource && (
-                        <button onClick={() => makeActive(d)} title="Hand this device the active-source role on its next verified sync"
-                          className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-indigo-600 border border-indigo-200 hover:bg-indigo-50">Make active</button>
+                        <button
+                          onClick={() => makeActive(d)}
+                          disabled={!!busy || activation?.inFlight || d.canActivate === false}
+                          title={d.canActivate === false
+                            ? d.stateReason
+                            : activation?.inFlight
+                              ? 'Another activation is already running.'
+                              : 'Capture this machine’s WriteHuman session, verify it, and make it the active source'}
+                          className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed">Mark active</button>
                       )}
                       <button onClick={() => revokeDevice(d)} className="px-3 py-1.5 rounded-lg text-[13px] font-semibold text-red-600 border border-red-200 hover:bg-red-50">Revoke</button>
                     </div>

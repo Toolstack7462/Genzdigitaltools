@@ -38,10 +38,19 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
+// 3.5.0 — `capture-and-activate` (this agent captures its OWN session on demand, so Mark Active
+// stops depending on the machine happening to push), stage reporting so the dashboard shows a real
+// progress step instead of an endless "syncing", and a stand-down that SURVIVES A RESTART.
+//
+// That last one matters more than it sounds. 3.4.0 stood down in memory only: a revoked agent went
+// quiet, and then the next logon (or any restart) brought it straight back, polling with the same
+// dead credential until the server refused it again. The marker file makes "this installation is
+// finished" a fact on disk, so a retired agent stays retired until an installer clears it.
+//
 // 3.4.0 — ADDRESSED commands (this agent refuses anything not addressed to its own device id),
 // stand-down on revoke (a revoked agent no longer keeps relaunching Chrome forever), and the
 // token-rotation nudge that stops the dedicated Chrome rotating late.
-const AGENT_VERSION = '3.4.0';
+const AGENT_VERSION = '3.5.0';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -140,7 +149,17 @@ const CFG = {
   // same time; the server promotes whichever supplies the newest VERIFIED bundle, so moving the
   // login between them needs no configuration change on either side.
   deviceStateFile: process.env.WHV2_DEVICE_STATE || FILE_CFG.deviceStateFile || path.join(__dirname, '..', 'agent-device.json'),
+  // The terminal stand-down marker. Written when the server says this installation is finished
+  // (revoked / uninstalled / superseded), and checked at STARTUP — which is the whole point. A
+  // stand-down held only in memory is undone by the next logon, and that is exactly how a revoked
+  // machine went on relaunching its own dedicated WriteHuman Chrome for hours.
+  standDownFile: process.env.WHV2_STAND_DOWN || FILE_CFG.standDownFile
+    || path.join(path.dirname(process.env.WHV2_DEVICE_STATE || FILE_CFG.deviceStateFile || path.join(__dirname, '..', 'agent-device.json')), 'stood-down.json'),
   pairCode: process.env.WHV2_PAIR_CODE || '',
+  // How long a `capture-and-activate` may spend bringing Chrome up and waiting for somebody to be
+  // signed in before it gives up and reports a stated failure. Bounded so an activation can never
+  // hold a machine in a capture loop; the server-side transaction expires independently anyway.
+  activationWaitMs: Math.max(30000, parseInt(pick('WHV2_ACTIVATION_WAIT_MS', 'activationWaitMs', ''), 10) || 8 * 60000),
   // Which Chrome profile this device is authorised to read. Matched against the browser's own
   // reported user-data-dir; empty means 'whatever this debug port is attached to'.
   chromeProfile: pick('WHV2_CHROME_PROFILE', 'chromeProfile', ''),
@@ -195,6 +214,35 @@ function saveDeviceState(st) {
     return true;
   } catch (e) { log('device_state_write_failed', { error: e.message }); return false; }
 }
+// ── terminal stand-down (survives a restart) ─────────────────────────────────
+/**
+ * "This installation is finished." Written when the server refuses us as REVOKED, UNINSTALLED or
+ * SUPERSEDED, and read at startup before anything else happens.
+ *
+ * 3.4.0 stood down in memory, which quietly did not solve the problem it was written for: the
+ * agent went quiet until the next logon, and then started again, polled with the same dead
+ * credential, and — because `isActiveSource` is undefined until a reply arrives and CDP failures
+ * accumulate faster than refusals — could still take a run at relaunching its own Chrome. The
+ * observed shape of this on a live machine was `heartbeat_rejected {status:403}` followed by
+ * `relaunch_chrome {reason:"cdp_auto"}` every few minutes, for hours.
+ *
+ * The marker is deliberately a FILE next to the credential, not a flag inside it: the credential
+ * may be archived or wiped by an uninstall, and the fact that this machine has been retired must
+ * outlive that. Only an installer clears it.
+ */
+function readStandDown() {
+  try { return JSON.parse(fs.readFileSync(CFG.standDownFile, 'utf8')); } catch (_) { return null; }
+}
+function writeStandDown(code, reason, deviceId) {
+  try {
+    fs.writeFileSync(CFG.standDownFile, JSON.stringify({
+      code: code || 'DEVICE_REVOKED', reason: reason || null, deviceId: deviceId || null,
+      at: new Date().toISOString(), agentVersion: AGENT_VERSION,
+    }, null, 2), { mode: 0o600 });
+    return true;
+  } catch (e) { log('stand_down_write_failed', { error: e.message }); return false; }
+}
+
 /**
  * Browser-authorized enrolment (PKCE device flow).
  *
@@ -312,6 +360,16 @@ async function pairDevice(code) {
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
 function log(event, fields) { try { console.log(`[${new Date().toISOString()}] [wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
+
+/**
+ * The three server refusals that mean this installation is over. All of them are terminal, and all
+ * of them are cleared the same way: run the installer again, which archives the dead identity and
+ * starts a fresh browser authorization for a NEW one.
+ *
+ * 3.4.0 only recognised DEVICE_REVOKED here, so a SUPERSEDED duplicate (a machine that had already
+ * reinstalled and re-enrolled) and an UNINSTALLED row carried on polling indefinitely.
+ */
+const TERMINAL_CODES = ['DEVICE_REVOKED', 'DEVICE_UNINSTALLED', 'DEVICE_SUPERSEDED'];
 
 // Sticky error tracker. Unlike the momentary per-poll `state.lastError`, these PERSIST across
 // recovery so the dashboard can show "last error … Xm ago (N×)" instead of a field that snaps back
@@ -559,6 +617,19 @@ async function postToServer(state, payload) {
     // gated on this: a standby must never open Chrome or nudge a token.
     state.isActiveSource = body && body.isActiveSource === true;
     state.superseded = !!(body && body.superseded);
+    // The server's canonical verdict on what this machine IS (READY / ACTIVE / STANDBY / …). Kept
+    // in telemetry so a disagreement between "what the box thinks it is" and "what the server
+    // thinks it is" becomes visible — that disagreement is the shape of every wrong-machine bug
+    // this system has had.
+    state.deviceState = (body && body.deviceState) || null;
+    // A terminal verdict can also arrive on a 200 (a row retired between our authentication and
+    // this reply). Treat it exactly like the 403: persist it and go dormant.
+    if (body && body.standDown === true && !state.standDown) {
+      state.standDown = true;
+      state.standDownCode = body.deviceState || 'DEVICE_REVOKED';
+      log('stand_down', { code: state.standDownCode, reason: body.standDownReason || null, persisted: true });
+      writeStandDown(state.standDownCode, body.standDownReason || null, state.device && (state.device.deviceId || state.device.agentId));
+    }
     // How long until the stored access token expires, as the SERVER sees it. Only the active
     // source is ever told. This is what lets rotation happen ON TIME instead of whenever a
     // throttled background timer in Chrome eventually gets round to it.
@@ -570,10 +641,16 @@ async function postToServer(state, payload) {
   // and auto-relaunching the dedicated Chrome on that machine indefinitely, which is exactly how
   // WriteHuman Chrome kept appearing on a computer that was no longer the source. When the server
   // says the credential is gone, stop touching the browser and go quiet.
-  if (resp.status === 403 && body && (body.standDown === true || body.code === 'DEVICE_REVOKED')) {
-    if (!state.standDown) log('stand_down', { code: body.code, reason: 'revoked_by_server' });
+  if (resp.status === 403 && body && (body.standDown === true || TERMINAL_CODES.includes(body.code))) {
+    if (!state.standDown) {
+      log('stand_down', { code: body.code, reason: body.hint || 'retired_by_server', persisted: true });
+      // Persist it. Without this the stand-down lasts only until the next logon, which is how a
+      // retired machine came back and started touching its browser again.
+      writeStandDown(body.code, body.hint || null, state.device && (state.device.deviceId || state.device.agentId));
+    }
     state.standDown = true;
-    recordError(state, 'revoked: ' + (body.code || 'DEVICE_REVOKED'));
+    state.standDownCode = body.code || 'DEVICE_REVOKED';
+    recordError(state, 'retired: ' + (body.code || 'DEVICE_REVOKED'));
     return { _status: resp.status, body, code: body.code, standDown: true };
   }
   // A 4xx is the server ANSWERING us — the candidate was judged and refused (stale, wrong account,
@@ -641,10 +718,14 @@ function handleCommand(state, cmd) {
     state.pendingAck = { commandId: cmd.id, nonce: cmd.nonce, ok: true, result: null };
 
     if (cmd.type === 'resync') {
-      // Force a real re-sync + server-side re-verify on the next poll: clear lastHash AND set the
-      // force flag so the push is honoured even if the cookie hash is unchanged (the server no-ops
-      // an unchanged hash otherwise, which made "Re-sync" a silent no-op).
-      state.lastHash = null; state.forceNext = true;
+      // Re-read the cookies and offer them again on the next poll. It clears `lastHash` only.
+      //
+      // It used to also set a `force` flag in the request body, which the server honoured by
+      // bypassing the unchanged-hash check, the trusted-ordering check AND the standby rule. That
+      // put "may this machine overwrite the live session" in the hands of the machine asking, so
+      // the server no longer reads it and the agent no longer sends it. Re-syncing is a refresh,
+      // not a promotion: if the intent is to move the session, that is Mark Active.
+      state.lastHash = null;
       log('command_resync', { command_id: cmd.id });
       state.pendingAck.result = 'resync_queued';
       return;
@@ -653,6 +734,24 @@ function handleCommand(state, cmd) {
       // Nudge the WriteHuman tab so Supabase rotates the access token now rather than late. No
       // browser is launched; if Chrome is not there this simply does nothing.
       nudgeTokenRotation(state, 'command').then((r) => { state.pendingAck = { commandId: cmd.id, nonce: cmd.nonce, ok: !!r, result: r ? 'rotated' : 'no_tab' }; }).catch(() => {});
+      return;
+    }
+    if (cmd.type === 'capture-and-activate') {
+      // MARK ACTIVE, on this machine. The server addressed this to us and handed us a one-time
+      // capability; runActivation is what makes the operator's click actually do something here
+      // rather than the server waiting and hoping we push of our own accord.
+      if (!cmd.activationId || !cmd.activationNonce) {
+        log('command_rejected', { reason: 'activation_capability_missing', command_id: cmd.id });
+        state.pendingAck = { commandId: cmd.id, nonce: cmd.nonce, ok: false, result: 'no_capability' };
+        return;
+      }
+      if (state.activation && state.activation.running) {
+        log('command_ignored', { reason: 'activation_already_running', command_id: cmd.id });
+        return;
+      }
+      state.activation = { id: cmd.activationId, nonce: cmd.activationNonce, running: true, startedAt: Date.now(), commandId: cmd.id };
+      state.pendingAck.result = 'capture_started';
+      runActivation(state).catch((e) => log('activation_error', { error: e && e.message }));
       return;
     }
     if (cmd.type === 'open-chrome') {
@@ -666,17 +765,123 @@ function handleCommand(state, cmd) {
   } catch (e) { log('command_failed', { command: cmd && cmd.type, error: e.message }); }
 }
 
+/**
+ * Run one activation to completion on THIS machine.
+ *
+ * The stages it reports are the operator's progress bar. Each one is a real thing happening here,
+ * which is the difference between the dashboard saying "Opening WriteHuman Chrome on the selected
+ * RDP" and the dashboard saying "syncing" for fifteen minutes and then nothing:
+ *
+ *   OPENING_CHROME            our dedicated Chrome is not up; bring it up (we were asked to)
+ *   WAITING_FOR_AUTH_COOKIES  Chrome is up, but nobody is signed in to WriteHuman on it
+ *   CAPTURING                 reading the allowlisted cookies over loopback CDP
+ *   UPLOADING                 handing them to the server with the activation id + nonce
+ *
+ * Everything after that is the server's to decide and to report. This function never promotes
+ * anything; it only produces a candidate and says what it is doing.
+ *
+ * Two deliberate properties:
+ *   - it captures even when the cookie hash is unchanged, because "which machine supplies the
+ *     session" is not a question about whether the bytes changed;
+ *   - it gives up on its own deadline with a STATED failure, so a machine that is signed out does
+ *     not leave the operator watching a spinner until the transaction silently expires.
+ */
+async function runActivation(state) {
+  const act = state.activation;
+  const deadline = act.startedAt + CFG.activationWaitMs;
+  const report = (stage, note) => postToServer(state, {
+    heartbeat: true, hash: null, activationId: act.id, activationStage: stage, activationNote: note || null,
+  });
+  const giveUp = async (code, note) => {
+    log('activation_failed', { activation_id: act.id, code, note: note || null });
+    act.running = false;
+    state.activation = null;
+    await postToServer(state, {
+      heartbeat: true, hash: null, activationId: act.id, activationNonce: act.nonce,
+      activationFailed: code, activationNote: note || null,
+    });
+  };
+
+  log('activation_started', { activation_id: act.id, wait_ms: CFG.activationWaitMs });
+  let announcedWaiting = false;
+
+  while (Date.now() < deadline) {
+    if (state.standDown) return giveUp('DEVICE_RETIRED', 'This device was retired while the capture was running.');
+
+    // 1. Our own dedicated Chrome must be up. This is the ONE case where a non-active-source
+    //    machine may start a browser: an operator has just asked for this machine by name.
+    let cookies = null;
+    try {
+      cookies = await getAllCookiesViaCDP(CFG.cdpUrl, state);
+      state.cdp = '200'; state.chrome = true; state.cdpFails = 0;
+    } catch (e) {
+      state.cdp = 'DOWN'; state.chrome = false;
+      await report('OPENING_CHROME', 'CDP is down; starting the dedicated WriteHuman Chrome');
+      if ((Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+        state.lastRelaunchAt = Date.now();
+        relaunchChrome('activation:' + act.id);
+      }
+      await sleep(5000);
+      continue;
+    }
+
+    // 2. Chrome is up. Is anybody signed in to WriteHuman on it?
+    const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
+    state.authCount = auth.length;
+    if (!auth.length) {
+      if (!announcedWaiting) { announcedWaiting = true; log('activation_waiting_for_login', { activation_id: act.id }); }
+      await report('WAITING_FOR_AUTH_COOKIES', 'No signed-in WriteHuman session in this machine’s dedicated Chrome yet');
+      await sleep(6000);
+      continue;
+    }
+
+    // 3. Capture and upload. Note there is NO hash comparison: an identical bundle is exactly the
+    //    normal case when the same account is signed in on the new machine, and it must still
+    //    complete the handover.
+    const hash = hashAuthCookies(auth);
+    await report('CAPTURING', null);
+    log('activation_capturing', { activation_id: act.id, auth_cookies: auth.length, hash: hash ? hash.slice(0, 8) : null });
+
+    const r = await postToServer(state, {
+      cookies: auth, activationId: act.id, activationNonce: act.nonce, activationStage: 'UPLOADING',
+    });
+    if (r && r._err) { await sleep(5000); continue; }        // transport failure: retry inside the window
+    act.running = false;
+    state.activation = null;
+    if (r && r._status) {
+      log('activation_rejected', { activation_id: act.id, status: r._status, code: (r.body && r.body.code) || r.code || null });
+      return;                                                 // the server has already failed the transaction and said why
+    }
+    state.lastHash = hash;
+    state.lastHeartbeatAt = Date.now();
+    log('activation_uploaded', {
+      activation_id: act.id, code: r.code || null, promoted: r.promoted === true,
+      source_switched: r.sourceSwitched === true, stage: (r.activation && r.activation.stage) || null,
+    });
+    return;
+  }
+  return giveUp('AGENT_TIMEOUT', 'This machine could not produce a signed-in WriteHuman session in time.');
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 async function pushIfChanged(state) {
   state.pollCount = (state.pollCount || 0) + 1;
-  // Stood down by the server (this device was revoked). Keep checking in occasionally — a
-  // reinstall re-enrols and clears this — but touch NOTHING: no cookie read, no Chrome launch.
+  // Retired by the server (revoked / uninstalled / superseded). Touch NOTHING: no cookie read, no
+  // Chrome launch, and — unlike 3.4.0 — no periodic ping either. A retired installation has nothing
+  // to say and nothing to ask for; the marker on disk is what a reinstall clears. Continuing to
+  // call in was how a revoked machine kept a live row looking half-awake in the dashboard.
   if (state.standDown) {
-    if (!state.lastStandDownPingAt || (Date.now() - state.lastStandDownPingAt) >= 15 * 60000) {
-      state.lastStandDownPingAt = Date.now();
-      await postToServer(state, { heartbeat: true, hash: null });
+    if (!state.standDownLogged) {
+      state.standDownLogged = true;
+      log('dormant', { code: state.standDownCode || 'DEVICE_REVOKED', note: 'run the installer again to enrol a new identity' });
     }
     return;
   }
+  // An activation owns the CDP connection and the upload channel while it runs. A routine poll
+  // racing it would read the same cookies, push them WITHOUT the capability, and get itself
+  // answered STANDBY_ROUTINE_REFRESH — muddying the transaction for no benefit.
+  if (state.activation && state.activation.running) return;
   let cookies;
   try {
     cookies = await getAllCookiesViaCDP(CFG.cdpUrl, state);
@@ -735,8 +940,10 @@ async function pushIfChanged(state) {
     return;
   }
   state.emptyPolls = 0; state.loggedOutSent = false;
-  const forced = !!state.forceNext;
-  if (!forced && hash === state.lastHash) {
+  // A resync simply clears lastHash, so an unchanged bundle is re-offered on the next poll. There
+  // is no client-side force flag any more: the server decides what an offer is worth, we only make
+  // it. (The old flag let any agent bypass the standby rule by putting a boolean in its own body.)
+  if (hash === state.lastHash) {
     // Nothing changed. Asking Chrome was free (loopback); telling the SERVER so is not, and this
     // runs on a host that has hit its process ceiling. So a no-change poll only reaches the network
     // when a heartbeat is actually due - at a 45s poll and a 3-minute heartbeat that is one request
@@ -750,8 +957,8 @@ async function pushIfChanged(state) {
     else log('heartbeat', { hash: hash.slice(0, 8) });
     return;
   }
-  const r = await postToServer(state, forced ? { cookies: auth, force: true } : { cookies: auth });
-  if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // keep lastHash + forceNext → retry next tick
+  const r = await postToServer(state, { cookies: auth });
+  if (r && r._err) { log('ingest_post_failed', { error: r._err }); return; }     // lastHash is still cleared → retried next tick
   if (r && r._status) {
     // A REFUSED candidate is a real outcome, not a transport failure: record the server's reason
     // and stop re-offering the same bundle, or the agent would push a rejected candidate forever.
@@ -761,7 +968,7 @@ async function pushIfChanged(state) {
     log('ingest_rejected', { status: r._status, code });
     return;
   }
-  state.lastHash = hash; state.forceNext = false;
+  state.lastHash = hash;
   state.lastHeartbeatAt = Date.now();   // a push IS contact; no extra beat needed right after
   // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
   state.quickPollsLeft = CFG.quickPollFor;
@@ -831,6 +1038,22 @@ function start() {
 }
 
 async function run() {
+  // ── FIRST: has this installation been retired? ─────────────────────────────
+  // Checked before the identity, before the config, before anything touches Chrome. A revoked,
+  // uninstalled or superseded installation must come up dormant and stay dormant — the failure it
+  // replaces is an agent that went quiet until the next logon and then started polling (and
+  // relaunching its own browser) all over again with a credential the server had already refused.
+  const retired = readStandDown();
+  if (retired && !/^(1|true|yes)$/i.test(String(process.env.WHV2_CLEAR_STAND_DOWN || ''))) {
+    log('dormant', {
+      code: retired.code || 'DEVICE_REVOKED', since: retired.at || null, device_id: retired.deviceId || null,
+      remedy: 'Run the WriteHuman Agent installer again — it archives this dead identity and starts a fresh authorization.',
+      marker: CFG.standDownFile,
+    });
+    releaseLock();
+    process.exit(0);
+  }
+
   // Identity resolution, in order: an existing pairing on this machine, else redeem a pairing code
   // if one was supplied, else fall back to the pre-multi-device single global key.
   // Optional legacy path: an explicit pairing code still works and yields a per-device key.
@@ -869,7 +1092,7 @@ async function run() {
       : (readDpapiKeyFile(process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile) ? 'dpapi' : 'file'));
   log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile, device_id: (device && (device.deviceId || device.agentId)) || null, device_name: device ? device.name : null, self_registered: !!(device && device.agentId) });
 
-  const state = { device, lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, forceNext: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
+  const state = { device, lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
   // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
