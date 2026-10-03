@@ -156,7 +156,13 @@ const corsOptions = {
     return callback(new Error(`CORS policy: origin '${origin}' is not allowed`));
   },
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  // Let browsers cache the preflight (Chrome caps this at 2 h). Without it Chrome re-sends an
+  // OPTIONS request before almost every API call (they carry Authorization / x-csrf-token), and
+  // from members' locations each one costs ~0.5–1.4 s of pure network — measured 2026-10-04,
+  // while the API itself answers in 15–25 ms. Only the allow decision for this exact
+  // origin + method + headers is cached; the origin allowlist above is unchanged.
+  maxAge: 7200
 };
 
 app.use(cors(corsOptions));

@@ -29,10 +29,23 @@
         <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
         <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 
-        <!-- Google Fonts -->
+        <!-- Open the API connection while the app bundle downloads. Every request carries
+             cookies (axios withCredentials), so this must NOT have `crossorigin` — that would
+             warm the anonymous connection pool, which credentialed requests never use. -->
+        <link rel="preconnect" href="https://api.genzdigitalstore.com" />
+
+        <!-- Google Fonts — ONE request, loaded without blocking first paint.
+             Previously fonts came from two places (this file AND an @import at the top of
+             index.css): Inter was downloaded twice in two variants, Space Grotesk (only a
+             fallback) was fetched, and the @import chained HTML → CSS → font CSS → fonts
+             serially before anything could render. Only what the UI uses is requested:
+             Inter 400–900 (800/900 are used), Sora 600–800 (headings), JetBrains Mono 500–700.
+             display=swap: text shows immediately in the fallback font, then swaps. -->
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+        <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@500..700&family=Sora:wght@600..800&display=swap" />
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@500..700&family=Sora:wght@600..800&display=swap" media="print" onload="this.media='all'" />
+        <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..900&family=JetBrains+Mono:wght@500..700&family=Sora:wght@600..800&display=swap" /></noscript>
 
         <!-- Self-heal stale caches on old devices. This app uses NO service worker; if a
              device still has one registered from a past build (or stale Cache Storage),

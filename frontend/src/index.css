@@ -1,4 +1,5 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400;14..32,500;14..32,600;14..32,700&family=JetBrains+Mono:wght@500;600;700&family=Sora:wght@600;700;800&display=swap');
+/* Web fonts are loaded by public/index.html (one non-render-blocking request). A remote
+   @import here made fonts load serially after this stylesheet and blocked first paint. */
 @import "./styles/design-tokens.css";
 @import "./styles/typography.css";
 @import "./styles/premium.css";
