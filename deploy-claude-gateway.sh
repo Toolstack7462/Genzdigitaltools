@@ -90,5 +90,47 @@ case "$HCODE" in
   502) echo "   ~ 502 — app not booting; check the subdomain .htaccess Passenger block + node path + Passenger logs";;
   *)   echo "   ~ /__genz/health returned HTTP ${HCODE} — check the app .env / .htaccess / Passenger logs";;
 esac
+# ── Did the upload actually take effect, on EVERY worker? ─────────────────────────────────────
+# "health 200" only proves SOMETHING is up. It cannot distinguish a completed deploy from a
+# Passenger worker still serving the previous code — and that ambiguity is expensive: a Cloudflare
+# verification page on a MacBook or a phone looks identical whether the challenge-handling fix is
+# live or was never picked up. server.js hashes the shipped file set and reports it at
+# /__genz/health .build.id; `node server.js --build-id` computes the same value locally from the
+# bytes we just uploaded (no .env needed). Equal ids = this exact code is live.
+#
+# Passenger runs several workers and bumping tmp/restart.txt retires them lazily, so poll a few
+# times: each response also carries a short per-worker id, and a worker still on the old build
+# shows up as a MISMATCHED id. Advisory only — never fails the deploy, since the code is already
+# uploaded by this point and a false alarm here must not look like a failed release.
+EXPECTED_ID="$(node server.js --build-id 2>/dev/null || echo '')"
+if [ "$HCODE" = "200" ] && [ -n "$EXPECTED_ID" ]; then
+  echo "==> Verifying build ${EXPECTED_ID} is live on every worker"
+  WORKERS=""; MISMATCH=0; SEEN=0
+  for i in 1 2 3 4 5 6 7 8; do
+    J="$(curl -s -m 15 "https://${VHOST}/__genz/health" || echo '')"
+    [ -n "$J" ] || continue
+    # Parse with node (no jq on this box). Prints "<build.id> <worker>".
+    PAIR="$(printf '%s' "$J" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const b=(JSON.parse(s).build)||{};console.log((b.id||"?")+" "+(b.worker||"?"))}catch(_){console.log("? ?")}})' 2>/dev/null || echo '? ?')"
+    LID="${PAIR%% *}"; WID="${PAIR##* }"
+    [ "$LID" = "?" ] && continue
+    SEEN=$((SEEN+1))
+    case " $WORKERS " in *" ${WID} "*) ;; *) WORKERS="${WORKERS} ${WID}";; esac
+    if [ "$LID" != "$EXPECTED_ID" ]; then
+      MISMATCH=1
+      echo "   !! worker ${WID} is serving build ${LID}, expected ${EXPECTED_ID} — STALE WORKER"
+    fi
+  done
+  NWORKERS="$(printf '%s' "$WORKERS" | wc -w | tr -d ' ')"
+  if [ "$SEEN" = "0" ]; then
+    echo "   ~ health did not report a build id (older gateway build, or /__genz/health unreachable)"
+  elif [ "$MISMATCH" = "0" ]; then
+    echo "   ✓ build ${EXPECTED_ID} live and consistent across ${NWORKERS} worker(s) seen in ${SEEN} polls"
+  else
+    echo "   ~ STALE WORKERS PRESENT. Re-bump the restart file and re-poll; if it persists, restart the"
+    echo "     app from hPanel (Node.js app → Restart). Do NOT re-diagnose the gateway code until the"
+    echo "     live build id matches ${EXPECTED_ID} — an old worker will reproduce old bugs."
+  fi
+fi
+
 echo "==> Done. Next: in Admin → Proxy Tools → Claude, add an account (Capture via proxy so"
 echo "    cf_clearance is minted in-context), then grant a client access to test an Open."

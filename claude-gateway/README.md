@@ -178,6 +178,54 @@ expose an `aria-label` containing "effort", set `CLAUDE_EFFORT_TRIGGER_SEL` to t
 selector so detection is reliable (the heuristic requires an effort-labelled control to avoid
 mis-clicking).
 
+## Build fingerprint — prove WHICH code is live (2026-08-15)
+
+**Why.** The Cloudflare-challenge handling below (Fix A / Fix B / the bounded nav retry) is
+deliberately **device-independent**: MacBook Safari, MacBook Chrome, iPadOS Safari, Android Chrome
+and Chromebook Chrome all take the same path as the Windows control, and `classifyDevice()` returns
+`desktop` for every Mac *and* every iPad (iPadOS sends a Macintosh UA). So when a MacBook still
+shows a verification page, the first question is **not** "which device branch is wrong" — there is
+no device branch — it is **"is the fix actually live?"** From outside those two were
+indistinguishable:
+
+| Symptom on the device | Cause | Fixable in this repo? |
+| --- | --- | --- |
+| verification page / reload | the fix **is** live; Cloudflare is challenging this datacenter egress IP | no — upstream limitation |
+| verification page / reload | a Passenger worker is still serving the **pre-fix** code | yes — redeploy / restart |
+
+Mistaking the first for the second is how correct code gets rewritten. So the gateway now names its
+own build.
+
+**How.** `server.js` hashes the exact file set `deploy-claude-gateway.sh` uploads (`BUILD_FILES`,
+kept equal to the deploy manifest by a test) — sha256 per file, combined in a fixed order, first 12
+hex. There is no git checkout in the Hostinger app dir, so the bytes are the only honest identity.
+A **missing** file hashes as *absent*, so a dropped upload can never read as the same build.
+
+```bash
+node claude-gateway/server.js --build-id      # local, works from a bare checkout (no .env needed)
+curl -s https://claude1.genzdigitalstore.com/__genz/health   # → .build = { id, files, worker, uptimeSec }
+```
+
+* **`id` equal, local vs live** → this exact code is running.
+* **Poll a few times** → each response carries a short random per-worker `worker` id. Passenger
+  retires workers lazily after a `tmp/restart.txt` bump, so a worker reporting a *different* `id` is
+  a **stale worker** — restart the app from hPanel (Node.js app → Restart) and re-poll.
+* **`build` absent from the response** → the live gateway predates this change.
+
+`deploy-claude-gateway.sh` runs this comparison automatically after the restart poke and prints
+`✓ build <id> live and consistent across N worker(s)`. It is **advisory** — it never fails the
+deploy, because the code is already uploaded by then and a false alarm must not read as a bad
+release.
+
+Booleans, a content hash, a random worker id and an uptime — **no cookie, token, secret, filesystem
+path or customer data**, on a route that is already lease-free (asserted by
+`test/buildFingerprint.test.js`). It touches **no proxying path**: a request that succeeds today
+takes byte-for-byte the same route.
+
+> **Do not re-diagnose the challenge-handling code until the live build id matches the repo.** An
+> old worker reproduces old bugs, and every earlier round of "the mobile fix didn't work" was
+> unable to rule that out.
+
 ## Mobile Cloudflare identity — REGRESSION-SENSITIVE (claude-only, fixed 2026-07-22)
 
 **Design.** The gateway's egress is a datacenter IP, and the only Cloudflare `cf_clearance` that
