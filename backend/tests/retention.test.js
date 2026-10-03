@@ -90,14 +90,21 @@ test('deleteByIds batches: 1,234 ids → 3 DELETE statements, not 1,234', async 
   assert.ok(t.deletes.every(d => d.n <= 500));
 });
 
-test('scheduler: defaults to dry-run, honours off/apply, never deletes in dry-run', async () => {
+test('scheduler: defaults to apply, dry-run never deletes, off/unknown are safe', async () => {
   delete process.env.RETENTION_MODE;
-  const t = fakeTable([{ _id: 'old-expired', expiresAt: ago(30), action: 'TOOL_OPENED', createdAt: ago(30) }]);
   const sched = fresh('../cron/retentionScheduler');
-  assert.strictEqual(sched.mode(), 'dry-run');
+  assert.strictEqual(sched.mode(), 'apply');
+  process.env.RETENTION_MODE = 'dry-run';
+  const t = fakeTable([{ _id: 'old-expired', expiresAt: ago(30), action: 'TOOL_OPENED', createdAt: ago(30) }]);
   const r = await sched.runOnce();
   assert.strictEqual(r.mode, 'dry-run');
-  assert.strictEqual(t.deletes.length, 0);
+  assert.strictEqual(t.deletes.length, 0, 'dry-run must never delete');
+  delete process.env.RETENTION_MODE;
+  const t2 = fakeTable([{ _id: 'old-expired', expiresAt: ago(30), action: 'TOOL_OPENED', createdAt: ago(30) },
+                        { _id: 'live', expiresAt: ahead(5), action: 'TOOL_OPENED', createdAt: ago(1) }]);
+  const r2 = await sched.runOnce();
+  assert.strictEqual(r2.mode, 'apply');
+  assert.ok(t2.data.has('live'), 'apply must keep live rows');
   process.env.RETENTION_MODE = 'off';
   assert.strictEqual(await sched.runOnce(), null);
   process.env.RETENTION_MODE = 'bogus';

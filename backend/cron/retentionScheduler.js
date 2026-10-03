@@ -13,8 +13,12 @@
  *   - routine activity older than 7 days (ActivityLog's KEEP_ACTION_RE audit rows are kept);
  *   - closed, low-risk security alerts older than 7 days (SecurityAlert's own rules, unchanged).
  *
- * MODE (env RETENTION_MODE): 'dry-run' (DEFAULT — counts only, logs what it WOULD delete),
- * 'apply' (deletes), 'off'. Rows are unrecoverable, so the first deployment only reports.
+ * MODE (env RETENTION_MODE): 'apply' (DEFAULT since 2026-10-03), 'dry-run' (counts only), 'off'.
+ * Shipped in dry-run first; its production report (2026-10-03 18:17Z) was checked against
+ * read-only table counts — refresh_tokens 32,336 of 37,283 dead (422 still valid, none in the
+ * candidate set), extension_tokens 381 of 3,255, activity_logs 422 — and a full DB backup was
+ * taken (~/db-backup/genz-full-20261003-182916.sql.gz) before apply became the default.
+ * An unknown value falls back to dry-run; RETENTION_MODE=off disables without a deploy.
  *
  * Stability: one self-rescheduling unref'd timer per process, single-flight, first run 5 min
  * after boot, then every 6 h. Several Passenger workers running it is harmless (idempotent).
@@ -29,7 +33,7 @@ const INTERVAL_MS = Math.max(15 * 60_000, Number(process.env.RETENTION_INTERVAL_
 const GRACE_DAYS = Math.max(1, Number(process.env.RETENTION_TOKEN_GRACE_DAYS || 7));
 
 function mode() {
-  const m = String(process.env.RETENTION_MODE || 'dry-run').toLowerCase();
+  const m = String(process.env.RETENTION_MODE || 'apply').toLowerCase();
   return ['apply', 'off', 'dry-run'].includes(m) ? m : 'dry-run';
 }
 
