@@ -271,25 +271,6 @@ export default function AdminExtension() {
               </div>
             </div>
 
-            {/* Served-artifact consistency: every download folder must serve the same ZIP, and the
-                release record must describe it. Clients are offered the OLDEST served copy. */}
-            {(data?.servedConsistent === false || data?.metadataMatchesArtifact === false) && (
-              <div className="ds-card p-4" style={{ borderColor: '#f59e0b' }}>
-                <div className="text-[13px] font-semibold" style={{ color: '#b45309' }}>
-                  The download folders do not all serve the same extension build
-                </div>
-                <div className="text-[12px] text-genz-muted mt-1">
-                  Clients are being offered v{latest || '—'} (the oldest copy being served). Re-upload the intended release ZIP to bring every folder in line.
-                </div>
-                <ul className="text-[11.5px] text-genz-muted mt-2 space-y-0.5 break-all">
-                  {(data?.servedArtifacts || []).map(a => (
-                    <li key={a.dir}>{a.dir}: {a.version ? `v${a.version}` : (a.error || 'missing')}{a.sha256 ? ` · ${a.sha256.slice(0, 12)}` : ''}</li>
-                  ))}
-                  {data?.dbVersion && <li>release record: v{data.dbVersion}</li>}
-                </ul>
-              </div>
-            )}
-
             {/* Upload + policy */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="ds-card p-4">
