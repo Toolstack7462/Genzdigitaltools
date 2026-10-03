@@ -84,6 +84,15 @@ jobs:
           test -f frontend/build/index.html || { echo "::error::frontend/build/index.html missing"; exit 1; }
           test -f frontend/build/.htaccess || echo "::warning::frontend/build/.htaccess not found (main root redirect file)"
 
+      # The served ZIP has a second writer: the admin panel's extension upload writes the live
+      # docroots directly. `mirror -R` re-uploads any file whose size/time differ, so without this
+      # step every frontend deploy would put the COMMITTED ZIP back over a newer admin-published
+      # release. The guard compares against what each origin serves now and, unless the repo ZIP
+      # is strictly newer (or identical), drops it from this deploy — no --delete, so the live
+      # file is left untouched.
+      - name: Never overwrite a newer live extension release
+        run: node scripts/extension-live-guard.mjs frontend/build/downloads/genz-digital-store-extension.zip --remove-if-keep
+
       - name: Install lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 

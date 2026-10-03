@@ -50,4 +50,19 @@ function isValidVersion(v) {
   return /^\d+(\.\d+){0,3}([-+][0-9A-Za-z.\-]+)?$/.test(String(v || '').trim().replace(/^v/i, ''));
 }
 
-module.exports = { compareVersions, isOlder, isValidVersion, maxVersion, parse };
+/**
+ * Chrome's manifest "version" rules: one to four dot-separated integers, each 0–65535, no
+ * leading zeros, not all zero, no suffix. Chrome refuses to load anything else, so a published
+ * release (and a minimum-required version, which is compared against installed manifests) must
+ * use exactly this form. Ordering is numeric per segment with missing segments = 0, which is
+ * what compareVersions already does.
+ */
+function isValidChromeVersion(v) {
+  const s = String(v == null ? '' : v);
+  if (!/^(0|[1-9]\d{0,4})(\.(0|[1-9]\d{0,4})){0,3}$/.test(s)) return false;
+  const parts = s.split('.').map(Number);
+  if (parts.some(n => n > 65535)) return false;
+  return parts.some(n => n > 0);
+}
+
+module.exports = { compareVersions, isOlder, isValidVersion, isValidChromeVersion, maxVersion, parse };

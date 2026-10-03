@@ -40,12 +40,20 @@
   var attrSubs = CFG.attrSubstrings || [];
   var hideSelectors = CFG.hideSelectors || [];
   var blockFrags = CFG.blockRouteFragments || [];
+  // Hash routes ("#settings/…"). ChatGPT opens Settings — incl. Security → "Log out of all
+  // devices" — as a HASH route on the same path, which pathname checks never see. Host-scoped:
+  // only an override that sets blockHashFragments (chatgpt.com) has any; every other tool
+  // gets [] and this whole layer is a no-op for it.
+  var blockHashFrags = CFG.blockHashFragments || [];
   var HIDE_TEXT_RE = safeRe(CFG.hideTextSource, 'i');
   var KEEP_TEXT_RE = safeRe(CFG.keepTextSource, 'i');
   var EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 
   // Restricted-URL popup copy + dashboard origin (validated; safe fallback).
   var MODAL_ID = 'genz-shield-modal';
+  // Separate id for the Work-mode warning modal (its own lifecycle — the restricted popup's
+  // hardBlock/dashboard/hideModal logic never touches it, and vice versa).
+  var WORK_MODAL_ID = 'genz-workmode-modal';
   var RESTRICT_TITLE = CFG.restrictTitle || 'Access restricted';
   var RESTRICT_MSG = CFG.restrictMessage ||
     'This account is managed by Gen Z Digital Store. Account settings and subscription management are handled by the administrator.';
@@ -101,9 +109,14 @@
     }
     return n;
   }
-  // Our own injected UI (the restricted popup) must never be swept/hidden.
+  // Our own injected UI (the restricted popup AND the Work-mode warning modal) must
+  // never be swept/hidden by our own rules.
   function isOwnUi(n) {
-    try { return !!(n && n.nodeType === 1 && (n.id === MODAL_ID || (n.closest && n.closest('#' + MODAL_ID)))); }
+    try {
+      return !!(n && n.nodeType === 1 && (
+        n.id === MODAL_ID || n.id === WORK_MODAL_ID ||
+        (n.closest && (n.closest('#' + MODAL_ID) || n.closest('#' + WORK_MODAL_ID)))));
+    }
     catch (e) { return false; }
   }
   function hide(n) {
@@ -441,9 +454,11 @@
   //      Prose cannot manufacture a small container holding two sibling interactive controls
   //      labelled exactly "Chat" and exactly "Work".
   //   e) One of the pair carries an explicit SELECTION marker (aria-selected / aria-checked /
-  //      aria-current / data-state=active|checked|selected|on). A segmented switcher always marks
-  //      its active segment; an incidental pair of buttons does not. Configurable via
-  //      requireSelectionMarker so it can be relaxed once the real DOM is confirmed.
+  //      aria-pressed / aria-current / data-state=active|checked|selected|on). A segmented
+  //      switcher always marks its active segment; an incidental pair of buttons does not.
+  //      Verified 2026-09-30 on live chatgpt.com: the real switcher marks ONLY via
+  //      aria-pressed on plain <button> segments inside div[role=group][aria-label="Composer mode"].
+  //      Configurable via requireSelectionMarker so it can be relaxed if the DOM changes again.
   //
   // FAILURE MODE IS DELIBERATELY A NO-OP. If ChatGPT changes its markup and the signature stops
   // matching, the policy simply does nothing — Work becomes visible again. It can never blank the
@@ -479,10 +494,16 @@
     return null;
   }
   // (e) Does this row advertise itself as the active segment?
+  // VERIFIED 2026-09-30 against the live logged-in chatgpt.com DOM: the Chat/Work switcher
+  // is <div role="group" aria-label="Composer mode"> holding two plain
+  // <button type="button" aria-pressed="true|false"> segments ("Chat" as a direct text node,
+  // "Work" wrapped in a span). There is NO aria-selected / aria-checked on the live switcher —
+  // aria-pressed is the ONLY selection marker, so without this check the policy silently no-ops.
   function tabSelected(el) {
     try {
       if (el.getAttribute('aria-selected') === 'true') return true;
       if (el.getAttribute('aria-checked') === 'true') return true;
+      if (el.getAttribute('aria-pressed') === 'true') return true;
       var cur = el.getAttribute('aria-current');
       if (cur && cur !== 'false') return true;
       var ds = el.getAttribute('data-state') || '';
@@ -635,6 +656,13 @@
         found.container.__genzTabFixes = n + 1;
         try { chatRow.click(); } catch (e) {}
       }
+      // WORK IS NOT MERELY HIDDEN — IT IS NOT ALLOWED. The recovery click above returns the
+      // session to Chat, but a silent redirect hides the store's policy from the member. If the
+      // session was actually sitting in Work (direct URL entry, refresh, Back/Forward, or a
+      // programmatic switch — the only ways past the capture guards), say so explicitly.
+      // showWorkModeWarning is idempotent per container: the member sees the warning once,
+      // never a nag loop.
+      showWorkModeWarning(found.container, chatRow);
     }
 
     // VISUAL RESULT, decided from the LIVE DOM rather than assumed. If the container holds no
@@ -667,6 +695,14 @@
       } catch (e) { return; }
       var done = [];
       for (var c = 0; c < candidates.length; c++) {
+        // Nodes this shield already hid are never re-vetted as fresh rows. hideTabNode
+        // stamps tabindex="-1" on hidden containers, which would otherwise match
+        // TAB_ROW_SEL's [tabindex] on the next pass and get misread as a NEW Chat/Work
+        // switcher one level up (phantom container, duplicate warning, wasted recovery
+        // click). A node we hid was already vetted; if it outgrows its bounds,
+        // verifyHiddenTabNodes() restores it (clearing the stamp) and it becomes a
+        // candidate again on its own merits.
+        try { if (candidates[c].getAttribute('data-genz-tab-blocked') === '1') continue; } catch (e) {}
         var info = classifyTab(candidates[c]);
         if (!info) continue;
         var sw = findSwitch(candidates[c]);
@@ -736,7 +772,10 @@
       // re-trigger this observer. That is the observer-loop prevention.
       menuMo.observe(document.documentElement, {
         childList: true, subtree: true, attributes: true,
-        attributeFilter: ['aria-checked', 'aria-selected', 'data-state', 'aria-current']
+        // aria-pressed is here because the live ChatGPT Chat/Work switcher (verified 2026-09-30)
+        // toggles ONLY aria-pressed in place — no node is re-inserted. Without it, flipping
+        // Chat→Work would never re-trigger this observer and Work would stay visible.
+        attributeFilter: ['aria-checked', 'aria-selected', 'aria-pressed', 'data-state', 'aria-current']
       });
     } catch (e) {}
 
@@ -755,7 +794,30 @@
     document.addEventListener('mousedown', onSelectCapture, true);
     document.addEventListener('keydown', onSelectCapture, true);
   }
+  // Modal element handles, declared BEFORE installMenuGuards() and the initial
+  // document_start pass below. That pass can already build either modal (a session
+  // that loads with Work active, or a blocked route present at parse time), and
+  // `var x = null` only initializes when execution REACHES the line — a declaration
+  // placed after the initial pass would reset a modal built during that pass back to
+  // null, orphaning it (duplicate modal, dead dismiss button). The builder functions
+  // are declarations, so they hoist and can stay where they are.
+  var modalEl = null;
+  var workModalEl = null;
   installMenuGuards();
+
+  // ── INITIAL document_start pass for the tab policy ──────────────────────────
+  // WHY THIS EXISTS (the load-flash gap). installMenuGuards() only sees nodes inserted
+  // AFTER it installs. Markup already parsed before this script executed — a
+  // server-rendered shell, or anything the parser got to on a fast/cached load — would
+  // otherwise never be evaluated until some later mutation touched it, and the first
+  // paint can happen before DOMContentLoaded: the Work segment would be visible from
+  // the very first frame. Evaluating the already-present DOM right here, still at
+  // document_start, closes that gap: the pre-paint observer then owns every insertion
+  // after this point, and start() (DOMContentLoaded) owns the settled re-vet.
+  // Safe to run on a near-empty document: applyTabPolicy early-outs without TABP, and
+  // vetSwitch/hideTabNode keep every structural guard (isStructuralNode, size bounds,
+  // the readyState==='loading' deferral of the recovery click and container hide).
+  try { applyTabPolicy(document); } catch (e) {}
 
   // ── Professional restricted-access popup ────────────────────────────────────
   // Replaces the old toast. Shown whenever the member tries to reach a restricted page —
@@ -768,7 +830,7 @@
   //                       dismisses the popup and the member stays where they were.
   // Buttons: "Go to Dashboard" (member dashboard) and "Close". Purely UI — touches no
   // cookies/tokens/session and never bypasses anything.
-  var modalEl = null;
+  // (modalEl is declared before installMenuGuards(); see the note there.)
   function buildModal() {
     if (modalEl && document.documentElement.contains(modalEl)) return modalEl;
     var wrap = document.createElement('div');
@@ -841,6 +903,89 @@
     try { modalEl.style.display = 'none'; } catch (e) {}
     try { document.documentElement.style.overflow = modalEl.__prevOverflow || ''; } catch (e) {}
   }
+
+  // ── Work-mode warning ───────────────────────────────────────────────────────
+  // Store policy: Work mode is not merely hidden — it is NOT ALLOWED in managed sessions.
+  // If the session is found sitting in Work (the only ways past the capture guards are
+  // direct URL entry, refresh, Back/Forward, or a programmatic switch), vetSwitch has
+  // already dispatched the recovery click into the app's own Chat segment; this modal
+  // makes the policy explicit instead of recovering silently. Deliberately NOT a
+  // hard block: navigating away (like the restricted popup's "Close → /") would destroy
+  // the member's conversation. The button just acknowledges and hides the modal — the
+  // recovery click in vetSwitch does the actual return to Chat.
+  // (workModalEl is declared before installMenuGuards(); see the note there.)
+  function buildWorkModal() {
+    if (workModalEl && document.documentElement.contains(workModalEl)) return workModalEl;
+    var wrap = document.createElement('div');
+    wrap.id = WORK_MODAL_ID;
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;' +
+      'justify-content:center;padding:24px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;';
+
+    var backdrop = document.createElement('div');
+    backdrop.setAttribute('data-genz-backdrop', '1');
+    backdrop.style.cssText = 'position:absolute;inset:0;background:rgba(4,16,31,.78);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);';
+    wrap.appendChild(backdrop);
+
+    var card = document.createElement('div');
+    card.style.cssText = 'position:relative;width:100%;max-width:440px;background:rgba(10,24,48,.97);' +
+      'border:1px solid rgba(6,182,212,.32);border-radius:20px;padding:34px 30px;text-align:center;' +
+      'box-shadow:0 24px 60px rgba(2,8,23,.6);color:#eaf1fb;';
+
+    var badge = document.createElement('div');
+    badge.style.cssText = 'width:54px;height:54px;margin:0 auto 16px;border-radius:14px;display:flex;' +
+      'align-items:center;justify-content:center;background:linear-gradient(135deg,#2563EB,#06B6D4);' +
+      'box-shadow:0 8px 24px rgba(6,182,212,.35);font-size:26px;line-height:1;';
+    badge.textContent = '🚫';
+    card.appendChild(badge);
+
+    var h = document.createElement('h1');
+    h.style.cssText = 'font-size:21px;font-weight:700;margin:0 0 10px;color:#f3f8ff;letter-spacing:-.01em;';
+    h.textContent = 'Work mode is not allowed';
+    card.appendChild(h);
+
+    var p = document.createElement('p');
+    p.style.cssText = 'color:rgba(234,241,251,.74);font-size:14.5px;line-height:1.6;margin:0 0 24px;';
+    p.textContent = 'This account is managed by Gen Z Digital Store and is limited to Chat mode. ' +
+      'You have been switched back to Chat.';
+    card.appendChild(p);
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:10px;justify-content:center;flex-wrap:wrap;';
+
+    var back = document.createElement('button');
+    back.id = 'genz-workmode-back';
+    back.type = 'button';
+    back.textContent = 'Back to Chat';
+    back.style.cssText = 'background:linear-gradient(135deg,#2563EB 0%,#06B6D4 100%);' +
+      'color:#fff;font-weight:700;font-size:14px;padding:12px 22px;border-radius:11px;cursor:pointer;border:0;' +
+      'box-shadow:0 8px 24px rgba(37,99,235,.28);';
+    // Acknowledge: re-assert Chat (harmless if the recovery click already landed) and dismiss.
+    back.addEventListener('click', function () {
+      try { if (workModalEl.__chatRow && workModalEl.__chatRow.click) workModalEl.__chatRow.click(); } catch (e) {}
+      try { workModalEl.style.display = 'none'; } catch (e) {}
+    });
+    row.appendChild(back);
+
+    card.appendChild(row);
+    wrap.appendChild(card);
+    (document.body || document.documentElement).appendChild(wrap);
+    workModalEl = wrap;
+    return wrap;
+  }
+  // Idempotent per switcher container: the warning is informative, not a nag. Called only
+  // when the session was found IN Work after the document settled (see vetSwitch).
+  function showWorkModeWarning(container, chatRow) {
+    try {
+      if (!container || container.__genzWorkWarned) return;
+      container.__genzWorkWarned = true;
+      var m = buildWorkModal();
+      m.__chatRow = chatRow || null;
+      m.style.display = 'flex';
+    } catch (e) {}
+  }
+
   function showRestrictedPopup(hardBlock) {
     var m = buildModal();
     m.__hardBlock = !!hardBlock;
@@ -856,12 +1001,26 @@
     for (var i = 0; i < blockFrags.length; i++) { if (p.indexOf(blockFrags[i]) !== -1) return true; }
     return false;
   }
+  // Prefix match on the fragment ("#settings" blocks "#settings", "#settings/Security", …) so a
+  // conversation anchor that merely CONTAINS the word can never trip it.
+  function hashIsBlocked(hash) {
+    var h = String(hash || '').toLowerCase();
+    if (!h || h === '#') return false;
+    for (var i = 0; i < blockHashFrags.length; i++) {
+      var f = String(blockHashFrags[i] || '').toLowerCase();
+      if (f && (h === f || h.indexOf(f + '/') === 0 || h.indexOf(f + '?') === 0)) return true;
+    }
+    return false;
+  }
+  function routeIsBlocked(loc) {
+    return pathIsBlocked(loc && loc.pathname) || hashIsBlocked(loc && loc.hash);
+  }
 
   // Restricted page loaded directly (URL entry, refresh, new tab) or reached via SPA route
   // change / account switch → hard-block with the popup. Re-evaluated on every route change.
   function maybeBlockCurrentRoute() {
     try {
-      if (pathIsBlocked(location.pathname)) showRestrictedPopup(true);
+      if (routeIsBlocked(location)) showRestrictedPopup(true);
       else if (modalEl && modalEl.__hardBlock) hideModal();   // navigated back to an allowed route
     } catch (e) {}
   }
@@ -887,7 +1046,7 @@
       var url;
       try { url = new URL(a.getAttribute('href'), location.href); } catch (e) { return; }
       if (url.host && url.host !== location.host) return;     // external link — leave alone
-      if (pathIsBlocked(url.pathname)) {
+      if (routeIsBlocked(url)) {
         ev.preventDefault(); ev.stopPropagation();
         if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();
         showRestrictedPopup(false);
@@ -938,7 +1097,11 @@
   window.__GENZ_SHIELD_REFRESH__ = function (cfg) {
     if (!cfg) return;
     if (Array.isArray(cfg.blockRouteFragments)) blockFrags = cfg.blockRouteFragments;
-    if (Array.isArray(cfg.hideSelectors)) hideSelectors = cfg.hideSelectors;
+    if (Array.isArray(cfg.blockHashFragments)) blockHashFrags = cfg.blockHashFragments;
+    // injectStyle is cheap + idempotent (rebuilds only when the text actually changed), so
+    // refreshed selectors take effect as CSS immediately — the profile selectors seeded by
+    // the early bootstrap stay covered here too, not just the first run.
+    if (Array.isArray(cfg.hideSelectors)) { hideSelectors = cfg.hideSelectors; try { injectStyle(); } catch (e) {} }
     // COMPLETENESS MATTERS. The zero-flash bootstrap seeds these as empty placeholders, so the
     // real config MUST be able to replace every one of them — otherwise the ChatGPT account /
     // logout shield would stay permanently disabled behind the bootstrap's blanks. For every
@@ -995,8 +1158,11 @@
     var _ps = history.pushState; history.pushState = function () { var r = _ps.apply(this, arguments); onRouteChange(); return r; };
     var _rs = history.replaceState; history.replaceState = function () { var r = _rs.apply(this, arguments); onRouteChange(); return r; };
     window.addEventListener('popstate', onRouteChange);
+    // Typing/pasting "#settings/…" fires hashchange; the app's own in-page pushState does not
+    // reach the isolated-world patch above, so the safety net re-checks hash routes too.
+    window.addEventListener('hashchange', onRouteChange);
     // Low-frequency safety net (marked nodes are skipped, so this is cheap).
-    setInterval(scheduleFull, 4000);
+    setInterval(function () { scheduleFull(); if (blockHashFrags.length) maybeBlockCurrentRoute(); }, 4000);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);

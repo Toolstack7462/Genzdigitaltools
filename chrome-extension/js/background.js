@@ -3618,15 +3618,36 @@ async function injectShield(tabId, url, tool) {
     try { cfg.appOrigin = await getAppOrigin(); } catch (_) {}
     const hasPermission = await chrome.permissions.contains({ origins: [getOriginPattern(url)] });
     if (!hasPermission) return false;
-    // Set config in the page's isolated world, then inject the shield (idempotent on the
-    // page side: a re-injection just refreshes config + re-sweeps).
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: (c) => { window.__GENZ_SHIELD_CFG__ = c; },
-      args: [cfg]
-    });
-    await chrome.scripting.executeScript({ target: { tabId }, files: ['js/shield.js'] });
-    logger.debug('Shield injected', { tabId });
+    // If the shield is ALREADY running in this tab (chatgpt.com loads it declaratively at
+    // document_start, before the service worker even wakes), refresh its config IN PLACE via
+    // the designed __GENZ_SHIELD_REFRESH__ hook — do NOT re-execute shield.js. Re-execution
+    // installs duplicate observers/listeners AND neuters the account sweep: the fresh
+    // closure's sweepGen collides with the first run's __genzShield marks, so pre-existing
+    // nodes would never be re-evaluated with the real rules. If the shield is not running
+    // yet (other tools inject only here, or an old build without the refresh hook), fall
+    // back to seeding the config and injecting shield.js exactly once.
+    let refreshed = false;
+    try {
+      const rs = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (c) => {
+          try {
+            if (typeof window.__GENZ_SHIELD_REFRESH__ === 'function') {
+              window.__GENZ_SHIELD_REFRESH__(c);
+              return true;
+            }
+          } catch (e) {}
+          try { window.__GENZ_SHIELD_CFG__ = c; } catch (e2) {}
+          return false;
+        },
+        args: [cfg]
+      });
+      refreshed = !!(rs && rs[0] && rs[0].result === true);
+    } catch (e) { refreshed = false; }
+    if (!refreshed) {
+      await chrome.scripting.executeScript({ target: { tabId }, files: ['js/shield.js'] });
+    }
+    logger.debug('Shield injected', { tabId, refreshed });
     return true;
   } catch (error) {
     logger.warn('Shield injection failed', { error: error.message });

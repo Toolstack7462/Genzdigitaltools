@@ -1,24 +1,23 @@
 'use strict';
 const express = require('express');
-const crypto = require('crypto');
 const router = express.Router();
 const { requireAuth } = require('../../middleware/authEnhanced');
 const ActivityLog = require('../../models/ActivityLog');
 const ExtensionRelease = require('../../models/ExtensionRelease');
 const User = require('../../models/User');
-const { readManifestFromZip } = require('../../utils/zipManifest');
-const { writeExtensionZip, ZIP_FILENAME, readDiskExtensionVersion, versionedFilename } = require('../../utils/extensionDownloads');
-const { isValidVersion, compareVersions, isOlder, maxVersion } = require('../../utils/semver');
+const {
+  ZIP_FILENAME, versionedFilename, resolvePublishedRelease, resolveServedRelease,
+  validateExtensionPackage, decidePublish, publishExtensionZip, verifyPublicDownloads,
+  withPublishLock, ReleaseError, versionFromFilename,
+} = require('../../utils/extensionDownloads');
+const { isValidChromeVersion, compareVersions, isOlder } = require('../../utils/semver');
 
-// The effective PUBLISHED version = the newer of the on-disk ZIP and the DB release row. A freshly
-// deployed ZIP can be newer than the last DB publish row, so BOTH must be considered. This is the
-// SINGLE source of truth for "published version" — /release (what the admin sees), the save-policy
-// ceiling, and the notify route all use it, so they can never disagree (the root cause of the
-// "minVersion cannot be greater than the published version" false error). Disk wins ties, matching
-// /release's original preference.
-function effectiveLatest(dbVersion, diskVersion) {
-  return maxVersion(diskVersion, dbVersion);
-}
+// The PUBLISHED version is resolved in ONE place — resolvePublishedRelease() — from the artifact
+// actually being served (the DB row is only a fallback when nothing is readable on disk). /release
+// (what the admin sees), the save-policy ceiling, /notify, the client version-info and the
+// heartbeat all use it, so none of them can advertise a version the download does not contain.
+// (Earlier code took the NEWER of disk and DB, which let a DB row announce 3.9.29 while the
+// download still served 3.9.25.)
 
 // Admin auth — same pattern as the other admin routers.
 router.use(requireAuth);
@@ -100,12 +99,9 @@ function clientMatchesSearch(c, search) {
 router.get('/release', async (req, res) => {
   try {
     const rel = await ExtensionRelease.getLatest();
-    const diskVersion = readDiskExtensionVersion();
-    const dbVersion = rel ? rel.version : null;
-    const latest = effectiveLatest(dbVersion, diskVersion);
-    const minVersion = rel ? (rel.minVersion || null) : null;
-    const forceUpdate = rel ? !!rel.updateRequired : false;
-    const effectiveMin = minVersion || (forceUpdate ? latest : null);
+    const pub = resolvePublishedRelease(rel);
+    const { latest, dbVersion, diskVersion, minVersion, effectiveMin } = pub;
+    const forceUpdate = pub.forceUpdate;
 
     const { page, limit, status, sortBy, sortOrder, search } = parseListParams(req.query);
 
@@ -162,10 +158,16 @@ router.get('/release', async (req, res) => {
       updateRequired: forceUpdate,
       filename: versionedFilename(latest),
       stableFilename: ZIP_FILENAME,
-      size: rel ? (rel.size || 0) : 0,
+      size: pub.size || 0,
+      sha256: pub.sha256 || null,
       uploadedAt: rel ? (rel.publishedAt || null) : null,
       diskVersion,
       dbVersion,
+      // Every download folder serves the same bytes, and the DB row describes them. When either
+      // is false the panel warns: clients are offered `latestVersion` (the oldest served copy).
+      servedConsistent: pub.servedConsistent,
+      metadataMatchesArtifact: pub.metadataMatchesArtifact,
+      servedArtifacts: pub.artifacts.map(a => ({ dir: a.dir, version: a.version, sha256: a.sha256, size: a.size, mtime: a.mtime || null, error: a.error || null })),
       downloadPath: `/downloads/${ZIP_FILENAME}`,
       clients,
       counts,
@@ -177,103 +179,132 @@ router.get('/release', async (req, res) => {
   }
 });
 
-// POST /api/crm/admin/extension/upload — upload/replace the latest extension ZIP.
-// Body = raw zip bytes (Content-Type application/zip). Optional ?minVersion=x.y.z
-// The ZIP is written into the EXISTING download folders (no new download flow);
-// the version is read from the ZIP's own manifest.json. Never logs secrets.
+// POST /api/crm/admin/extension/upload — publish a new extension release.
+// Body = raw zip bytes (Content-Type application/zip). Query (all optional):
+//   minVersion=x.y.z      admin-controlled forced-update floor
+//   filename=<name>       the chosen file's name; a "-v<version>" in it must match the manifest
+//   expectedVersion=x.y.z explicit version the admin intends to publish (same check)
+//   allowDowngrade=1      deliberate rollback / replacement of an already-published version
+//
+// Order (each step must pass before the next; any failure restores the previous release):
+//   1. validate the package itself (integrity, root manifest, Chrome version, referenced files,
+//      unchanged extension key, version matches what the admin selected)
+//   2. under a cross-process lock, decide against what is CURRENTLY served (no stale publish)
+//   3. write ALL download folders (staged, hash-verified, swapped in, re-verified)
+//   4. fetch the public download URLs and require the same SHA-256 (proves the folders written
+//      are the ones clients download from — the 2026-10 incident)
+//   5. only then record the release row the version endpoints read
 router.post('/upload',
   express.raw({ type: ['application/zip', 'application/x-zip-compressed', 'application/x-zip', 'application/octet-stream'], limit: '40mb' }),
   async (req, res) => {
+    const fail = (err) => res.status(err.status || 500).json({ error: err.message, code: err.code, ...(err.extra || {}) });
     try {
       const buf = req.body;
       if (!Buffer.isBuffer(buf) || buf.length === 0) {
         return res.status(400).json({ error: 'No ZIP uploaded. POST the .zip with Content-Type application/zip.' });
       }
 
-      // Read the version straight from the uploaded ZIP's manifest.json.
-      let manifest;
-      try {
-        manifest = readManifestFromZip(buf);
-      } catch (e) {
-        return res.status(422).json({ error: 'Could not read manifest.json from the ZIP', code: String(e.message || 'manifest_read_failed') });
+      const explicit = req.query.expectedVersion != null && req.query.expectedVersion !== '' ? String(req.query.expectedVersion) : null;
+      if (explicit && !isValidChromeVersion(explicit)) {
+        return res.status(400).json({ error: 'expectedVersion is not a valid Chrome extension version', code: 'invalid_expected_version' });
       }
-      if (!manifest.version || !isValidVersion(manifest.version)) {
-        return res.status(422).json({ error: 'manifest.json has no valid "version"', code: 'invalid_manifest_version' });
+      const expectedVersion = explicit || versionFromFilename(req.query.filename);
+
+      let pkg;
+      try {
+        pkg = validateExtensionPackage(buf, { expectedVersion, currentKey: resolveServedRelease().key });
+      } catch (e) {
+        if (e instanceof ReleaseError) return fail(e);
+        throw e;
       }
 
       // Optional minimum-required version (admin-controlled forced-update floor).
-      let minVersion = req.query.minVersion != null ? String(req.query.minVersion) : undefined;
-      if (minVersion !== undefined && minVersion !== '' && !isValidVersion(minVersion)) {
+      const minVersion = req.query.minVersion != null ? String(req.query.minVersion) : undefined;
+      if (minVersion !== undefined && minVersion !== '' && !isValidChromeVersion(minVersion)) {
         return res.status(400).json({ error: 'minVersion is not a valid version', code: 'invalid_min_version' });
       }
       // A min version must never exceed the version we are publishing.
-      if (minVersion && compareVersions(minVersion, manifest.version) > 0) {
+      if (minVersion && compareVersions(minVersion, pkg.version) > 0) {
         return res.status(400).json({ error: 'minVersion cannot be greater than the uploaded version', code: 'min_version_too_high' });
       }
 
-      // ── Accidental-downgrade guard ────────────────────────────────────────────
-      // Publishing is a straight overwrite of the served ZIP, so uploading an older build
-      // silently replaces a newer production release and every client is offered the stale
-      // extension. That is exactly how v3.9.20 came to be served while v3.9.25 was the real
-      // latest. Compare against the EFFECTIVE published version (newer of the on-disk ZIP and
-      // the DB row) — the same value /release shows the admin, so the block can never disagree
-      // with what the panel displays.
-      //
-      // Deliberate rollback stays possible, but it has to be asked for explicitly
-      // (?allowDowngrade=1); it is never the default, and it is recorded in the activity log.
       const allowDowngrade = /^(1|true|yes)$/i.test(String(req.query.allowDowngrade || ''));
-      const relNow = await ExtensionRelease.getLatest();
-      const publishedNow = effectiveLatest(relNow ? relNow.version : null, readDiskExtensionVersion());
-      const downgrade = !!publishedNow && isOlder(manifest.version, publishedNow);
-      if (downgrade && !allowDowngrade) {
-        return res.status(409).json({
-          error: `Upload blocked: version ${manifest.version} is older than currently deployed version ${publishedNow}.`,
-          code: 'version_downgrade_blocked',
-          uploadedVersion: manifest.version,
-          publishedVersion: publishedNow,
-        });
-      }
+      const adminId = req.userId || (req.user && req.user._id) || null;
 
-      // Replace the ZIP in the EXISTING download folders.
-      const { written, skipped } = writeExtensionZip(buf);
-      if (!written.length) {
-        return res.status(500).json({ error: 'Could not write the ZIP to any download folder', skipped });
-      }
+      const { decision, written, publicCheck, doc } = await withPublishLock(async () => {
+        // Decide against the state INSIDE the lock, so a publish that queued behind a newer one
+        // cannot overwrite it.
+        const relNow = await ExtensionRelease.getLatest();
+        const decision = decidePublish(
+          { version: pkg.version, sha256: pkg.sha256 },
+          { artifacts: resolveServedRelease().artifacts, dbVersion: relNow ? relNow.version : null, dbSha256: relNow ? relNow.sha256 : null },
+          allowDowngrade,
+        );
+        if (!decision.ok) {
+          throw new ReleaseError(decision.status, decision.code, decision.error, { uploadedVersion: pkg.version, publishedVersion: decision.publishedVersion });
+        }
 
-      const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
-      const doc = await ExtensionRelease.publish({
-        version: manifest.version,
-        minVersion,
-        filename: ZIP_FILENAME,
-        size: buf.length,
-        sha256,
-        manifestName: manifest.name,
-        publishedBy: req.userId || (req.user && req.user._id) || null,
+        const written = publishExtensionZip(buf);
+
+        const publicCheck = await verifyPublicDownloads(written.sha256);
+        const wrong = publicCheck.filter(r => r.status === 'mismatch');
+        if (wrong.length) {
+          const rollbackFailed = written.rollback();
+          throw new ReleaseError(502, 'served_artifact_mismatch',
+            `The ZIP was written but ${wrong.map(r => r.origin).join(', ')} still served a different file, so the release was rolled back and nothing changed for clients. The download folders configured on the server are not the ones the site serves.`,
+            { publicCheck, rollbackFailed });
+        }
+
+        let doc;
+        try {
+          doc = await ExtensionRelease.publish({
+            version: pkg.version,
+            minVersion,
+            filename: ZIP_FILENAME,
+            size: written.size,
+            sha256: written.sha256,
+            manifestName: pkg.name,
+            publishedBy: adminId,
+          });
+        } catch (dbErr) {
+          const rollbackFailed = written.rollback();
+          console.error('Extension release row write failed; files rolled back:', dbErr.message, rollbackFailed);
+          throw new ReleaseError(500, 'release_record_failed', 'The release could not be recorded, so the previous release was restored.');
+        }
+        return { decision, written, publicCheck, doc };
       });
 
-      await ActivityLog.log('ADMIN', req.userId || (req.user && req.user._id), 'EXTENSION_RELEASE_PUBLISHED', {
-        version: manifest.version,
+      const rollback = decision.kind === 'rollback' || decision.kind === 'replace';
+      await ActivityLog.log('ADMIN', adminId, 'EXTENSION_RELEASE_PUBLISHED', {
+        version: pkg.version,
         minVersion: doc.minVersion || null,
-        sizeBytes: buf.length,
-        foldersWritten: written.length,
+        sizeBytes: written.size,
+        sha256: written.sha256,
+        foldersWritten: written.written.length,
+        publicCheck: publicCheck.map(r => `${r.origin}:${r.status}`).join(' ') || 'not_configured',
         // Records a deliberate rollback so an intentional downgrade is distinguishable
         // from a normal release when reading the audit trail later.
-        rollback: downgrade || undefined,
-        replacedVersion: downgrade ? publishedNow : undefined,
+        rollback: rollback || undefined,
+        replacedVersion: rollback ? decision.replacedVersion : undefined,
       });
 
       res.json({
         success: true,
-        version: manifest.version,
+        version: pkg.version,
         minVersion: doc.minVersion || null,
-        size: buf.length,
+        size: written.size,
+        sha256: written.sha256,
         filename: ZIP_FILENAME,
-        foldersWritten: written.length,
-        written,
-        skipped,
+        foldersWritten: written.written.length,
+        written: written.written,
+        skipped: [],
+        publication: decision.kind,
+        // 'unreachable' entries mean the public URL could not be checked — not that it matched.
+        publicCheck,
         downloadPath: `/downloads/${ZIP_FILENAME}`,
       });
     } catch (err) {
+      if (err instanceof ReleaseError) return fail(err);
       console.error('Extension upload error:', err.message);
       res.status(500).json({ error: 'Extension upload failed' });
     }
@@ -288,14 +319,14 @@ async function handleSetPolicy(req, res) {
     const body = req.body || {};
     const minVersion = body.minVersion;
     const updateRequired = body.updateRequired;
-    if (minVersion != null && minVersion !== '' && !isValidVersion(minVersion)) {
+    if (minVersion != null && minVersion !== '' && !isValidChromeVersion(String(minVersion))) {
       return res.status(400).json({ error: 'minVersion is not a valid version' });
     }
 
     // Ensure a release row exists — seed from the on-disk ZIP if needed.
     let latest = await ExtensionRelease.getLatest();
     if (!latest) {
-      const seedVersion = readDiskExtensionVersion();
+      const seedVersion = resolveServedRelease().version;
       if (!seedVersion) return res.status(409).json({ error: 'No extension ZIP available yet' });
       latest = await ExtensionRelease.publish({
         version: seedVersion, filename: ZIP_FILENAME, size: 0,
@@ -303,10 +334,9 @@ async function handleSetPolicy(req, res) {
         publishedBy: req.userId || (req.user && req.user._id) || null,
       });
     }
-    // Validate against the EFFECTIVE published version (newer of on-disk ZIP + DB row) — the same
-    // value /release shows the admin. Using latest.version (DB only) here was the root-cause bug:
-    // a stale DB row older than the on-disk ZIP wrongly rejected a valid, lower minVersion.
-    const publishedVersion = effectiveLatest(latest.version, readDiskExtensionVersion());
+    // Validate against the published version clients can actually download — the same value
+    // /release shows the admin — so a minimum can never require an unavailable package.
+    const publishedVersion = resolvePublishedRelease(latest).latest;
     if (minVersion && publishedVersion && compareVersions(minVersion, publishedVersion) > 0) {
       return res.status(400).json({ error: 'minVersion cannot be greater than the published version', code: 'min_version_too_high' });
     }
@@ -358,13 +388,8 @@ router.post('/notify', express.json({ limit: '64kb' }), async (req, res) => {
 
     // Resolve latest + effective minimum from the SAME source as /release.
     const rel = await ExtensionRelease.getLatest();
-    const diskVersion = readDiskExtensionVersion();
-    const dbVersion = rel ? rel.version : null;
-    const latest = effectiveLatest(dbVersion, diskVersion);
+    const { latest, effectiveMin } = resolvePublishedRelease(rel);
     if (!latest) return res.status(409).json({ error: 'No published extension version yet' });
-    const minVersion = rel ? (rel.minVersion || null) : null;
-    const forceUpdate = rel ? !!rel.updateRequired : false;
-    const effectiveMin = minVersion || (forceUpdate ? latest : null);
 
     const query = { role: 'CLIENT' };
     if (!all) query._id = { $in: clientIds };

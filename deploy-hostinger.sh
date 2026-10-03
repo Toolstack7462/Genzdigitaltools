@@ -218,8 +218,24 @@ EXT_VER="$(node -e "try{const{readManifestFromZip}=require('./backend/utils/zipM
 # argv. Code-splitting produces ~100 hashed chunk files; passing them all inline
 # overflows the OS command-line limit ("Argument list too long"). The credential
 # stays on the command line (-u), never written to the config file.
+# Never overwrite a NEWER live extension release with the committed ZIP (the admin panel
+# publishes to the docroots directly — see scripts/extension-live-guard.mjs).
+# Ships the ZIP only on an explicit DECISION=ship; any failure keeps the live release.
+EXT_GUARD_SKIP="downloads/genz-digital-store-extension.zip"
+if command -v node >/dev/null 2>&1; then
+  GUARD_OUT="$(node scripts/extension-live-guard.mjs "${BUILD_DIR}/downloads/genz-digital-store-extension.zip" 2>&1 || true)"
+  echo "${GUARD_OUT}" | sed 's/^/    /'
+  case "${GUARD_OUT}" in *"DECISION=ship"*) EXT_GUARD_SKIP="" ;; esac
+else
+  echo "    node not found — cannot compare with the live extension." >&2
+fi
+if [[ -n "${EXT_GUARD_SKIP}" ]]; then
+  EXT_VER="(live release kept)"
+  echo "    extension ZIP left out of this upload — the live release is kept." >&2
+fi
 FRONT_CFG="$(mktemp)"
 while IFS= read -r rel; do
+  [[ -n "${EXT_GUARD_SKIP}" && "${rel#./}" == "${EXT_GUARD_SKIP}" ]] && continue
   rel="${rel#./}"
   printf 'upload-file = "%s"\nurl = "sftp://%s:%s%s/%s"\n' "${BUILD_DIR}/${rel}" "${HOST}" "${PORT}" "${MAIN_WEB}" "${rel}" >> "${FRONT_CFG}"
   if [[ "${rel}" != ".htaccess" ]]; then

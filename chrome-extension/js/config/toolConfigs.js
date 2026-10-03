@@ -480,17 +480,42 @@ export const SHIELD_OVERRIDES = {
   // The PROXY ChatGPT (chatgpt1.genzdigitalstore.com, served by proxy-gateway/) never matches this
   // host key and is a completely separate deploy, so it is untouched by everything below.
   'chatgpt.com': {
-    hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]'],
+    // Verified 2026-09-30 against the live logged-in chatgpt.com DOM: the profile control is
+    // <button aria-label="Open profile menu" aria-haspopup="menu" ...> with NO data-testid
+    // (the id is a radix-generated unstable value). The data-testid selectors are kept as
+    // fallbacks; the aria-label selector is the one that matches the live UI.
+    // '[aria-label="Filter chats and work"]' (added 2026-10-01, user-approved): the Recents
+    // header's filter button carries "work" in its accessible label ("Filter chats and work").
+    // The visible glyph is only a filter icon, so hiding the button also removes the chat
+    // filter — accepted trade-off for zero Work trace in Chat-only store sessions.
+    hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]',
+                    '[aria-label="Open profile menu"]',
+                    '[aria-label="Filter chats and work"]'],
+
+    // ChatGPT opens Settings as a HASH route on the current path (chatgpt.com/#settings,
+    // #settings/Security, …). Settings → Security → "Log out of all devices" (and Account →
+    // Log out) would end the SHARED session for every member, and pathname-based
+    // blockRouteFragments never see a hash. Typing that URL was the remaining way past the
+    // hidden profile menu. Prefix-matched by shield.js hashIsBlocked; chatgpt.com only.
+    blockHashFragments: ['#settings'],
 
     // ── Chat / Work mode switcher policy (chatgpt.com ONLY) ────────────────────────────────
     // ChatGPT's July 2026 merge of the ChatGPT and Codex surfaces added a segmented
     // "Chat | Work" switcher, Work being an agentic mode. Gen Z-managed sessions are Chat-only.
     //
-    // WHY THERE IS NO data-testid / class / route HERE. ChatGPT's live markup could not be read
-    // from an authorised session when this was written. A guessed attribute would be worse than
-    // none: it could match the wrong node. So this config carries only a VOCABULARY and BOUNDS,
-    // and shield.js (applyTabPolicy/findSwitch) verifies the switcher structurally in the live
-    // page before touching anything. If the signature does not match, nothing happens.
+    // VERIFIED 2026-09-30 against the live logged-in chatgpt.com DOM (previously this config
+    // carried only a vocabulary because the live markup had never been read). The real switcher:
+    //   <div role="group" aria-label="Composer mode">          ← the switcher container
+    //     <span aria-hidden="true">…</span>                     ← decorative track (ignored)
+    //     <span aria-hidden="true" style="transform:…">…</span> ← sliding indicator (ignored)
+    //     <button type="button" aria-pressed="true" data-state="closed">Chat</button>
+    //     <button type="button" aria-pressed="false" data-state="closed"><span>Work</span></button>
+    // Key facts the policy depends on: segments are plain <button>s (no role=tab, no
+    // aria-selected/aria-checked — aria-pressed is the ONLY selection marker); "Chat" is a direct
+    // text node while "Work" is wrapped in a span (menuLabel handles both); data-state="closed"
+    // is a Radix popover state, NOT a selection marker. shield.js tabSelected() accepts
+    // aria-pressed, and the observer's attributeFilter watches it so an in-place Chat→Work
+    // toggle re-triggers evaluation.
     //
     // WHY THIS CANNOT HIT CONVERSATION CONTENT. Unlike hideTextSource — which runs over every
     // a/button/li/span/div/p/h1-h4 on the page and must therefore never contain a common word —
@@ -513,8 +538,10 @@ export const SHIELD_OVERRIDES = {
       // reach the sidebar list or the app shell.
       maxClimb: 6,
       maxSwitchNodes: 120,
-      // Require the switcher to mark its active segment (aria-selected / aria-checked /
-      // aria-current / data-state). Set false only if the verified DOM proves no marker exists.
+      // Require the switcher to mark its active segment. Verified 2026-09-30: the live
+      // switcher marks ONLY via aria-pressed (aria-selected / aria-checked / aria-current /
+      // data-state=active are also accepted for other/future shapes). Set false only if a
+      // re-verified DOM proves no marker exists at all.
       requireSelectionMarker: true,
       // Cap on "Work is active -> click Chat" recoveries per container instance. Loop guard.
       maxRecoveries: 3
@@ -686,6 +713,8 @@ export function getShieldConfig(url, tool) {
     hideTextSource: SHIELD_DEFAULTS.hideTextSource,
     keepTextSource: SHIELD_DEFAULTS.keepTextSource,
     blockRouteFragments: SHIELD_DEFAULTS.blockRouteFragments.slice(),
+    // Empty for every tool unless its host override adds some (only chatgpt.com does).
+    blockHashFragments: [],
     restrictTitle: SHIELD_DEFAULTS.restrictTitle,
     restrictMessage: SHIELD_DEFAULTS.restrictMessage
     // cfg.appOrigin is added at injection time by background.js (dashboard origin for the popup).
@@ -696,6 +725,7 @@ export function getShieldConfig(url, tool) {
       if (o.enabled === false) cfg.enabled = false;
       if (Array.isArray(o.hideSelectors)) cfg.hideSelectors = cfg.hideSelectors.concat(o.hideSelectors);
       if (Array.isArray(o.hrefSubstrings)) cfg.hrefSubstrings = cfg.hrefSubstrings.concat(o.hrefSubstrings);
+      if (Array.isArray(o.blockHashFragments)) cfg.blockHashFragments = cfg.blockHashFragments.concat(o.blockHashFragments);
       // Host-scoped by construction: only the matched override can contribute one, so no other
       // tool can ever receive a menu policy.
       if (o.menuPolicy) cfg.menuPolicy = o.menuPolicy;

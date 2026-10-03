@@ -76,13 +76,18 @@ test('the stale 3.9.15 registration is explicitly torn down on install AND start
     `expected the teardown to be defined and called from both onInstalled and onStartup (found ${calls.length} references)`);
 });
 
-test('manifest is 3.9.25 and permissions are unchanged from 3.9.14', () => {
+test('manifest version is a valid Chrome release version and permissions are unchanged from 3.9.14', () => {
   const m = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
-  // 3.9.23 adds per-tab assignment binding so same-host tools (ChatGPT Plus vs Pro) expire
-  // independently; 3.9.22 shipped the Chat/Work tab policy + zero-flash bootstrap. The version MUST be
-  // bumped with it: the update system reads "latest" from the served ZIP's manifest, so shipping
-  // new code under the old version leaves every installed user un-prompted and on the old build.
-  assert.strictEqual(m.version, '3.9.25');
+  const pkg = JSON.parse(fs.readFileSync(path.join(EXT, 'package.json'), 'utf8'));
+  // Release-aware, not pinned: this test used to assert one literal version, which had to be edited
+  // by hand on every release and said nothing about whether the SHIPPED ZIP matched. The version
+  // must be one Chrome accepts (1–4 integers 0–65535, no leading zeros, no suffix) and package.json
+  // must agree. "New code ⇒ new version" is enforced where it matters: build-extension.mjs --check
+  // compares the served ZIP's runtime files with this source, and the admin upload refuses a
+  // version that is already published with different bytes.
+  assert.match(m.version, /^(0|[1-9]\d{0,4})(\.(0|[1-9]\d{0,4})){0,3}$/, `"${m.version}" is not a valid Chrome extension version`);
+  assert.ok(m.version.split('.').every(n => Number(n) <= 65535), 'each version part must be <= 65535');
+  assert.strictEqual(pkg.version, m.version, 'package.json version must equal manifest.json version');
   assert.deepStrictEqual(
     m.permissions.slice().sort(),
     ['alarms', 'cookies', 'management', 'notifications', 'scripting', 'storage', 'tabs'],

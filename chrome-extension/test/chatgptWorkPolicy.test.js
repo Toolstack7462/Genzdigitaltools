@@ -94,12 +94,23 @@ class El {
     };
   }
   get className() { return this._attrs.class || ''; }
+  // Real DOM reflects id between the property and the attribute; the harness must too,
+  // or getElementById can never find an element created via el.id = '...'.
+  get id() { return this._attrs.id || ''; }
+  set id(v) { this._attrs.id = String(v); }
   getAttribute(k) { return k in this._attrs ? this._attrs[k] : null; }
   setAttribute(k, v) { this._attrs[k] = String(v); }
   removeAttribute(k) { delete this._attrs[k]; }
   appendChild(c) { c.parentElement = this; this.childNodes.push(c); return c; }
   get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
   get textContent() { return this.childNodes.map((n) => n.textContent).join(''); }
+  // Real DOM replaces all children with a single text node. Without this, shield.js
+  // (strict mode) throws when it sets textContent — e.g. buildModal/buildWorkModal and
+  // injectStyle never produced any element in the harness, silently.
+  set textContent(v) {
+    this.childNodes = [];
+    if (v !== null && v !== undefined && String(v) !== '') this.appendChild(new TextNode(String(v)));
+  }
   _walk(acc) {
     for (const c of this.childNodes) {
       if (c.nodeType === 1) { acc.push(c); c._walk(acc); }
@@ -126,15 +137,20 @@ class El {
     return false;
   }
   click() { this._doc._dispatch('click', this); }
-  addEventListener() {}
+  // Element-level listeners (target phase). Previously a no-op, which meant our own UI
+  // buttons (modal "Back to Chat", popup "Close") could never be exercised in tests.
+  addEventListener(type, fn) { (this._elListeners = this._elListeners || []).push({ type, fn }); }
 }
 
-function makeDom() {
+function makeDom(opts) {
   const listeners = [];           // {type, fn, capture}
   const observers = [];           // {cb, opts}
   const doc = {
     nodeType: 9,
-    readyState: 'complete',
+    // readyState override models document_start ('loading'): start() is then deferred to
+    // DOMContentLoaded, which is exactly what the load-flash tests need — without it every
+    // boot would run the settled pass immediately and the initial-pass gap would be untestable.
+    readyState: (opts && opts.readyState) || 'complete',
     createElement(tag) { const e = new El(tag); e._doc = doc; return e; },
     addEventListener(type, fn, capture) { listeners.push({ type, fn, capture: !!capture }); },
     removeEventListener() {},
@@ -175,6 +191,16 @@ function makeDom() {
       if (l.type !== type) continue;
       l.fn(ev);
       if (ev._stopImmediate) break;
+    }
+    // Target phase: listeners registered on the element itself (our modal buttons use
+    // these). Real DOM fires them even when default was prevented; stopImmediatePropagation
+    // still cuts the chain short.
+    if (target && target._elListeners && !ev._stopImmediate) {
+      for (const l of target._elListeners) {
+        if (l.type !== type) continue;
+        l.fn(ev);
+        if (ev._stopImmediate) break;
+      }
     }
     if (!ev.defaultPrevented) {
       // Simulate ChatGPT: activating a segment selects it and switches mode.
@@ -258,8 +284,8 @@ const CHATGPT_CFG = {
   }
 };
 
-function boot(buildFn, cfg) {
-  const { doc, win, ctx } = makeDom();
+function boot(buildFn, cfg, opts) {
+  const { doc, win, ctx } = makeDom(opts);
   const built = buildFn ? buildFn(doc) : {};
   win.__GENZ_SHIELD_CFG__ = JSON.parse(JSON.stringify(cfg || CHATGPT_CFG));
   vm.runInContext(SHIELD_SRC, ctx);
@@ -350,6 +376,307 @@ test('accessibility + focus order: the removed Work segment is out of both', () 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 2b. VERIFIED REAL-DOM REGRESSION — live chatgpt.com, inspected 2026-09-30
+// ─────────────────────────────────────────────────────────────────────────────
+// The live logged-in switcher is NOT role=tab/aria-selected. It is:
+//   <div role="group" aria-label="Composer mode">
+//     <span aria-hidden="true">…</span>                 (decorative track)
+//     <span aria-hidden="true" style="transform:…">…</span> (sliding indicator)
+//     <button type="button" aria-pressed="true" data-state="closed">Chat</button>
+//     <button type="button" aria-pressed="false" data-state="closed"><span>Work</span></button>
+// "Chat" is a DIRECT text node; "Work" is wrapped in a span. aria-pressed is the ONLY
+// selection marker — the old tabSelected() (aria-selected/aria-checked only) silently
+// no-opped on this markup, which is exactly the reported "hide does not work" defect.
+// These tests run the REAL shield.js against that exact shape, so a future markup change
+// that breaks detection fails LOUDLY here instead of failing silently in production.
+
+// Faithful builder for the verified live markup. opts.workActive flips aria-pressed;
+// opts.noMarker omits every selection marker (must remain a no-op).
+function buildRealChatGpt(doc, opts) {
+  const o = opts || {};
+  const pressed = o.noMarker ? {} : { 'aria-pressed': 'true' };
+  const unpressed = o.noMarker ? {} : { 'aria-pressed': 'false' };
+  const chatBtn = doc.el('button', Object.assign(
+    { type: 'button', 'data-state': 'closed' }, o.workActive ? unpressed : pressed), ['Chat']);
+  const workBtn = doc.el('button', Object.assign(
+    { type: 'button', 'data-state': 'closed' }, o.workActive ? pressed : unpressed),
+    [doc.el('span', {}, ['Work'])]);
+  const group = doc.el('div', { role: 'group', 'aria-label': 'Composer mode' }, [
+    doc.el('span', { 'aria-hidden': 'true' }, []),
+    doc.el('span', { 'aria-hidden': 'true' }, []),
+    chatBtn,
+    workBtn
+  ]);
+  const header = doc.el('header', {}, [doc.el('div', {}, [group])]);
+  // The composer lives OUTSIDE the switcher subtree on the live page (ProseMirror
+  // contenteditable, aria-label="Ask ChatGPT") — the climb must stop before reaching it.
+  const composer = doc.el('div',
+    { contenteditable: 'true', role: 'textbox', 'aria-label': 'Ask ChatGPT' }, []);
+  const workConvo = doc.el('a', { href: '/c/aaa' }, ['Work']);   // sidebar convo titled "Work"
+  const main = doc.el('main', {}, [composer, workConvo]);
+  doc.body.appendChild(header);
+  doc.body.appendChild(main);
+  return { group, chatBtn, workBtn, header, main, composer, workConvo };
+}
+
+test('REAL-DOM: the live aria-pressed switcher is identified and Work is removed', () => {
+  const t = boot((d) => buildRealChatGpt(d));
+  assert.strictEqual(t.workBtn.getAttribute('data-genz-tab-blocked'), '1',
+    'the live Work segment must be marked blocked — this failed before the aria-pressed fix');
+  assert.strictEqual(t.workBtn.hidden, true, 'the live Work segment must not be visible');
+  assert.strictEqual(t.group.hidden, true,
+    'the container holds nothing but the switch, so it goes whole (matches synthetic policy)');
+  assert.strictEqual(t.chatBtn.getAttribute('data-genz-tab-blocked'), null,
+    'Chat itself is never individually marked — it only goes with the container');
+  assert.strictEqual(t.composer.hidden, false, 'the composer is never touched');
+  assert.strictEqual(t.main.hidden, false, 'the app shell is never touched');
+  assert.strictEqual(t.workConvo.hidden, false, 'a sidebar conversation titled "Work" survives');
+});
+
+test('REAL-DOM: a live-shaped pair with NO selection marker is still a no-op', () => {
+  const t = boot((d) => buildRealChatGpt(d, { noMarker: true }));
+  assert.strictEqual(t.workBtn.hidden, false, 'without a marker nothing may be hidden');
+  assert.strictEqual(t.group.hidden, false);
+  assert.strictEqual(t.doc.querySelectorAll('[data-genz-tab-blocked]').length, 0);
+});
+
+test('REAL-DOM: a session loading already in Work is returned to Chat', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  assert.strictEqual(t.doc.app.mode, 'chat',
+    'recovery must click the app’s own Chat control when Work starts pressed');
+  assert.strictEqual(t.workBtn.hidden, true, 'and the Work segment is removed regardless');
+});
+
+test('REAL-DOM: an in-place Chat→Work toggle (aria-pressed flip, no re-insert) is corrected', () => {
+  const t = boot((d) => buildRealChatGpt(d));
+  assert.strictEqual(t.workBtn.hidden, true, 'precondition: Work starts hidden');
+  // ChatGPT's React flips aria-pressed on the SAME nodes — this is the exact mutation the
+  // observer's attributeFilter must catch (it did not, before aria-pressed was added).
+  t.chatBtn.setAttribute('aria-pressed', 'false');
+  t.workBtn.setAttribute('aria-pressed', 'true');
+  t.doc._mutate([], [t.chatBtn, t.workBtn]);
+  assert.strictEqual(t.doc.app.mode, 'chat', 'the toggle must be recovered via the Chat control');
+  assert.strictEqual(t.workBtn.hidden, true, 'Work must stay hidden after the in-place toggle');
+});
+
+test('REAL-DOM: the capture guard refuses a pointerdown on the live Work segment', () => {
+  const t = boot((d) => buildRealChatGpt(d));
+  const ev = t.doc._dispatch('pointerdown', t.workBtn);
+  assert.strictEqual(ev.defaultPrevented, true, 'activation of Work must be refused outright');
+  assert.strictEqual(t.doc.app.mode, 'chat', 'the mode must not change');
+});
+
+test('REAL-DOM: the observer watches aria-pressed so in-place toggles re-fire it', () => {
+  const m = SHIELD_SRC.match(/attributeFilter:\s*\[([^\]]*)\]/);
+  assert.ok(m, 'attributeFilter literal not found in shield.js');
+  assert.ok(m[1].includes('aria-pressed'),
+    'the live switcher flips ONLY aria-pressed in place — without it in attributeFilter ' +
+    'the observer never re-fires on Chat→Work (the harness stub ignores opts, so this ' +
+    'is asserted on the source)');
+});
+
+test('REAL-DOM: the chatgpt.com profile selector matches the live profile button', () => {
+  // Live 2026-09-30: <button aria-label="Open profile menu" type="button" aria-haspopup="menu"
+  // aria-expanded="false" data-state="closed"> — NO data-testid anywhere on it, so the old
+  // [data-testid="accounts-profile-button"] selector matched nothing.
+  assert.ok(TOOLCFG.includes('[aria-label="Open profile menu"]'),
+    'toolConfigs.js must carry a selector matching the live profile button');
+  const { doc } = makeDom();
+  const live = doc.el('button', {
+    'aria-label': 'Open profile menu', type: 'button',
+    'aria-haspopup': 'menu', 'aria-expanded': 'false', 'data-state': 'closed'
+  }, []);
+  assert.strictEqual(live.matches('[aria-label="Open profile menu"]'), true,
+    'the new selector must match the verified live markup');
+  const other = doc.el('button', { 'aria-label': 'Open main menu' }, []);
+  assert.strictEqual(other.matches('[aria-label="Open profile menu"]'), false,
+    'and must not match other labelled buttons');
+});
+
+test('REAL-DOM: the sidebar "Filter chats and work" button is hidden (accessible label carries "work")', () => {
+  // Found 2026-09-30 in the live logged-in sidebar: the Recents filter button's accessible
+  // label is "Filter chats and work". The visible glyph is only a filter icon — hiding the
+  // button also removes the chat filter, which the store accepted as the trade-off for zero
+  // Work trace in Chat-only sessions.
+  assert.ok(TOOLCFG.includes('[aria-label="Filter chats and work"]'),
+    'toolConfigs.js must carry the filter-button selector');
+  const cfg = Object.assign({}, CHATGPT_CFG,
+    { hideSelectors: ['[aria-label="Filter chats and work"]'] });
+  const t = boot((d) => {
+    const btn = d.el('button', { 'aria-label': 'Filter chats and work' }, []);
+    d.body.appendChild(btn);
+    return { btn };
+  }, cfg);
+  const style = t.doc.getElementById('genz-shield-style');
+  assert.ok(style && style.textContent.indexOf('[aria-label="Filter chats and work"]') !== -1,
+    'the first-paint stylesheet must hide the filter button');
+  assert.strictEqual(t.btn.matches('[aria-label="Filter chats and work"]'), true,
+    'the selector matches the live button shape');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2c. LOAD-TIME — Work must never be visible while ChatGPT loads
+// ─────────────────────────────────────────────────────────────────────────────
+// THE GAP. installMenuGuards() (the pre-paint MutationObserver) only sees nodes inserted
+// AFTER it installs, and start() — which re-vets the whole document — waits for
+// DOMContentLoaded. Markup already parsed before the observer installed would therefore
+// never be evaluated until some later mutation touched it, and the first paint can happen
+// before DOMContentLoaded: the Work segment would be visible from the very first frame.
+// The fix is an initial applyTabPolicy(document) at document_start, right after the
+// observer installs (see js/shield.js). These tests model document_start with
+// readyState 'loading': start() is deferred, the pre-built DOM generates no mutation
+// records, so WITHOUT the initial pass nothing would hide the segment — the first test
+// is the revert-proof for exactly that.
+//
+// The readyState==='loading' deferral inside vetSwitch is DELIBERATE and stays: the
+// Work→Chat recovery click must not fire into a half-built router, and the whole-
+// container hide must wait until wrappers stop growing. The second test proves the
+// deferred half settles correctly at DOMContentLoaded.
+
+test('LOAD: a switcher parsed before the observer installs is hidden by the initial pass', () => {
+  // readyState 'loading' models document_start: start() is deferred to DOMContentLoaded,
+  // and the pre-built DOM produces no observer records — without the initial
+  // applyTabPolicy(document) this markup would sit unevaluated (and paintable).
+  const t = boot((d) => buildRealChatGpt(d), null, { readyState: 'loading' });
+  assert.strictEqual(t.workBtn.getAttribute('data-genz-tab-blocked'), '1',
+    'the document_start initial pass must evaluate pre-existing markup — without it the ' +
+    'Work segment would be visible from the first paint');
+  assert.strictEqual(t.workBtn.hidden, true, 'the Work segment must not survive load');
+  assert.strictEqual(t.group.hidden, false,
+    '...but the whole-container hide stays deliberately deferred while loading');
+  assert.strictEqual(t.chatBtn.hidden, false, 'Chat is never hidden');
+  assert.strictEqual(t.composer.hidden, false, 'the composer is never touched');
+});
+
+test('LOAD: DOMContentLoaded settles the deferred work — Work-boot recovers, container goes', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }), null, { readyState: 'loading' });
+  t.doc.app.mode = 'work';   // the session booted into Work mode (refresh / back-button)
+  assert.strictEqual(t.workBtn.hidden, true, 'precondition: segment hidden pre-paint');
+  assert.strictEqual(t.group.hidden, false, 'precondition: container hide deferred while loading');
+  // Settle the document exactly as the browser does at DOMContentLoaded.
+  t.doc.readyState = 'interactive';
+  for (const l of t.doc._listeners) if (l.type === 'DOMContentLoaded') l.fn();
+  assert.strictEqual(t.doc.app.mode, 'chat',
+    'the deferred Work→Chat recovery must fire once the document settles — otherwise a ' +
+    'session that boots into Work would stay in Work mode');
+  assert.strictEqual(t.workBtn.hidden, true, 'Work stays hidden after the recovery');
+  assert.strictEqual(t.group.hidden, true,
+    'and the now-pointless switcher container is removed once parsing is done');
+});
+
+test('LOAD: shield.js evaluates pre-existing markup at document_start, before first paint', () => {
+  const i = SHIELD_SRC.indexOf('installMenuGuards();');
+  assert.ok(i !== -1, 'installMenuGuards() call not found in shield.js');
+  const after = SHIELD_SRC.slice(i, i + 2200);
+  assert.ok(/applyTabPolicy\(document\)/.test(after),
+    'an initial applyTabPolicy(document) must run at document_start right after the ' +
+    'observer installs — markup parsed before the observer would otherwise never be ' +
+    'evaluated until a later mutation (first-paint flash gap)');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2d. WORK-MODE WARNING — Work is not allowed, not merely hidden
+// ─────────────────────────────────────────────────────────────────────────────
+// Store policy (2026-10-01): the Work segment is refused at the capture phase so it can
+// never be ACTIVATED, and if the session is found sitting in Work anyway (direct URL
+// entry, refresh, Back/Forward, or a programmatic switch — the only ways past the
+// guards), the member gets an explicit warning instead of a silent redirect. The
+// recovery click in vetSwitch still returns the session to Chat; the modal only makes
+// the policy visible. It is informative, not a nag: once per switcher container, never
+// during parsing, and "Back to Chat" just acknowledges.
+
+test('WARNING: a session found in Work shows the not-allowed warning', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const m = t.doc.getElementById('genz-workmode-modal');
+  assert.ok(m, 'the warning modal must exist when the session is found in Work');
+  assert.strictEqual(m.style.display, 'flex', 'it must be visible');
+  assert.strictEqual(m.getAttribute('role'), 'dialog', 'it must be announced as a dialog');
+  const txt = m.textContent;
+  assert.ok(txt.indexOf('Work mode is not allowed') !== -1, 'the title states the store policy');
+  assert.ok(txt.indexOf('Gen Z Digital Store') !== -1,
+    'it names the manager, like the restricted popup');
+  assert.ok(txt.indexOf('Back to Chat') !== -1, 'it offers the way back');
+  assert.strictEqual(t.doc.app.mode, 'chat',
+    'the recovery click still returns the session to Chat — the warning informs, it does not substitute');
+});
+
+test('WARNING: no warning when the session is already in Chat', () => {
+  const t = boot((d) => buildRealChatGpt(d));
+  assert.strictEqual(t.doc.getElementById('genz-workmode-modal'), null,
+    'a healthy Chat session must never see the warning');
+});
+
+test('WARNING: shown once per switcher — never a nag loop', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const m = t.doc.getElementById('genz-workmode-modal');
+  assert.ok(m, 'precondition: the warning is showing');
+  assert.strictEqual(t.group.__genzWorkWarned, true, 'the container is marked');
+  for (let i = 0; i < 5; i++) {
+    t.workBtn.setAttribute('aria-pressed', 'true');
+    t.chatBtn.setAttribute('aria-pressed', 'false');
+    t.doc._mutate([], [t.workBtn, t.chatBtn]);
+  }
+  assert.strictEqual(t.doc.getElementById('genz-workmode-modal'), m,
+    'repeated re-vets must reuse the same modal, never stack another');
+});
+
+test('WARNING: "Back to Chat" acknowledges and dismisses the warning', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const m = t.doc.getElementById('genz-workmode-modal');
+  const back = t.doc.getElementById('genz-workmode-back');
+  assert.ok(back, 'the button must exist');
+  const clicksBefore = t.chatBtn.clicks;
+  back.click();
+  assert.strictEqual(m.style.display, 'none', 'acknowledging hides the modal');
+  assert.ok(t.chatBtn.clicks > clicksBefore,
+    'acknowledging re-asserts the REAL Chat button — a phantom container must never steal the target');
+  assert.strictEqual(t.doc.app.mode, 'chat', 'the session stays in Chat');
+});
+
+test('WARNING: exactly one modal element exists — the initial document_start pass must not orphan one', () => {
+  // REGRESSION (2026-10-01): `var workModalEl = null` used to sit AFTER the initial
+  // applyTabPolicy(document) call, so a modal built during that pass was reset to null
+  // and the next warning built a SECOND modal with a dead dismiss button.
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const all = [];
+  t.doc.documentElement._walk(all);
+  const modals = all.filter((e) => e.getAttribute('id') === 'genz-workmode-modal');
+  assert.strictEqual(modals.length, 1, 'one warning, one modal — never a duplicate');
+});
+
+test('WARNING: a hidden switcher never becomes a phantom container', () => {
+  // REGRESSION (2026-10-01): hideTabNode stamps tabindex="-1" on the hidden switcher,
+  // which used to match TAB_ROW_SEL's [tabindex] on the next pass and get misread as a
+  // NEW Chat/Work switcher one level up — a second warning for a container the member
+  // never saw, and a wasted recovery click.
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const all = [];
+  t.doc.documentElement._walk(all);
+  const warned = all.filter((e) => e.__genzWorkWarned);
+  assert.strictEqual(warned.length, 1, 'exactly one container is ever warned');
+  assert.strictEqual(warned[0], t.group, 'and it is the real switcher');
+});
+
+test('WARNING: no warning while the document is still parsing', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }), null, { readyState: 'loading' });
+  assert.strictEqual(t.doc.getElementById('genz-workmode-modal'), null,
+    'no modal during parsing — the warning shares the recovery click’s settled gate');
+  t.doc.readyState = 'interactive';
+  for (const l of t.doc._listeners) if (l.type === 'DOMContentLoaded') l.fn();
+  const m = t.doc.getElementById('genz-workmode-modal');
+  assert.ok(m, 'the warning appears once the app has settled');
+  assert.strictEqual(m.style.display, 'flex');
+});
+
+test('WARNING: the modal is the shield’s own UI — the sweep never hides it', () => {
+  const t = boot((d) => buildRealChatGpt(d, { workActive: true }));
+  const m = t.doc.getElementById('genz-workmode-modal');
+  t.doc._runTimers();   // pump the debounced flush: injectStyle + full re-sweep
+  assert.strictEqual(m.hidden, false, 'our own warning modal must survive our own sweep');
+  assert.strictEqual(m.style.display, 'flex', 'and stay visible');
+});
+
 // 3. Selector safety — the whole point of not text-matching "Work" globally
 // ─────────────────────────────────────────────────────────────────────────────
 test('conversation content containing "Work" is untouched', () => {
@@ -773,7 +1100,9 @@ test('FLASH FIX: the bootstrap policy has not drifted from toolConfigs.js', () =
 
 test('FLASH FIX: the bootstrap seeds no account/logout rules it could freeze', () => {
   // It must NOT invent href/attr/text/route rules — those arrive with the real config.
-  for (const k of ['hrefSubstrings', 'attrSubstrings', 'hideSelectors', 'blockRouteFragments']) {
+  // hideSelectors is the deliberate exception: the static profile + filter selectors are
+  // seeded so they are hidden from the very first paint (covered by the drift test below).
+  for (const k of ['hrefSubstrings', 'attrSubstrings', 'blockRouteFragments']) {
     assert.ok(new RegExp(k + ':\\s*\\[\\s*\\]').test(EARLY_SRC),
       `${k} must be seeded EMPTY so the real config is authoritative`);
   }
@@ -782,6 +1111,51 @@ test('FLASH FIX: the bootstrap seeds no account/logout rules it could freeze', (
   }
   assert.match(EARLY_SRC, /if \(window\.__GENZ_SHIELD_CFG__\) return;/,
     'the bootstrap must never overwrite a real config already delivered');
+});
+
+// Extract a `hideSelectors: [...]` array literal from source text and evaluate it as data.
+// Used to prove the bootstrap's seeded selectors are identical to toolConfigs.js.
+function grabHideSelectors(src, fromIndex) {
+  const re = /hideSelectors\s*:/g;
+  re.lastIndex = fromIndex || 0;
+  const hit = re.exec(src);
+  assert.ok(hit, 'hideSelectors literal not found');
+  const open = src.indexOf('[', hit.index);
+  let d = 0, end = -1;
+  for (let k = open; k < src.length; k++) {
+    if (src[k] === '[') d++;
+    else if (src[k] === ']') { d--; if (d === 0) { end = k + 1; break; } }
+  }
+  assert.ok(end !== -1, 'hideSelectors array never closes');
+  return Function('"use strict"; return (' + src.slice(open, end) + ');')();
+}
+
+test('FLASH FIX: the bootstrap hideSelectors have not drifted from toolConfigs.js', () => {
+  // The profile + filter selectors are the deliberate exception to the empty-seed rule:
+  // they must be hidden from the very first paint, so the bootstrap carries a copy of
+  // SHIELD_OVERRIDES['chatgpt.com'].hideSelectors. Compared as data (formatting may differ,
+  // content may not).
+  const early = grabHideSelectors(EARLY_SRC);
+  const live = grabHideSelectors(TOOLCFG, TOOLCFG.indexOf("'chatgpt.com'"));
+  assert.deepStrictEqual(early, live,
+    "the bootstrap hideSelectors must stay identical to SHIELD_OVERRIDES['chatgpt.com'].hideSelectors");
+});
+
+test('PRIVACY: the seeded profile selectors reach the stylesheet from the very first run', () => {
+  // Bug 1 from the 2026-09-30 audit: the profile button stayed visible until
+  // tabs.onUpdated 'complete' because the bootstrap seeded EMPTY hideSelectors and the real
+  // ones arrived late. Boot with exactly what the early shield seeds and prove the CSS
+  // hides the profile entry point from the first run — no waiting for the service worker.
+  const seeded = grabHideSelectors(EARLY_SRC);
+  assert.ok(seeded.length >= 3, 'the bootstrap must seed the profile selectors');
+  const cfg = Object.assign({}, CHATGPT_CFG, { hideSelectors: seeded });
+  const t = boot(null, cfg);
+  const style = t.doc.getElementById('genz-shield-style');
+  assert.ok(style, 'the stylesheet must exist from the first run');
+  for (const sel of seeded) {
+    assert.ok(style.textContent.indexOf(sel) !== -1,
+      `the first-paint stylesheet must contain ${sel}`);
+  }
 });
 
 test('FLASH FIX: the real config fully SUPERSEDES every bootstrap placeholder', () => {
@@ -801,6 +1175,23 @@ test('FLASH FIX: the stylesheet is updatable, not create-once', () => {
   assert.ok(!/if \(document\.getElementById\('genz-shield-style'\)\) return;/.test(fn),
     'a create-once stylesheet would freeze the bootstrap’s EMPTY hideSelectors forever');
   assert.match(fn, /s\.textContent !== css/, 'it must update the existing element in place');
+});
+
+test('DOUBLE-EXEC FIX: background.js refreshes a running shield in place instead of re-executing it', () => {
+  // Audit bug 2 (2026-09-30): injectShield re-executed shield.js at tabs.onUpdated
+  // 'complete' even when the declarative document_start instance was already running. The
+  // fresh closure's sweepGen collided with the first run's __genzShield marks, so the
+  // merged account sweep never re-evaluated pre-existing nodes — and duplicate
+  // observers/listeners piled up. The fix uses the designed __GENZ_SHIELD_REFRESH__ hook
+  // when the shield is already running, and only injects when it is not.
+  const BG = fs.readFileSync(path.join(EXT, 'js', 'background.js'), 'utf8');
+  const fn = BG.slice(BG.indexOf('async function injectShield'));
+  assert.ok(fn.indexOf('__GENZ_SHIELD_REFRESH__') !== -1,
+    'injectShield must refresh via __GENZ_SHIELD_REFRESH__ when the shield is already running');
+  assert.ok(fn.indexOf("files: ['js/shield.js']") !== -1,
+    '...and still inject shield.js exactly once when no shield is running (other tools, old builds)');
+  assert.match(fn, /refreshed/,
+    'the refresh result must decide whether the injection happens');
 });
 
 test('FLASH FIX (behavioural): a switcher rendered AFTER load is hidden pre-paint', () => {
@@ -1000,4 +1391,94 @@ test('the managed-session gate is the EXISTING one — no new host or permission
   assert.deepStrictEqual(manifest.permissions.slice().sort(),
     ['alarms', 'cookies', 'management', 'notifications', 'scripting', 'storage', 'tabs'],
     'no permission change may accompany this feature');
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3.9.30 — ChatGPT Settings is a HASH route; it must be blocked like /settings.
+// chatgpt.com/#settings/Security holds "Log out of all devices" (and Account holds Log out):
+// one member using it ends the SHARED session for every member. pathname checks never see a
+// hash, so typing that URL was the remaining way past the hidden profile menu.
+// ─────────────────────────────────────────────────────────────────────────────
+const HASH_CFG = Object.assign({}, CHATGPT_CFG, { blockHashFragments: ['#settings'] });
+function bootAt(hash, cfg) {
+  const { doc, win, ctx } = makeDom();
+  ctx.location.hash = hash;
+  ctx.URL = URL;
+  buildRealChatGpt(doc);
+  win.__GENZ_SHIELD_CFG__ = JSON.parse(JSON.stringify(cfg || HASH_CFG));
+  vm.runInContext(SHIELD_SRC, ctx);
+  return { doc, win, ctx };
+}
+const restricted = (t) => {
+  const m = t.doc.getElementById('genz-shield-modal');
+  return !!(m && m.style.display === 'flex');
+};
+
+test('LOGOUT: direct entry on #settings/Security (log out of all devices) is hard-blocked', () => {
+  for (const h of ['#settings', '#settings/Security', '#settings/Account', '#Settings/DataControls']) {
+    assert.ok(restricted(bootAt(h)), `${h} must show the restricted popup`);
+  }
+});
+
+test('LOGOUT: hash block is a prefix match — chats, anchors and empty hashes stay usable', () => {
+  for (const h of ['', '#', '#settingsfoo', '#work', '#main-content']) {
+    assert.ok(!restricted(bootAt(h)), `${JSON.stringify(h)} must NOT be blocked`);
+  }
+});
+
+test('LOGOUT: a same-host link to /#settings/... is refused and explains why', () => {
+  const t = bootAt('');
+  const a = t.doc.el('a', { href: '/#settings/Security' }, ['Security']);
+  t.doc.body.appendChild(a);
+  const ev = t.doc._dispatch('click', a);
+  assert.ok(restricted(t), 'clicking a settings hash link shows the restricted popup');
+  if (ev) assert.strictEqual(ev.defaultPrevented, true, 'and the navigation is cancelled');
+});
+
+test('LOGOUT: typing the hash later (hashchange) is caught, and the guard is wired to it', () => {
+  const t = bootAt('');
+  assert.ok(!restricted(t));
+  const l = t.doc._winListeners.find((x) => x.type === 'hashchange');
+  assert.ok(l, 'shield.js must listen for hashchange');
+  t.ctx.location.hash = '#settings/Security';
+  l.fn({});
+  assert.ok(restricted(t), 'a hash typed into the address bar is blocked without a reload');
+});
+
+test('LOGOUT: the early bootstrap leaves the hash block empty and the real config fills it', () => {
+  // Bootstrap blanks must be superseded (see COMPLETENESS in shield.js).
+  const t = bootAt('#settings/Security', Object.assign({}, CHATGPT_CFG, { blockHashFragments: [] }));
+  assert.ok(!restricted(t), 'with the bootstrap placeholder nothing fires');
+  t.win.__GENZ_SHIELD_REFRESH__(HASH_CFG);
+  assert.ok(restricted(t), 'the refreshed real config must enable the hash block');
+  assert.match(EARLY_SRC, /blockHashFragments:\s*\[\]/, 'the bootstrap must seed an EMPTY list');
+});
+
+test('LOGOUT: only chatgpt.com carries a hash block — every other tool is unaffected', () => {
+  const overrides = TOOLCFG.slice(TOOLCFG.indexOf('export const SHIELD_OVERRIDES'), TOOLCFG.indexOf('export function getShieldConfig'));
+  const hits = overrides.match(/blockHashFragments:\s*\[[^\]]*\]/g) || [];
+  assert.deepStrictEqual(hits, ["blockHashFragments: ['#settings']"], 'exactly one override (chatgpt.com) sets it');
+  const chatgptBlock = TOOLCFG.slice(TOOLCFG.indexOf("'chatgpt.com': {"));
+  assert.ok(chatgptBlock.indexOf("blockHashFragments: ['#settings']") < chatgptBlock.indexOf('tabPolicy'),
+    'it sits inside the chatgpt.com override');
+  assert.match(TOOLCFG, /blockHashFragments: \[\],/, 'getShieldConfig defaults it to [] for every host');
+  // With no hash fragments configured (any non-ChatGPT tool), a settings hash does nothing.
+  assert.ok(!restricted(bootAt('#settings/Security', CHATGPT_CFG)));
 });

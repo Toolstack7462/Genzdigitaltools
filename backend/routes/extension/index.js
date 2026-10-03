@@ -13,8 +13,8 @@ const DeviceBinding = require('../../models/DeviceBinding');
 const { getClientAccessibleTool } = require('../../utils/getClientAccessibleTool');
 const { buildToolCleanupConfig, getToolAccessMode } = require('../../utils/toolCleanupConfig');
 const ExtensionRelease = require('../../models/ExtensionRelease');
-const { isOlder, compareVersions } = require('../../utils/semver');
-const { readDiskExtensionVersion, versionedFilename } = require('../../utils/extensionDownloads');
+const { isOlder } = require('../../utils/semver');
+const { resolvePublishedRelease, versionedFilename } = require('../../utils/extensionDownloads');
 
 // Compute update status for an installed extension version against the latest
 // published release. Returns safe metadata only (versions/booleans). `rel` may
@@ -22,22 +22,14 @@ const { readDiskExtensionVersion, versionedFilename } = require('../../utils/ext
 async function computeExtensionUpdate(installedVersion, rel) {
   try {
     const release = rel !== undefined ? rel : await ExtensionRelease.getLatest();
-    // LATEST = the actual version of the ZIP currently served from /downloads
-    // (read from its manifest.json — never hardcoded). Fall back to the DB
-    // release record, then take whichever is newer so admin-upload and
-    // deploy-written zips never disagree downward.
-    const diskVersion = readDiskExtensionVersion();
-    const dbVersion = release ? release.version : null;
-    let latest = diskVersion || dbVersion || null;
-    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
-
-    const minVersionRaw = release ? (release.minVersion || null) : null;
-    const forceUpdate = release ? !!release.updateRequired : false;
+    // LATEST = the version of the ZIP clients actually download (read from its own
+    // manifest.json — never hardcoded, never a DB row the download does not match).
+    // effectiveMin = the admin minimum, or `latest` when force-update is on, clamped
+    // to `latest` so nobody is required to install a package that is not available.
+    const pub = resolvePublishedRelease(release);
+    const { latest, effectiveMin, forceUpdate } = pub;
+    const minVersionRaw = pub.minVersion;
     const installed = installedVersion || null;
-
-    // Effective floor: an explicit minimum, or (when force-update is on) the
-    // latest version itself.
-    const effectiveMin = minVersionRaw || (forceUpdate ? latest : null);
 
     const isOutdated = !!(latest && installed && isOlder(installed, latest));
     const mustUpdate = !!(effectiveMin && installed && isOlder(installed, effectiveMin));
@@ -52,6 +44,8 @@ async function computeExtensionUpdate(installedVersion, rel) {
       updateRequired: mustUpdate,          // true → block tool opening
       filename: versionedFilename(latest), // suggested versioned save-as name
       downloadPath: '/downloads/genz-digital-store-extension.zip',
+      sha256: pub.sha256 || null,          // of the served ZIP — a content-addressed cache key
+      size: pub.size || 0,
       publishedAt: release ? (release.publishedAt || null) : null,
     };
   } catch (_) {
@@ -159,7 +153,8 @@ router.get('/version-info', async (req, res) => {
       updateRequired: upd.updateRequired,
       filename: upd.filename,                 // versioned save-as name
       stableFilename: 'genz-digital-store-extension.zip',
-      size: rel ? (rel.size || 0) : 0,
+      size: upd.size || 0,
+      sha256: upd.sha256 || null,
       publishedAt: upd.publishedAt,
       downloadPath: '/downloads/genz-digital-store-extension.zip',
     });

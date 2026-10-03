@@ -8,8 +8,8 @@ const Tool = require('../../models/Tool');
 const Announcement = require('../../models/Announcement');
 const Offer = require('../../models/Offer');
 const ExtensionRelease = require('../../models/ExtensionRelease');
-const { isOlder, compareVersions } = require('../../utils/semver');
-const { readDiskExtensionVersion } = require('../../utils/extensionDownloads');
+const { isOlder } = require('../../utils/semver');
+const { resolvePublishedRelease } = require('../../utils/extensionDownloads');
 const { requireAuth, requireRole } = require('../../middleware/authEnhanced');
 
 // Apply auth middleware
@@ -266,12 +266,9 @@ router.get('/extension-notice', async (req, res) => {
     const notice = user && user.extensionUpdateNotice ? user.extensionUpdateNotice : null;
     if (!notice || !notice.notifiedAt) return res.json({ success: true, notice: null });
 
-    // Resolve the current latest version (disk ZIP first, then DB record).
+    // Resolve the version clients can actually download (same resolver as version-info).
     const rel = await ExtensionRelease.getLatest().catch(() => null);
-    const diskVersion = readDiskExtensionVersion();
-    const dbVersion = rel ? rel.version : null;
-    let latest = diskVersion || dbVersion || null;
-    if (diskVersion && dbVersion && compareVersions(dbVersion, diskVersion) > 0) latest = dbVersion;
+    const { latest } = resolvePublishedRelease(rel);
 
     const installed = user.extensionVersion || notice.installedVersion || null;
     // Self-clear: if the client is no longer behind the latest, suppress the notice.

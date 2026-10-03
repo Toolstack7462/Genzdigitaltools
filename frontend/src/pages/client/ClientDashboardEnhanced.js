@@ -757,7 +757,7 @@ const ClientDashboardEnhanced = () => {
                 </span>
               </div>
               <div className="flex items-center gap-2.5 mt-6">
-                <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+                <a href={extZipUrl(extLatest, extInfo?.sha256)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                    onClick={() => setShowMandatoryModal(false)}
                    className="flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[13px] font-bold text-white transition-all hover:-translate-y-0.5"
                    style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 12px 26px -10px rgba(37,99,235,0.8)' }}>
@@ -880,7 +880,7 @@ const ClientDashboardEnhanced = () => {
               </div>
               {/* action */}
               <div className="flex-shrink-0 sm:self-center">
-                <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+                <a href={extZipUrl(extLatest, extInfo?.sha256)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                    className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
                    style={{ background: 'linear-gradient(135deg, #2563EB, #06B6D4)', boxShadow: '0 10px 22px -10px rgba(37,99,235,0.75)' }}>
                   <Download size={14} /> Download Latest Extension
@@ -1117,7 +1117,7 @@ const ClientDashboardEnhanced = () => {
               {/* action */}
               <div className="flex-shrink-0 xl:self-center flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 {!extConnStatus?.checking ? (
-                  <a href={extZipUrl(extLatest)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
+                  <a href={extZipUrl(extLatest, extInfo?.sha256)} download={versionedZipName(extLatest)} target="_blank" rel="noopener noreferrer"
                      onClick={verifyExtensionDownload}
                      data-testid="ext-banner-install"
                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-[12.5px] font-bold text-white transition-all hover:-translate-y-0.5"
@@ -1350,7 +1350,7 @@ const ClientDashboardEnhanced = () => {
         {/* ── Quick actions ── */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {[
-            { icon: Chrome, title: 'Extension Setup',  desc: extSoftUpdate ? 'A newer extension version is available — download to update.' : 'Download the Chrome extension for one-click tool access.', to: extZipUrl(extLatest), cta: extSoftUpdate ? 'Update' : 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true, badge: extSoftUpdate ? 'Update available' : null },
+            { icon: Chrome, title: 'Extension Setup',  desc: extSoftUpdate ? 'A newer extension version is available — download to update.' : 'Download the Chrome extension for one-click tool access.', to: extZipUrl(extLatest, extInfo?.sha256), cta: extSoftUpdate ? 'Update' : 'Download', grad: 'linear-gradient(135deg,#2563EB,#06B6D4)', download: true, badge: extSoftUpdate ? 'Update available' : null },
             { icon: Shield, title: 'Account Security', desc: 'Manage device binding and your security settings.',         to: '/client/profile', cta: 'Manage',   grad: 'linear-gradient(135deg,#0891B2,#14B8A6)' },
             { icon: Zap,    title: 'Need More Tools?', desc: 'Upgrade your membership to unlock all 90+ tools.',          to: '/pricing',        cta: 'Upgrade',  grad: 'linear-gradient(135deg,#4F46E5,#2563EB)' },
           ].map(({ icon: Icon, title, desc, to, cta, grad, download, badge }) => {

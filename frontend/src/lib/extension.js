@@ -14,9 +14,14 @@ export const EXT_ZIP_PATH = `/downloads/${EXT_ZIP_FILENAME}`;
 // place on the server, so this path always resolves to the latest upload.
 export const EXT_ZIP_URL = EXT_ZIP_PATH;
 
-// Append a cache-bust version when known, so a replaced ZIP is never served stale.
-export function extZipUrl(version) {
-  return version ? `${EXT_ZIP_PATH}?v=${encodeURIComponent(version)}` : EXT_ZIP_PATH;
+// Append a cache-bust key when known, so a replaced ZIP is never served stale. The key
+// includes the served ZIP's SHA-256 (from version-info) as well as its version: a browser
+// that once cached `?v=3.9.29` holding the wrong bytes (the 2026-10 mismatch) can never be
+// handed that entry again, because the real 3.9.29 has a different hash.
+export function extZipUrl(version, sha256) {
+  if (!version) return EXT_ZIP_PATH;
+  const h = sha256 ? `&h=${encodeURIComponent(String(sha256).slice(0, 12))}` : '';
+  return `${EXT_ZIP_PATH}?v=${encodeURIComponent(version)}${h}`;
 }
 
 // Suggested SAVE-AS filename including the version, e.g.
@@ -43,7 +48,8 @@ export async function getLatestExtension(installed) {
       updateRequired: !!data?.updateRequired,
       filename: data?.filename || versionedZipName(data?.latest),
       downloadPath: data?.downloadPath || EXT_ZIP_PATH,
-      downloadUrl: extZipUrl(data?.latest),
+      sha256: data?.sha256 || null,
+      downloadUrl: extZipUrl(data?.latest, data?.sha256),
       publishedAt: data?.publishedAt || null,
     };
   } catch (_) {

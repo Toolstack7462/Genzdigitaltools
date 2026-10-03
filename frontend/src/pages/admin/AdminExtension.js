@@ -86,10 +86,16 @@ export default function AdminExtension() {
     try {
       setUploading(true);
       const buf = await file.arrayBuffer();
+      // The file name goes along so the server can reject a ZIP whose name claims one version
+      // while its manifest.json says another (a renamed old build) instead of publishing it.
       const { data: r } = await api.post('/admin/extension/upload', buf, {
         headers: { 'Content-Type': 'application/zip' },
+        params: { filename: file.name },
       });
-      showSuccess(`Uploaded extension v${r.version}`);
+      const unchecked = (r.publicCheck || []).filter(c => c.status !== 'match').map(c => c.origin);
+      showSuccess(unchecked.length
+        ? `Published extension v${r.version} — could not confirm the public download on ${unchecked.join(', ')}; check it manually`
+        : `Published extension v${r.version}`);
       await load();
     } catch (err) {
       const msg = err?.response?.data?.error || 'Upload failed';
@@ -257,13 +263,32 @@ export default function AdminExtension() {
                 <div className="text-[15px] font-semibold text-genz-navy flex items-center gap-1.5">
                   <Clock size={14} /> {data?.uploadedAt ? new Date(data.uploadedAt).toLocaleString() : '—'}
                 </div>
-                <a href={`${data?.downloadPath || '/downloads/genz-digital-store-extension.zip'}${latest ? `?v=${latest}` : ''}`}
+                <a href={`${data?.downloadPath || '/downloads/genz-digital-store-extension.zip'}${latest ? `?v=${latest}${data?.sha256 ? `&h=${data.sha256.slice(0, 12)}` : ''}` : ''}`}
                    download={data?.filename || 'genz-digital-store-extension.zip'} target="_blank" rel="noopener noreferrer"
                    className="inline-flex items-center gap-1.5 mt-2 text-[12.5px] font-semibold text-genz-blue">
                   <Download size={14} /> Download latest
                 </a>
               </div>
             </div>
+
+            {/* Served-artifact consistency: every download folder must serve the same ZIP, and the
+                release record must describe it. Clients are offered the OLDEST served copy. */}
+            {(data?.servedConsistent === false || data?.metadataMatchesArtifact === false) && (
+              <div className="ds-card p-4" style={{ borderColor: '#f59e0b' }}>
+                <div className="text-[13px] font-semibold" style={{ color: '#b45309' }}>
+                  The download folders do not all serve the same extension build
+                </div>
+                <div className="text-[12px] text-genz-muted mt-1">
+                  Clients are being offered v{latest || '—'} (the oldest copy being served). Re-upload the intended release ZIP to bring every folder in line.
+                </div>
+                <ul className="text-[11.5px] text-genz-muted mt-2 space-y-0.5 break-all">
+                  {(data?.servedArtifacts || []).map(a => (
+                    <li key={a.dir}>{a.dir}: {a.version ? `v${a.version}` : (a.error || 'missing')}{a.sha256 ? ` · ${a.sha256.slice(0, 12)}` : ''}</li>
+                  ))}
+                  {data?.dbVersion && <li>release record: v{data.dbVersion}</li>}
+                </ul>
+              </div>
+            )}
 
             {/* Upload + policy */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

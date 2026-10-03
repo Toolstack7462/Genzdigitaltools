@@ -7,26 +7,25 @@
  * extension. That is exactly what happened on 2026-08-22: v3.9.20 was being served while v3.9.25
  * was the real latest, and nothing in the upload path noticed.
  *
- * The guard compares against the EFFECTIVE published version — the newer of the on-disk ZIP and
- * the DB release row — which is the same value /release shows the admin, so a block can never
- * contradict what the panel displays. Deliberate rollback stays possible via ?allowDowngrade=1.
+ * The guard compares against everything currently published — every served docroot's ZIP AND
+ * the DB release row — and blocks anything older than the newest of them. Deliberate rollback
+ * stays possible via ?allowDowngrade=1.
  *
- * These assertions pin the DECISION LOGIC (semver comparison + effective-latest + the override),
- * not the HTTP plumbing, so they stay meaningful without standing up Express and a database.
+ * These assertions drive the REAL decision function the route calls (decidePublish), not a copy
+ * of it, so they cannot drift from production behaviour.
  */
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { isOlder, maxVersion, isValidVersion } = require('../utils/semver');
+const { isOlder, isValidVersion } = require('../utils/semver');
+const { decidePublish } = require('../utils/extensionDownloads');
 
-// Mirrors the route: effectiveLatest = newer of (DB row, on-disk ZIP).
-const effectiveLatest = (dbVersion, diskVersion) => maxVersion(diskVersion, dbVersion);
-
-// Mirrors the guard in routes/admin/extension.js POST /upload.
-function shouldBlock(uploadedVersion, dbVersion, diskVersion, allowDowngrade = false) {
-  const publishedNow = effectiveLatest(dbVersion, diskVersion);
-  const downgrade = !!publishedNow && isOlder(uploadedVersion, publishedNow);
-  return downgrade && !allowDowngrade;
+// dbVersion = the DB release row; diskVersion = what the docroots serve.
+function shouldBlock(uploadedVersion, dbVersion, diskVersion, allowDowngrade = false, { sameBytes = true } = {}) {
+  const artifacts = diskVersion ? [{ version: diskVersion, sha256: `sha-${diskVersion}` }] : [];
+  const upSha = sameBytes ? `sha-${uploadedVersion}` : 'different-bytes';
+  return !decidePublish({ version: uploadedVersion, sha256: upSha },
+    { artifacts, dbVersion, dbSha256: dbVersion ? `sha-${dbVersion}` : null }, allowDowngrade).ok;
 }
 
 test('the exact incident is blocked: 3.9.20 uploaded while 3.9.25 is published', () => {
@@ -43,8 +42,13 @@ test('a newer upload is always allowed', () => {
   assert.strictEqual(shouldBlock('3.10.0', '3.9.25', '3.9.25'), false);
 });
 
-test('re-uploading the SAME version is allowed (a rebuild is not a downgrade)', () => {
+test('re-uploading the SAME build is allowed; the same version with DIFFERENT bytes is not', () => {
+  // Identical bytes = idempotent re-publish (also how drifted docroots are repaired).
   assert.strictEqual(shouldBlock('3.9.25', '3.9.25', '3.9.25'), false);
+  // One version must map to one package — otherwise "v3.9.25" names two different builds and the
+  // ?v= download cache key serves whichever a browser saw first.
+  assert.strictEqual(shouldBlock('3.9.25', '3.9.25', '3.9.25', false, { sameBytes: false }), true);
+  assert.strictEqual(shouldBlock('3.9.25', '3.9.25', '3.9.25', true, { sameBytes: false }), false);
 });
 
 test('a deliberate rollback is possible, but only when explicitly requested', () => {

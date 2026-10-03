@@ -28,6 +28,7 @@ import fs from 'fs';
 import path from 'path';
 import zlib from 'zlib';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
@@ -166,19 +167,49 @@ function sourceVersion() {
 const check = process.argv.includes('--check');
 const srcVer = sourceVersion();
 
+// Runtime payload check: a matching version string proves nothing about the CODE inside the ZIP
+// (a version bump can be stamped onto old files, and new code can ship under an old version).
+// Every entry Chrome can load must be byte-identical to chrome-extension/. test/ is dev-only —
+// Chrome never loads it — so a test-only edit does not force a re-release.
+const isDevOnly = (name) => name.startsWith('test/');
+// Line endings are not code: the ZIP is built on a Windows checkout (CRLF) and CI checks it out
+// on Linux (LF). Text files are compared with CRLF normalised to LF; binaries byte-for-byte.
+const isText = (buf) => !buf.includes(0);
+const sameContent = (a, b) => a.equals(b)
+  || (isText(a) && isText(b) && a.toString('latin1').replace(/\r\n/g, '\n') === b.toString('latin1').replace(/\r\n/g, '\n'));
+
+function payloadDiff(zipBuf) {
+  const { readAllEntries } = createRequire(import.meta.url)('../backend/utils/zipManifest.js');
+  const entries = readAllEntries(zipBuf);
+  const src = new Map(listFiles(SRC).map(f => [f.arc, f.full]));
+  const diffs = [];
+  for (const [name, data] of entries) {
+    if (isDevOnly(name)) continue;
+    if (!src.has(name)) diffs.push(`extra in ZIP: ${name}`);
+    else if (!sameContent(fs.readFileSync(src.get(name)), data)) diffs.push(`differs from source: ${name}`);
+  }
+  for (const name of src.keys()) if (!isDevOnly(name) && !entries.has(name)) diffs.push(`missing from ZIP: ${name}`);
+  return diffs;
+}
+
 if (check) {
   let ok = true;
   for (const dir of OUT_DIRS) {
     const p = path.join(dir, ZIP_NAME);
     if (!fs.existsSync(p)) { console.error(`MISSING  ${p}`); ok = false; continue; }
-    const ver = zipManifestVersion(fs.readFileSync(p));
-    const match = ver === srcVer;
+    const buf = fs.readFileSync(p);
+    const ver = zipManifestVersion(buf);
+    let diffs;
+    try { diffs = payloadDiff(buf); } catch (e) { diffs = [`unreadable ZIP: ${e.message}`]; }
+    const match = ver === srcVer && diffs.length === 0;
     console.log(`${match ? 'OK      ' : 'STALE   '} ${path.relative(REPO, p)} → ${ver} (source ${srcVer})`);
+    for (const d of diffs.slice(0, 20)) console.log(`           ${d}`);
     if (!match) ok = false;
   }
   if (!ok) {
-    console.error('\n✗ Served extension ZIP is out of sync with chrome-extension/manifest.json.');
-    console.error('  Run:  node scripts/build-extension.mjs   (then commit + deploy)');
+    console.error('\n✗ Served extension ZIP is out of sync with chrome-extension/ (version or runtime files).');
+    console.error('  If runtime files changed, bump chrome-extension/manifest.json "version" first — the same');
+    console.error('  version must never ship two different packages. Then run:  node scripts/build-extension.mjs   (then commit + deploy)');
     process.exit(1);
   }
   console.log(`\n✓ Served extension ZIP matches source (v${srcVer}).`);

@@ -22,11 +22,17 @@
  * Work segment is hidden in the same microtask it is inserted and never occupies a
  * painted frame.
  *
- * WHY THE CONFIG HERE IS MINIMAL. This bootstrap carries ONLY the tab policy. The
- * account/logout shield rules (href/attr/text/route) are deliberately left empty and
- * arrive later with the real, fully-resolved config from background.js — which may also
- * carry per-assignment overrides this file cannot know about. Seeding them here would
- * mean duplicating SHIELD_DEFAULTS and risking drift.
+ * WHY THE CONFIG HERE IS MINIMAL. This bootstrap carries ONLY the tab policy and the
+ * STATIC chatgpt.com hideSelectors (profile button, chat filter). The account/logout sweep
+ * rules (href/attr/text/route) are deliberately left empty and arrive later with the real,
+ * fully-resolved config from background.js — which may also carry per-assignment overrides
+ * this file cannot know about. Seeding them here would mean duplicating SHIELD_DEFAULTS
+ * and risking drift. The seeded hideSelectors are a deliberate exception: they are static,
+ * chatgpt.com-specific (not part of SHIELD_DEFAULTS), and hiding the profile entry point
+ * cannot wait until tabs.onUpdated 'complete' — until then the shared account's profile
+ * menu (email / settings / logout) would be one click away during the load window.
+ * chatgptWorkPolicy.test.js compares BOTH the tabPolicy and the hideSelectors here
+ * against toolConfigs.js and fails on any drift.
  *
  * Consequently shield.js's __GENZ_SHIELD_REFRESH__ MUST fully supersede every value
  * seeded here when the real config lands; that completeness is asserted by
@@ -37,11 +43,11 @@
  * other extension feature can ever load this file. It is ISOLATED world and touches no
  * page globals, no cookies, no tokens and no storage.
  *
- * The tabPolicy literal below is a deliberate, test-guarded copy of the one in
- * js/config/toolConfigs.js (SHIELD_OVERRIDES['chatgpt.com'].tabPolicy). It cannot be
- * imported: that file is an ES module used by the service worker, and a content script
- * loaded this early must be a classic script. chatgptWorkPolicy.test.js compares the two
- * and fails on any drift.
+ * The tabPolicy literal and the hideSelectors array below are deliberate, test-guarded
+ * copies of the ones in js/config/toolConfigs.js (SHIELD_OVERRIDES['chatgpt.com']). They
+ * cannot be imported: that file is an ES module used by the service worker, and a content
+ * script loaded this early must be a classic script. chatgptWorkPolicy.test.js compares
+ * both and fails on any drift.
  */
 (function () {
   'use strict';
@@ -56,11 +62,18 @@
     // text sweep is inert during the bootstrap window and cannot hide anything by guess.
     hrefSubstrings: [],
     attrSubstrings: [],
-    hideSelectors: [],
+    // Static chatgpt.com hideSelectors, seeded so the profile entry point and the
+    // "Filter chats and work" button are hidden from the very first paint instead of
+    // appearing until tabs.onUpdated 'complete'. Deliberate, test-guarded copy of
+    // SHIELD_OVERRIDES['chatgpt.com'].hideSelectors in js/config/toolConfigs.js.
+    hideSelectors: ['[data-testid="accounts-profile-button"]', '[data-testid*="account" i]',
+                    '[aria-label="Open profile menu"]',
+                    '[aria-label="Filter chats and work"]'],
     hideTextSource: '',
     keepTextSource: '',
     // Empty so the restricted-route popup cannot fire on a partial config.
     blockRouteFragments: [],
+    blockHashFragments: [],
     tabPolicy: {
       rowSel: '[role="tab"],[role="radio"],[role="menuitemradio"],[role="option"],button,a[href],[tabindex]',
       blockLabelSource: '^work$',
