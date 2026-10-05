@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createLatestOnly } from '../../lib/latestOnly';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
 import {
@@ -98,12 +99,19 @@ const AdminWriteHuman = () => {
   const actTimer = useRef(null);
   const logTick = useRef(0);
 
+  // loadState runs from the 30s poll, the activation poll, every action and Refresh, so several
+  // can be in flight. Only the newest-sent one may write state — an older, slower snapshot used to
+  // land last and overwrite the newer one, leaving cards and banners describing different moments.
+  const stateGate = useRef(createLatestOnly());
   const loadState = useCallback(async () => {
+    const ticket = stateGate.current.issue();
     try {
       const r = await writeHumanV2Admin.getState();
+      if (!stateGate.current.accept(ticket)) return;
       setState(r.data); setConn('live');
       if (r.data && r.data.activation !== undefined) setActivation(r.data.activation);
     } catch (e) {
+      if (!stateGate.current.accept(ticket)) return;
       const code = e.response?.data?.code;
       if (code === 'v2_not_configured') setConn('not_configured');
       else setConn('offline');
@@ -312,10 +320,11 @@ const AdminWriteHuman = () => {
 
   const sessionLabel = sess === 'HEALTHY' ? 'healthy'
     : sess === 'REFRESHING' ? 'refreshing'
+    : sess === 'STALLED' ? 'renewal stalled'
     : sess === 'LOGIN_REQUIRED' ? 'login required'
     : sess === 'ERROR' ? 'no session'
     : (a.sessionStatus || a.status || '—');
-  const stTone = sess === 'HEALTHY' ? 'ok' : sess === 'REFRESHING' ? 'warn' : sess ? 'bad' : healthTone;
+  const stTone = sess === 'HEALTHY' ? 'ok' : (sess === 'REFRESHING' || sess === 'STALLED') ? 'warn' : sess ? 'bad' : healthTone;
 
   const verLabel = ver === 'recent' ? `verified ${rel(a.lastVerifiedAt)}`
     : ver === 'due' ? 'verification due' : ver === 'failed' ? 'verification failed' : '—';
@@ -369,8 +378,8 @@ const AdminWriteHuman = () => {
           <span className="w-11 h-11 rounded-xl flex items-center justify-center text-white bg-gradient-to-br from-cyan-500 to-blue-600"><PenTool size={22} /></span>
           <div>
             <h1 className="font-heading text-xl font-bold text-slate-800 flex items-center gap-2">WriteHuman
-              {conn === 'live' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600"><Wifi size={13} /> live</span>}
-              {conn === 'offline' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-500"><WifiOff size={13} /> offline</span>}
+              {conn === 'live' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-600" title="This page can reach the server. It says nothing about the source machine — see the Agent card."><Wifi size={13} /> dashboard connected</span>}
+              {conn === 'offline' && <span className="inline-flex items-center gap-1 text-xs font-semibold text-red-500" title="This page cannot reach the server right now."><WifiOff size={13} /> dashboard disconnected</span>}
               {conn === 'not_configured' && <span className="text-xs font-semibold text-amber-600">not configured</span>}
               {conn === 'live' && state?.health && (
                 <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full ${
@@ -415,7 +424,7 @@ const AdminWriteHuman = () => {
           <span className="flex items-start gap-2">
             <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
             <span>
-              <strong>{sess === 'LOGIN_REQUIRED' ? 'WriteHuman login required' : sess === 'ERROR' ? 'No session saved' : 'Session refreshing'}:</strong> {hs?.session?.reason}
+              <strong>{sess === 'LOGIN_REQUIRED' ? 'WriteHuman login required' : sess === 'ERROR' ? 'No session saved' : sess === 'STALLED' ? 'Session renewal stalled' : 'Session refreshing'}:</strong> {hs?.session?.reason}
               {sess === 'LOGIN_REQUIRED' && !activeSourceOnline && (
                 <em className="block mt-1 not-italic font-semibold">Login required, but the active source is currently offline.</em>
               )}

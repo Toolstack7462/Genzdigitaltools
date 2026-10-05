@@ -58,10 +58,25 @@ function decryptBundle(account) {
   } catch (_) { return null; }
 }
 
+// What a COOKIE SYNC outcome is, as opposed to everything else a device can report.
+//   SYNC_OK       the push was received and judged fine (promoted, identical, or standby data).
+//   SYNC_NEUTRAL  not a statement about the session's sync at all: a heartbeat is liveness, a
+//                 replay is transport hygiene, STALE_BUNDLE means another copy is already newer,
+//                 and a logged-out device is reported by the session signal, not by "sync failed".
+// Anything else is a refused or failed sync.
+const SYNC_OK = ['PROMOTED', 'COOKIE_BUNDLE_UNCHANGED', 'STANDBY_ROUTINE_REFRESH', 'OK'];
+const SYNC_NEUTRAL = ['HEARTBEAT', 'REPLAY_REJECTED', 'STALE_BUNDLE', 'DEVICE_LOGGED_OUT'];
+
 /** Record the outcome of an attempt on the device row - success AND failure are both visible. */
 function recordAttempt(account, device, code, opts) {
   const o = opts || {};
-  const now = new Date();
+  const now = o.now || new Date();
+  // The last real SYNC outcome, kept apart from `lastResultCode` (which every heartbeat
+  // overwrites). The dashboard's "cookie sync failed" used to read the ACCOUNT-wide last code, so
+  // any device — a standby, a duplicate — could set it, and a bare heartbeat cleared it.
+  if (!SYNC_NEUTRAL.includes(code)) {
+    device.lastSyncOutcome = { code, at: now, ok: SYNC_OK.includes(code) };
+  }
   device.lastSyncAttemptAt = now;
   device.lastSeenAt = now;
   device.lastResultCode = code;
@@ -459,4 +474,22 @@ async function markDeviceLoggedOut(account, tool, device, opts) {
   });
 }
 
-module.exports = { ingestCandidate, markDeviceLoggedOut, recordAttempt, withAccountLock, decryptBundle };
+/**
+ * The cookie-sync verdict for the dashboard: the ACTIVE SOURCE's last real sync outcome. A
+ * standby's refusal never reaches it and a heartbeat never clears it; only a newer sync from the
+ * active source does. Rows written before `lastSyncOutcome` existed fall back to that device's
+ * `lastResultCode` when it is a sync code, so a genuine failure is not hidden by the upgrade.
+ */
+function syncOutcome(account) {
+  const id = account && account.activeSource && account.activeSource.deviceId;
+  const dev = id ? findDevice(account, id) : null;
+  if (!dev) return { deviceId: null, code: null, at: null, failed: false };
+  let o = dev.lastSyncOutcome || null;
+  if (!o && dev.lastResultCode && !SYNC_NEUTRAL.includes(dev.lastResultCode)) {
+    o = { code: dev.lastResultCode, at: dev.lastSyncAttemptAt || null, ok: SYNC_OK.includes(dev.lastResultCode) };
+  }
+  if (!o) return { deviceId: dev.deviceId, code: null, at: null, failed: false };
+  return { deviceId: dev.deviceId, code: o.code, at: o.at || null, failed: !o.ok };
+}
+
+module.exports = { ingestCandidate, markDeviceLoggedOut, recordAttempt, syncOutcome, withAccountLock, decryptBundle, SYNC_OK, SYNC_NEUTRAL };

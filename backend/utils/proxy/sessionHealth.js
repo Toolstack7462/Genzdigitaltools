@@ -21,7 +21,8 @@
  *
  * THE FIVE SIGNALS
  * ----------------
- *  1. SESSION HEALTH          HEALTHY | REFRESHING | LOGIN_REQUIRED | ERROR
+ *  1. SESSION HEALTH          HEALTHY | REFRESHING | STALLED | LOGIN_REQUIRED | ERROR
+ *                             (STALLED = access token expired and nothing able to rotate it.)
  *                             From the stored bundle + server-side verification ONLY.
  *  2. VERIFICATION FRESHNESS  recent | due | failed
  *  3. AGENT HEALTH            ONLINE | RECONNECTING | OFFLINE | UNKNOWN   (heartbeat only)
@@ -172,13 +173,44 @@ function deriveSession(s) {
     };
   }
   if (tokenExpired) {
-    // THE ONE-HOUR CASE. The access token aged out and the refresh session is still there. The
-    // session is NOT unhealthy and the operator has NOTHING to do — the browser rotates, or the
-    // server-side refresh fallback does. Reported as REFRESHING; the UI must not call it stale,
-    // expired, or unverified.
+    // THE ONE-HOUR CASE — but only while something can actually ROTATE the token.
+    //
+    // The dedicated Chrome on the active source is the sole rotator (server-side refresh is a
+    // break-glass that is off by default). An expired access token plus a stored refresh token is
+    // therefore "refreshing" only while that rotator is reporting and connected, and only until the
+    // configured sync window (cookieSyncStaleSec) says the rotation is overdue. Outside that, the
+    // old sentence — "The access token is rotating. The stored session is still valid — no action
+    // needed." — claimed a rotation nobody was performing and a validity nobody had proven; on
+    // 2026-10-05 it stayed up for ~7 hours with the source silent.
+    //
+    // STALLED says exactly that and no more. It is deliberately NOT a login problem: an absent
+    // rotator is not proof that the refresh session is dead, so it never sets loginRequired.
+    const agent = deriveAgent(s);
+    const chrome = deriveChrome(s);
+    if (agent.state !== 'ONLINE') {
+      return {
+        state: 'STALLED',
+        reason: 'The access token has expired and nothing is renewing it: the active source is not reporting, so its WriteHuman Chrome cannot rotate the token. The refresh session has not been checked since, so its state is unknown until the source reports again.',
+        loginRequired: false,
+      };
+    }
+    if (chrome.state !== 'CONNECTED') {
+      return {
+        state: 'STALLED',
+        reason: 'The access token has expired and nothing is renewing it: the active source is reporting, but its WriteHuman Chrome cannot be reached, so it cannot rotate the token.',
+        loginRequired: false,
+      };
+    }
+    if (deriveCookieSync(s).state === 'BEHIND') {
+      return {
+        state: 'STALLED',
+        reason: 'Token rotation is overdue: the access token has expired and no newer cookies have arrived within the configured sync window, although the source is reporting. Check WriteHuman Chrome on the active source.',
+        loginRequired: false,
+      };
+    }
     return {
       state: 'REFRESHING',
-      reason: 'The access token is rotating. The stored session is still valid — no action needed.',
+      reason: 'The access token has expired; WriteHuman Chrome on the active source is connected and is expected to rotate it shortly. Not re-verified yet.',
       loginRequired: false,
     };
   }
@@ -224,6 +256,11 @@ function deriveLifecycle(signals) {
   const h = deriveHealth(signals);
   if (h.session.state === 'ERROR') return { state: 'ERROR', reason: h.session.reason, loginRequired: false };
   if (h.session.state === 'LOGIN_REQUIRED') return { state: 'LOGIN_REQUIRED', reason: h.session.reason, loginRequired: true };
+  // A stalled renewal must not fall through to the OFFLINE reason below ("keeps working from the
+  // last verified session") or to HEALTHY — with the token expired, neither is proven.
+  if (h.session.state === 'STALLED') {
+    return { state: h.agent.state === 'OFFLINE' ? 'OFFLINE' : 'RECONNECTING', reason: h.session.reason, loginRequired: false };
+  }
   if (h.agent.state === 'OFFLINE') {
     const reason = (signals && signals.ingestConfigured === false)
       ? h.agent.reason

@@ -280,3 +280,54 @@ Order: **backend first, then frontend.** The new page reads `healthSignals`, whi
 backend returns; the reverse order would leave the page briefly reading `undefined`. Agents
 update independently — a 3.3.0 agent simply receives no commands until it is updated to 3.4.0,
 which is the safe failure mode.
+
+## Incident 2026-10-05 — "live / refreshing / offline / failed" (agent 3.5.1)
+
+**What was proven (read-only audit of the live record, sanitised):**
+
+- Active source `WIN-K0R6CCFHB4L` (agent 3.5.0) last reported 07:12:19Z; no request reached the
+  application after that (a Re-sync queued 07:15Z stayed `pending`). Why the agent stopped is NOT
+  proven — it needs that machine's `%LOCALAPPDATA%\GenZDigitalTools\WriteHumanAgent\logs\agent.log`.
+  The previous source (`WIN-J0672VM8GSC`) went silent the same way on 2026-09-30.
+- Its last report carried `uptimeSec: -6877`: the source's wall clock went BACKWARDS after the agent
+  started. 3.5.0 measured heartbeat-due / cooldowns / activation deadline with `Date.now()`, which
+  silences heartbeats for as long as such a jump.
+- Last accepted bundle 02:21Z, so the stored access token had expired ~03:20Z. The 07:12Z push carried
+  an already-expired token and was correctly refused (`VERIFICATION_INCONCLUSIVE`). "Verification
+  unknown, HTTP 0" is `readonly_no_exchange` — the server deliberately does not check an expired
+  token in read-only mode; it is not a network failure.
+- RECOVERY DEADLOCK: every refusal reply carried the rotate-token nudge and could carry an addressed
+  command, but agents ≤3.5.0 read reply bodies only on a 2xx — and the server had already marked the
+  command delivered.
+
+**Misleading classification fixed:**
+
+| Was | Now |
+|---|---|
+| Expired token + refresh token present ⇒ REFRESHING "rotating · still valid · no action needed" | REFRESHING only while the active source is ONLINE with Chrome CONNECTED and cookies inside `SYNC_STALE_MIN`; otherwise **STALLED** ("nothing is renewing it…"). Never LOGIN_REQUIRED on absence of evidence. |
+| Cookie sync FAILED = account-wide last code (any device; any heartbeat cleared it) | The ACTIVE source's last real sync outcome (`device.lastSyncOutcome`); heartbeats, replays and STALE_BUNDLE are neutral; a standby cannot set it |
+| Title badge "live" | "dashboard connected" (dashboard ↔ server only) |
+| Last-finishing status response wins | Only the newest-sent response is applied (`lib/latestOnly.js`) |
+
+**Agent 3.5.1:** applies directives from answered refusals (409 carrying `deviceState`), and uses a
+monotonic clock (`monoNow()`) for every local interval. Wall-clock remains for server-issued expiry,
+reported timestamps and the cross-process lock. Server: a refusal reply no longer spends a command
+for an agent < 3.5.1 (`agentDirectives(…, { replyOk })`).
+
+**Version floors:** `EXPECTED_AGENT_VERSION` = 3.5.1 (dashboard "update available"); the activation
+floor stays **3.5.0** (the version that introduced capture-and-activate) so Mark Active keeps working
+on 3.5.0 machines. The drift test now pins "3.5.0 ≤ floor ≤ source" instead of "floor == source".
+
+**Known gap, not fixed (cause unproven):** the agent exits on an uncaught exception expecting a
+supervisor, but the installer only creates a logon Startup shortcut — a crash stays silent until the
+next logon. Confirm from the source's agent.log before changing supervision.
+
+**Safe operator recovery** (no reinstall, no re-enrolment, no vault change): on the active source,
+check Task Manager for `WriteHumanAgent.exe`; read the tail of agent.log; if it is not running, start
+it via the "WriteHuman Agent" Startup shortcut. Do not delete `stood-down.json` — a revoked install
+must stay down.
+
+**Rollback (WriteHuman only):** redeploy the previous `sessionHealth.js`, `candidateSync.js`,
+`agentSync.js`, `proxyTools.js` (+ frontend bundle). The new `lastSyncOutcome` field is additive and
+ignored by old code; no session, vault or device record is migrated. Installed 3.5.1 agents remain
+compatible with the old server: it already attaches directives to refusal replies, and 3.5.1 simply acts on them.

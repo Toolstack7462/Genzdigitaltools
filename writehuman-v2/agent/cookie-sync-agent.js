@@ -50,7 +50,11 @@ const { spawn } = require('child_process');
 // 3.4.0 — ADDRESSED commands (this agent refuses anything not addressed to its own device id),
 // stand-down on revoke (a revoked agent no longer keeps relaunching Chrome forever), and the
 // token-rotation nudge that stops the dedicated Chrome rotating late.
-const AGENT_VERSION = '3.5.0';
+// 3.5.1 — honours server directives on an answered refusal (409): the token-rotation nudge and the
+//         addressed command used to be discarded exactly when the stored token had expired; and
+//         every LOCAL interval uses a monotonic clock, so a backwards wall-clock correction can no
+//         longer silence heartbeats (the source reported uptimeSec -6877 on 2026-10-05).
+const AGENT_VERSION = '3.5.1';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -359,6 +363,12 @@ async function pairDevice(code) {
 }
 
 // Structured, timestamped log line (ISO 8601). Never logs cookie values — counts / 8-char hash only.
+// Monotonic milliseconds for LOCAL intervals (heartbeat due, cooldowns, activation deadline,
+// uptime). Date.now() is wall-clock: a Windows time correction can move it backwards by hours,
+// and `Date.now() - lastX` then stays below every threshold for that long. Wall-clock is still
+// right for server-issued expiry times, for timestamps we report, and for the cross-process lock.
+function monoNow() { return Number(process.hrtime.bigint() / 1000000n); }
+function heartbeatDue(state) { return !state.lastHeartbeatAt || (monoNow() - state.lastHeartbeatAt) >= CFG.heartbeatMs; }
 function log(event, fields) { try { console.log(`[${new Date().toISOString()}] [wh-v2-agent] ${event} ${JSON.stringify(fields || {})}`); } catch (_) {} }
 
 /**
@@ -537,7 +547,7 @@ async function nudgeTokenRotation(state, reason) {
       ws.onerror = () => done(false);
       ws.onclose = () => done(false);
     });
-    state.lastNudgeAt = Date.now();
+    state.lastNudgeAt = monoNow();
     log('token_nudge', { reason, action: ok ? 'reloaded' : 'reload_failed' });
     // A rotation lands a moment later; poll fast for a short burst so the new cookie reaches the
     // server in seconds rather than at the next 45-second tick.
@@ -559,11 +569,37 @@ function buildReport(state) {
     lastErrorAt: state.lastErrorAt ? new Date(state.lastErrorAt).toISOString() : null,
     errorCount: state.errorCount || 0,
     host: os.hostname(), version: AGENT_VERSION,
-    uptimeSec: Math.round((Date.now() - state.startedAt) / 1000),
+    uptimeSec: Math.round((monoNow() - state.startedAt) / 1000),
     lastCommand: state.lastCommand || null,
     lastCommandAt: state.lastCommandAt ? new Date(state.lastCommandAt).toISOString() : null,
     profile: state.profile || null,
   };
+}
+
+// The server's directives, from any reply that carries them (2xx, or an answered 409 refusal).
+function applyDirectives(state, body) {
+  // Am I the machine currently supplying the session? Everything that touches the BROWSER is
+  // gated on this: a standby must never open Chrome or nudge a token.
+  state.isActiveSource = body && body.isActiveSource === true;
+  state.superseded = !!(body && body.superseded);
+  // The server's canonical verdict on what this machine IS (READY / ACTIVE / STANDBY / …). Kept
+  // in telemetry so a disagreement between "what the box thinks it is" and "what the server
+  // thinks it is" becomes visible — that disagreement is the shape of every wrong-machine bug
+  // this system has had.
+  state.deviceState = (body && body.deviceState) || null;
+  // A terminal verdict can arrive on any answered reply (a row retired between our authentication
+  // and this reply). Treat it exactly like the 403: persist it and go dormant.
+  if (body && body.standDown === true && !state.standDown) {
+    state.standDown = true;
+    state.standDownCode = body.deviceState || 'DEVICE_REVOKED';
+    log('stand_down', { code: state.standDownCode, reason: body.standDownReason || null, persisted: true });
+    writeStandDown(state.standDownCode, body.standDownReason || null, state.device && (state.device.deviceId || state.device.agentId));
+  }
+  // How long until the stored access token expires, as the SERVER sees it. Only the active
+  // source is ever told. This is what lets rotation happen ON TIME instead of whenever a
+  // throttled background timer in Chrome eventually gets round to it.
+  state.rotateTokenIn = (body && typeof body.rotateTokenIn === 'number') ? body.rotateTokenIn : null;
+  if (body && body.command) handleCommand(state, body.command);
 }
 
 // One POST to /v2/cookies/ingest (cookie push / heartbeat / logout), always carrying the agent
@@ -613,28 +649,7 @@ async function postToServer(state, payload) {
       delete state.device.agentId;
       if (saveDeviceState(state.device)) log('device_key_issued', { device_id: body.deviceId });
     }
-    // Am I the machine currently supplying the session? Everything that touches the BROWSER is
-    // gated on this: a standby must never open Chrome or nudge a token.
-    state.isActiveSource = body && body.isActiveSource === true;
-    state.superseded = !!(body && body.superseded);
-    // The server's canonical verdict on what this machine IS (READY / ACTIVE / STANDBY / …). Kept
-    // in telemetry so a disagreement between "what the box thinks it is" and "what the server
-    // thinks it is" becomes visible — that disagreement is the shape of every wrong-machine bug
-    // this system has had.
-    state.deviceState = (body && body.deviceState) || null;
-    // A terminal verdict can also arrive on a 200 (a row retired between our authentication and
-    // this reply). Treat it exactly like the 403: persist it and go dormant.
-    if (body && body.standDown === true && !state.standDown) {
-      state.standDown = true;
-      state.standDownCode = body.deviceState || 'DEVICE_REVOKED';
-      log('stand_down', { code: state.standDownCode, reason: body.standDownReason || null, persisted: true });
-      writeStandDown(state.standDownCode, body.standDownReason || null, state.device && (state.device.deviceId || state.device.agentId));
-    }
-    // How long until the stored access token expires, as the SERVER sees it. Only the active
-    // source is ever told. This is what lets rotation happen ON TIME instead of whenever a
-    // throttled background timer in Chrome eventually gets round to it.
-    state.rotateTokenIn = (body && typeof body.rotateTokenIn === 'number') ? body.rotateTokenIn : null;
-    if (body && body.command) handleCommand(state, body.command);
+    applyDirectives(state, body);
     return body || {};
   }
   // STAND DOWN. A revoked device used to log its 403 and carry right on — polling every 45 seconds
@@ -658,6 +673,10 @@ async function postToServer(state, payload) {
   // hammering a down backend; treating a healthy "your bundle is older than the active one" as an
   // outage would back the agent off to 5-minute polls for no reason.
   if (resp.status >= 500 || resp.status === 429) state.ingestFails = (state.ingestFails || 0) + 1;
+  // An ANSWERED refusal still carries the server's directives (it always sends `deviceState` with
+  // them). 3.5.0 threw them away, and the commonest refusal — VERIFICATION_INCONCLUSIVE, because the
+  // stored token has expired — is exactly when the rotation nudge is needed. A 429/5xx carries none.
+  else if (body && typeof body === 'object' && body.deviceState) applyDirectives(state, body);
   recordError(state, 'ingest_http_' + resp.status + ((body && body.code) ? ' ' + body.code : ''));
   return { _status: resp.status, body, code: body && body.code };
 }
@@ -749,7 +768,7 @@ function handleCommand(state, cmd) {
         log('command_ignored', { reason: 'activation_already_running', command_id: cmd.id });
         return;
       }
-      state.activation = { id: cmd.activationId, nonce: cmd.activationNonce, running: true, startedAt: Date.now(), commandId: cmd.id };
+      state.activation = { id: cmd.activationId, nonce: cmd.activationNonce, running: true, startedAt: monoNow(), commandId: cmd.id };
       state.pendingAck.result = 'capture_started';
       runActivation(state).catch((e) => log('activation_error', { error: e && e.message }));
       return;
@@ -788,7 +807,7 @@ function handleCommand(state, cmd) {
  */
 async function runActivation(state) {
   const act = state.activation;
-  const deadline = act.startedAt + CFG.activationWaitMs;
+  const deadline = act.startedAt + CFG.activationWaitMs;   // monotonic (startedAt = monoNow())
   const report = (stage, note) => postToServer(state, {
     heartbeat: true, hash: null, activationId: act.id, activationStage: stage, activationNote: note || null,
   });
@@ -805,7 +824,7 @@ async function runActivation(state) {
   log('activation_started', { activation_id: act.id, wait_ms: CFG.activationWaitMs });
   let announcedWaiting = false;
 
-  while (Date.now() < deadline) {
+  while (monoNow() < deadline) {
     if (state.standDown) return giveUp('DEVICE_RETIRED', 'This device was retired while the capture was running.');
 
     // 1. Our own dedicated Chrome must be up. This is the ONE case where a non-active-source
@@ -817,8 +836,8 @@ async function runActivation(state) {
     } catch (e) {
       state.cdp = 'DOWN'; state.chrome = false;
       await report('OPENING_CHROME', 'CDP is down; starting the dedicated WriteHuman Chrome');
-      if ((Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
-        state.lastRelaunchAt = Date.now();
+      if ((monoNow() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+        state.lastRelaunchAt = monoNow();
         relaunchChrome('activation:' + act.id);
       }
       await sleep(5000);
@@ -853,7 +872,7 @@ async function runActivation(state) {
       return;                                                 // the server has already failed the transaction and said why
     }
     state.lastHash = hash;
-    state.lastHeartbeatAt = Date.now();
+    state.lastHeartbeatAt = monoNow();
     log('activation_uploaded', {
       activation_id: act.id, code: r.code || null, promoted: r.promoted === true,
       source_switched: r.sourceSwitched === true, stage: (r.activation && r.activation.stage) || null,
@@ -902,8 +921,8 @@ async function pushIfChanged(state) {
     // so it no longer starts one. `isActiveSource` is undefined until the first reply, and that
     // first poll is a heartbeat, so a fresh agent simply waits to be told.
     if (CFG.autoLaunchChrome && state.isActiveSource === true
-        && state.cdpFails >= CFG.cdpRelaunchAfter && (Date.now() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
-      state.lastRelaunchAt = Date.now();
+        && state.cdpFails >= CFG.cdpRelaunchAfter && (monoNow() - (state.lastRelaunchAt || 0)) > CFG.relaunchCooldownMs) {
+      state.lastRelaunchAt = monoNow();
       relaunchChrome('cdp_auto');
     }
     await postToServer(state, { heartbeat: true, hash: null }); // report CDP-down so the dashboard sees it live
@@ -915,7 +934,7 @@ async function pushIfChanged(state) {
   // instead of whenever a throttled background timer gets round to it. Cooldown-gated so a run of
   // polls inside the same window cannot reload in a loop.
   if (state.isActiveSource === true && state.rotateTokenIn != null
-      && (Date.now() - (state.lastNudgeAt || 0)) > Math.max(120000, CFG.relaunchCooldownMs)) {
+      && (monoNow() - (state.lastNudgeAt || 0)) > Math.max(120000, CFG.relaunchCooldownMs)) {
     await nudgeTokenRotation(state, 'token_ttl_' + state.rotateTokenIn + 's');
   }
   const auth = filterAuthCookies(cookies, CFG.domain, CFG.ref);
@@ -927,13 +946,13 @@ async function pushIfChanged(state) {
       if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
         const r = await postToServer(state, { loggedOut: true, reason: 'auth_cookie_absent' });
         if (r && !r._err && r._status == null) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
-      } else if (!state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs) {
-        state.lastHeartbeatAt = Date.now();
+      } else if (heartbeatDue(state)) {
+        state.lastHeartbeatAt = monoNow();
         await postToServer(state, { heartbeat: true, hash: null });
         log('browser_not_authenticated', { auth_cookies: 0, empty_polls: state.emptyPolls });
       }
-    } else if (!state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs) {
-      state.lastHeartbeatAt = Date.now();
+    } else if (heartbeatDue(state)) {
+      state.lastHeartbeatAt = monoNow();
       await postToServer(state, { heartbeat: true, hash: null });
       log('browser_not_authenticated', { auth_cookies: 0 });
     }
@@ -948,9 +967,9 @@ async function pushIfChanged(state) {
     // runs on a host that has hit its process ceiling. So a no-change poll only reaches the network
     // when a heartbeat is actually due - at a 45s poll and a 3-minute heartbeat that is one request
     // in four. Liveness is unaffected: the dashboard's staleness window is far wider than 3 minutes.
-    const due = !state.lastHeartbeatAt || (Date.now() - state.lastHeartbeatAt) >= CFG.heartbeatMs;
+    const due = heartbeatDue(state);
     if (!due) return;
-    state.lastHeartbeatAt = Date.now();
+    state.lastHeartbeatAt = monoNow();
     const r = await postToServer(state, { heartbeat: true, hash: hash.slice(0, 8) });
     if (r && r._err) log('heartbeat_failed', { error: r._err });
     else if (r && r._status) log('heartbeat_rejected', { status: r._status });
@@ -969,7 +988,7 @@ async function pushIfChanged(state) {
     return;
   }
   state.lastHash = hash;
-  state.lastHeartbeatAt = Date.now();   // a push IS contact; no extra beat needed right after
+  state.lastHeartbeatAt = monoNow();   // a push IS contact; no extra beat needed right after
   // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
   state.quickPollsLeft = CFG.quickPollFor;
   log('cookie_synchronized', {
@@ -1092,7 +1111,7 @@ async function run() {
       : (readDpapiKeyFile(process.env.WHV2_AGENT_KEY_DPAPI || FILE_CFG.agentKeyDpapiFile) ? 'dpapi' : 'file'));
   log('starting', { version: AGENT_VERSION, ingest: CFG.ingestUrl, cdp: CFG.cdpUrl, domain: CFG.domain, poll_ms: CFG.pollMs, chrome_task: CFG.chromeTask, config: CONFIG_SOURCE, key_source: keySource, lock_file: CFG.lockFile, device_id: (device && (device.deviceId || device.agentId)) || null, device_name: device ? device.name : null, self_registered: !!(device && device.agentId) });
 
-  const state = { device, lastHash: null, startedAt: Date.now(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
+  const state = { device, lastHash: null, startedAt: monoNow(), pollCount: 0, authCount: 0, cdp: null, chrome: false, lastError: null, errorCount: 0, lastErrorMsg: null, lastErrorAt: null, emptyPolls: 0, loggedOutSent: false, stopped: false, cdpFails: 0, ingestFails: 0, lastRelaunchAt: 0, lastDelay: 0, quickPollsLeft: 0 };
   let timer = null;
   // Self-rescheduling timer: AWAIT each poll before scheduling the next, so polls never overlap
   // (a slow CDP read + ingest can exceed the poll interval). NOT unref'd — the agent is a daemon,
@@ -1137,6 +1156,6 @@ async function run() {
   loop(); // run once immediately, then self-reschedule
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand, postToServer, applyDirectives, heartbeatDue, monoNow };
 
 if (require.main === module) start();

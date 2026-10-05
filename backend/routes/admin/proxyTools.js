@@ -34,6 +34,7 @@ const activation = require('../../utils/proxy/activation');
 const agentEnroll = require('../../utils/proxy/agentEnroll');
 const { verifyAndApply } = require('../../utils/proxy/verifyAndApply');
 const { deriveLifecycle, deriveHealth } = require('../../utils/proxy/sessionHealth');
+const { syncOutcome } = require('../../utils/proxy/candidateSync');
 const agentCommands = require('../../utils/proxy/agentCommands');
 const proxyVerifyScheduler = require('../../cron/proxyVerifyScheduler');
 const healthAlerts = require('../../utils/proxy/healthAlerts');
@@ -1060,7 +1061,7 @@ const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.0';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.1';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1187,8 +1188,11 @@ router.get('/:tool/agent-state', async (req, res) => {
     const lastVerifyResult = (account.verification && account.verification.result) || null;
     const verifiedAt = account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : null;
     const verificationAgeSec = verifiedAt ? Math.round((Date.now() - verifiedAt) / 1000) : null;
-    const lastSyncFailed = !!(account.lastSyncResultCode
-      && !['PROMOTED', 'COOKIE_BUNDLE_UNCHANGED', 'HEARTBEAT', 'STANDBY_ROUTINE_REFRESH', 'OK'].includes(account.lastSyncResultCode));
+    // Cookie-sync FAILED is the ACTIVE SOURCE's last real sync outcome. It used to be the ACCOUNT's
+    // last result code, which every device wrote: a standby's refusal set it, and any heartbeat
+    // (an allow-listed code) cleared it without a single cookie having synced.
+    const lastSync = syncOutcome(account);
+    const lastSyncFailed = lastSync.failed;
 
     const signals = {
       hasBundle: !!account.sessionEncrypted,
@@ -1220,6 +1224,7 @@ router.get('/:tool/agent-state', async (req, res) => {
     let health, statusReason;
     if (hs.session.state === 'ERROR') { health = 'down'; statusReason = hs.session.reason; }
     else if (hs.session.state === 'LOGIN_REQUIRED') { health = 'down'; statusReason = hs.session.reason; }
+    else if (hs.session.state === 'STALLED') { health = 'degraded'; statusReason = hs.session.reason; }
     else if (!ingestConfigured) { health = 'degraded'; statusReason = 'Working, but no device is paired — nothing can refresh this session when it ages out. Pair a device to restore automatic sync.'; }
     else if (hs.verification.state === 'failed') { health = 'degraded'; statusReason = hs.verification.reason; }
     else if (hs.agent.state === 'OFFLINE') { health = 'degraded'; statusReason = 'Working from the last verified bundle, but no paired device is reporting — it cannot refresh until one comes back online.'; }
@@ -1293,6 +1298,8 @@ router.get('/:tool/agent-state', async (req, res) => {
       lastAgentSeenAt,
       lastSyncAttemptAt: account.lastSyncAttemptAt || null,
       lastSyncResultCode: account.lastSyncResultCode || null,
+      // The active source's last REAL sync outcome (heartbeats excluded) — what the Cookie sync card means.
+      activeSourceLastSync: lastSync.code ? { code: lastSync.code, at: lastSync.at, failed: lastSync.failed } : null,
       account: {
         id: account._id,
         label: account.label || null,

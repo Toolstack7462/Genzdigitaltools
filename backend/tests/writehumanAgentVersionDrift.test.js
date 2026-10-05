@@ -68,13 +68,22 @@ test('the agent source version is a real semver', () => {
  * Neither may exceed the version that has been built and shipped: demanding a version that was
  * never published is the 2026-08-26 failure this file exists to prevent.
  */
-test('the ACTIVATION floor matches the agent source, and the addressing floor never exceeds it', () => {
+test('the ACTIVATION floor sits between the capture-introducing version and the source; the addressing floor never exceeds it', () => {
   const { MIN_AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION, atLeast } = require('../utils/proxy/agentCommands');
+  // The floor is the version that INTRODUCED capture-and-activate (3.5.0), not "whatever the source
+  // is today": a patch release that does not touch the activation protocol (3.5.1 — directives on
+  // refusals, monotonic intervals) must not refuse Mark Active on every 3.5.0 machine in the field.
+  // Both failure directions stay pinned: never ABOVE what is built (the button would refuse), never
+  // BELOW the version that can execute it (the command would silently do nothing).
+  const CAPTURE_INTRODUCED_IN = '3.5.0';
   assert.strictEqual(
-    MIN_ACTIVATION_AGENT_VERSION, sourceVersion(),
-    'agentCommands.MIN_ACTIVATION_AGENT_VERSION must equal the agent source AGENT_VERSION — Mark '
-    + 'Active is executed BY the agent, so demanding a version that was never built makes the '
-    + 'button refuse, and accepting an older one makes it silently do nothing.');
+    atLeast(sourceVersion(), MIN_ACTIVATION_AGENT_VERSION), true,
+    'agentCommands.MIN_ACTIVATION_AGENT_VERSION must not exceed the agent source AGENT_VERSION — '
+    + 'demanding a version that was never built makes the Mark Active button refuse.');
+  assert.strictEqual(
+    atLeast(MIN_ACTIVATION_AGENT_VERSION, CAPTURE_INTRODUCED_IN), true,
+    'agentCommands.MIN_ACTIVATION_AGENT_VERSION must not be below ' + CAPTURE_INTRODUCED_IN + ' — an older '
+    + 'agent receives capture-and-activate and silently does nothing.');
   assert.strictEqual(
     atLeast(sourceVersion(), MIN_AGENT_VERSION), true,
     'agentCommands.MIN_AGENT_VERSION must not exceed the agent source AGENT_VERSION — otherwise the '

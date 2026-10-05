@@ -28,8 +28,14 @@ test('the agent package version is the one the backend expects', () => {
   // the server and the agent agree — which is the only thing worth asserting. The full identity
   // chain (source == activation floor == dashboard == published artifact) is in
   // writehumanAgentVersionDrift.test.js.
-  const { MIN_ACTIVATION_AGENT_VERSION } = require('../utils/proxy/agentCommands');
-  assert.strictEqual(agent.AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION);
+  // EXPECTED_AGENT_VERSION is the version the server advertises and checks reported agents against.
+  // (The activation floor is deliberately allowed to sit below the source — see the drift test.)
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'routes', 'admin', 'proxyTools.js'), 'utf8');
+  const m = src.match(/EXPECTED_AGENT_VERSION\s*=\s*process\.env\.PROXY_EXPECTED_AGENT_VERSION\s*\|\|\s*'([^']+)'/);
+  assert.ok(m, 'EXPECTED_AGENT_VERSION default not found');
+  assert.strictEqual(agent.AGENT_VERSION, m[1]);
+  const { MIN_ACTIVATION_AGENT_VERSION, atLeast } = require('../utils/proxy/agentCommands');
+  assert.strictEqual(atLeast(agent.AGENT_VERSION, MIN_ACTIVATION_AGENT_VERSION), true);
 });
 
 test('canonical path comparison accepts the same profile written differently', () => {

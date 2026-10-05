@@ -150,8 +150,15 @@ function accessTokenTtlSec(account, tool) {
  *                 whichever agent polled first and is why "Open Chrome" landed on the wrong box.
  *   rotateTokenIn seconds until the token should be rotated, and only ever sent to the ACTIVE
  *                 SOURCE. A standby is explicitly told `null` so it never touches its browser.
+ *
+ * opts.replyOk  false when this goes out on a refusal (409). Agents before 3.5.1 ignore the body of
+ *               any non-2xx reply, so a command handed out there was marked delivered and silently
+ *               dropped — on 2026-10-05 that is where an admin's Re-sync went while every push was
+ *               being refused. For those agents the command now stays pending for the next 2xx.
  */
-function agentDirectives(account, tool, device) {
+const DIRECTIVES_ON_REFUSAL_VERSION = '3.5.1';
+function agentDirectives(account, tool, device, opts) {
+  const replyOk = !(opts && opts.replyOk === false);
   const staleMs = AGENT_STALE_MIN * 60000;
   const st = deviceState.stateOf(account, device, { staleMs });
   // A device in a terminal state must not act. It is told so explicitly, with `standDown`, rather
@@ -166,7 +173,8 @@ function agentDirectives(account, tool, device) {
     };
   }
   const active = st.state === 'ACTIVE';
-  const command = agentCommands.takeFor(account, device, { tool, agentVersion: device.agentVersion });
+  const willAct = replyOk || agentCommands.atLeast(device.agentVersion, DIRECTIVES_ON_REFUSAL_VERSION);
+  const command = willAct ? agentCommands.takeFor(account, device, { tool, agentVersion: device.agentVersion }) : null;
   // The capture command is what starts the visible part of the transaction: the moment the target
   // machine actually collects it, the operator's screen moves off "waiting for the agent".
   if (command && command.type === 'capture-and-activate' && command.activationId) {
@@ -491,7 +499,8 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       activation.advance(account, { activationId: act.activationId, deviceId: device.deviceId, stage: 'UPLOADING', fromAgent: true });
     }
     const r = await ingestCandidate(account, tool, device, body.cookies, Object.assign({ activation: act }, meta));
-    const d = agentDirectives(account, tool, device);
+    const replyOk = [CODES.PROMOTED, CODES.COOKIE_BUNDLE_UNCHANGED, CODES.STANDBY_ROUTINE_REFRESH].includes(r.code);
+    const d = agentDirectives(account, tool, device, { replyOk });
     await account.save();
 
     // STANDBY_ROUTINE_REFRESH is a SUCCESSFUL outcome, not a refusal: the server received the push,
@@ -500,7 +509,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
     // codes, re-offer the identical bundle on every single poll — a standby machine talking to the
     // server forever about cookies it is never allowed to write. 200 with `standby: true` lets it
     // record the hash and go quiet until something actually changes.
-    const httpCode = [CODES.PROMOTED, CODES.COOKIE_BUNDLE_UNCHANGED, CODES.STANDBY_ROUTINE_REFRESH].includes(r.code) ? 200 : 409;
+    const httpCode = replyOk ? 200 : 409;
     return res.status(httpCode).json(withIssuedKey(req, {
       ok: httpCode === 200,
       code: r.code,
@@ -625,3 +634,5 @@ router.post('/:tool/uninstall', express.json({ limit: '4kb' }), async (req, res)
 });
 
 module.exports = router;
+// Exposed for tests: the directive builder is where command delivery is decided.
+module.exports.agentDirectives = agentDirectives;
