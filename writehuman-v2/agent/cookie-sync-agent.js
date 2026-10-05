@@ -54,7 +54,10 @@ const { spawn } = require('child_process');
 //         addressed command used to be discarded exactly when the stored token had expired; and
 //         every LOCAL interval uses a monotonic clock, so a backwards wall-clock correction can no
 //         longer silence heartbeats (the source reported uptimeSec -6877 on 2026-10-05).
-const AGENT_VERSION = '3.5.1';
+// 3.5.2 — the success log no longer throws (`forced is not defined` hid every successful sync as a
+//         tick_error), and each push / refusal logs the candidate token's EXPIRY TIME (never the
+//         token), so a run of refusals shows whether Chrome had actually rotated.
+const AGENT_VERSION = '3.5.2';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -410,6 +413,33 @@ function filterAuthCookies(cookies, domain, ref) {
     .map((c) => ({ name: c.name, value: c.value, domain: c.domain, path: c.path || '/' }));
 }
 // MUST match session/cookieManager.cookieHash: sha256 of sorted "name=value" joined by \n.
+// The candidate token's expiry, as an ISO TIME — read from the Supabase auth cookie (whole, or its
+// .0/.1 chunks joined in order). Only `expires_at` (or the JWT `exp`) is extracted; the token itself
+// never leaves this function. Null when it cannot be read.
+function authTokenExpiry(authList, ref) {
+  try {
+    const base = authTokenBase(ref);
+    const list = Array.isArray(authList) ? authList : [];
+    const whole = list.find(c => c && c.name === base);
+    const chunks = list.filter(c => c && typeof c.name === 'string' && c.name.startsWith(base + '.'))
+      .map(c => [parseInt(c.name.slice(base.length + 1), 10), c.value])
+      .filter(([n]) => Number.isFinite(n)).sort((x, y) => x[0] - y[0]);
+    let raw = chunks.length ? chunks.map(([, v]) => v).join('') : (whole && whole.value);
+    if (!raw) return null;
+    raw = String(raw);
+    if (/%[0-9A-Fa-f]{2}/.test(raw)) { try { raw = decodeURIComponent(raw); } catch (_) {} }
+    const json = raw.startsWith('base64-') ? Buffer.from(raw.slice(7).replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8') : raw;
+    let exp = null;
+    const ea = json.match(/"expires_at":(\d+)/);
+    if (ea) exp = Number(ea[1]);
+    if (!exp) {
+      const at = json.match(/"access_token":"([^"]+)"/);
+      const part = at && at[1].split('.')[1];
+      if (part) exp = Number(JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')).exp);
+    }
+    return Number.isFinite(exp) && exp > 0 ? new Date(exp * 1000).toISOString() : null;
+  } catch (_) { return null; }
+}
 function hashAuthCookies(authList) {
   const items = (authList || []).map((c) => `${c.name}=${c.value == null ? '' : c.value}`).sort();
   if (!items.length) return null;
@@ -984,7 +1014,7 @@ async function pushIfChanged(state) {
     // STALE_BUNDLE in particular is normal and healthy — it just means another device is ahead.
     const code = (r.body && r.body.code) || r.code || null;
     if (code === 'STALE_BUNDLE' || code === 'ACCOUNT_MISMATCH' || code === 'REPLAY_REJECTED') state.lastHash = hash;
-    log('ingest_rejected', { status: r._status, code });
+    log('ingest_rejected', { status: r._status, code, token_exp: authTokenExpiry(auth, CFG.ref) });
     return;
   }
   state.lastHash = hash;
@@ -992,7 +1022,8 @@ async function pushIfChanged(state) {
   // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
   state.quickPollsLeft = CFG.quickPollFor;
   log('cookie_synchronized', {
-    hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result, forced,
+    hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result,
+    token_exp: authTokenExpiry(auth, CFG.ref),
     promoted: r.promoted === true, source_switched: r.sourceSwitched === true,
     active_source: (r.activeSource && r.activeSource.name) || null,
     is_active_source: r.isActiveSource === true,
@@ -1156,6 +1187,6 @@ async function run() {
   loop(); // run once immediately, then self-reschedule
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand, postToServer, applyDirectives, heartbeatDue, monoNow };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, authTokenExpiry, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand, postToServer, applyDirectives, heartbeatDue, monoNow };
 
 if (require.main === module) start();

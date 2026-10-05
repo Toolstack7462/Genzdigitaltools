@@ -1061,7 +1061,7 @@ const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.1';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.2';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1300,6 +1300,9 @@ router.get('/:tool/agent-state', async (req, res) => {
       lastSyncResultCode: account.lastSyncResultCode || null,
       // The active source's last REAL sync outcome (heartbeats excluded) — what the Cookie sync card means.
       activeSourceLastSync: lastSync.code ? { code: lastSync.code, at: lastSync.at, failed: lastSync.failed } : null,
+      // The last REFUSED candidate (times, codes, reason — no secrets). Survives later successes, so a
+      // run of refusals can still be diagnosed after the session recovers.
+      lastRejectedCandidate: account.lastRejectedCandidate || null,
       account: {
         id: account._id,
         label: account.label || null,

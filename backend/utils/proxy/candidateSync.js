@@ -67,6 +67,23 @@ function decryptBundle(account) {
 const SYNC_OK = ['PROMOTED', 'COOKIE_BUNDLE_UNCHANGED', 'STANDBY_ROUTINE_REFRESH', 'OK'];
 const SYNC_NEUTRAL = ['HEARTBEAT', 'REPLAY_REJECTED', 'STALE_BUNDLE', 'DEVICE_LOGGED_OUT'];
 
+/**
+ * The last REFUSED candidate, kept apart from `account.candidate` (which the next push overwrites,
+ * success included). Non-secret by construction: times, ids, codes and a short reason — never a
+ * token, cookie value or email. On 2026-10-05 the one candidate that could have explained four hours
+ * of refusals was overwritten by the push that finally succeeded.
+ */
+function recordRejectionEvidence(account, device, code, reason, times, now) {
+  const t = times || {};
+  const iso = (s) => (Number.isFinite(s) ? new Date(s * 1000).toISOString() : null);
+  account.lastRejectedCandidate = {
+    at: now, deviceId: device.deviceId, deviceName: device.name || null, code,
+    reason: reason && reason !== code ? String(reason).slice(0, 80) : null,
+    tokenIssuedAt: iso(t.iat), tokenExpiresAt: iso(t.exp),
+    tokenExpiredAtReceipt: Number.isFinite(t.exp) ? t.exp * 1000 <= now.getTime() : null,
+  };
+}
+
 /** Record the outcome of an attempt on the device row - success AND failure are both visible. */
 function recordAttempt(account, device, code, opts) {
   const o = opts || {};
@@ -127,8 +144,11 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     // authorise, and only inside an activation.
     const act = o.activation || null;
 
+    // Claims of the candidate's token, filled in once the candidate is built. Times only.
+    let candTimes = { iat: null, exp: null };
     const fail = async (code, error) => {
       recordAttempt(account, device, code, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, error: error || code });
+      recordRejectionEvidence(account, device, code, error, candTimes, now);
       account.candidate = {
         deviceId: device.deviceId, deviceName: device.name || null,
         receivedAt: now, status: 'rejected', code, hash: null,
@@ -159,6 +179,7 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     const candClaims = bundleTokenClaims(candidate, tool);
     const activeClaims = activeBundle ? bundleTokenClaims(activeBundle, tool) : { iat: null, sessionId: null };
     const candIat = candClaims.iat;
+    candTimes = { iat: candClaims.iat, exp: candClaims.exp };
     const activeIat = activeClaims.iat;
 
     // -- 3. WHO IS THIS DEVICE? Decided BEFORE any short-circuit, because the answer changes what
@@ -299,12 +320,15 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     const prevMasked = (account.verification && account.verification.maskedId) || null;
     if (v.result === 'wrong_account' || (maskedId && prevMasked && maskedId !== prevMasked && !account.expectedIdentifier)) {
       recordAttempt(account, device, CODES.ACCOUNT_MISMATCH, { report: o.report, agentVersion: o.agentVersion, hostname: o.hostname, seq: o.seq, idempotencyKey: o.idempotencyKey, error: 'candidate belongs to a different account' });
+      recordRejectionEvidence(account, device, CODES.ACCOUNT_MISMATCH, 'candidate belongs to a different account', candTimes, now);
       account.candidate = { deviceId: device.deviceId, deviceName: device.name || null, receivedAt: now, status: 'rejected', code: CODES.ACCOUNT_MISMATCH, hash: candidateHash ? candidateHash.slice(0, 12) : null, observedMaskedId: maskedId, expectedMaskedId: prevMasked };
       await account.save();
       return { code: CODES.ACCOUNT_MISMATCH, promoted: false, changed: false, bundleVersion: account.bundleVersion || 0, activeSource: account.activeSource || null, maskedId, verifyResult: v.result };
     }
     if (v.result === 'session_expired') return fail(CODES.SESSION_EXPIRED);
-    if (v.result !== 'working') return fail(CODES.VERIFICATION_INCONCLUSIVE, v.result);
+    // The verifier's own reason (e.g. readonly_no_exchange = the candidate's token is expired or
+    // about to be) is the evidence; the bare result 'unknown' says nothing.
+    if (v.result !== 'working') return fail(CODES.VERIFICATION_INCONCLUSIVE, v.reason || v.result);
 
     // -- 7. ATOMIC PROMOTION. Keep the outgoing bundle as rollback FIRST.
     const prevSs = account.session_status;

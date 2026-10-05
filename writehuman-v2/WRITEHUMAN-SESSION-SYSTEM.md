@@ -281,24 +281,31 @@ backend returns; the reverse order would leave the page briefly reading `undefin
 update independently — a 3.3.0 agent simply receives no commands until it is updated to 3.4.0,
 which is the safe failure mode.
 
-## Incident 2026-10-05 — "live / refreshing / offline / failed" (agent 3.5.1)
+## Incident 2026-10-05 — "live / refreshing / offline / failed" (agents 3.5.1 / 3.5.2)
 
-**What was proven (read-only audit of the live record, sanitised):**
+**What was proven** (live record, sanitised, plus the source's own `agent.log`, collected by the owner):
 
-- Active source `WIN-K0R6CCFHB4L` (agent 3.5.0) last reported 07:12:19Z; no request reached the
-  application after that (a Re-sync queued 07:15Z stayed `pending`). Why the agent stopped is NOT
-  proven — it needs that machine's `%LOCALAPPDATA%\GenZDigitalTools\WriteHumanAgent\logs\agent.log`.
-  The previous source (`WIN-J0672VM8GSC`) went silent the same way on 2026-09-30.
-- Its last report carried `uptimeSec: -6877`: the source's wall clock went BACKWARDS after the agent
-  started. 3.5.0 measured heartbeat-due / cooldowns / activation deadline with `Date.now()`, which
-  silences heartbeats for as long as such a jump.
-- Last accepted bundle 02:21Z, so the stored access token had expired ~03:20Z. The 07:12Z push carried
-  an already-expired token and was correctly refused (`VERIFICATION_INCONCLUSIVE`). "Verification
-  unknown, HTTP 0" is `readonly_no_exchange` — the server deliberately does not check an expired
-  token in read-only mode; it is not a network failure.
-- RECOVERY DEADLOCK: every refusal reply carried the rotate-token nudge and could carry an addressed
-  command, but agents ≤3.5.0 read reply bodies only on a 2xx — and the server had already marked the
-  command delivered.
+- Timeline on `WIN-K0R6CCFHB4L` (agent 3.5.0): the machine went down ~01:23Z and the agent restarted
+  ~02:07Z with the **clock ~7 h fast** (first line stamped 09:06:56Z), corrected seconds later. That
+  alone explains `uptimeSec: -6877`. It did NOT silence heartbeats this time — the first heartbeat ran
+  after the correction and they flowed every ~3 min until 03:18Z. (The wall-clock interval defect is
+  still real and fixed in 3.5.1.)
+- 02:21Z last good sync. From **03:19Z to 07:12Z every push (661) was refused
+  `VERIFICATION_INCONCLUSIVE`**. "Verification unknown, HTTP 0" is `readonly_no_exchange`: the server
+  deliberately does not check a token that is expired or within 2 min of expiry.
+- The agent DID keep nudging: 115 `token_nudge … reloaded` (every ~2 min) — all with the stale value
+  `token_ttl_141s`, the last one a 2xx reply had given it; 3.5.0 never refreshed `rotateTokenIn` from a
+  409. Chrome was reloaded repeatedly and still produced no candidate with a live token. Why is NOT
+  proven: the rejected candidate was overwritten when a later push succeeded (hence the evidence fix
+  below).
+- **07:12:20Z the agent stopped with no log line at all** (no crash, no `stopping`) — consistent with
+  an external stop (sign-out, shutdown, VM stop, kill); not an internal crash, which would log
+  `uncaught_exception`.
+- **Recovery:** 3.5.1 was installed on the source; its first push at 11:56:13Z was verified and
+  promoted (bundle 818), a Re-sync was acknowledged at 11:57Z, server check 200 at 12:02Z. The live
+  token had been issued ~11:34Z — the WriteHuman session itself was never dead.
+- Also found in that log: `tick_error {"error":"forced is not defined"}` ×107 = every SUCCESSFUL sync
+  threw after updating state (harmless to syncing, but no success was ever logged). Fixed in 3.5.2.
 
 **Misleading classification fixed:**
 
@@ -308,6 +315,11 @@ which is the safe failure mode.
 | Cookie sync FAILED = account-wide last code (any device; any heartbeat cleared it) | The ACTIVE source's last real sync outcome (`device.lastSyncOutcome`); heartbeats, replays and STALE_BUNDLE are neutral; a standby cannot set it |
 | Title badge "live" | "dashboard connected" (dashboard ↔ server only) |
 | Last-finishing status response wins | Only the newest-sent response is applied (`lib/latestOnly.js`) |
+
+**Agent 3.5.2:** the success log no longer throws; every push / refusal logs the candidate token's
+expiry TIME (`token_exp`). **Server:** `account.lastRejectedCandidate` keeps the last refusal (time,
+device, code, verifier reason, token issued/expiry times — no secrets) and is NOT overwritten by a
+later success; published in the admin state.
 
 **Agent 3.5.1:** applies directives from answered refusals (409 carrying `deviceState`), and uses a
 monotonic clock (`monoNow()`) for every local interval. Wall-clock remains for server-issued expiry,

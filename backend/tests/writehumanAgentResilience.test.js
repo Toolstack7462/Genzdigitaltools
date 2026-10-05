@@ -142,3 +142,47 @@ test('no local interval in the polling/activation paths is measured with the wal
       fn + ' must measure local intervals with monoNow()');
   }
 });
+
+// ── 3. 3.5.2: the success log no longer throws; token expiry TIMES are logged ───────────────────
+test('the cookie_synchronized log does not reference an undeclared variable (`forced is not defined`)', () => {
+  // In 3.5.0/3.5.1 every SUCCESSFUL sync threw ReferenceError right after updating state, so a
+  // success surfaced in agent.log only as `tick_error {"error":"forced is not defined"}` (107 times
+  // on the 2026-10-05 source). It did not break syncing — it hid every success from diagnosis.
+  const src = fs.readFileSync(AGENT, 'utf8');
+  const start = src.indexOf('async function pushIfChanged(');
+  let depth = 0; let i = src.indexOf('{', start);
+  for (; i < src.length; i++) { if (src[i] === '{') depth++; else if (src[i] === '}' && --depth === 0) break; }
+  const body = src.slice(start, i);
+  if (/\bforced\b/.test(body)) assert.match(body, /\b(?:let|const|var)\s+forced\b/, '`forced` is used but never declared');
+});
+
+const { authTokenExpiry } = agent;
+const REF = 'hicfsbrfkzsxbwayibfm';
+function sessionCookieValue(expiresAt) {
+  const tok = 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ exp: expiresAt })).toString('base64url') + '.sig';
+  return 'base64-' + Buffer.from(JSON.stringify({ access_token: tok, refresh_token: 'rt-secret', expires_at: expiresAt })).toString('base64');
+}
+
+test('authTokenExpiry reads only the expiry TIME from a whole auth cookie', () => {
+  const exp = 1_790_000_000;
+  const out = authTokenExpiry([{ name: 'sb-' + REF + '-auth-token', value: sessionCookieValue(exp) }], REF);
+  assert.strictEqual(out, new Date(exp * 1000).toISOString());
+});
+
+test('authTokenExpiry joins chunked auth cookies in order', () => {
+  const exp = 1_790_000_123;
+  const v = sessionCookieValue(exp);
+  const half = Math.floor(v.length / 2);
+  const out = authTokenExpiry([
+    { name: 'sb-' + REF + '-auth-token.1', value: v.slice(half) },
+    { name: 'sb-' + REF + '-auth-token.0', value: v.slice(0, half) },
+  ], REF);
+  assert.strictEqual(out, new Date(exp * 1000).toISOString());
+});
+
+test('authTokenExpiry never returns token material, and is null when unreadable', () => {
+  assert.strictEqual(authTokenExpiry([], REF), null);
+  assert.strictEqual(authTokenExpiry([{ name: 'sb-' + REF + '-auth-token', value: 'garbage' }], REF), null);
+  const out = String(authTokenExpiry([{ name: 'sb-' + REF + '-auth-token', value: sessionCookieValue(1_790_000_000) }], REF));
+  assert.doesNotMatch(out, /eyJ|rt-secret/);
+});

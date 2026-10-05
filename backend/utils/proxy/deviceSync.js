@@ -102,21 +102,23 @@ function cleanName(n, fallback) {
  *               the session we already have" from "somebody signed in again over here", and the
  *               promotion policy turns on exactly that difference.
  *
- * Returns { iat: number|null, sessionId: string|null }.
+ * Returns { iat: number|null, exp: number|null, sessionId: string|null }. `exp` is a TIME, never a
+ * secret: it is what lets a refusal be diagnosed later ("was the candidate's token already expired?").
  */
 function bundleTokenClaims(bundle, tool) {
   try {
     const ref = (tools.supabaseConfig(tool) || {}).projectRef;
     const header = buildCookieHeader(bundle, tools.targetHost(tool));
     const { accessToken } = extractSupabaseSession(header, ref);
-    if (!accessToken) return { iat: null, sessionId: null };
+    if (!accessToken) return { iat: null, exp: null, sessionId: null };
     const part = String(accessToken).split('.')[1];
-    if (!part) return { iat: null, sessionId: null };
+    if (!part) return { iat: null, exp: null, sessionId: null };
     const json = JSON.parse(Buffer.from(part.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
     const iat = Number(json && json.iat);
+    const exp = Number(json && json.exp);
     const sid = json && (json.session_id || json.sid);
-    return { iat: Number.isFinite(iat) ? iat : null, sessionId: sid ? String(sid) : null };
-  } catch (_) { return { iat: null, sessionId: null }; }
+    return { iat: Number.isFinite(iat) ? iat : null, exp: Number.isFinite(exp) ? exp : null, sessionId: sid ? String(sid) : null };
+  } catch (_) { return { iat: null, exp: null, sessionId: null }; }
 }
 
 /** Back-compat shorthand for the ordering claim alone. */
