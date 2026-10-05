@@ -1,7 +1,7 @@
 import { MessageCircle, Palette, Star, Image, Layout, FileImage, CheckCircle } from 'lucide-react';
 import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
-import { WHATSAPP_URL } from '../../components/public/PublicNavbar';
+import { useSupportContact } from '../../lib/support';
 
 const BRAND_TYPES = [
   { icon: Star,      color: '#fb923c', title: 'Brand Identity',          desc: 'Logo design, brand guidelines, typography systems, and colour palettes.' },
@@ -13,6 +13,7 @@ const BRAND_TYPES = [
 ];
 
 const ServiceBranding = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroVisible] = useReveal(0.05);
   const [typesRef, typesVisible] = useReveal();
 

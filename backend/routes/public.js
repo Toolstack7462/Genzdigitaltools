@@ -9,6 +9,7 @@ const { sendVerificationEmail, isEmailEnabled } = require('../utils/email');
 const { sendAfterResponse } = require('../utils/deferredSend');
 const { withOutbox } = require('../utils/emailOutbox');
 const { normalizeAuthInputs } = require('../middleware/normalize');
+const { getSupportContact } = require('../utils/supportContact');
 const {
   normalizeEmail, emailMatch, isValidEmail, classifyExisting, RESEND_COOLDOWN_MS,
 } = require('../utils/signupPolicy');
@@ -349,6 +350,14 @@ router.post('/contact', async (req, res) => {
 });
 
 // GET /api/crm/public/tools - Get public tools listing
+// GET /api/crm/public/support-contact — official public support WhatsApp + email.
+// Admin-editable (Admin → Support Contact); never fails: falls back to env/built-in.
+router.get('/support-contact', async (req, res) => {
+  const { whatsappNumber, whatsappDisplay, whatsappUrl, email } = await getSupportContact();
+  res.set('Cache-Control', 'public, max-age=60');
+  res.json({ success: true, contact: { whatsappNumber, whatsappDisplay, whatsappUrl, email } });
+});
+
 router.get('/tools', async (req, res) => {
   try {
     const Tool = require('../models/Tool');

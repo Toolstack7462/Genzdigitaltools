@@ -1,11 +1,12 @@
+import { useSupportContact } from '../lib/support';
 import { useState } from 'react';
 import { MessageCircle, Mail, Send, CheckCircle, Clock, Shield } from 'lucide-react';
 import { useReveal } from '../hooks/useReveal';
-import { WHATSAPP_URL } from '../components/public/PublicNavbar';
 import PageHero from '../components/public/PageHero';
 import api from '../services/api';
 
 const Contact = () => {
+  const { whatsappUrl: WHATSAPP_URL, email: SUPPORT_EMAIL } = useSupportContact();
   const [form, setForm] = useState({ name: '', email: '', subject: '', message: '' });
   const [status, setStatus] = useState('idle');
   const [formRef, formV] = useReveal();
@@ -132,7 +133,7 @@ const Contact = () => {
                 </div>
               </a>
 
-              <a href="mailto:admin@genzdigitalstore.com"
+              <a href={`mailto:${SUPPORT_EMAIL}`}
                 className="hover-glow flex items-center gap-4 p-6 rounded-2xl bg-white border border-blue-200/60"
                 style={{ background: 'linear-gradient(135deg, rgba(37,99,235,0.06), #ffffff)' }}>
                 <div className="w-12 h-12 rounded-2xl flex items-center justify-center text-white"
@@ -141,7 +142,7 @@ const Contact = () => {
                 </div>
                 <div>
                   <div className="text-genz-navy font-bold text-[15.5px]">Email us</div>
-                  <div className="text-genz-muted text-[13px] mt-0.5">admin@genzdigitalstore.com</div>
+                  <div className="text-genz-muted text-[13px] mt-0.5">{SUPPORT_EMAIL}</div>
                 </div>
               </a>
 

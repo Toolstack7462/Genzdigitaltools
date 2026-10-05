@@ -100,6 +100,9 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
   -T backend/utils/email.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/email.js" \
+  -T backend/utils/supportContact.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/supportContact.js" \
+  -T backend/models/SupportSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/models/SupportSettings.js" \
+  -T backend/routes/admin/supportSettings.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/supportSettings.js" \
   -T backend/utils/emailOutbox.js                "sftp://${HOST}:${PORT}${API_ROOT}/utils/emailOutbox.js" \
   -T backend/utils/emailOutboxSweeper.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/emailOutboxSweeper.js" \
   -T backend/utils/deferredSend.js               "sftp://${HOST}:${PORT}${API_ROOT}/utils/deferredSend.js" \

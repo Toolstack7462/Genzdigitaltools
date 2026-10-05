@@ -1,6 +1,6 @@
 import React from 'react';
 import { authService } from '../services/authService';
-import { buildRenewWhatsAppUrl, SUPPORT_CONTACT_PATH } from '../lib/support';
+import { buildRenewWhatsAppUrl, SUPPORT_CONTACT_PATH, useSupportContact } from '../lib/support';
 
 /**
  * Reusable "Renew Plan" action that opens WhatsApp support in a new tab with a
@@ -11,6 +11,7 @@ import { buildRenewWhatsAppUrl, SUPPORT_CONTACT_PATH } from '../lib/support';
  * Props: { toolName?, status?, className?, children?, ...anchorProps }
  */
 export default function RenewPlanLink({ toolName, status = 'expired', className, children, onClick, ...rest }) {
+  const supportContact = useSupportContact();
   let user = null;
   try { user = authService.getCurrentUser(); } catch (_) {}
 
@@ -19,7 +20,7 @@ export default function RenewPlanLink({ toolName, status = 'expired', className,
     clientEmail: user?.email || null,
     toolName: toolName || null,
     status,
-  });
+  }, supportContact);
 
   const handleClick = (e) => {
     if (onClick) onClick(e);

@@ -218,6 +218,7 @@ mysqlAdapter.connect()
     stealthScheduler.start(); // StealthWriter daily reset (no-op unless STEALTH_INTERNAL_CRON=true)
     proxyVerifyScheduler.start(); // periodic read-only auto-verify for WriteHuman (no-op unless a live-agent tool exists)
     retentionScheduler.start(); // token/log retention every 6 h (RETENTION_MODE: dry-run default | apply | off)
+    require('./utils/supportContact').getSupportContact().catch(() => {}); // warm the support-contact cache (emails read it synchronously)
   })
   .catch(err => {
     console.error('❌ MySQL/MariaDB connection FAILED:', err.message);
@@ -317,6 +318,7 @@ const adminAnnouncementsRoutes = require('./routes/admin/announcements');
 const adminRenewalsRoutes      = require('./routes/admin/renewals');
 const adminOffersRoutes        = require('./routes/admin/offers');
 const adminSecurityAlertsRoutes = require('./routes/admin/securityAlerts');
+const adminSupportSettingsRoutes = require('./routes/admin/supportSettings');
 const clientToolsRoutes       = require('./routes/client/tools');
 const clientAssignmentsRoutes = require('./routes/client/assignmentsEnhanced');
 const clientNotificationsRoutes = require('./routes/client/notifications');
@@ -374,6 +376,7 @@ app.use('/api/crm/admin/announcements',  adminAnnouncementsRoutes);
 app.use('/api/crm/admin/renewals',       adminRenewalsRoutes);
 app.use('/api/crm/admin/offers',         adminOffersRoutes);
 app.use('/api/crm/admin/security-alerts', adminSecurityAlertsRoutes);
+app.use('/api/crm/admin/support-settings', adminSupportSettingsRoutes);
 // Extension release management (admin uploads/replaces the ZIP in the EXISTING
 // download folder; body parsing is handled inside the router — raw for upload).
 app.use('/api/crm/admin/extension', adminExtensionRoutes);

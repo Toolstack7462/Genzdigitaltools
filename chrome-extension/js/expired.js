@@ -61,9 +61,12 @@
     }
 
     // "Renew your plan" opens WhatsApp support with a safe pre-filled message.
-    // Central support number (wa.me format: no '+'/spaces). Safe info only — never
-    // tokens, cookies, sessions, or secrets.
-    const SUPPORT_WHATSAPP_NUMBER = '923027467462';
+    // Safe info only — never tokens, cookies, sessions, or secrets.
+    // Support number: the admin-editable live value (GET /api/crm/public/support-contact,
+    // below) wins; these two constants are the extension's ONE bundled fallback, used
+    // offline / before the API answers. expired.html's static href/text mirrors them for no-JS.
+    const SUPPORT_WHATSAPP_NUMBER = '923355500134';
+    const SUPPORT_WHATSAPP_DISPLAY = '+92 335 5500134';
     const email = (params.get('email') || '').slice(0, 120);
     const name = (params.get('name') || '').slice(0, 80);
     const lines = ['Hello, I want to renew my plan.'];
@@ -71,7 +74,11 @@
     if (reason) lines.push(`Status: ${reason === 'revoked' ? 'revoked' : reason === 'removed' || reason === 'tool_removed' ? 'removed' : 'expired'}`);
     const who = name || email;
     if (who && /^[\w .,'@+\-]+$/.test(who)) lines.push(`Account: ${who}`);
-    const waUrl = `https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${encodeURIComponent(lines.join('\n'))}`;
+    const waText = encodeURIComponent(lines.join('\n'));
+    const waUrlFor = (number) => `https://wa.me/${number}?text=${waText}`;
+    const waUrl = waUrlFor(SUPPORT_WHATSAPP_NUMBER);
+    const numberEl = document.getElementById('support-number');
+    if (numberEl) numberEl.textContent = SUPPORT_WHATSAPP_DISPLAY;
 
     if (btn) {
       btn.textContent = 'Renew your plan';
@@ -82,6 +89,15 @@
         if (fallbackEl) setTimeout(() => { fallbackEl.style.display = 'block'; }, 1200);
       });
     }
+
+    // ── LIVE SUPPORT CONTACT (admin-editable) ────────────────────────────────────────────
+    // Best-effort, public, credential-free read. Only a well-formed number is accepted, and the
+    // button is only retargeted while it is still the WhatsApp renew link (never after it has
+    // flipped to "Go to Dashboard" below).
+    loadLiveSupportContact((contact) => {
+      if (btn && /^https:\/\/wa\.me\//.test(btn.href || '')) btn.href = waUrlFor(contact.whatsappNumber);
+      if (numberEl) numberEl.textContent = contact.whatsappDisplay;
+    });
 
     // ── AUTHORITATIVE VERIFICATION (presentation correctness + renewal recovery) ──────────
     // Everything above renders from the query string, which is USER-EDITABLE and therefore
@@ -137,6 +153,27 @@
       );
     }
   } catch (_) { /* leave the static fallback message in place */ }
+
+  function loadLiveSupportContact(apply) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local || typeof fetch !== 'function') return;
+      chrome.storage.local.get(['apiUrl'], (data) => {
+        try {
+          let base = String((data && data.apiUrl) || '').trim().replace(/\/+$/, '').replace(/\/api\/crm(\/extension)?$/i, '');
+          if (!/^https:\/\/[\w.-]+(:\d+)?$/i.test(base)) base = 'https://api.genzdigitalstore.com';
+          fetch(`${base}/api/crm/public/support-contact`, { credentials: 'omit', cache: 'no-store' })
+            .then(r => (r.ok ? r.json() : null))
+            .then(body => {
+              const c = body && body.contact;
+              if (!c || !/^\d{8,15}$/.test(String(c.whatsappNumber || ''))) return;
+              const display = /^\+[\d ]{8,24}$/.test(String(c.whatsappDisplay || '')) ? c.whatsappDisplay : `+${c.whatsappNumber}`;
+              apply({ whatsappNumber: String(c.whatsappNumber), whatsappDisplay: display });
+            })
+            .catch(() => { /* offline / API down → keep the bundled number */ });
+        } catch (_) { /* keep the bundled number */ }
+      });
+    } catch (_) { /* keep the bundled number */ }
+  }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => (

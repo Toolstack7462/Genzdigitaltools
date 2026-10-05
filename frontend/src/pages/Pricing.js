@@ -1,3 +1,4 @@
+import { useSupportContact } from '../lib/support';
 import { Link } from 'react-router-dom';
 import { CheckCircle, MessageCircle, Zap, ArrowRight } from 'lucide-react';
 import { useReveal } from '../hooks/useReveal';
@@ -5,7 +6,6 @@ import PricingCard from '../components/public/PricingCard';
 import FAQItem from '../components/public/FAQItem';
 import CTASection from '../components/public/CTASection';
 import PageHero from '../components/public/PageHero';
-import { WHATSAPP_URL } from '../components/public/PublicNavbar';
 
 const PLANS = [
   { tier: 'Starter',      price: 'Contact for quote', priceNote: '', tagline: 'Great for individuals and solo creators.',
@@ -39,6 +39,7 @@ const FAQS = [
 ];
 
 const Pricing = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [plansRef, plansV] = useReveal();
   const [addonRef, addonV] = useReveal();
   const [faqRef, faqV] = useReveal();

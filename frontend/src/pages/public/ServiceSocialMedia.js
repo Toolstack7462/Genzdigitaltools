@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { Instagram, CheckCircle, ArrowRight, BarChart2, Calendar, Image, Film, MessageCircle, TrendingUp } from 'lucide-react';
 import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
-import { WHATSAPP_URL } from '../../components/public/PublicNavbar';
+import { useSupportContact } from '../../lib/support';
 
 const DELIVERABLES = [
   { icon: Calendar, label: 'Content Calendar',        desc: 'Monthly content planning with scheduled posts across all platforms.' },
@@ -16,6 +16,7 @@ const DELIVERABLES = [
 const PLATFORMS = ['Instagram','Facebook','TikTok','LinkedIn','Twitter / X','YouTube Shorts','Pinterest','Threads'];
 
 const ServiceSocialMedia = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroVisible] = useReveal(0.05);
   const [delRef, delVisible] = useReveal();
   const [platRef, platVisible] = useReveal();

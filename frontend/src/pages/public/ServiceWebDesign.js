@@ -1,7 +1,7 @@
 import { MessageCircle, Globe, CheckCircle, Zap, Monitor, ShoppingBag, LayoutDashboard, Database } from 'lucide-react';
 import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
-import { WHATSAPP_URL } from '../../components/public/PublicNavbar';
+import { useSupportContact } from '../../lib/support';
 
 const WEB_TYPES = [
   { icon: Zap,           color: '#06B6D4', title: 'Animated Landing Pages',   desc: 'High-converting landing pages with smooth animations and strong CTAs.' },
@@ -15,6 +15,7 @@ const WEB_TYPES = [
 const TECH = ['React.js', 'Next.js', 'Tailwind CSS', 'Node.js', 'Express', 'MySQL', 'MongoDB', 'Framer Motion'];
 
 const ServiceWebDesign = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroVisible] = useReveal(0.05);
   const [typesRef, typesVisible] = useReveal();
   const [techRef, techVisible] = useReveal();

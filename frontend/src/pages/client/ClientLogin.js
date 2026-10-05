@@ -1,3 +1,4 @@
+import { useSupportContact, buildSupportWhatsAppUrl } from '../../lib/support';
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { motion, useReducedMotion } from 'framer-motion';
@@ -18,6 +19,7 @@ const HUB = [
 ];
 
 const ClientLogin = () => {
+  const supportContact = useSupportContact();
   const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
   const reduce = useReducedMotion();
@@ -165,7 +167,7 @@ const ClientLogin = () => {
                 className="btn-grad flex-1 py-3 text-[14px] font-bold rounded-[14px] flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed">
                 <RefreshCw size={15} className={loading ? 'animate-spin' : ''} /> Retry Connection
               </button>
-              <a href={`https://wa.me/923027467462?text=${encodeURIComponent("Hello, I'm having trouble connecting to my Gen Z Digital Store account.")}`}
+              <a href={buildSupportWhatsAppUrl("Hello, I'm having trouble connecting to my Gen Z Digital Store account.", supportContact)}
                 target="_blank" rel="noopener noreferrer"
                 className="flex-1 py-3 text-[14px] font-semibold rounded-[14px] flex items-center justify-center gap-2 border border-genz-border text-genz-navy hover:border-genz-blue/50 hover:bg-genz-blue/5 transition-all">
                 Contact Support

@@ -1,13 +1,14 @@
+import { useSupportContact } from '../../lib/support';
 import { useState, useEffect } from 'react';
 import ClientLayoutEnhanced, { CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import { User, Mail, Calendar, Shield, Smartphone, Clock, CheckCircle2, AlertCircle, MessageCircle, ArrowRight, Save, Lock, Loader2 } from 'lucide-react';
 
-const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { authService } from '../../services/authService';
 import { useToast } from '../../components/Toast';
 
 const ClientProfile = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const { showError, showSuccess } = useToast();
   const [profile, setProfile] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null);

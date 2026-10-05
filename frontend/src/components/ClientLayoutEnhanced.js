@@ -1,3 +1,4 @@
+import { useSupportContact } from '../lib/support';
 import { useState, useEffect } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
@@ -47,7 +48,6 @@ export const CARD_VARIANTS = {
   indigo:   'bg-indigo-50 border border-indigo-200',
 };
 
-const WHATSAPP_URL = 'https://wa.me/923027467462';
 
 // Route → human page title for the topbar
 const PAGE_TITLES = [
@@ -65,6 +65,7 @@ const getPageMeta = (path) =>
 // MAIN LAYOUT COMPONENT
 // ============================================================================
 const ClientLayoutEnhanced = ({ children }) => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const navigate  = useNavigate();
   const location  = useLocation();
   const reduce    = useReducedMotion();

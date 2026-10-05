@@ -1,3 +1,4 @@
+import { useSupportContact } from '../../lib/support';
 import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
@@ -8,7 +9,6 @@ import {
   MessageCircle, PlayCircle
 } from 'lucide-react';
 
-const WHATSAPP_URL = 'https://wa.me/923027467462';
 import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
@@ -168,6 +168,7 @@ ToolCard.displayName = 'ToolCard';
 
 /* ─── MAIN DASHBOARD ─────────────────────────────────────────────── */
 const ClientDashboardEnhanced = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const navigate = useNavigate();
   const { showError, showWarning, showInfo } = useToast();
   // The Install Extension button downloads the static ZIP directly. We don't

@@ -1,3 +1,4 @@
+import { useSupportContact } from '../../lib/support';
 import { useState, useRef, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Menu, X, ChevronDown, ArrowRight, MessageCircle } from 'lucide-react';
@@ -24,7 +25,6 @@ const NAV_LINKS = [
   { to: '/contact',  label: 'Contact'   },
 ];
 
-const WHATSAPP_URL = 'https://wa.me/923027467462';
 const APP_LOGIN_URL = 'https://app.genzdigitalstore.com/client/login';
 // Member signup lives on the app subdomain. Use an absolute URL (full-page load)
 // so "Get Started" lands on the real member flow instead of rendering on the
@@ -49,6 +49,7 @@ const MARKETING_HREF = {
 };
 
 const PublicNavbar = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const location = useLocation();
   const onApp = isAppSubdomain(); // marketing links must leave the app subdomain
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -339,4 +340,4 @@ const PublicNavbar = () => {
 };
 
 export default PublicNavbar;
-export { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain };
+export { APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain };

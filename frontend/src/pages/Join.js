@@ -1,3 +1,4 @@
+import { useSupportContact } from '../lib/support';
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, MotionConfig, useReducedMotion } from 'framer-motion';
@@ -11,7 +12,6 @@ import { sanitizeError, diagnosticsVisible, authDiag, newRequestId, loginDebugEn
 
 const EASE_OUT = [0.16, 1, 0.3, 1];
 const BRAND_CTA = 'linear-gradient(135deg,#2563EB 0%,#06B6D4 100%)';
-const WHATSAPP_URL = 'https://wa.me/923027467462';
 
 // Module-scope so it is a STABLE component type — defining it inside Join would
 // remount the whole subtree each render and make inputs lose focus per keystroke.
@@ -39,6 +39,7 @@ const TRUST_LINES = [
 ];
 
 const Join = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const navigate = useNavigate();
   const { showSuccess, showError } = useToast();
   const reduce = useReducedMotion();

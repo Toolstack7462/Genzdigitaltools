@@ -1,7 +1,8 @@
+import { useSupportContact } from '../../lib/support';
 import { Link } from 'react-router-dom';
 import { MessageCircle, ArrowRight, Mail, ShieldCheck, Clock, Sparkles } from 'lucide-react';
 import BrandLogo from '../BrandLogo';
-import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain } from './PublicNavbar';
+import { APP_LOGIN_URL, APP_SIGNUP_URL, MAIN_SITE_URL, isAppSubdomain } from './PublicNavbar';
 
 const SERVICES_LINKS = [
   { to: '/services/digital-tools',           label: 'Digital Tools Access'       },
@@ -22,6 +23,7 @@ const COMPANY_LINKS = [
 ];
 
 const PublicFooter = () => {
+  const { whatsappUrl: WHATSAPP_URL, email: SUPPORT_EMAIL } = useSupportContact();
   const year = new Date().getFullYear();
   // On the app subdomain, footer marketing links must navigate to the main site
   // (same reason as the navbar). Footer targets are all real pages, so route + host.
@@ -106,16 +108,16 @@ const PublicFooter = () => {
               all from one platform built for creators, businesses, and digital professionals.
             </p>
             <a
-              href="mailto:admin@genzdigitalstore.com"
+              href={`mailto:${SUPPORT_EMAIL}`}
               className="inline-flex items-center gap-2 text-white/60 hover:text-genz-teal text-sm mb-6 transition-colors duration-150"
             >
-              <Mail size={15} /> admin@genzdigitalstore.com
+              <Mail size={15} /> {SUPPORT_EMAIL}
             </a>
             {/* Connect — only real destinations (no dead links) */}
             <div className="flex gap-3 flex-wrap">
               {[
                 { Icon: MessageCircle, href: WHATSAPP_URL, label: 'WhatsApp', external: true },
-                { Icon: Mail, href: 'mailto:admin@genzdigitalstore.com', label: 'Email', external: false },
+                { Icon: Mail, href: `mailto:${SUPPORT_EMAIL}`, label: 'Email', external: false },
               ].map(({ Icon, href, label, external }) => (
                 <a
                   key={label}

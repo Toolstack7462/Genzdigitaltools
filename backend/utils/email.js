@@ -72,7 +72,11 @@ function diagnostics() {
 // Public brand assets used inside emails.
 const SITE_URL = 'https://genzdigitalstore.com';
 const LOGO_URL = `${SITE_URL}/logo-genz-digital-store.png`;
-const SUPPORT_WHATSAPP = 'https://wa.me/923027467462';
+// Official support WhatsApp link — admin-editable via utils/supportContact.js. emailShell is
+// synchronous, so it reads the last cached contact; every sender warms that cache first.
+const { getSupportContact, getSupportContactSync } = require('./supportContact');
+const supportWhatsApp = () => getSupportContactSync().whatsappUrl;
+const warmSupport = () => getSupportContact().catch(() => null);
 const BRAND = 'Gen Z Digital Store';
 const PROMO =
   'Gen Z Digital Store helps you access premium digital tools, AI productivity support, web services, branding, and digital solutions.';
@@ -473,7 +477,7 @@ function emailShell(previewText, innerHtml) {
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f6fb;border:1px solid #e3ebf3;border-radius:14px">
             <tr><td style="padding:18px 20px">
               <p style="margin:0 0 12px;color:${SLATE};font-size:13px;line-height:20px">${PROMO}</p>
-              <a href="${SUPPORT_WHATSAPP}" style="display:inline-block;background:#25D366;color:#ffffff;font-size:13px;font-weight:700;padding:9px 16px;border-radius:10px">Chat with us on WhatsApp</a>
+              <a href="${supportWhatsApp()}" style="display:inline-block;background:#25D366;color:#ffffff;font-size:13px;font-weight:700;padding:9px 16px;border-radius:10px">Chat with us on WhatsApp</a>
               <a href="${SITE_URL}" style="display:inline-block;margin-left:8px;color:${NAVY};font-size:13px;font-weight:700;padding:9px 12px">Visit website →</a>
             </td></tr>
           </table>
@@ -561,7 +565,8 @@ function offerClause(offer) {
 }
 
 async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, offer = 'none', deferred = false } = {}) {
-  const cta = renewUrl || SUPPORT_WHATSAPP;
+  await warmSupport();
+  const cta = renewUrl || supportWhatsApp();
   const anyExpired = tools.some(t => t.expired);
   const offerLine = offerClause(offer);
   const rows = (tools || []).map(t => {
@@ -607,7 +612,8 @@ async function sendRenewalReminderEmail(to, { clientName, tools = [], renewUrl, 
  * `offer` = { title, description, toolNames[], priceText, expiryDate, kind }.
  */
 async function sendOfferEmail(to, { clientName, offer = {}, ctaUrl } = {}) {
-  const cta = ctaUrl || SUPPORT_WHATSAPP;
+  await warmSupport();
+  const cta = ctaUrl || supportWhatsApp();
   const tools = Array.isArray(offer.toolNames) ? offer.toolNames.filter(Boolean) : [];
   const expiry = offer.expiryDate ? new Date(offer.expiryDate) : null;
   const expiryStr = expiry && !isNaN(expiry.getTime())

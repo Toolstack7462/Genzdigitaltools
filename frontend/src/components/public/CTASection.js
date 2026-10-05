@@ -1,12 +1,14 @@
+import { useSupportContact } from '../../lib/support';
 import { Link } from 'react-router-dom';
 import { MessageCircle, ArrowRight, LayoutDashboard } from 'lucide-react';
-import { WHATSAPP_URL, APP_LOGIN_URL } from './PublicNavbar';
+import { APP_LOGIN_URL } from './PublicNavbar';
 import { useReveal } from '../../hooks/useReveal';
 
 const CTASection = ({
   headline = 'Ready to build your digital presence?',
   sub = 'Talk to us today about tools, services, or a fully custom solution.',
 }) => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [ref, visible] = useReveal();
 
   return (

@@ -1,3 +1,4 @@
+import { useSupportContact } from '../lib/support';
 import { Link } from 'react-router-dom';
 import { motion, MotionConfig } from 'framer-motion';
 import {
@@ -12,7 +13,7 @@ import CTASection from '../components/public/CTASection';
 import TrustpilotReviewCollector from '../components/public/TrustpilotReviewCollector';
 import ShowcaseCard from '../components/public/showcase/ShowcaseCard';
 import SHOWCASE_ITEMS from '../components/public/showcase/showcaseItems';
-import { WHATSAPP_URL, APP_LOGIN_URL, APP_SIGNUP_URL } from '../components/public/PublicNavbar';
+import { APP_LOGIN_URL, APP_SIGNUP_URL } from '../components/public/PublicNavbar';
 
 const Eyebrow = ({ label, light }) => (
   <div className={`gz-eyebrow mb-5 ${light ? 'gz-eyebrow-light' : ''}`}><span className="glow-dot" /> {label}</div>
@@ -234,6 +235,7 @@ const ServiceCard = ({ icon: Icon, color, title, desc, bullets, to, badge, delay
 
 /* ───────────────────────── PAGE ───────────────────────── */
 const Home = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroV] = useReveal(0.05);
   const [trustRef, trustV] = useReveal();
   const [servRef, servV] = useReveal();

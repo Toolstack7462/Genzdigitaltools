@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Gift, Package, Tag, MessageCircle } from 'lucide-react';
 import api from '../services/api';
-import { SUPPORT_WHATSAPP_NUMBER } from '../lib/support';
+import { useSupportContact, buildSupportWhatsAppUrl } from '../lib/support';
 
 /* ─── DashboardOffers ─────────────────────────────────────────────────────────
    Curated promotional offers for the signed-in client. Reuses GET /client/offers
@@ -13,6 +13,7 @@ import { SUPPORT_WHATSAPP_NUMBER } from '../lib/support';
 const KIND_ACCENT = { combo: '#2563EB', renewal: '#D97706', upgrade: '#7C3AED', recovery: '#DC2626' };
 
 const DashboardOffers = () => {
+  const supportContact = useSupportContact();
   const [offers, setOffers] = useState([]);
 
   useEffect(() => {
@@ -26,8 +27,8 @@ const DashboardOffers = () => {
   if (offers.length === 0) return null;
 
   const claim = (o) => {
-    const text = encodeURIComponent(`Hello, I'm interested in this offer: ${o.title}`);
-    window.open(`https://wa.me/${SUPPORT_WHATSAPP_NUMBER}?text=${text}`, '_blank', 'noopener,noreferrer');
+    const href = buildSupportWhatsAppUrl(`Hello, I'm interested in this offer: ${o.title}`, supportContact);
+    window.open(href, '_blank', 'noopener,noreferrer');
   };
 
   return (

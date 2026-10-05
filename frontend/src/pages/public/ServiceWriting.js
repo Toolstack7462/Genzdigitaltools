@@ -1,7 +1,7 @@
 import { MessageCircle, CheckCircle, PenTool, FileText, BookOpen, Briefcase, Search, Edit } from 'lucide-react';
 import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
-import { WHATSAPP_URL } from '../../components/public/PublicNavbar';
+import { useSupportContact } from '../../lib/support';
 
 const TYPES = [
   { icon: FileText,  color: '#a78bfa', title: 'Website Content',      desc: 'Persuasive, SEO-optimised copy for homepages, about pages, service pages, and product descriptions.' },
@@ -13,6 +13,7 @@ const TYPES = [
 ];
 
 const ServiceWriting = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroVisible] = useReveal(0.05);
   const [typesRef, typesVisible] = useReveal();
   const [processRef, processVisible] = useReveal();

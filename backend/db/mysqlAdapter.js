@@ -68,6 +68,8 @@ const tableNames = {
   // The row id is the code's truncated SHA-256 digest, so redemption is an atomic
   // DELETE by primary key. See models/LaunchCode.js and utils/launchStore.js.
   LaunchCode: 'launch_codes',
+  // ── Public support contact (single-row, admin-editable) — see utils/supportContact.js ─
+  SupportSettings: 'support_settings',
 };
 
 // Hot STRING-equality lookup fields per table. For these we create an indexed VIRTUAL generated

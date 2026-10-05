@@ -3,7 +3,7 @@ import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import {
   LayoutDashboard, Package, Users, Activity, LogOut, FileText, Mail,
-  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome, Megaphone, CalendarClock, Gift, PenTool, Bot, BriefcaseBusiness
+  Menu, X, Shield, TrendingUp, ShieldAlert, ExternalLink, Sparkles, Zap, Chrome, Megaphone, CalendarClock, Gift, PenTool, Bot, BriefcaseBusiness, LifeBuoy
 } from 'lucide-react';
 import BrandLogo from './BrandLogo';
 import RefreshButton from './RefreshButton';
@@ -28,6 +28,7 @@ const NAV_ITEMS = [
   { to: '/admin/contacts',  icon: Mail,            label: 'Contacts',    group: 'Content'  },
   { to: '/admin/announcements', icon: Megaphone,   label: 'Announcements', group: 'Content' },
   { to: '/admin/marketing', icon: Gift,            label: 'Marketing',     group: 'Content' },
+  { to: '/admin/support-contact', icon: LifeBuoy,  label: 'Support Contact', group: 'Content' },
   { to: '/admin/analytics', icon: TrendingUp,      label: 'Analytics',   group: 'Insights' },
   { to: '/admin/security',  icon: ShieldAlert,     label: 'Security',    group: 'Insights' },
 ];

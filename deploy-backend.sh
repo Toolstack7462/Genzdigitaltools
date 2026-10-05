@@ -2,7 +2,8 @@
 # Reliable backend deploy: VERIFIED per-file uploads + restart + boot check.
 # Replaces the ad-hoc per-feature scripts that used flaky multi-file curl transfers.
 #
-# Usage:  SFTP_PASS=... bash deploy-backend.sh backend/utils/email.js [backend/routes/admin/renewals.js ...]
+# Usage:  SFTP_PASS=... bash deploy-backend.sh backend/utils/email.js backend/utils/supportContact.js backend/models/SupportSettings.js [backend/routes/admin/renewals.js ...]
+#   - Ship every local module a file require()s (email.js needs utils/supportContact.js + models/SupportSettings.js).
 #   - Each arg is a repo-relative path under backend/. It maps to <API_ROOT>/<path-without-backend/>.
 #   - Every .js is syntax-checked, uploaded ONE at a time, and SHA-256 verified on the server.
 #   - Only after ALL files land is the app restarted; then we wait for it to boot.

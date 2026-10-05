@@ -1,10 +1,10 @@
 import { MessageCircle } from 'lucide-react';
+import { useSupportContact, buildSupportWhatsAppUrl } from '../lib/support';
 
-const WHATSAPP_NUMBER = '923027467462';
 const DEFAULT_MESSAGE = 'Hi Gen Z Digital Store! I need help with tools/subscription.';
 
 const WhatsAppButton = () => {
-  const whatsappUrl = `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(DEFAULT_MESSAGE)}`;
+  const whatsappUrl = buildSupportWhatsAppUrl(DEFAULT_MESSAGE, useSupportContact());
   
   return (
     <div 

@@ -1,7 +1,7 @@
 import { MessageCircle, TrendingUp, Search, Link2, BarChart2, FileText, Globe, CheckCircle } from 'lucide-react';
 import { useReveal } from '../../hooks/useReveal';
 import CTASection from '../../components/public/CTASection';
-import { WHATSAPP_URL } from '../../components/public/PublicNavbar';
+import { useSupportContact } from '../../lib/support';
 
 const SEO_SERVICES = [
   { icon: Search,    color: '#22d3ee', title: 'Keyword Research',      desc: 'In-depth research to identify high-traffic, low-competition keywords for your niche.' },
@@ -13,6 +13,7 @@ const SEO_SERVICES = [
 ];
 
 const ServiceSEO = () => {
+  const { whatsappUrl: WHATSAPP_URL } = useSupportContact();
   const [heroRef, heroVisible] = useReveal(0.05);
   const [servRef, servVisible] = useReveal();
 
