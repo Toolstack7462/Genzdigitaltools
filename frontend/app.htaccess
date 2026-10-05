@@ -1,4 +1,5 @@
-# Deployed to: public_html/app/.htaccess  (app.genzdigitalstore.com docroot)
+# Deployed to: ~/domains/app.genzdigitalstore.com/public_html/.htaccess  (the app subdomain's own docroot;
+# NOT genzdigitalstore.com/public_html/app — a legacy folder that serves nothing since 2026-08-22)
 # Goal: app subdomain is the portal only. Marketing paths and "/" -> /client/login.
 # Never redirect client/admin/api/static assets. No redirect loops.
 DirectoryIndex index.html
