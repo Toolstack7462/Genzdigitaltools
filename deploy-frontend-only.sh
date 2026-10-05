@@ -13,7 +13,9 @@ HOST=147.79.103.253
 PORT=65002
 USER=u171982351
 MAIN_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html"
-APP_WEB="/home/${USER}/domains/genzdigitalstore.com/public_html/app"
+# app.genzdigitalstore.com has its OWN docroot (same as .github/workflows/deploy-frontend.yml).
+# NOT genzdigitalstore.com/public_html/app — a legacy folder that serves nothing since 2026-08-22.
+APP_WEB="/home/${USER}/domains/app.genzdigitalstore.com/public_html"
 BUILD_DIR="frontend/build"
 
 if [[ -z "${SFTP_PASS:-}" ]]; then

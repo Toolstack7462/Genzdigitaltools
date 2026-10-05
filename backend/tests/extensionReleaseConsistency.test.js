@@ -118,6 +118,22 @@ test('INCIDENT: docroots serving 3.9.29 and 3.9.25 must NOT advertise 3.9.29', w
   assert.strictEqual(readManifestFromZip(served(app)).version, pub.latest);
 }));
 
+test('INCIDENT: no deploy script or workflow publishes the app to the dead public_html/app root', () => {
+  // app.genzdigitalstore.com is served from its OWN docroot; genzdigitalstore.com/public_html/app
+  // serves nothing, so an upload there "succeeds" while clients keep the old build.
+  const repo = path.join(__dirname, '..', '..');
+  const targets = [
+    ...fs.readdirSync(repo).filter(f => /^deploy.*\.sh$/.test(f)),
+    ...fs.readdirSync(path.join(repo, '.github', 'workflows')).map(f => path.join('.github', 'workflows', f)),
+  ];
+  assert.ok(targets.includes('deploy-frontend-only.sh'), 'the scan must cover deploy-frontend-only.sh');
+  const offenders = targets.filter((f) => fs.readFileSync(path.join(repo, f), 'utf8')
+    .split(/\r?\n/).some(l => !/^\s*#/.test(l) && /genzdigitalstore\.com\/public_html\/app\b/.test(l)));
+  assert.deepStrictEqual(offenders, []);
+  const script = fs.readFileSync(path.join(repo, 'deploy-frontend-only.sh'), 'utf8');
+  assert.match(script, /^APP_WEB="\/home\/\$\{USER\}\/domains\/app\.genzdigitalstore\.com\/public_html"\r?$/m);
+});
+
 test('INCIDENT: the default download dirs are the real client-serving docroots', () => {
   assert.ok(D.DEFAULT_DIRS.includes('/home/u171982351/domains/app.genzdigitalstore.com/public_html/downloads'),
     'the app subdomain docroot — where the dashboard and popup download from — must be written');
