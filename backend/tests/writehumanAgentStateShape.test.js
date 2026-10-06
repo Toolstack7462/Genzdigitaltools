@@ -21,6 +21,20 @@ process.env.PROXY_VAULT_KEY = process.env.PROXY_VAULT_KEY || crypto.randomBytes(
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'mysql://u:p@127.0.0.1:3306/db';
 delete process.env.PROXY_AGENT_SYNC_KEY;
 
+// The agent-state route also reads the CLIENT gateway's route self-check (/__genz/health → route).
+// A test must never reach the production gateway: point it at a local stub whose verdict each test
+// can set. Cache off so a changed verdict is read on the next request.
+process.env.PROXY_CLIENT_ROUTE_CACHE_MS = '0';
+let GATEWAY_ROUTE = () => ({ result: 'contained', scope: 'public_page_static', checkedAt: new Date().toISOString() });
+const fakeGateway = http.createServer((_req, res) => {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, tool: 'writehuman', route: GATEWAY_ROUTE() }));
+});
+test.before(() => new Promise((r) => fakeGateway.listen(0, '127.0.0.1', () => {
+  process.env.WRITEHUMAN_GATEWAY_URL = `http://127.0.0.1:${fakeGateway.address().port}`; r();
+})));
+test.after(() => new Promise((r) => fakeGateway.close(r)));
+
 const vaultCrypto = require('../utils/proxy/vaultCrypto');
 
 // --- stub the models + auth BEFORE the router captures them -----------------
@@ -278,4 +292,30 @@ test('with the token already expired, read-only verify does not rotate and does 
   assert.strictEqual(body.result, 'unknown', 'inconclusive, NOT expired');
   assert.strictEqual(body.refreshed, false);
   assert.strictEqual(ACCOUNTS[0].session_status, 'working', 'a live session must survive an aged token');
+});
+
+test('client route: a gateway serving an off-site redirect makes the account DOWN even with a green source', async () => {
+  ACCOUNTS = [account()];
+  const prev = GATEWAY_ROUTE;
+  GATEWAY_ROUTE = () => ({ result: 'escape', reason: 'host_guard_survives', scope: 'public_page_static', checkedAt: new Date().toISOString() });
+  const s = await serve();
+  try {
+    const { body } = await s.state();
+    assert.strictEqual(body.healthSignals.session.state, 'HEALTHY', 'the source-side session is a separate fact');
+    assert.strictEqual(body.healthSignals.clientRoute.state, 'ESCAPING');
+    assert.strictEqual(body.health, 'down');
+    assert.match(body.statusReason, /public WriteHuman site/);
+  } finally { GATEWAY_ROUTE = prev; await s.close(); }
+});
+
+test('client route: an old gateway with no route check is never reported healthy', async () => {
+  ACCOUNTS = [account()];
+  const prev = GATEWAY_ROUTE;
+  GATEWAY_ROUTE = () => undefined; // pre-fix gateway: {ok:true} and no `route`
+  const s = await serve();
+  try {
+    const { body } = await s.state();
+    assert.strictEqual(body.healthSignals.clientRoute.state, 'UNKNOWN');
+    assert.strictEqual(body.health, 'degraded');
+  } finally { GATEWAY_ROUTE = prev; await s.close(); }
 });

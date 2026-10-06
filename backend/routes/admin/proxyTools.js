@@ -1066,6 +1066,24 @@ function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
 
+// Client-route evidence (WriteHuman): the gateway's own route self-check from its lease-free
+// /__genz/health. Server-to-server, 5s budget, cached briefly so polling the admin page does not
+// turn into a gateway request per poll. Never throws; an unreachable gateway is reported as such.
+const CLIENT_ROUTE_CACHE_MS = Number(process.env.PROXY_CLIENT_ROUTE_CACHE_MS ?? 60 * 1000);
+const clientRouteCache = new Map();
+async function fetchClientRoute(tool) {
+  const hit = clientRouteCache.get(tool);
+  if (hit && Date.now() - hit.at < CLIENT_ROUTE_CACHE_MS) return hit.value;
+  let value;
+  try {
+    const r = await fetch(`${tools.gatewayBase(tool)}/__genz/health`, { signal: AbortSignal.timeout(5000), redirect: 'manual' });
+    const body = await r.json().catch(() => null);
+    value = body && body.route ? body.route : (body ? {} : { unreachable: true });
+  } catch (_) { value = { unreachable: true }; }
+  clientRouteCache.set(tool, { at: Date.now(), value });
+  return value;
+}
+
 router.get('/:tool/agent-state', async (req, res) => {
   try {
     const tool = req.proxyTool;
@@ -1213,6 +1231,8 @@ router.get('/:tool/agent-state', async (req, res) => {
       cookieSyncAgeSec: staleMs != null ? Math.round(staleMs / 1000) : null,
       cookieSyncStaleSec: SYNC_STALE_MIN * 60,
       lastSyncFailed,
+      // WriteHuman only; every other tool's signals (and summary) are unchanged.
+      clientRoute: tool === 'writehuman' ? await fetchClientRoute(tool) : undefined,
     };
     const hs = deriveHealth(signals);
     const lc = deriveLifecycle(signals);
@@ -1230,6 +1250,12 @@ router.get('/:tool/agent-state', async (req, res) => {
     else if (hs.agent.state === 'OFFLINE') { health = 'degraded'; statusReason = 'Working from the last verified bundle, but no paired device is reporting — it cannot refresh until one comes back online.'; }
     else if (hs.cookieSync.state === 'BEHIND' || hs.cookieSync.state === 'FAILED') { health = 'degraded'; statusReason = 'Working — cookie sync is behind. The stored session is still valid.'; }
     else { health = 'up'; statusReason = hs.summary; }
+    // A healthy SOURCE is not a working CLIENT. If the gateway is sending members off the managed
+    // site, nothing above matters to them; if the client route is unverified, "healthy" overclaims.
+    if (signals.clientRoute !== undefined) {
+      if (hs.clientRoute.state === 'ESCAPING') { health = 'down'; statusReason = hs.clientRoute.reason; }
+      else if (hs.clientRoute.state === 'UNKNOWN' && health === 'up') { health = 'degraded'; statusReason = hs.clientRoute.reason; }
+    }
 
     // Retained for API compatibility. It now means what its name says — the session is working but
     // the last check could not CONFIRM it — and is no longer set merely because a token aged.

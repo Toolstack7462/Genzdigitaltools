@@ -515,8 +515,61 @@ const HOST_GUARD_RE = TARGET_HOST
       TARGET_HOST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
       "\\1\\s*\\+\\s*location\\.pathname\\s*\\+\\s*location\\.search\\s*\\)", 'g')
   : null;
+// WriteHuman (seen 2026-10-06) ships the same guard with the host ASSEMBLED AT RUNTIME —
+//   var d=['write','human'].join('')+'.ai',h=location.hostname…; var o='https://'+d; …
+//   location.replace(o+location.pathname+location.search)
+// — so neither HOST_GUARD_RE nor rewriteUpstreamUrls can see the domain, the guard runs on the
+// gateway host, and the client is replaced onto the PUBLIC writehuman.ai (no session cookies
+// there → the logged-out landing page). Defuse only a `location.replace(<identifier>+pathname
+// +search)` that follows a `location.hostname` read inside the same script ([^<] keeps the match
+// from crossing a </script>), and leave the rest of the guard intact. WriteHuman-scoped: every
+// other gateway keeps exactly the behaviour it had.
+const HOST_GUARD_INDIRECT_RE = TOOL_KEY === 'writehuman'
+  ? /(location\.hostname[^<]{0,2000}?)location\.replace\(\s*[A-Za-z_$][\w$]*\s*\+\s*location\.pathname\s*\+\s*location\.search\s*\)/g
+  : null;
 function neutralizeHostGuard(html) {
-  return HOST_GUARD_RE ? html.replace(HOST_GUARD_RE, 'void 0') : html;
+  if (HOST_GUARD_RE) html = html.replace(HOST_GUARD_RE, 'void 0');
+  if (HOST_GUARD_INDIRECT_RE) html = html.replace(HOST_GUARD_INDIRECT_RE, '$1void 0');
+  return html;
+}
+// ── Client-route self-check (WriteHuman only) ─────────────────────────────────
+// Evidence for the admin dashboard that the page this gateway SERVES keeps a client on this
+// origin. Fetches the PUBLIC upstream page (no account cookies), runs it through the same
+// neutralizeHostGuard + rewriteUpstreamUrls the proxy applies, then looks for an inline script
+// that still reads location.hostname AND still navigates — the shape of a canonical-host guard.
+// SCOPE: a static check of the public page. It does not prove a logged-in Humanize works; it
+// proves the 2026-10-06 escape (or a new guard variant) is not being served. Cached, single-flight
+// and lease-free, so hitting /__genz/health can never make the gateway hammer the upstream.
+const ROUTE_CHECK_TTL_MS = 10 * 60 * 1000;
+let routeCheckCache = null, routeCheckInflight = null;
+function countHostEscapes(html) {
+  const scripts = html.match(/<script(?:\s[^>]*)?>[\s\S]*?<\/script>/gi) || [];
+  return scripts.filter(s => /location\.hostname/.test(s)
+    && /location\.(?:replace|assign)\(|location\.href\s*=(?!=)/.test(s)).length;
+}
+function routeCheck() {
+  if (!HOST_GUARD_INDIRECT_RE) return Promise.resolve(null);
+  if (routeCheckCache && Date.now() - routeCheckCache.at < ROUTE_CHECK_TTL_MS) return Promise.resolve(routeCheckCache.result);
+  if (routeCheckInflight) return routeCheckInflight;
+  routeCheckInflight = (async () => {
+    let result;
+    try {
+      const r = await fetch(TARGET_ORIGIN + DEFAULT_PATH, {
+        headers: { 'user-agent': UPSTREAM_UA, accept: 'text/html' }, redirect: 'manual', signal: AbortSignal.timeout(10000),
+      });
+      if (r.status !== 200 || !/text\/html/i.test(r.headers.get('content-type') || '')) {
+        result = { result: 'inconclusive', reason: 'upstream_http_' + r.status };
+      } else {
+        const escapes = countHostEscapes(rewriteUpstreamUrls(neutralizeHostGuard(await r.text())).text);
+        result = escapes ? { result: 'escape', reason: 'host_guard_survives', count: escapes } : { result: 'contained' };
+      }
+    } catch (_) { result = { result: 'inconclusive', reason: 'upstream_unreachable' }; }
+    result.scope = 'public_page_static';
+    result.checkedAt = new Date().toISOString();
+    routeCheckCache = { at: Date.now(), result };
+    return result;
+  })().finally(() => { routeCheckInflight = null; });
+  return routeCheckInflight;
 }
 // Text bodies worth rewriting upstream origins inside (never images/fonts/streams).
 function isRewritableText(ct) {
@@ -1242,6 +1295,9 @@ const server = http.createServer(async (req, res) => {
       },
       missingEnv,
     };
+    // WriteHuman only (null elsewhere, so every other gateway's health JSON is unchanged).
+    const route = await routeCheck();
+    if (route) body.route = route;
     res.writeHead(missingEnv.length ? 503 : 200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     return res.end(JSON.stringify(body));
   }

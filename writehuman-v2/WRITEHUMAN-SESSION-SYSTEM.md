@@ -343,3 +343,28 @@ must stay down.
 `agentSync.js`, `proxyTools.js` (+ frontend bundle). The new `lastSyncOutcome` field is additive and
 ignored by old code; no session, vault or device record is migrated. Installed 3.5.1 agents remain
 compatible with the old server: it already attaches directives to refusal replies, and 3.5.1 simply acts on them.
+
+## Client routing roles and the client-route signal (2026-10-06)
+
+Two browsers, two destinations — both intended:
+
+| Entry point | Destination | Why |
+|---|---|---|
+| Client dashboard → Open WriteHuman (`POST /client/proxy-tools/writehuman/open` → `launchService.openFromLaunchResponse`) | `WRITEHUMAN_GATEWAY_URL` (default `https://writehuman1.genzdigitalstore.com`) `/gateway?lease=…` or the POST launch URL | Managed client access. No fallback to writehuman.ai exists; a missing launch closes the placeholder window. |
+| Agent / admin "Open Chrome on active source" (`cookie-sync-agent.js` `/json/new?url=https://writehuman.ai/`) | `https://writehuman.ai/` in the DEDICATED profile | Source login + cookie sync. If that profile is signed out it shows the public "Log in / Sign Up" page — that is expected there. |
+
+**Defect found 2026-10-06:** writehuman.ai's root layout ships an obfuscated canonical-host guard
+(`d=['write','human'].join('')+'.ai'` … `location.replace(o+location.pathname+location.search)`),
+inline and RSC-serialized. The gateway's `HOST_GUARD_RE` only knew the literal form, and URL
+rewriting cannot see a runtime-built host, so a page served on writehuman1 replaced itself onto the
+public writehuman.ai (no gateway cookies there → logged-out landing page). Fix: WriteHuman-scoped
+`HOST_GUARD_INDIRECT_RE` in `proxy-gateway/server.js`. Test: `backend/tests/writehumanHostGuardEscape.test.js`
+(spawns the real gateway, executes the served HTML against a fake `location`).
+
+**Sixth health signal `clientRoute`** (CONTAINED | ESCAPING | UNKNOWN, `sessionHealth.deriveClientRoute`):
+read by `/admin/proxy-tools/writehuman/agent-state` from the gateway's `/__genz/health` → `route`
+(gateway fetches the PUBLIC page, applies its own transforms, looks for a surviving
+hostname-check-plus-navigation script; cached 10 min). Scope `public_page_static` — it is NOT a
+logged-in Humanize. ESCAPING forces overall `down`; UNKNOWN (gateway unreachable, gateway predating
+the check, inconclusive, or older than 30 min) can never read `healthy` — it caps overall at
+`degraded`. Health alert emails still key off session status only.

@@ -317,6 +317,10 @@ const AdminWriteHuman = () => {
   const agentState = hs?.agent?.state || null;
   const chromeState = hs?.chrome?.state || null;
   const syncState = hs?.cookieSync?.state || null;
+  const routeState = hs?.clientRoute?.state || null;
+  const routeLabel = routeState === 'CONTAINED' ? `stays on managed site · checked ${rel(hs.clientRoute.checkedAt)}`
+    : routeState === 'ESCAPING' ? 'redirecting to public site' : routeState === 'UNKNOWN' ? 'unverified' : '—';
+  const routeTone = routeState === 'CONTAINED' ? 'ok' : routeState === 'ESCAPING' ? 'bad' : 'mut';
 
   const sessionLabel = sess === 'HEALTHY' ? 'healthy'
     : sess === 'REFRESHING' ? 'refreshing'
@@ -437,6 +441,15 @@ const AdminWriteHuman = () => {
               <Chrome size={14} /> Open Chrome on {activeSource?.name || 'active source'}
             </button>
           )}
+        </div>
+      )}
+
+      {/* Client route is about MEMBERS, not the source: a healthy session is useless to them if the
+          gateway sends them off the managed site. Shown independently of the session banner. */}
+      {conn === 'live' && !firstLoad && routeState === 'ESCAPING' && (
+        <div className="ds-card rounded-xl p-4 mb-5 border border-red-200 bg-red-50 text-red-700 text-sm flex items-start gap-2">
+          <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+          <span><strong>Clients are being sent to the public WriteHuman site:</strong> {hs?.clientRoute?.reason}</span>
         </div>
       )}
 
@@ -638,6 +651,7 @@ const AdminWriteHuman = () => {
               <Row k="Account">{a.label || '—'}</Row>
               <Row k="Overall"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
               <Row k="Session"><Badge tone={stTone}>{sessionLabel}</Badge></Row>
+              <Row k="Client route"><span title={hs?.clientRoute?.reason || ''}><Badge tone={routeTone}>{routeLabel}</Badge></span></Row>
               <Row k="Sign-in">{a.browserAuthCookies == null
                 ? <Badge tone="mut">{a.telemetryFrozen ? 'unknown · no device reporting' : 'unknown'}</Badge>
                 : loggedOut ? <Badge tone="bad">signed out</Badge> : <Badge tone="ok">signed in</Badge>}</Row>

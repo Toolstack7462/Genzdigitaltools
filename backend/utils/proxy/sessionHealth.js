@@ -221,6 +221,37 @@ function deriveSession(s) {
 }
 
 /**
+ * 6. CLIENT ROUTE   CONTAINED | ESCAPING | UNKNOWN
+ *
+ * The five signals above are all about the SOURCE side. On 2026-10-06 every one of them could be
+ * green while every client launch was being replaced off writehuman1 onto the public writehuman.ai
+ * (an obfuscated canonical-host guard the gateway did not defuse). This signal is the gateway's own
+ * route self-check (`route` in its /__genz/health): the page it serves, run through its own
+ * rewriting, still keeps a client on the managed origin. Its scope is deliberately narrow and is
+ * carried through — a static check of the public page, not a logged-in Humanize.
+ *
+ * No evidence is UNKNOWN, never CONTAINED: an unreachable gateway, a gateway too old to run the
+ * check, an inconclusive check, or a verdict older than CLIENT_ROUTE_MAX_AGE_SEC.
+ */
+const CLIENT_ROUTE_MAX_AGE_SEC = 30 * 60;
+function deriveClientRoute(route, nowMs) {
+  const r = route || {};
+  const at = Date.parse(r.checkedAt);
+  const ageSec = Number.isFinite(at) ? Math.round(((nowMs || Date.now()) - at) / 1000) : null;
+  const base = { scope: r.scope || null, checkedAt: Number.isFinite(at) ? r.checkedAt : null, ageSec };
+  if (r.unreachable) return { ...base, state: 'UNKNOWN', reason: 'The client gateway could not be reached from the server, so the client route is unverified.' };
+  if (r.result === 'escape') {
+    return { ...base, state: 'ESCAPING', reason: 'The client gateway is serving a page that redirects members off the managed site to the public WriteHuman site. Clients cannot use WriteHuman until the gateway is fixed.' };
+  }
+  if (r.result === 'contained' && ageSec != null && ageSec <= CLIENT_ROUTE_MAX_AGE_SEC) {
+    return { ...base, state: 'CONTAINED', reason: 'The client gateway is reachable and the page it serves stays on the managed site (static check of the public page; not a logged-in operation).' };
+  }
+  if (r.result === 'contained') return { ...base, state: 'UNKNOWN', reason: 'The last client-route check is too old to rely on.' };
+  if (r.result === 'inconclusive') return { ...base, state: 'UNKNOWN', reason: `The client-route check could not run (${r.reason || 'inconclusive'}).` };
+  return { ...base, state: 'UNKNOWN', reason: 'The client gateway does not report a route check (it may predate it), so the client route is unverified.' };
+}
+
+/**
  * deriveHealth — the whole picture, as five signals that are allowed to disagree with each other
  * because in reality they DO disagree, and pretending otherwise is what made the old page lie.
  */
@@ -231,9 +262,12 @@ function deriveHealth(signals) {
   const agent = deriveAgent(s);
   const chrome = deriveChrome(s);
   const cookieSync = deriveCookieSync(s);
+  const clientRoute = deriveClientRoute(s.clientRoute, s.nowMs);
 
   // A one-line operator summary that never contradicts the parts it summarises.
   const bits = ['Session ' + session.state];
+  // Only when route evidence was SOUGHT (WriteHuman) — other callers' summaries stay as they were.
+  if (s.clientRoute !== undefined && clientRoute.state !== 'CONTAINED') bits.push('Client route ' + clientRoute.state);
   if (agent.state !== 'ONLINE') bits.push('Agent ' + agent.state);
   if (cookieSync.state !== 'FRESH') bits.push('Cookie sync ' + cookieSync.state.replace('_', ' '));
   if (session.state !== 'LOGIN_REQUIRED' && session.state !== 'ERROR'
@@ -241,7 +275,7 @@ function deriveHealth(signals) {
     bits.push('using the last verified bundle');
   }
 
-  return { session, verification, agent, chrome, cookieSync, summary: bits.join(' · '), loginRequired: session.loginRequired };
+  return { session, verification, agent, chrome, cookieSync, clientRoute, summary: bits.join(' · '), loginRequired: session.loginRequired };
 }
 
 /**
@@ -279,6 +313,6 @@ function deriveLifecycle(signals) {
 
 module.exports = {
   deriveHealth, deriveLifecycle,
-  deriveSession, deriveVerification, deriveAgent, deriveChrome, deriveCookieSync,
-  DOWN_STATES, FAILED_VERIFY,
+  deriveSession, deriveVerification, deriveAgent, deriveChrome, deriveCookieSync, deriveClientRoute,
+  DOWN_STATES, FAILED_VERIFY, CLIENT_ROUTE_MAX_AGE_SEC,
 };
