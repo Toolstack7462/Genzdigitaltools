@@ -10,6 +10,7 @@ import { authService } from '../services/authService';
 import { useToast } from './Toast';
 import BrandLogo from './BrandLogo';
 import RefreshButton from './RefreshButton';
+import ClientGuideAssistant from '../features/clientAssistant/ClientGuideAssistant';
 
 // ============================================================================
 // SHARED THEME CONSTANTS
@@ -258,6 +259,11 @@ const ClientLayoutEnhanced = ({ children }) => {
           </div>
         </main>
       </div>
+
+      {/* Gen Z Guide — context-aware client support assistant. Mounted ONLY here (the authenticated
+          client layout), so it renders across client pages but never on public/admin/login routes.
+          Self-contained + error-boundaried: it can never block the portal from loading. */}
+      <ClientGuideAssistant />
     </div>
   );
 };

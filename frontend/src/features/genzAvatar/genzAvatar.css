@@ -1,0 +1,101 @@
+/* Zee — original animation system. Breathing runs on an OUTER group; one-shot/loop actions run on an
+   INNER group, so a wave/nod/celebration never conflicts with breathing. All motion stops under
+   prefers-reduced-motion and when the tab is hidden (data-paused). Original timings. */
+
+.genz-avatar-root { -webkit-tap-highlight-color: transparent; }
+.genz-avatar-breathe,
+.genz-avatar-action {
+  transform-box: fill-box;
+  transform-origin: center;
+  will-change: transform;
+}
+
+/* gentle idle breathing (loop) */
+.genz-avatar-breathe { animation: genz-avatar-breathe 3.8s ease-in-out infinite; }
+@keyframes genz-avatar-breathe {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.03); }
+}
+
+/* thinking — slow attentive tilt (loop) */
+.genz-avatar-root[data-anim="thinking"] .genz-avatar-action {
+  animation: genz-avatar-think 1.7s ease-in-out infinite;
+}
+@keyframes genz-avatar-think {
+  0%, 100% { transform: rotate(-3.5deg); }
+  50%      { transform: rotate(3.5deg); }
+}
+
+/* talking — the oral oval pulses (loop) */
+.genz-avatar-root[data-anim="talking"] .genz-avatar-mouth-oval {
+  animation: genz-avatar-talk 0.52s ease-in-out infinite;
+  transform-box: fill-box; transform-origin: center;
+}
+@keyframes genz-avatar-talk {
+  0%, 100% { transform: scaleY(0.6); }
+  50%      { transform: scaleY(1.15); }
+}
+
+/* greeting wave — a friendly tilt, once, returns to rest */
+.genz-avatar-root[data-anim="wave"] .genz-avatar-action {
+  animation: genz-avatar-wave 1.1s ease-in-out 1;
+}
+@keyframes genz-avatar-wave {
+  0% { transform: rotate(0deg); }
+  25% { transform: rotate(-8deg); }
+  55% { transform: rotate(8deg); }
+  80% { transform: rotate(-4deg); }
+  100% { transform: rotate(0deg); }
+}
+
+/* nod — once */
+.genz-avatar-root[data-anim="nod"] .genz-avatar-action {
+  animation: genz-avatar-nod 0.85s ease-in-out 1;
+}
+@keyframes genz-avatar-nod {
+  0%, 100% { transform: translateY(0); }
+  40% { transform: translateY(3.5px); }
+  70% { transform: translateY(1px); }
+}
+
+/* celebration — a small bounce, once */
+.genz-avatar-root[data-anim="celebration"] .genz-avatar-action {
+  animation: genz-avatar-celebrate 1.4s cubic-bezier(.22,1,.36,1) 1;
+}
+@keyframes genz-avatar-celebrate {
+  0% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-6px) scale(1.05); }
+  55% { transform: translateY(0) scale(1); }
+  75% { transform: translateY(-3px) scale(1.02); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+/* warning — a short attention shake, once */
+.genz-avatar-root[data-anim="warning"] .genz-avatar-action {
+  animation: genz-avatar-warn 0.9s ease-in-out 1;
+}
+@keyframes genz-avatar-warn {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-3px); }
+  40% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  80% { transform: translateX(2px); }
+}
+
+/* Stop ALL motion when the tab is hidden or reduced-motion is requested. */
+.genz-avatar-root[data-paused="1"] .genz-avatar-breathe,
+.genz-avatar-root[data-paused="1"] .genz-avatar-action,
+.genz-avatar-root[data-paused="1"] .genz-avatar-mouth-oval,
+.genz-avatar-root[data-reduced="1"] .genz-avatar-breathe,
+.genz-avatar-root[data-reduced="1"] .genz-avatar-action,
+.genz-avatar-root[data-reduced="1"] .genz-avatar-mouth-oval {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .genz-avatar-breathe,
+  .genz-avatar-action,
+  .genz-avatar-mouth-oval {
+    animation: none !important;
+  }
+}
