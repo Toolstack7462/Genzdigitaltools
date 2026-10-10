@@ -63,6 +63,7 @@ curl --fail-with-body --ftp-create-dirs \
   -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/getClientAccessibleTool.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/getClientAccessibleTool.js" \
   -T backend/utils/toolCleanupConfig.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/toolCleanupConfig.js" \
+  -T backend/utils/clientCredentialSafety.js  "sftp://${HOST}:${PORT}${API_ROOT}/utils/clientCredentialSafety.js" \
   -T backend/utils/semver.js                  "sftp://${HOST}:${PORT}${API_ROOT}/utils/semver.js" \
   -T backend/utils/zipManifest.js             "sftp://${HOST}:${PORT}${API_ROOT}/utils/zipManifest.js" \
   -T backend/utils/extensionDownloads.js      "sftp://${HOST}:${PORT}${API_ROOT}/utils/extensionDownloads.js" \

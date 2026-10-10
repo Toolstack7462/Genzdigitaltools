@@ -60,7 +60,17 @@ async function verifyAndApply(account, tool, opts = {}) {
 
   // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
   const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
+  // providerErrorCode: the provider's own SANITISED reason for an expiry (an
+  // allowlisted constant from verify.js — never body text, never a token). Recorded
+  // so the CAUSE of a logout is captured at the moment it happens: an HTTP 400 alone
+  // cannot tell a multi-writer refresh-token race apart from a provider-enforced
+  // session timebox. Additive and optional — absent on every non-expiry result, so
+  // nothing that reads `verification` today changes behaviour.
   account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: now };
+  if (v.providerErrorCode) {
+    account.verification.providerErrorCode = v.providerErrorCode;
+    account.verification.providerErrorAt = v.providerErrorAt || now.toISOString();
+  }
   account.lastVerifiedAt = now;
   if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
   else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }

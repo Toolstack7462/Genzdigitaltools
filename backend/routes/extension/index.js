@@ -16,6 +16,13 @@ const ExtensionRelease = require('../../models/ExtensionRelease');
 const { isOlder } = require('../../utils/semver');
 const { resolvePublishedRelease, versionedFilename } = require('../../utils/extensionDownloads');
 
+// Client-facing credential safety. A PROVIDER MASTER PASSWORD never reaches a
+// client extension, for ANY tool shape including enabled Form/Combo auth --
+// see utils/clientCredentialSafety.js for why client-side form fill cannot be
+// made safe for a shared account. Behavioural flags and session material are
+// untouched.
+const { sanitizeComboAuthForClient, sanitizeCredentialsForClient } = require('../../utils/clientCredentialSafety');
+
 // Compute update status for an installed extension version against the latest
 // published release. Returns safe metadata only (versions/booleans). `rel` may
 // be passed in to avoid a duplicate DB read.
@@ -411,8 +418,11 @@ router.get('/tools', verifyExtensionToken, async (req, res) => {
         hasCredentials: tool.hasCredentials(),
         // Session Bundle info for version checking
         sessionBundle: sessionBundleInfo,
-        // Combo Auth config with parallel mode support
-        comboAuth: comboAuthConfig,
+        // Combo Auth config with parallel mode support.
+        // This builder ships flags only (no formConfig), so the sanitiser is a
+        // no-op today -- it is applied anyway so the invariant holds at EVERY
+        // client-facing boundary and a future field cannot leak through here.
+        comboAuth: sanitizeComboAuthForClient(comboAuthConfig),
         extensionSettings: {
           ...tool.extensionSettings,
           // Ensure new settings have defaults
@@ -979,7 +989,7 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         commitLock: tool.comboAuth.parallelSettings?.commitLock ?? true,
         verifyAfterAuth: tool.comboAuth.parallelSettings?.verifyAfterAuth ?? true
       },
-      // Include form and SSO configs for combo auth
+      // Include form and SSO configs for combo auth (master credentials stripped below)
       formConfig: tool.comboAuth.formConfig || {},
       ssoConfig: tool.comboAuth.ssoConfig || {},
       cookiesConfig: tool.comboAuth.cookiesConfig || {},
@@ -997,8 +1007,10 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
         loginUrl: tool.loginUrl || tool.targetUrl,
         domain: tool.domain,
         credentialVersion: tool.credentialVersion,
-        // Include combo auth configuration with parallel mode
-        comboAuth: comboAuthConfig,
+        // Include combo auth configuration with parallel mode.
+        // sanitizeComboAuthForClient() is the LAST thing that touches it: every
+        // flag survives, the provider's master username/password never ships.
+        comboAuth: sanitizeComboAuthForClient(comboAuthConfig),
         extensionSettings: {
           ...tool.extensionSettings,
           reloadAfterLogin: tool.extensionSettings?.reloadAfterLogin ?? true,
@@ -1017,7 +1029,9 @@ router.get('/tools/:toolId/credentials', verifyExtensionToken, async (req, res) 
       // Session bundle with decrypted data
       sessionBundle,
       credentials: {
-        ...credentials,
+        // A 'form' tool's decrypted payload IS the master {username,password};
+        // strip it here. Cookie / token / storage payloads pass through intact.
+        ...sanitizeCredentialsForClient(credentials),
         // Include additional options from the tool schema
         formOptions: tool.credentials?.formOptions || {
           multiStep: false,

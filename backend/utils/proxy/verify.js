@@ -292,7 +292,10 @@ async function supabaseUserCheck(cfg, accessToken) {
   try { body = (await resp.text()).slice(0, 20000); } catch (_) {}
   if (resp.status >= 200 && resp.status < 300) {
     const em = body.match(/"email":"([^"]+)"/i);
-    return { ok: true, status: resp.status, inconclusive: false, email: em ? em[1] : null };
+    // The Supabase user id (sub) — a STABLE, unique, authoritative account identifier confirmed by
+    // this server-side /auth/v1/user call. Additive: existing callers ignore it.
+    const idm = body.match(/"id":"([0-9a-fA-F-]{16,})"/);
+    return { ok: true, status: resp.status, inconclusive: false, email: em ? em[1] : null, id: idm ? idm[1] : null };
   }
   // 401 with a structurally valid, unexpired JWT = the session itself is gone (signed out, revoked,
   // user deleted). That IS proof, and it is the case a local JWT decode can never see.
@@ -305,6 +308,77 @@ async function supabaseUserCheck(cfg, accessToken) {
     return { ok: false, status: resp.status, inconclusive: false, email: null };
   }
   return { ok: false, status: resp.status, inconclusive: true, email: null };
+}
+
+// ── Sanitised provider error classification (diagnostics only) ────────────────
+// A 400 from GoTrue's token endpoint is NOT self-explanatory: it is returned for a
+// refresh token that was already rotated by another holder, for one that no longer
+// exists, and for a session the provider itself ended. Those are different root
+// causes with different fixes, and the body was previously discarded — so every
+// expiry looked identical.
+//
+// This maps the provider's own machine-readable code onto a CLOSED allowlist of
+// constants. Nothing from the response body is ever returned, logged or stored:
+// an unrecognised code becomes 'other', so a provider message containing a token,
+// an email or any payload fragment can never escape through this path. Returns a
+// constant from PROVIDER_ERROR_CODES, or null.
+const PROVIDER_ERROR_CODES = Object.freeze({
+  // The refresh token was valid but had ALREADY been exchanged by someone else →
+  // more than one holder is rotating the same session (the multi-writer race).
+  REFRESH_TOKEN_ALREADY_USED: 'refresh_token_already_used',
+  // The token is not on record at all → the family was revoked (often the
+  // consequence of reuse detection) or the session was deleted.
+  REFRESH_TOKEN_NOT_FOUND: 'refresh_token_not_found',
+  // The provider ended the session on its own schedule → provider-enforced
+  // reauthentication (session timebox / inactivity policy). No refresh can help.
+  SESSION_EXPIRED: 'session_expired',
+  SESSION_NOT_FOUND: 'session_not_found',
+  USER_BANNED: 'user_banned',
+  USER_NOT_FOUND: 'user_not_found',
+  RATE_LIMITED: 'over_request_rate_limit',
+  // MFA / step-up required or failed. Recovery MUST stop on these: an automated
+  // login cannot and must not attempt to satisfy a second factor.
+  MFA_REQUIRED: 'insufficient_aal',
+  MFA_FAILED: 'mfa_verification_failed',
+  // A recognised provider reason we have no specific constant for. NOT a cause.
+  OTHER: 'other',
+});
+const PROVIDER_ERROR_ALLOWLIST = new Set([
+  'refresh_token_already_used',
+  'refresh_token_not_found',
+  'session_expired',
+  'session_not_found',
+  'user_banned',
+  'user_not_found',
+  'over_request_rate_limit',
+  'insufficient_aal',
+  'mfa_verification_failed',
+]);
+function classifyProviderError(body) {
+  // HARD RULE: a bare HTTP 400 with no machine-readable reason returns null, never
+  // a cause. Reuse is only ever reported when the provider itself names it. An
+  // absent code means "cause unknown" and must stay that way, because a 400 is
+  // also the answer for an ordinary revoked token and a provider-ended session.
+  try {
+    let code = null;
+    try {
+      const j = JSON.parse(body);
+      // GoTrue returns `error_code` (current) or `error` (legacy OAuth style).
+      code = j && (j.error_code || j.error || null);
+    } catch (_) {
+      // Not JSON — fall back to a bounded scan for an allowlisted constant only.
+      const m = String(body || '').slice(0, 2000).match(/"error_code"\s*:\s*"([a-z_]{1,64})"/);
+      code = m ? m[1] : null;
+    }
+    if (!code || typeof code !== 'string') return null;
+    const norm = code.toLowerCase().trim();
+    if (PROVIDER_ERROR_ALLOWLIST.has(norm)) return norm;
+    // Legacy `invalid_grant` + the SDK's human message both mean already-used.
+    if (norm === 'invalid_grant' && /already\s*used/i.test(String(body).slice(0, 2000))) {
+      return PROVIDER_ERROR_CODES.REFRESH_TOKEN_ALREADY_USED;
+    }
+    return PROVIDER_ERROR_CODES.OTHER;
+  } catch (_) { return null; }
 }
 
 /**
@@ -342,9 +416,9 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
         const email = c.email || cookieEmail || null;
         const maskedId = email ? maskEmail(email) : null;
         if (expectedIdentifier && email && String(expectedIdentifier).trim().toLowerCase() !== email.toLowerCase()) {
-          return { result: 'wrong_account', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+          return { result: 'wrong_account', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed', accountKey: c.id || null };
         }
-        return { result: 'working', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+        return { result: 'working', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed', accountKey: c.id || null };
       }
       if (!c.inconclusive) {
         // Proven dead while the JWT still looks valid — exactly the case the local decode misses.
@@ -420,10 +494,20 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
   }
   // 400/401/403 → the refresh token is invalid/expired/revoked → truly can't log in.
   if (httpStatus === 400 || httpStatus === 401 || httpStatus === 403) {
-    return { result: 'session_expired', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, loggedOut: true, maskedId: null };
+    // Carry the provider's SANITISED reason so the cause of an expiry is recorded at
+    // the moment it happens (allowlisted constant only — never body text). This is
+    // what distinguishes a multi-writer refresh race from a provider-enforced
+    // session timebox after the fact; both previously looked like a bare 400.
+    const providerErrorCode = classifyProviderError(body);
+    return {
+      result: 'session_expired', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false,
+      loggedOut: true, maskedId: null,
+      providerErrorCode,
+      providerErrorAt: new Date().toISOString(),
+    };
   }
   // 429 / 5xx / unexpected → don't falsely expire a possibly-valid session.
   return { result: 'unknown', httpStatus, finalPath: '/auth/v1/token', redirectedToSignIn: false, maskedId: null };
 }
 
-module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh, jwtExp, extractSupabaseSession, supabaseUserCheck };
+module.exports = { verifyAccountCookies, maskEmail, pageDiagnostics, applySupabaseRefresh, jwtExp, extractSupabaseSession, supabaseUserCheck, classifyProviderError, PROVIDER_ERROR_CODES };

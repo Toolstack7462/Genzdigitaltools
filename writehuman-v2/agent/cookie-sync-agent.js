@@ -54,10 +54,16 @@ const { spawn } = require('child_process');
 //         addressed command used to be discarded exactly when the stored token had expired; and
 //         every LOCAL interval uses a monotonic clock, so a backwards wall-clock correction can no
 //         longer silence heartbeats (the source reported uptimeSec -6877 on 2026-10-05).
+// 3.5.3 — SOURCE-SIDE AUTOMATIC RE-LOGIN (opt-in, WHV2_RELOGIN=1). On a CONFIRMED logout of
+//         this machine's own source account, sign back in through WriteHuman's normal login page
+//         in the tab that is already open, once, using a DPAPI CurrentUser credential readable
+//         only by this Windows user; then let the existing sync pipeline verify and promote it.
+//         Never touches the refresh token, never adds a visible tab, and halts for MFA / CAPTCHA /
+//         wrong password / rate limit / restriction / wrong account.
 // 3.5.2 — the success log no longer throws (`forced is not defined` hid every successful sync as a
 //         tick_error), and each push / refusal logs the candidate token's EXPIRY TIME (never the
 //         token), so a run of refusals shows whether Chrome had actually rotated.
-const AGENT_VERSION = '3.5.2';
+const AGENT_VERSION = '3.5.3';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -175,6 +181,14 @@ const CFG = {
   // by more activity, and this catches the follow-up promptly without ever becoming busy-polling.
   quickPollMs: Math.max(5000, parseInt(pick('WHV2_QUICK_POLL_MS', 'quickPollMs', ''), 10) || 8000),
   quickPollFor: Math.max(0, parseInt(pick('WHV2_QUICK_POLL_COUNT', 'quickPollFor', ''), 10) || 4),
+  // ── source-side automatic re-login (3.5.3) ─────────────────────────────────
+  // OFF unless explicitly switched on, so recovering this source file onto an
+  // existing install changes NOTHING until an operator opts in. Enabling it does
+  // not touch the Observe/Enforce policy, which is a server-side setting.
+  reloginEnabled: String(pick('WHV2_RELOGIN', 'reloginEnabled', '')).trim() === '1',
+  // WriteHuman's own login surface. Matches the SIGNIN_PATH the backend registry
+  // already uses for this tool, and is overridable if the app ever moves it.
+  loginPath: pick('WHV2_LOGIN_PATH', 'loginPath', '/signup?mode=login'),
   // How often we TALK TO THE SERVER when nothing has changed. Decoupled from the Chrome poll on
   // purpose: checking cookies is a loopback call costing nothing, whereas a heartbeat is a request
   // to a shared, process-limited host. Polling Chrome every 45s while heartbeating every 3 minutes
@@ -603,7 +617,43 @@ function buildReport(state) {
     lastCommand: state.lastCommand || null,
     lastCommandAt: state.lastCommandAt ? new Date(state.lastCommandAt).toISOString() : null,
     profile: state.profile || null,
+    // Source-side recovery status. ADDITIVE and non-secret: whether recovery is even
+    // switched on, and - the part that matters operationally - whether it has HALTED
+    // and needs a human (MFA, CAPTCHA, wrong password, rate limit, restriction, wrong
+    // account). Never the account, never the credential. An older server simply
+    // ignores the extra keys, so this is safe to report before any backend change.
+    relogin: reloginReport(),
   };
+}
+
+// Non-secret snapshot of the recovery budget / halt state for the dashboard.
+function reloginReport() {
+  try {
+    if (!CFG.reloginEnabled) return { enabled: false };
+    const st = readReloginState();
+    const now = Date.now();
+    const recent = (st.attempts || []).filter(t => now - t < RELOGIN.windowMs);
+    return {
+      enabled: true,
+      hasCredential: !!readSourceCredentialPresence(),
+      attemptsInWindow: recent.length,
+      maxAttempts: RELOGIN.maxAttempts,
+      haltedReason: st.haltedReason || null,
+      haltedAt: st.haltedAt || null,
+      lastOutcome: st.lastOutcome || null,
+      lastAttemptAt: st.lastAttemptAt || null,
+    };
+  } catch (_) { return { enabled: !!CFG.reloginEnabled }; }
+}
+
+// Does a credential vault EXIST? Deliberately a file-existence check only - it never
+// decrypts, so the heartbeat cannot be used to exercise DPAPI on every poll.
+function readSourceCredentialPresence() {
+  try {
+    const p = process.env.WHV2_CREDENTIAL_VAULT || FILE_CFG.credentialVaultFile
+      || path.join(path.dirname(CFG.deviceStateFile), 'source-credential.dpapi');
+    return fs.existsSync(p);
+  } catch (_) { return false; }
 }
 
 // The server's directives, from any reply that carries them (2xx, or an answered 409 refusal).
@@ -914,6 +964,375 @@ async function runActivation(state) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SOURCE-SIDE AUTOMATIC RE-LOGIN (3.5.3)
+ *
+ * WHAT THIS IS. When the MAIN WriteHuman account on THIS approved source machine
+ * is genuinely signed out, sign it back in through WriteHuman's own normal login
+ * page, in the dedicated Chrome tab that is already open, exactly once — then let
+ * the EXISTING sync pipeline pick the new session up. Nothing else changes.
+ *
+ * WHAT IT IS NOT. It is not a client-side login: no customer browser, extension or
+ * dashboard is involved and none of them ever receives the credential. It is not a
+ * second rotator either — it never touches the refresh token. The browser remains
+ * the sole rotator, so Supabase reuse-detection stays out of the picture, exactly
+ * as nudgeTokenRotation() is careful to preserve.
+ *
+ * WHEN IT RUNS. Only from the `logout_signaled` path, which is already the
+ * CONFIRMED-logout path: the Supabase auth cookie has been absent for
+ * CFG.logoutDebounce consecutive polls AND the browser had previously been
+ * authenticated (state.lastHash !== null). An inconclusive poll — CDP down, Chrome
+ * closed, a network error, a transient read failure — never reaches it, which is
+ * the "do not recover on inconclusive verification alone" requirement.
+ *
+ * WHO VERIFIES THE ACCOUNT. We do a local sanity check (the auth cookie came back
+ * and we are off the login route), but the AUTHORITATIVE identity check stays
+ * server-side: clearing state.lastHash makes the next poll offer the bundle, and
+ * candidateSync performs its usual provider-authenticated verify plus the
+ * expectedAccountId match. If the server answers ACCOUNT_MISMATCH we halt
+ * permanently — a recovered-but-wrong account must never be promoted.
+ *
+ * CREDENTIAL SOURCE. A DPAPI CurrentUser blob written by Enroll-SourceCredential.ps1,
+ * readable only by this Windows user on this machine. It is read at the moment of
+ * recovery, used, and dropped; it is never logged, never put in a URL, never sent to
+ * the server, and never written into config.json. The password reaches the page via
+ * Input.insertText (loopback CDP to our own browser), so it is never interpolated
+ * into evaluated JavaScript.
+ *
+ * SAFETY RAILS. Opt-in (off unless WHV2_RELOGIN=1); active source only; single
+ * flight; bounded attempts inside a rolling window; cooldown between attempts;
+ * state persisted so a restart cannot reset the budget; and a PERSISTENT HALT on
+ * anything a machine must not retry — wrong password, MFA, CAPTCHA, rate limit,
+ * account restriction, wrong account. A halt requires an operator to clear it.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+const RELOGIN = {
+  // Hard ceilings. Deliberately small: recovery is a once-in-a-while repair, and a
+  // login form is the last place a machine should be allowed to retry freely.
+  maxAttempts: Math.max(1, parseInt(pick('WHV2_RELOGIN_MAX', 'reloginMax', ''), 10) || 3),
+  windowMs: Math.max(30 * 60000, parseInt(pick('WHV2_RELOGIN_WINDOW_MS', 'reloginWindowMs', ''), 10) || 6 * 60 * 60000),
+  cooldownMs: Math.max(5 * 60000, parseInt(pick('WHV2_RELOGIN_COOLDOWN_MS', 'reloginCooldownMs', ''), 10) || 30 * 60000),
+  // How long to wait for the app to finish signing in before calling it a failure.
+  authWaitMs: Math.max(15000, parseInt(pick('WHV2_RELOGIN_WAIT_MS', 'reloginWaitMs', ''), 10) || 60000),
+};
+// Reasons that must NEVER be retried automatically. Each one needs a human: a
+// wrong password will lock the account, and MFA/CAPTCHA exist precisely to stop
+// automation. Persisted, so a restart does not quietly resume hammering.
+const RELOGIN_TERMINAL = ['wrong_credentials', 'mfa_required', 'captcha_required', 'rate_limited', 'account_restricted', 'wrong_account'];
+
+function reloginStatePath() {
+  return process.env.WHV2_RELOGIN_STATE || FILE_CFG.reloginStateFile
+    || path.join(path.dirname(CFG.deviceStateFile), 'agent-relogin.json');
+}
+function readReloginState() {
+  const s = readJsonFile(reloginStatePath());
+  if (!s || typeof s !== 'object') return { attempts: [], haltedReason: null, haltedAt: null };
+  return {
+    attempts: Array.isArray(s.attempts) ? s.attempts.filter(n => Number.isFinite(n)) : [],
+    haltedReason: typeof s.haltedReason === 'string' ? s.haltedReason : null,
+    haltedAt: s.haltedAt || null,
+    lastOutcome: typeof s.lastOutcome === 'string' ? s.lastOutcome : null,
+    lastAttemptAt: s.lastAttemptAt || null,
+  };
+}
+function writeReloginState(st) {
+  try {
+    fs.mkdirSync(path.dirname(reloginStatePath()), { recursive: true });
+    fs.writeFileSync(reloginStatePath(), JSON.stringify(st, null, 2));
+  } catch (e) { log('relogin_state_write_failed', { error: e && e.message }); }
+}
+
+/**
+ * The credential for THIS machine's source account. DPAPI CurrentUser, same
+ * mechanism (and same PowerShell round-trip) as the shared ingest key — see
+ * readDpapiKeyFile. Returns null when absent or undecryptable; the caller then
+ * reports that recovery is unavailable rather than guessing.
+ *
+ * NEVER log the return value or any part of it.
+ */
+function readSourceCredential() {
+  const p = process.env.WHV2_CREDENTIAL_VAULT || FILE_CFG.credentialVaultFile
+    || path.join(path.dirname(CFG.deviceStateFile), 'source-credential.dpapi');
+  const raw = readDpapiKeyFile(p);
+  if (!raw) return null;
+  try {
+    const o = JSON.parse(raw);
+    if (!o || typeof o.email !== 'string' || typeof o.password !== 'string') return null;
+    if (!o.email || !o.password) return null;
+    return { email: o.email, password: o.password, path: p };
+  } catch (_) { return null; }
+}
+
+/**
+ * A short-lived CDP session on one page target, able to issue several commands.
+ * The existing helpers each open a socket for a single command; a login needs a
+ * handful in order, so this keeps one socket for the sequence and always closes it.
+ *
+ * `send` rejects on a CDP-level error. Payloads are never logged — one of them
+ * carries the password.
+ */
+function cdpSession(wsUrl, totalTimeoutMs) {
+  return new Promise((resolve, reject) => {
+    if (typeof WebSocket === 'undefined') return reject(new Error('no_global_websocket_need_node22'));
+    const ws = new WebSocket(wsUrl);
+    let nextId = 1, closed = false;
+    const pending = new Map();
+    const hardStop = setTimeout(() => { try { ws.close(); } catch (_) {} }, Math.max(20000, totalTimeoutMs || 90000));
+    const fail = (e) => { for (const [, p] of pending) p.reject(e); pending.clear(); };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(typeof ev.data === 'string' ? ev.data : ev.data.toString()); } catch (_) { return; }
+      if (msg.id == null) return;                       // an event, not a reply
+      const p = pending.get(msg.id); if (!p) return;
+      pending.delete(msg.id);
+      if (msg.error) p.reject(new Error('cdp_' + (msg.error.message || 'error')));
+      else p.resolve(msg.result || {});
+    };
+    ws.onerror = () => { fail(new Error('cdp_ws_error')); };
+    ws.onclose = () => { closed = true; clearTimeout(hardStop); fail(new Error('cdp_ws_closed')); };
+    ws.onopen = () => resolve({
+      send(method, params, timeoutMs) {
+        if (closed) return Promise.reject(new Error('cdp_ws_closed'));
+        const id = nextId++;
+        return new Promise((res, rej) => {
+          const t = setTimeout(() => { pending.delete(id); rej(new Error('cdp_timeout_' + method)); }, Math.max(3000, timeoutMs || 15000));
+          pending.set(id, { resolve: (v) => { clearTimeout(t); res(v); }, reject: (e) => { clearTimeout(t); rej(e); } });
+          try { ws.send(JSON.stringify({ id, method, params: params || {} })); }
+          catch (e) { clearTimeout(t); pending.delete(id); rej(e); }
+        });
+      },
+      close() { clearTimeout(hardStop); try { ws.close(); } catch (_) {} },
+    });
+  });
+}
+
+// Page-side probe, run as an expression (no secrets inside it). Reports what the
+// login surface currently looks like so the caller can decide: fill, or halt for a
+// human. Kept deliberately conservative — anything it is not sure about is 'unknown'.
+const RELOGIN_PROBE = `(function(){
+  function vis(el){ if(!el) return false; var r=el.getBoundingClientRect();
+    return r.width>0 && r.height>0 && getComputedStyle(el).visibility!=='hidden'; }
+  function pick(sels){ for(var i=0;i<sels.length;i++){ var n=document.querySelector(sels[i]); if(vis(n)) return sels[i]; } return null; }
+  var email = pick(['input[type="email"]','input[name="email"]','input[autocomplete="username"]','input[name="username"]','input[id*="email" i]']);
+  var pass  = pick(['input[type="password"]','input[name="password"]','input[autocomplete="current-password"]']);
+  var submit= pick(['button[type="submit"]','form button:not([type="button"])','button[data-testid*="sign" i]']);
+  var text  = (document.body ? (document.body.innerText||'') : '').slice(0,4000);
+  var captcha = !!(document.querySelector('iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="challenges.cloudflare.com"],.g-recaptcha,[data-sitekey]'));
+  var otp = !!(document.querySelector('input[autocomplete="one-time-code"],input[name*="otp" i],input[name*="code" i][maxlength]'));
+  var mfaText = /two[- ]factor|verification code|authenticator|enter the code|2fa/i.test(text);
+  var badCreds = /invalid login credentials|incorrect (email|password)|wrong password|credentials are invalid|email or password is incorrect/i.test(text);
+  var rate = /too many (requests|attempts)|rate limit|try again later/i.test(text);
+  var locked = /account (is )?(locked|suspended|disabled)|has been suspended/i.test(text);
+  return JSON.stringify({ href: location.href, path: location.pathname,
+    email: email, pass: pass, submit: submit,
+    captcha: captcha, otp: otp, mfaText: mfaText, badCreds: badCreds, rate: rate, locked: locked });
+})()`;
+
+async function probePage(sess) {
+  const r = await sess.send('Runtime.evaluate', { expression: RELOGIN_PROBE, returnByValue: true }, 12000);
+  try { return JSON.parse((r.result && r.result.value) || '{}'); } catch (_) { return {}; }
+}
+
+// Focus a field by selector, then TYPE into it. Input.insertText keeps the value out
+// of any evaluated source; the selector is the only thing that reaches Runtime.
+async function typeInto(sess, selector, text) {
+  const expr = '(function(){var n=document.querySelector(' + JSON.stringify(selector) + ');' +
+    'if(!n) return false; n.focus(); try{ n.value=""; n.dispatchEvent(new Event("input",{bubbles:true})); }catch(e){} return true;})()';
+  const r = await sess.send('Runtime.evaluate', { expression: expr, returnByValue: true }, 10000);
+  if (!(r.result && r.result.value === true)) throw new Error('field_not_found');
+  await sess.send('Input.insertText', { text: text }, 10000);          // NEVER logged
+  await sess.send('Runtime.evaluate', {
+    expression: '(function(){var n=document.querySelector(' + JSON.stringify(selector) + ');' +
+      'if(n){ n.dispatchEvent(new Event("input",{bubbles:true})); n.dispatchEvent(new Event("change",{bubbles:true})); } return true;})()',
+    returnByValue: true,
+  }, 10000);
+}
+
+/**
+ * One controlled recovery attempt. Returns an outcome string; 'ok' means the browser
+ * is authenticated again and the bundle has been offered to the server for its own
+ * verification. Any RELOGIN_TERMINAL outcome halts recovery until an operator clears
+ * agent-relogin.json.
+ */
+async function attemptSourceRelogin(state, reason) {
+  // ── gates ─────────────────────────────────────────────────────────────────
+  if (!CFG.reloginEnabled) return 'disabled';
+  if (process.platform !== 'win32') return 'unsupported_platform';
+  if (state.reloginInFlight) return 'already_running';
+  if (state.standDownCode) return 'stood_down';            // revoked installs never log in
+  if (state.isActiveSource !== true) return 'not_active_source';
+
+  const st = readReloginState();
+  if (st.haltedReason) return 'halted_' + st.haltedReason;
+
+  const now = Date.now();
+  const recent = (st.attempts || []).filter(t => now - t < RELOGIN.windowMs);
+  if (recent.length >= RELOGIN.maxAttempts) {
+    log('relogin_budget_exhausted', { attempts: recent.length, window_h: Math.round(RELOGIN.windowMs / 3600000) });
+    await postToServer(state, { heartbeat: true, hash: null, reloginBlocked: 'budget_exhausted' }).catch(() => {});
+    return 'budget_exhausted';
+  }
+  const lastAt = recent.length ? Math.max.apply(null, recent) : 0;
+  if (lastAt && now - lastAt < RELOGIN.cooldownMs) return 'cooldown';
+
+  const cred = readSourceCredential();
+  if (!cred) {
+    log('relogin_no_vault', { hint: 'run Enroll-SourceCredential.ps1 as this Windows user' });
+    await postToServer(state, { heartbeat: true, hash: null, reloginBlocked: 'no_credential_vault' }).catch(() => {});
+    return 'no_vault';
+  }
+
+  state.reloginInFlight = true;
+  // Count the attempt BEFORE doing anything that could fail or hang, so a crash
+  // mid-login still consumes budget instead of looping on the next start.
+  recent.push(now);
+  writeReloginState(Object.assign({}, st, { attempts: recent, lastAttemptAt: new Date(now).toISOString(), lastOutcome: 'started' }));
+  log('relogin_start', { reason: reason, attempt: recent.length, of: RELOGIN.maxAttempts, account: maskAccount(cred.email) });
+
+  let sess = null;
+  const finish = (outcome, extra) => {
+    const halted = RELOGIN_TERMINAL.includes(outcome);
+    const cur = readReloginState();
+    writeReloginState(Object.assign({}, cur, {
+      lastOutcome: outcome,
+      haltedReason: halted ? outcome : cur.haltedReason,
+      haltedAt: halted ? new Date().toISOString() : cur.haltedAt,
+    }));
+    log(halted ? 'relogin_halted' : 'relogin_result', Object.assign({ outcome: outcome }, extra || {}));
+    if (sess) { try { sess.close(); } catch (_) {} }
+    state.reloginInFlight = false;
+    return outcome;
+  };
+
+  try {
+    // ── reuse the existing tab; never add a visible one ────────────────────
+    const host = (() => { try { return new URL(CFG.cdpUrl).hostname; } catch (_) { return ''; } })();
+    if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) return finish('cdp_not_local');
+
+    const listRes = await fetch(CFG.cdpUrl + '/json/list', { signal: AbortSignal.timeout(8000) }).catch(() => null);
+    if (!listRes || !listRes.ok) return finish('cdp_unreachable');
+    const targets = await listRes.json().catch(() => []);
+    let page = (Array.isArray(targets) ? targets : []).find(t =>
+      t && t.type === 'page' && typeof t.url === 'string' && t.url.includes(CFG.domain));
+
+    if (!page) {
+      // Same rule nudgeTokenRotation uses: a tab is not a browser, and without one
+      // an idle dedicated Chrome could never recover. Exactly one, and only when
+      // none exists — so a recovery can never leave a second WriteHuman tab behind.
+      const mk = await fetch(CFG.cdpUrl + '/json/new?url=' + encodeURIComponent('https://' + CFG.domain + CFG.loginPath),
+        { method: 'PUT', signal: AbortSignal.timeout(8000) }).catch(() => null);
+      if (!mk || !mk.ok) return finish('no_tab');
+      page = await mk.json().catch(() => null);
+      if (!page) return finish('no_tab');
+      log('relogin_opened_tab', { reused: false });
+    } else {
+      log('relogin_reusing_tab', { reused: true });
+    }
+    if (!page.webSocketDebuggerUrl) return finish('no_ws_url');
+
+    sess = await cdpSession(page.webSocketDebuggerUrl, RELOGIN.authWaitMs + 45000);
+    await sess.send('Page.enable', {}, 8000).catch(() => {});
+    await sess.send('Runtime.enable', {}, 8000).catch(() => {});
+
+    // ── get to the official login surface ─────────────────────────────────
+    let probe = await probePage(sess);
+    if (!probe.email || !probe.pass) {
+      await sess.send('Page.navigate', { url: 'https://' + CFG.domain + CFG.loginPath }, 20000);
+      await sleep(3500);
+      probe = await probePage(sess);
+      // A client-hydrated SPA may need a moment more before the form exists.
+      for (let i = 0; i < 4 && (!probe.email || !probe.pass); i++) { await sleep(2000); probe = await probePage(sess); }
+    }
+
+    // ── refuse to automate past a human gate ──────────────────────────────
+    if (probe.captcha) return finish('captcha_required', { path: probe.path });
+    if (probe.otp || probe.mfaText) return finish('mfa_required', { path: probe.path });
+    if (probe.locked) return finish('account_restricted', { path: probe.path });
+    if (probe.rate) return finish('rate_limited', { path: probe.path });
+    if (!probe.email || !probe.pass) return finish('login_form_not_found', { path: probe.path });
+
+    // ── fill and submit ONCE ──────────────────────────────────────────────
+    await typeInto(sess, probe.email, cred.email);
+    await typeInto(sess, probe.pass, cred.password);
+    if (probe.submit) {
+      const clicked = await sess.send('Runtime.evaluate', {
+        expression: '(function(){var b=document.querySelector(' + JSON.stringify(probe.submit) + ');' +
+          'if(!b) return false; b.click(); return true;})()',
+        returnByValue: true,
+      }, 10000);
+      if (!(clicked.result && clicked.result.value === true)) return finish('submit_not_found');
+    } else {
+      // No button found: submit the form the password field belongs to. Still one submit.
+      const sent = await sess.send('Runtime.evaluate', {
+        expression: '(function(){var p=document.querySelector(' + JSON.stringify(probe.pass) + ');' +
+          'var f=p&&p.form; if(!f) return false; if(f.requestSubmit) f.requestSubmit(); else f.submit(); return true;})()',
+        returnByValue: true,
+      }, 10000);
+      if (!(sent.result && sent.result.value === true)) return finish('submit_not_found');
+    }
+    log('relogin_submitted', { account: maskAccount(cred.email) });
+
+    // ── wait for the app to actually authenticate ─────────────────────────
+    const deadline = Date.now() + RELOGIN.authWaitMs;
+    let authed = false, last = {};
+    while (Date.now() < deadline) {
+      await sleep(2500);
+      last = await probePage(sess).catch(() => ({}));
+      if (last.badCreds) return finish('wrong_credentials');
+      if (last.captcha) return finish('captcha_required');
+      if (last.otp || last.mfaText) return finish('mfa_required');
+      if (last.rate) return finish('rate_limited');
+      if (last.locked) return finish('account_restricted');
+      // The real signal: the Supabase auth cookie is back in the browser.
+      const cookies = await getAllCookiesViaCDP(CFG.cdpUrl, null).catch(() => null);
+      if (cookies && filterAuthCookies(cookies, CFG.domain, CFG.ref).length > 0) { authed = true; break; }
+    }
+    if (!authed) return finish('auth_not_confirmed', { path: last.path || null });
+
+    // ── hand over to the EXISTING pipeline for authoritative verification ──
+    // Clearing lastHash makes the next poll offer the bundle; candidateSync then
+    // runs its normal provider verify + expectedAccountId match. We do not promote
+    // anything ourselves, so a wrong account cannot be accepted here.
+    state.lastHash = null;
+    state.emptyPolls = 0;
+    state.loggedOutSent = false;
+    state.quickPollsLeft = Math.max(state.quickPollsLeft || 0, CFG.quickPollFor || 4);
+    // NOT success yet - only the browser is authenticated. The server's accept (or
+    // ACCOUNT_MISMATCH) in pushIfChanged decides, and this flag is what makes us
+    // notice that verdict instead of assuming the best.
+    state.reloginPending = true;
+    return finish('browser_authenticated_pending_verification', { account: maskAccount(cred.email) });
+  } catch (e) {
+    return finish('error', { error: (e && e.message) || 'unknown' });
+  }
+}
+
+/**
+ * Record the SERVER's verdict on a recovery that already got the browser signed in.
+ * 'wrong_account' is terminal - a machine must never keep re-signing-in an account
+ * the backend refuses. Everything else is informational.
+ */
+function noteReloginVerdict(verdict) {
+  try {
+    const cur = readReloginState();
+    const terminal = RELOGIN_TERMINAL.includes(verdict);
+    writeReloginState(Object.assign({}, cur, {
+      lastOutcome: verdict,
+      lastVerdictAt: new Date().toISOString(),
+      haltedReason: terminal ? verdict : cur.haltedReason,
+      haltedAt: terminal ? new Date().toISOString() : cur.haltedAt,
+    }));
+  } catch (_) { /* status only - never fail a sync over it */ }
+}
+
+// Mask an account for logs: never the full address.
+function maskAccount(email) {
+  const s = String(email || '');
+  const at = s.indexOf('@');
+  if (at < 1) return '***';
+  return s.slice(0, 1) + '****' + s.slice(at);
+}
+
+
 async function pushIfChanged(state) {
   state.pollCount = (state.pollCount || 0) + 1;
   // Retired by the server (revoked / uninstalled / superseded). Touch NOTHING: no cookie read, no
@@ -976,6 +1395,20 @@ async function pushIfChanged(state) {
       if (state.emptyPolls >= CFG.logoutDebounce && !state.loggedOutSent) {
         const r = await postToServer(state, { loggedOut: true, reason: 'auth_cookie_absent' });
         if (r && !r._err && r._status == null) { state.loggedOutSent = true; log('logout_signaled', { after_polls: state.emptyPolls }); }
+        // CONFIRMED logout — and only here. Reaching this line means the auth cookie
+        // has been absent for CFG.logoutDebounce consecutive polls AND this browser
+        // was authenticated before (state.lastHash !== null, checked by the branch
+        // above), so an inconclusive read, a CDP outage or a closed Chrome can never
+        // trigger recovery. Every other gate (opt-in, active source, budget,
+        // cooldown, persistent halt, single flight) lives in attemptSourceRelogin.
+        // Awaited deliberately: the single-flight flag plus the tick's own sequencing
+        // are what stop two recoveries overlapping.
+        if (CFG.reloginEnabled) {
+          const outcome = await attemptSourceRelogin(state, 'auth_cookie_absent').catch((e) => 'error_' + ((e && e.message) || ''));
+          // 'ok' cleared lastHash, so the next poll offers the recovered bundle and
+          // the server performs the authoritative identity verification.
+          if (outcome === 'ok') return;
+        }
       } else if (heartbeatDue(state)) {
         state.lastHeartbeatAt = monoNow();
         await postToServer(state, { heartbeat: true, hash: null });
@@ -1015,12 +1448,51 @@ async function pushIfChanged(state) {
     const code = (r.body && r.body.code) || r.code || null;
     if (code === 'STALE_BUNDLE' || code === 'ACCOUNT_MISMATCH' || code === 'REPLAY_REJECTED') state.lastHash = hash;
     log('ingest_rejected', { status: r._status, code, token_exp: authTokenExpiry(auth, CFG.ref) });
+
+    // ── a recovery awaiting its verdict was REJECTED ──────────────────────────
+    // attemptSourceRelogin() only ever reports that the BROWSER re-authenticated;
+    // the account's identity is decided here, by the server. ACCOUNT_MISMATCH means
+    // we signed a DIFFERENT account in, so the recovery was not a success at all:
+    // halt permanently rather than leaving a wrong account logged in and retrying.
+    if (state.reloginPending) {
+      state.reloginPending = false;
+      if (code === 'ACCOUNT_MISMATCH') {
+        noteReloginVerdict('wrong_account');
+        log('relogin_rejected_by_server', { code: code, action: 'halted' });
+        return;
+      }
+      noteReloginVerdict('unconfirmed_' + (code || 'rejected'));
+      log('relogin_unconfirmed', { code: code });
+      return;
+    }
+
+    // ── PROVIDER-CONFIRMED logout, with the cookies still present ─────────────
+    // The second genuine-logout shape: Chrome still holds an auth cookie, but the
+    // provider itself says the session is dead (candidateSync verified it and
+    // answered SESSION_EXPIRED). That is a conclusive verdict from the real
+    // provider, not a guess, so it is a legitimate recovery trigger.
+    //
+    // VERIFICATION_INCONCLUSIVE, STALE_BUNDLE, REPLAY_REJECTED and every transport
+    // error are deliberately NOT triggers: inconclusive means unknown, and the other
+    // two mean another device is ahead or the offer was a duplicate - none of them is
+    // evidence that this browser is logged out.
+    if (CFG.reloginEnabled && code === 'SESSION_EXPIRED') {
+      await attemptSourceRelogin(state, 'provider_session_expired').catch(() => {});
+    }
     return;
   }
   state.lastHash = hash;
   state.lastHeartbeatAt = monoNow();   // a push IS contact; no extra beat needed right after
   // A genuine change happened — poll faster for a short window to catch the follow-up rotation.
   state.quickPollsLeft = CFG.quickPollFor;
+  // The server ACCEPTED the bundle, which means candidateSync completed its
+  // provider-authenticated verify AND its expectedAccountId match. Only now is a
+  // recovery actually complete - this is the one place that may call it confirmed.
+  if (state.reloginPending) {
+    state.reloginPending = false;
+    noteReloginVerdict('confirmed');
+    log('relogin_confirmed', { promoted: r.promoted === true, result: r.code || r.result || null });
+  }
   log('cookie_synchronized', {
     hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result,
     token_exp: authTokenExpiry(auth, CFG.ref),
@@ -1187,6 +1659,9 @@ async function run() {
   loop(); // run once immediately, then self-reschedule
 }
 
-module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, authTokenExpiry, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand, postToServer, applyDirectives, heartbeatDue, monoNow };
+module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies, authTokenExpiry, getAllCookiesViaCDP, buildReport, canonicalPath, samePath, AGENT_VERSION, CFG, handleCommand, postToServer, applyDirectives, heartbeatDue, monoNow,
+  // 3.5.3 source-side recovery - exported for tests (the file self-starts only
+  // under require.main, so a test can require it without launching the agent).
+  attemptSourceRelogin, noteReloginVerdict, readReloginState, writeReloginState, readSourceCredential, reloginReport, maskAccount, reloginStatePath, RELOGIN, RELOGIN_TERMINAL };
 
 if (require.main === module) start();

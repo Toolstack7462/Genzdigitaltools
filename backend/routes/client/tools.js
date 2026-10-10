@@ -15,9 +15,21 @@ router.use(requireRole('CLIENT'));
 function sanitizeToolForClient(toolObj) {
   const STRIP = ['cookiesEncrypted', 'tokenEncrypted', 'localStorageEncrypted'];
   STRIP.forEach(k => delete toolObj[k]);
+  // comboAuth.formConfig holds the PROVIDER's master username/password in
+  // PLAINTEXT (it is config, not an encrypted blob, so the STRIP list above never
+  // caught it) and these responses are spread wholesale with `...raw`. The client
+  // dashboard performs no logins and reads no comboAuth field anywhere in the
+  // frontend, so the whole sub-document is dropped rather than selectively
+  // scrubbed — nothing client-side can regress, and no future field added to
+  // comboAuth can leak through here. The extension's credentials endpoint keeps
+  // its own (sanitised) copy, which is where login config legitimately belongs.
+  delete toolObj.comboAuth;
   if (toolObj.credentials) {
     // Keep type/selectors/successCheck for extension config, remove encrypted payload
     delete toolObj.credentials.payloadEncrypted;
+    // A 'form' tool's unified payload decrypts to the master {username,password}.
+    // The dashboard never needs it; drop any decrypted payload defensively.
+    delete toolObj.credentials.payload;
   }
   if (toolObj.sessionBundle) {
     // Keep version/bundleUpdatedAt for sync checking; strip all encrypted data
