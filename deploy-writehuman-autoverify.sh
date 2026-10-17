@@ -26,7 +26,8 @@ cd "$(dirname "$0")"
 
 echo "==> Pre-flight: node --check every file"
 for f in backend/utils/proxy/tools.js backend/utils/proxy/verifyAndApply.js backend/utils/proxy/applySession.js \
-         backend/routes/admin/proxyTools.js backend/cron/proxyVerifyScheduler.js backend/server-crm.js; do
+         backend/routes/admin/proxyTools.js backend/cron/proxyVerifyScheduler.js backend/server-crm.js \
+         backend/db/poolLimits.js; do
   node --check "$f"
 done
 echo "    OK"
@@ -42,6 +43,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/verifyAndApply.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
   -T backend/utils/proxy/applySession.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/routes/admin/proxyTools.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/db/poolLimits.js              "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   `# proxyTools.js require()s deviceSync.js at module load — without it Passenger boots into` \
   `# "Cannot find module" and the whole API is down. candidateSync.js rides along for the same` \
   `# reason on agentSync.js. Re-uploading a module the server already has is a harmless no-op.` \

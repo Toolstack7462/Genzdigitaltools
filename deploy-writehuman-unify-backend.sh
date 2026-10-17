@@ -27,7 +27,8 @@ cd "$(dirname "$0")"
 
 echo "==> Pre-flight: node --check every file"
 for f in backend/utils/proxy/cookies.js backend/utils/proxy/verify.js backend/utils/proxy/applySession.js \
-         backend/routes/admin/proxyTools.js backend/routes/proxy/agentSync.js backend/server-crm.js; do
+         backend/routes/admin/proxyTools.js backend/routes/proxy/agentSync.js backend/server-crm.js \
+         backend/db/poolLimits.js; do
   node --check "$f"
 done
 echo "    OK"
@@ -44,6 +45,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/applySession.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/routes/admin/proxyTools.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
   -T backend/routes/proxy/agentSync.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
+  -T backend/db/poolLimits.js            "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   `# Both routes above require these at module load; shipping the routes without them boots` \
   `# Passenger into "Cannot find module" and takes the whole API down.` \
   -T backend/utils/proxy/agentCommands.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \

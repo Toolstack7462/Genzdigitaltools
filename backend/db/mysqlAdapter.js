@@ -11,6 +11,7 @@
  */
 
 const mysql = require('mysql2/promise');
+const { poolLimits } = require('./poolLimits');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
@@ -129,11 +130,17 @@ async function connect() {
 
   const parsed = parseDatabaseUrl(databaseUrl);
   connectionInfo = parsed;
+  // Pool sizing + the BOUNDED wait queue. `queueLimit: 0` (mysql2's unbounded queue) let a slow
+  // MySQL accumulate an unlimited backlog of requests, each pinning a socket and its closures until
+  // the process died or the proxy gave up — a 502/503 with no obvious cause. A bounded queue sheds
+  // the overflow immediately instead. See db/poolLimits.js; MYSQL_QUEUE_LIMIT=0 restores the old
+  // behaviour without a code change.
+  const limits = poolLimits(process.env);
   pool = mysql.createPool({
     uri: databaseUrl,
     waitForConnections: true,
-    connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
-    queueLimit: 0,
+    connectionLimit: limits.connectionLimit,
+    queueLimit: limits.queueLimit,
     timezone: 'Z',
     charset: 'utf8mb4',
     multipleStatements: false,
@@ -143,7 +150,7 @@ async function connect() {
     // bounded idle lifetime make the pool recycle stale connections instead.
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
-    maxIdle: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
+    maxIdle: limits.connectionLimit,
     idleTimeout: 60000,
   });
 
