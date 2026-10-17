@@ -38,12 +38,18 @@ jobs:
       - name: Syntax check
         working-directory: backend
         run: npm run check
-      # `npm run test:ci` is `npm test` minus exactly ONE file:
-      # writehumanAgentVersionDrift.test.js, which asserts that the PUBLISHED installer matches the
-      # agent source. It reads writehuman-v2/agent/dist/latest.json + the ~90 MB .exe beside it,
-      # both gitignored and absent from any fresh checkout, so it can never pass in CI. It is a
-      # LOCAL pre-deploy gate by design (deploys are cut from a working copy) and stays in
-      # `npm test`, unmodified, with every assertion intact. Nothing else is excluded.
+      # `npm run test:ci` is the whole suite. writehumanAgentVersionDrift is back in it: its four
+      # SOURCE-ONLY assertions (semver shape, protocol floors, dashboard/source agreement, build
+      # script derives its version) run on every pull request. Only its fifth assertion needs the
+      # ~90 MB installer, and dist/ is gitignored, so that one reports that it could not run
+      # instead of failing CI on a missing artifact.
+      #
+      # The binary side is NOT dropped — it is a MANDATORY RELEASE GATE:
+      #     npm run test:release-gate
+      # run from a working copy holding the candidate dist (where deploys are cut from). That gate
+      # goes further than CI ever could: it opens the PE and compares the EMBEDDED agent source
+      # byte for byte against this repo, because the agent's own 222-test suite reports the same
+      # number with or without the exe present — none of its tests read the real binary.
       - name: Tests
         working-directory: backend
         run: npm run test:ci

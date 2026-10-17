@@ -37,6 +37,43 @@ const ROOT = path.join(__dirname, '..', '..');
 const SEA = fs.readFileSync(path.join(ROOT, 'writehuman-v2', 'agent', 'wh-agent-sea.js'), 'utf8');
 const AGENT = fs.readFileSync(path.join(ROOT, 'writehuman-v2', 'agent', 'cookie-sync-agent.js'), 'utf8');
 
+/**
+ * 3.5.15 MOVED THINGS WITHOUT CHANGING THEM, and these structural guards had to follow.
+ *
+ * Two refactors defeated the literal patterns below, and neither altered behaviour:
+ *
+ *  1. A thin wrapper + `…Inner` implementation. `pushIfChanged` is now 112 characters of
+ *     try/catch delegating to `pushIfChangedInner`, which carries the real body. A guard reading
+ *     only the wrapper sees nothing and passes vacuously — worse than failing. `fnBodyDeep`
+ *     follows the delegation and asserts over BOTH, so the wrapper is still required to delegate.
+ *  2. `effectiveStatePaths()`. `doUninstall` and `archiveIdentity` no longer name CREDS_FILE /
+ *     STAND_DOWN_FILE / LOCK_FILE inline; they resolve a `files` object first (which also lets
+ *     config.json and env override each path). The logical requirement is unchanged, so each
+ *     constant is matched through its alias AND the resolver is separately required to name it.
+ *
+ * Nothing here is relaxed to "mentions the word somewhere": every assertion still pins a specific
+ * function, and the ordering assertions still pin order.
+ */
+function fnBodyDeep(src, name) {
+  const body = fnBody(src, name);
+  if (!new RegExp(name + 'Inner\\s*\\(').test(body)) return body;
+  // A delegating wrapper must actually delegate, and the implementation must exist.
+  return body + '\n' + fnBody(src, name + 'Inner');
+}
+
+// Old literal constant -> the spellings that satisfy it after the effectiveStatePaths() refactor.
+const STATE_ALIASES = {
+  CREDS_FILE: ['CREDS_FILE', 'files.device'],
+  STAND_DOWN_FILE: ['STAND_DOWN_FILE', 'files.standDown'],
+  CONFIG_FILE: ['CONFIG_FILE'],
+  LOCK_FILE: ['LOCK_FILE', 'files.lock'],
+  INSTALLED_MARKER: ['INSTALLED_MARKER'],
+  CREDS_DIR: ['CREDS_DIR'],
+};
+const names = (body, logical) => STATE_ALIASES[logical].some((a) => body.includes(a));
+const firstIndexOfAny = (body, logical) => STATE_ALIASES[logical]
+  .map((a) => body.indexOf(a)).filter((i) => i > -1).sort((a, b) => a - b)[0];
+
 /** The body of a named top-level function, so an assertion is about THAT function, not the file. */
 function fnBody(src, name) {
   const start = src.indexOf('function ' + name + '(');
@@ -56,7 +93,19 @@ test('uninstall removes every piece of local state the install created', () => {
   // The credential is the important one: leaving it behind is what let a "removed" agent go on
   // authenticating, and what let a reinstall silently reuse a dead identity.
   for (const owned of ['CREDS_FILE', 'STAND_DOWN_FILE', 'CONFIG_FILE', 'LOCK_FILE', 'INSTALLED_MARKER', 'CREDS_DIR']) {
-    assert.ok(body.includes(owned), 'uninstall must remove ' + owned);
+    assert.ok(names(body, owned), 'uninstall must remove ' + owned);
+  }
+  // The resolver that doUninstall now goes through must itself name every path it is trusted to
+  // resolve — otherwise an alias above could be satisfied by a `files` object that omits one.
+  const paths = fnBody(SEA, 'effectiveStatePaths');
+  for (const key of ['device', 'standDown', 'lock']) {
+    assert.ok(new RegExp(key + '\\s*[:,]').test(paths),
+      'effectiveStatePaths() must resolve ' + key + ' — uninstall deletes whatever it returns');
+  }
+  // 3.5.15 also owns two files 3.5.2 never had; deleting the set means deleting these too.
+  for (const added of ['recovery', 'vault']) {
+    assert.ok(body.includes('files.' + added),
+      'uninstall must also remove files.' + added + ', which 3.5.15 introduced');
   }
   assert.ok(body.includes('stopRunningAgent()'), 'uninstall must stop the running agent — it holds the exe open and keeps syncing');
   assert.ok(body.includes('removeAutoStart()'), 'uninstall must remove the logon shortcut, or it comes back at the next sign-in');
@@ -67,9 +116,10 @@ test('uninstall removes every piece of local state the install created', () => {
 test('uninstall tells the server BEFORE it destroys the credential it needs to prove who it is', () => {
   const body = fnBody(SEA, 'doUninstall');
   const reported = body.indexOf('reportUninstallToServer');
-  const wiped = body.indexOf('CREDS_FILE');
+  // The credential is deleted via files.device now; take whichever spelling appears.
+  const wiped = firstIndexOfAny(body, 'CREDS_FILE');
   assert.ok(reported > -1, 'uninstall must report itself to the server');
-  assert.ok(wiped > -1);
+  assert.ok(wiped > -1 && wiped !== undefined, 'uninstall must destroy the credential');
   assert.ok(reported < wiped,
     'the server call must come first — afterwards there is no credential left to authenticate the report, '
     + 'and the device row would stay live for ever with nothing to close it');
@@ -77,7 +127,9 @@ test('uninstall tells the server BEFORE it destroys the credential it needs to p
 
 test('uninstall keeps the WriteHuman Chrome profile by default, and only removes it on request', () => {
   const body = fnBody(SEA, 'doUninstall');
-  assert.ok(/if \(o\.removeChromeProfile\)/.test(body),
+  // 3.5.15 writes `if(o.removeChromeProfile&&purgeOwnedChromeProfile(profile))`: no space, and the
+  // purge is folded into the condition. Still conditional, which is the whole requirement.
+  assert.ok(/if\s*\(\s*o\.removeChromeProfile\b/.test(body),
     'removing the profile must be conditional — it holds the operator’s WriteHuman login');
   assert.ok(body.includes('KEPT'), 'the default path must state that the profile was kept');
   // And the choice must be offered explicitly rather than assumed either way.
@@ -128,9 +180,11 @@ test('a rejected credential is archived and a FRESH authorization is started —
   assert.ok(reauthBranch.includes('reauthorized: true'), 'the operator must be told a new authorization is starting');
 
   const archive = fnBody(SEA, 'archiveIdentity');
-  assert.ok(archive.includes('STAND_DOWN_FILE'),
+  assert.ok(names(archive, 'STAND_DOWN_FILE'),
     'the dormancy marker must be cleared, or the freshly installed agent stays dormant for ever');
-  assert.ok(/agent-device\.retired-/.test(archive), 'the old identity is archived for audit, not silently destroyed');
+  // 3.5.15 builds the archive name as `source + '.retired-' + stamp + '.json'` rather than
+  // hardcoding the agent-device prefix, so pin the retirement suffix, not the filename.
+  assert.ok(/\.retired-/.test(archive), 'the old identity is archived for audit, not silently destroyed');
 });
 
 test('re-authorization creates a NEW identity; the revoked row is never un-revoked', () => {
@@ -176,17 +230,17 @@ test('all three terminal refusals retire the agent, not just revocation', () => 
 });
 
 test('a retired agent touches nothing: no cookie read, no Chrome, no upload', () => {
-  const push = fnBody(AGENT, 'pushIfChanged');
+  const push = fnBodyDeep(AGENT, 'pushIfChanged');
   const guard = push.slice(0, push.indexOf('getAllCookiesViaCDP'));
-  assert.ok(/if \(state\.standDown\)/.test(guard) && /return;/.test(guard),
+  assert.ok(/if\s*\(\s*state\.standDown\s*\)/.test(guard) && /return;/.test(guard),
     'the stand-down check must come before any CDP read');
   // 3.4.0 kept pinging every 15 minutes while retired, which kept a dead row looking half-awake.
   assert.ok(!/lastStandDownPingAt/.test(AGENT), 'a retired agent must not keep calling in');
 });
 
 test('only the ACTIVE source auto-relaunches Chrome, and an activation is the one exception', () => {
-  const push = fnBody(AGENT, 'pushIfChanged');
-  assert.ok(/state\.isActiveSource === true/.test(push),
+  const push = fnBodyDeep(AGENT, 'pushIfChanged');
+  assert.ok(/state\.isActiveSource\s*===\s*true/.test(push),
     'auto-relaunch must be gated on being the active source — every installed agent used to relaunch its own Chrome');
   const act = fnBody(AGENT, 'runActivation');
   assert.ok(act.includes("relaunchChrome('activation:"),

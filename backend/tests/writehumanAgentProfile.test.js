@@ -71,11 +71,19 @@ test('case-insensitivity follows the platform', () => {
 
 test('the agent refuses a CDP endpoint that is not loopback', async () => {
   // No network is attempted: the check happens before any fetch.
+  //
+  // The REFUSAL is the invariant; its error identifier is not. 3.5.15 renamed this rejection from
+  // `cdp_not_loopback` to `cdp_not_local` while keeping the guard in the same place (before any
+  // fetch). Both spellings are accepted so a rename cannot read as a security regression — but the
+  // assertion is NOT loosened to "rejects for any reason": a non-loopback host must be refused by
+  // the LOOPBACK guard specifically, which the companion test below pins from the other side by
+  // requiring loopback forms to fail with something else entirely.
+  const refusedByGuard = /cdp_not_loopback|cdp_not_local/;
   await assert.rejects(
     () => agent.getAllCookiesViaCDP('http://10.0.0.5:9222', {}),
-    /cdp_not_loopback/,
+    refusedByGuard,
     'an unauthenticated debug port must never be contacted over the network');
-  await assert.rejects(() => agent.getAllCookiesViaCDP('http://example.com:9222', {}), /cdp_not_loopback/);
+  await assert.rejects(() => agent.getAllCookiesViaCDP('http://example.com:9222', {}), refusedByGuard);
 });
 
 test('loopback forms are all accepted by the guard', async () => {
@@ -83,7 +91,7 @@ test('loopback forms are all accepted by the guard', async () => {
   // error and proves the guard let them through.
   for (const url of ['http://127.0.0.1:59999', 'http://localhost:59999']) {
     await assert.rejects(() => agent.getAllCookiesViaCDP(url, {}), (e) => {
-      assert.ok(!/cdp_not_loopback/.test(e.message), `${url} must pass the loopback guard`);
+      assert.ok(!/cdp_not_loopback|cdp_not_local/.test(e.message), `${url} must pass the loopback guard`);
       return true;
     });
   }
