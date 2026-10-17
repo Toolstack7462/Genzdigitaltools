@@ -400,28 +400,37 @@ const ClientDashboardEnhanced = () => {
   // never toggles the loading skeleton, never re-fetches tools, and reuses the
   // dismissed/snooze state — so there is no second notification system and no
   // duplicate cards (the announcement list is replaced wholesale, keyed by _id).
+  // All three requests run CONCURRENTLY (as they always have), but this function no longer resolves
+  // until EVERY one has settled. The caller's in-flight guard keys off this promise, so a promise
+  // that settled on the first request would release the guard while the other two were still
+  // outstanding — letting the next tick overlap them. Each branch keeps its own catch, so the group
+  // never rejects and a single failing request can never disrupt the dashboard.
   const pollNotifications = useCallback(async () => {
-    // 1) Announcements — replace wholesale (dedupes), honour per-client dismissals.
-    try {
-      const r = await api.get('/client/announcements');
-      const dismissed = getDismissedAnnouncementIds();
-      const list = (r.data?.announcements || []).filter(a => !dismissed.has(a._id));
-      setAnnouncements(list);
-      // Toast only for genuinely NEW announcements (baseline set on first load).
-      const seen = seenAnnouncementIdsRef.current;
-      if (seen) {
-        const fresh = list.filter(a => !seen.has(a._id));
-        if (fresh.length === 1) showInfo(`New announcement: ${fresh[0].title}`);
-        else if (fresh.length > 1) showInfo(`${fresh.length} new announcements`);
-        fresh.forEach(a => seen.add(a._id));
-      } else {
-        seenAnnouncementIdsRef.current = new Set(list.map(a => a._id));
-      }
-    } catch (_) { /* fail-safe: never disrupt the dashboard */ }
-    // 2) Admin "please update" notice (self-clears server-side once up to date).
-    api.get('/client/extension-notice').then(r => setExtNotice(r.data?.notice || null)).catch(() => {});
-    // 3) Published version info — re-evaluates outdated / mandatory client-side.
-    getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {});
+    await Promise.all([
+      // 1) Announcements — replace wholesale (dedupes), honour per-client dismissals.
+      (async () => {
+        try {
+          const r = await api.get('/client/announcements');
+          const dismissed = getDismissedAnnouncementIds();
+          const list = (r.data?.announcements || []).filter(a => !dismissed.has(a._id));
+          setAnnouncements(list);
+          // Toast only for genuinely NEW announcements (baseline set on first load).
+          const seen = seenAnnouncementIdsRef.current;
+          if (seen) {
+            const fresh = list.filter(a => !seen.has(a._id));
+            if (fresh.length === 1) showInfo(`New announcement: ${fresh[0].title}`);
+            else if (fresh.length > 1) showInfo(`${fresh.length} new announcements`);
+            fresh.forEach(a => seen.add(a._id));
+          } else {
+            seenAnnouncementIdsRef.current = new Set(list.map(a => a._id));
+          }
+        } catch (_) { /* fail-safe: never disrupt the dashboard */ }
+      })(),
+      // 2) Admin "please update" notice (self-clears server-side once up to date).
+      api.get('/client/extension-notice').then(r => setExtNotice(r.data?.notice || null)).catch(() => {}),
+      // 3) Published version info — re-evaluates outdated / mandatory client-side.
+      getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {}),
+    ]);
   }, [getDismissedAnnouncementIds, showInfo]);
 
   // Visibility-GATED: the 45s cadence is unchanged while the tab is being looked at, and a return

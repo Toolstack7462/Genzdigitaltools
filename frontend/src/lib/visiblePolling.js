@@ -21,24 +21,59 @@
  */
 export function startVisiblePolling(fn, intervalMs, opts = {}) {
   const pollOnShow = opts.pollOnShow !== false;
+  // Window in which paired visibilitychange+focus events count as ONE return.
+  const showDedupeMs = Number.isFinite(opts.showDedupeMs) ? opts.showDedupeMs : 1000;
   if (typeof fn !== 'function' || !(intervalMs > 0)) return () => {};
 
   // No DOM (SSR / tests without jsdom): fall back to a plain interval rather than never polling.
   if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') {
-    const id = setInterval(fn, intervalMs);
-    return () => clearInterval(id);
+    let busy = false;
+    const tick = () => {
+      if (busy) return;
+      busy = true;
+      let p; try { p = fn(); } catch { busy = false; return; }
+      if (!p || typeof p.then !== 'function') { busy = false; return; }
+      Promise.resolve(p).then(() => { busy = false; }, () => { busy = false; });
+    };
+    const fid = setInterval(tick, intervalMs);
+    return () => clearInterval(fid);
   }
 
   let id = null;
-  // A poll that throws must never take the schedule down with it — on either path.
-  const safe = () => { try { fn(); } catch { /* caller's concern; the cadence survives */ } };
-  const visible = () => document.visibilityState !== 'hidden';
-  const start = () => { if (id === null) id = setInterval(safe, intervalMs); };
-  const stop = () => { if (id !== null) { clearInterval(id); id = null; } };
+  let inFlight = false;          // a poll GROUP is running — never start a second one
+  let lastShowRunAt = -Infinity; // when an event-driven poll last started (for pairing dedupe)
+  let stopped = false;
 
+  const settle = () => { inFlight = false; };
+
+  // Run one poll group. `fn`'s promise defines the group, so fn MUST resolve only once every
+  // request it issued has settled — a promise that settles on the first of several releases the
+  // guard while the rest are still outstanding.
+  const run = () => {
+    if (stopped || inFlight) return false;
+    inFlight = true;
+    let p;
+    try { p = fn(); } catch { settle(); return false; }   // synchronous throw
+    if (!p || typeof p.then !== 'function') { settle(); return true; }   // synchronous fn
+    // Both handlers, so a rejected poll releases the guard AND is never an unhandled rejection.
+    Promise.resolve(p).then(settle, settle);
+    return true;
+  };
+
+  const visible = () => document.visibilityState !== 'hidden';
+  const start = () => { if (id === null && !stopped) id = setInterval(run, intervalMs); };
+  const stopTimer = () => { if (id !== null) { clearInterval(id); id = null; } };
+
+  // One user action returning to a tab fires BOTH visibilitychange AND focus, and window managers
+  // can fire focus repeatedly. Collapse that burst into a single catch-up poll; a genuinely later
+  // return (outside the window) still polls.
   const onShow = () => {
-    if (!visible()) { stop(); return; }
-    if (pollOnShow) safe();
+    if (stopped) return;
+    if (!visible()) { stopTimer(); return; }
+    if (pollOnShow) {
+      const now = Date.now();
+      if (now - lastShowRunAt >= showDedupeMs) { lastShowRunAt = now; run(); }
+    }
     start();
   };
 
@@ -48,7 +83,8 @@ export function startVisiblePolling(fn, intervalMs, opts = {}) {
   window.addEventListener('focus', onShow);
 
   return () => {
-    stop();
+    stopped = true;
+    stopTimer();
     document.removeEventListener('visibilitychange', onShow);
     window.removeEventListener('focus', onShow);
   };

@@ -109,4 +109,151 @@ describe('ClientDashboardEnhanced uses visibility-gated polling', () => {
     expect(src).toMatch(/startVisiblePolling\(/);
     expect(src).not.toMatch(/setInterval\(\s*\(\)\s*=>\s*\{\s*pollNotifications\(\);\s*\}/);
   });
+
+  // The in-flight guard is only as good as the promise it waits on. pollNotifications issues three
+  // requests; if it resolves on the first, the guard releases while two are still in flight.
+  test('pollNotifications awaits ALL THREE of its requests, not just the first', () => {
+    const body = src.slice(src.indexOf('const pollNotifications'),
+                           src.indexOf('}, [getDismissedAnnouncementIds, showInfo]);'));
+    expect(body).toMatch(/await Promise\.all\(\[/);
+    for (const ep of ['/client/announcements', '/client/extension-notice', 'getLatestExtension(']) {
+      expect(body).toContain(ep);
+    }
+    // No request may be left as a floating statement outside the awaited group.
+    expect(body).not.toMatch(/\n\s*api\.get\([^\n]*\)\.then\([^\n]*\);/);
+    expect(body).not.toMatch(/\n\s*getLatestExtension\([^\n]*\)\.then\([^\n]*\);/);
+  });
+});
+
+// ── Event pairing and overlap ────────────────────────────────────────────────────────────────────
+//
+// Two defects in the first version of this helper, both of which multiply the request volume the
+// gating was added to reduce:
+//
+//  1. PAIRED EVENTS. One user action — switching back to the tab — fires BOTH `visibilitychange`
+//     AND `focus`. Both were wired to the same handler, so a single return ran the poll twice. On
+//     the dashboard that is two full groups, i.e. SIX backend requests for one tab switch. The
+//     original "no stacked duplicate intervals" test missed this because it passed
+//     `pollOnShow: false`, so it only ever checked interval identity, never callback count.
+//
+//  2. OVERLAP. Nothing tracked whether a poll was still running, so an interval tick (or a focus
+//     event) could start a second group while the first was still in flight — concurrent duplicate
+//     requests, and later responses racing earlier ones into state.
+//
+// The in-flight guard must span the WHOLE request group. pollNotifications awaited only its first
+// request and left the other two as floating promises, so a guard keyed on its returned promise
+// would have released while two requests were still outstanding.
+describe('startVisiblePolling — event pairing and overlap', () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  });
+  afterEach(() => { jest.useRealTimers(); });
+
+  const show = () => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  };
+
+  test('one tab return (visibilitychange + focus) polls ONCE, not twice', () => {
+    const fn = jest.fn(() => Promise.resolve());
+    const stop = startVisiblePolling(fn, 45000);
+
+    setVisibility('hidden');
+    fn.mockClear();
+
+    // Exactly what a browser does for a single user action, in this order.
+    show();
+    document.dispatchEvent(new Event('visibilitychange'));
+    window.dispatchEvent(new Event('focus'));
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  test('repeated focus events in quick succession collapse to one poll', () => {
+    const fn = jest.fn(() => Promise.resolve());
+    const stop = startVisiblePolling(fn, 45000);
+    fn.mockClear();
+
+    for (let i = 0; i < 6; i++) window.dispatchEvent(new Event('focus'));
+    expect(fn).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  test('a later, separate tab return still polls again', async () => {
+    const fn = jest.fn(() => Promise.resolve());
+    const stop = startVisiblePolling(fn, 45000);
+    fn.mockClear();
+
+    window.dispatchEvent(new Event('focus'));
+    expect(fn).toHaveBeenCalledTimes(1);
+    await Promise.resolve();                         // let the group settle, releasing the guard
+
+    // Past the pairing window but short of the 45s interval, so this isolates the dedupe rule
+    // from the cadence.
+    jest.advanceTimersByTime(2000);
+    window.dispatchEvent(new Event('focus'));
+    expect(fn).toHaveBeenCalledTimes(2);             // a genuine second return is NOT swallowed
+    stop();
+  });
+
+  test('does not start a new poll while the previous group is still in flight', async () => {
+    let release;
+    const fn = jest.fn(() => new Promise((r) => { release = r; }));
+    const stop = startVisiblePolling(fn, 45000);
+
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(45000);                 // tick while the first is unresolved
+    expect(fn).toHaveBeenCalledTimes(1);             // skipped, not queued
+
+    release();
+    await Promise.resolve(); await Promise.resolve();
+
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(2);             // resumes once the group completed
+    stop();
+  });
+
+  test('the in-flight guard waits for the WHOLE group, not just the first request', async () => {
+    // Mirrors pollNotifications: three requests, and the returned promise must represent all of
+    // them. If it settles on the first, the guard releases early and the next tick overlaps.
+    let r1; let r2; let r3;
+    const fn = jest.fn(() => Promise.all([
+      new Promise((r) => { r1 = r; }),
+      new Promise((r) => { r2 = r; }),
+      new Promise((r) => { r3 = r; }),
+    ]));
+    const stop = startVisiblePolling(fn, 45000);
+
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    r1(); await Promise.resolve();                   // first request done, two still outstanding
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(1);             // still held
+
+    r2(); r3();
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  test('a rejected group releases the guard instead of wedging it shut', async () => {
+    let reject;
+    const fn = jest.fn(() => new Promise((_, rj) => { reject = rj; }));
+    const stop = startVisiblePolling(fn, 45000);
+
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    reject(new Error('offline'));
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+
+    jest.advanceTimersByTime(45000);
+    expect(fn).toHaveBeenCalledTimes(2);             // a failed poll must not stop all future polls
+    stop();
+  });
 });
