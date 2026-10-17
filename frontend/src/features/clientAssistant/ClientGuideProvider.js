@@ -44,9 +44,17 @@ export function ClientGuideProvider({ children }) {
   const [history, setHistory] = useState([]);       // [{ role:'guide'|'client', text }]
   const [prompt, setPrompt] = useState(null);       // small non-blocking hint { code, title, toolName }
   const lastIssueRef = useRef(null);
+  // Bumped on every close so the launcher can tell a RETURN from the dialog apart from a first
+  // paint, and take focus back. The launcher unmounts while the panel is open, so the element that
+  // opened the assistant cannot simply be re-focused by reference — it no longer exists.
+  const [returnFocusToken, setReturnFocusToken] = useState(0);
 
   const openAssistant = useCallback(() => { setOpen(true); setAvatarState('greeting'); logEvent('assistant_opened'); }, []);
-  const closeAssistant = useCallback(() => { setOpen(false); logEvent('assistant_closed'); }, []);
+  const closeAssistant = useCallback(() => {
+    setOpen(false);
+    setReturnFocusToken((n) => n + 1);   // hand focus back to the launcher (WCAG 2.4.3)
+    logEvent('assistant_closed');
+  }, []);
   const dismissPrompt = useCallback(() => setPrompt(null), []);
 
   const resetConversation = useCallback(() => {
@@ -177,12 +185,12 @@ export function ClientGuideProvider({ children }) {
   }), [startIssueByCode]);
 
   const value = useMemo(() => ({
-    open, flow, avatarState, history, prompt,
+    open, flow, avatarState, history, prompt, returnFocusToken,
     client: { firstName: firstNameOf(user), fullName: user && user.fullName, email: user && user.email },
     extensionStatus: status,
     openAssistant, closeAssistant, dismissPrompt, resetConversation,
     startIntent, startIssueByCode, handleFreeText, performAction, setAvatarState,
-  }), [open, flow, avatarState, history, prompt, user, status, openAssistant, closeAssistant, dismissPrompt, resetConversation, startIntent, startIssueByCode, handleFreeText, performAction]);
+  }), [open, flow, avatarState, history, prompt, returnFocusToken, user, status, openAssistant, closeAssistant, dismissPrompt, resetConversation, startIntent, startIssueByCode, handleFreeText, performAction]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

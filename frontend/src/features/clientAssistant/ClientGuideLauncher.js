@@ -2,12 +2,25 @@
 // indicator + a dismissible non-blocking prompt when actionable guidance is available. It never
 // bounces continuously and never covers essential controls (positioned in the corner, safe-area
 // aware via CSS).
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import AvatarRenderer from './AvatarRenderer';
 import { useClientGuide } from './ClientGuideProvider';
 
 export default function ClientGuideLauncher() {
   const g = useClientGuide();
+  const btnRef = useRef(null);
+  // The panel takes focus when it opens and this launcher unmounts, so closing it would otherwise
+  // leave focus on <body> — dropping a keyboard client at the top of the document. The provider
+  // bumps returnFocusToken on each close; a non-zero change means "you are being returned to".
+  // It starts at 0 so landing on a client page never yanks focus into the assistant.
+  const returnFocusToken = g && g.returnFocusToken;
+  useEffect(() => {
+    if (!returnFocusToken) return;
+    const el = btnRef.current;
+    if (el && typeof el.focus === 'function') { try { el.focus(); } catch { /* focus is best-effort */ } }
+  }, [returnFocusToken]);
+
   if (!g) return null;
   const { open, openAssistant, prompt, dismissPrompt, startIssueByCode, avatarState } = g;
   if (open) return null; // panel is open — hide the launcher
@@ -31,6 +44,7 @@ export default function ClientGuideLauncher() {
       )}
       <button
         type="button"
+        ref={btnRef}
         className="cga-launcher"
         aria-haspopup="dialog"
         aria-label={prompt ? 'Open Gen Z Guide — help available' : 'Open Gen Z Guide support assistant'}
