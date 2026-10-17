@@ -153,12 +153,27 @@ test('the polled routes shed honestly; the deliberate fail-safes are left alone'
   // admin route into a crash. `node --check` cannot see that either: it is valid syntax.
   for (const file of ['routes/extension/index.js', 'routes/admin/proxyTools.js']) {
     const src = read(file);
-    const calls = [...src.matchAll(/\}\s*catch\s*\(\s*(\w+)\s*\)\s*\{([\s\S]{0,400}?)respondIfDbBusy\(\s*(\w+)\s*,\s*res\s*\)/g)];
-    assert.ok(calls.length > 0, `${file} must shed with 503 rather than report a 500`);
-    for (const [, caught, , passed] of calls) {
-      assert.strictEqual(passed, caught,
-        `${file}: respondIfDbBusy(${passed}, res) sits inside \`catch (${caught})\` — ${passed} is `
-        + 'not bound there, so the first real error would throw ReferenceError instead of being handled');
+
+    // EVERY call site must be checked, not merely the ones a lookbehind window happens to reach.
+    // Two earlier versions of this guard were blind in different ways. A 400-character window
+    // between `catch (X) {` and the call skipped the make-active site, which carries a longer
+    // explanatory comment. A single lazy regex found both sites but paired each with the FIRST
+    // catch in the file rather than the nearest one, reporting a false mismatch. So: find every
+    // call site, then walk back to the catch that actually encloses it.
+    const callSites = [...src.matchAll(/respondIfDbBusy\(\s*(\w+)\s*,\s*res\s*\)/g)];
+    assert.ok(callSites.length > 0, `${file} must shed with 503 rather than report a 500`);
+
+    const catches = [...src.matchAll(/catch\s*\(\s*(\w+)\s*\)\s*\{/g)]
+      .map((m) => ({ at: m.index, name: m[1] }));
+
+    for (const site of callSites) {
+      const enclosing = catches.filter((c) => c.at < site.index).pop();
+      assert.ok(enclosing,
+        `${file}: respondIfDbBusy(${site[1]}, res) is not inside any catch block`);
+      assert.strictEqual(site[1], enclosing.name,
+        `${file}: respondIfDbBusy(${site[1]}, res) sits inside \`catch (${enclosing.name})\` — `
+        + `${site[1]} is not bound there, so the first real error would throw ReferenceError `
+        + 'instead of being handled');
     }
   }
 

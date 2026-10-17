@@ -1722,6 +1722,14 @@ router.post('/:tool/devices/:deviceId/make-active', requireCsrf, async (req, res
       note: 'Queued for ' + (dev.name || dev.deviceId) + ' only. That machine captures and verifies its own WriteHuman session; the current session keeps serving until the capture passes.',
     });
   } catch (err) {
+    // No DB capacity is not a failed activation: nothing was promoted, nothing was queued, and the
+    // previous working source is untouched. Say 503 + Retry-After so the operator knows to try the
+    // same click again shortly, rather than a 500 that reads as "activation is broken".
+    //
+    // This deliberately does NOT retry by itself. A capture-and-activate is state-changing and its
+    // outcome is uncertain once issued, so re-issuing it automatically could mint a second
+    // activation for the same device. The retry decision stays with the operator.
+    if (respondIfDbBusy(err, res)) return;
     console.error('Proxy make-active error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to start the activation' });
   }

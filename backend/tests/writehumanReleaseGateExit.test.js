@@ -243,3 +243,33 @@ test('the gate runner propagates a non-zero status rather than swallowing it', (
   assert.ok(/r\.status !== 0/.test(runner) && /r\.signal/.test(runner) && /r\.error/.test(runner),
     'a spawn error or a signal must also be treated as failure, not as success');
 });
+
+// ── Candidate metadata must not overclaim, and the gate must not trust it ───────────────────────
+test('candidate metadata does not present an archive timestamp as a build time', () => {
+  const dist = process.env.WH_GATE_DIST_DIR
+    || path.join(ROOT, 'writehuman-v2', 'agent', 'dist');
+  const metaPath = path.join(dist, 'latest.json');
+  if (!fs.existsSync(metaPath)) return;   // nothing staged here; the gate covers absence
+  const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+  const c = meta.candidate || {};
+  if (c.buildTimeEstablished === false) {
+    assert.strictEqual(meta.builtAt, null,
+      'a ZIP member mtime records when the ARCHIVE was written, not when the binary was built. '
+      + 'With no evidence of the real build time, builtAt must be null rather than an archive '
+      + 'timestamp dressed up as a build time.');
+  }
+});
+
+test('the gate decides from bytes, never from candidate self-description', () => {
+  // A flag like publiclyAvailable:false is documentation. If the gate consulted it, a mislabelled
+  // candidate could talk its way past verification.
+  const gate = fs.readFileSync(path.join(BACKEND, 'tests', 'writehumanInstallerEmbeddedSource.test.js'), 'utf8');
+  for (const flag of ['publiclyAvailable', 'channel', 'buildTimeEstablished', 'publishedToHostinger',
+    'builtInThisSession', 'notVerified', 'safeguardNote']) {
+    assert.ok(!gate.includes(flag),
+      `the release gate must not branch on candidate.${flag}: verification comes from the exe and `
+      + 'the source bytes, not from what the metadata says about itself');
+  }
+  // The one metadata field it is allowed to require is `signed`, and only to forbid overclaiming.
+  assert.match(gate, /meta\.signed/);
+});

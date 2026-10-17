@@ -28,8 +28,12 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 const AGENT_SRC = path.join(ROOT, 'writehuman-v2', 'agent', 'cookie-sync-agent.js');
-const DIST_META = path.join(ROOT, 'writehuman-v2', 'agent', 'dist', 'latest.json');
-const DIST_EXE = path.join(ROOT, 'writehuman-v2', 'agent', 'dist', 'WriteHuman-Agent-Setup-x64.exe');
+// One candidate location, honoured by BOTH artifact suites. WH_GATE_DIST_DIR lets the release
+// gate's own exit-code regressions point every suite at a fixture dist; without it this file
+// read the real dist while the companion read the fixture, so a valid fixture still failed.
+const DIST_DIR = process.env.WH_GATE_DIST_DIR || path.join(ROOT, 'writehuman-v2', 'agent', 'dist');
+const DIST_META = path.join(DIST_DIR, 'latest.json');
+const DIST_EXE = path.join(DIST_DIR, 'WriteHuman-Agent-Setup-x64.exe');
 const PROXY_TOOLS = path.join(ROOT, 'backend', 'routes', 'admin', 'proxyTools.js');
 
 function sourceVersion() {
