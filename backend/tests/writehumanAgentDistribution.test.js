@@ -16,6 +16,7 @@
  * nothing is published.
  */
 const test = require('node:test');
+const { describe } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
 const path = require('path');
@@ -144,7 +145,7 @@ test('metadata without a sha256 -> BLOCK (nothing to verify the download against
   const meta = { ...meta315 }; delete meta.sha256;
   const { status, out } = await check({ meta, body: EXE_315 });
   assert.notStrictEqual(status, 0);
-  assert.match(out, /no sha256/);
+  assert.match(out, /no valid sha256/);
 });
 
 test('malformed published metadata -> BLOCK', async () => {
@@ -165,7 +166,9 @@ test('--skip-body says so in the verdict instead of implying the bytes were chec
   const { status, out } = await check({ meta: meta315, bodyStatus: 404 }, { extra: ['--skip-body'] });
   assert.strictEqual(status, 0, 'metadata-only mode still passes on matching metadata');
   assert.match(out, /METADATA ONLY/);
-  assert.match(out, /bytes were NOT verified/);
+  assert.match(out, /BYTES WERE NOT VERIFIED/);
+  assert.ok(!/is published and the served bytes match/.test(out),
+    'metadata-only output must not carry the full readiness verdict');
 });
 
 // ── The deploy script must ask BOTH questions, always ───────────────────────────────────────────
@@ -191,4 +194,114 @@ test('deploy-hostinger.sh checks distribution readiness even when a local candid
   // Local integrity is still required when a candidate is present — the two are complementary.
   assert.match(joined, /npm run --silent test:release-gate/,
     'a local candidate must still be verified for integrity');
+});
+
+/**
+ * FALSY JSON BODIES: absent evidence must never read as verified evidence.
+ *
+ * REPRODUCED on node v24.14.1 against the previous script. Every check AND the download itself sat
+ * behind `if (meta)`, and a 200 response whose JSON body is null / false / 0 / "" is falsy — so the
+ * branch was skipped entirely, no problem was recorded, the installer was NEVER REQUESTED, and the
+ * run printed "published and the served bytes match" and exited 0. With --sha256 supplied and
+ * without --skip-body:
+ *
+ *     body: null    -> exit 0, success verdict, installer_requested=false
+ *     body: false   -> exit 0, success verdict, installer_requested=false
+ *     body: 0       -> exit 0, success verdict, installer_requested=false
+ *     body: ""      -> exit 0, success verdict, installer_requested=false
+ *
+ * A placeholder endpoint, a misconfigured CDN returning an empty document, or a route that answers
+ * 200 with a null body would all have certified a release as downloadable. These cases pin the
+ * exit code for each one.
+ */
+describe('falsy and malformed published metadata', () => {
+  for (const [label, raw] of [['null', 'null'], ['false', 'false'], ['0', '0'], ['empty string', '""']]) {
+    test(`JSON body of ${label} -> BLOCK, and the installer is never certified`, async () => {
+      const { status, out } = await check({ metaRaw: raw, body: EXE_315 });
+      assert.notStrictEqual(status, 0,
+        `a 200 response whose body is ${label} must not certify a release`);
+      assert.ok(!/is published and the served bytes match/.test(out),
+        'no success verdict may be printed for a body that is not metadata');
+      assert.match(out, /not a metadata object/);
+    });
+  }
+
+  test('JSON body of an ARRAY -> BLOCK with a shape error, not an incidental one', async () => {
+    const { status, out } = await check({ metaRaw: '[]', body: EXE_315 });
+    assert.notStrictEqual(status, 0);
+    assert.match(out, /a JSON array/);
+  });
+
+  test('a JSON string body -> BLOCK', async () => {
+    const { status, out } = await check({ metaRaw: '"3.5.15"', body: EXE_315 });
+    assert.notStrictEqual(status, 0);
+    assert.match(out, /not a metadata object/);
+  });
+
+  // ── required fields, each validated on its own ────────────────────────────────────────────────
+  const base = { product: 'x', file: 'y', arch: 'x64', signed: false };
+
+  test('version missing -> BLOCK', async () => {
+    const { status, out } = await check({ meta: { ...base, sha256: SHA_315, size: EXE_315.length }, body: EXE_315 });
+    assert.notStrictEqual(status, 0);
+    assert.match(out, /no usable "version"/);
+  });
+
+  test('version present but not a string -> BLOCK', async () => {
+    const { status, out } = await check({ meta: { ...base, version: 3515, sha256: SHA_315, size: EXE_315.length }, body: EXE_315 });
+    assert.notStrictEqual(status, 0);
+    assert.match(out, /no usable "version"/);
+  });
+
+  test('sha256 that is not 64 hex characters -> BLOCK', async () => {
+    for (const bad of ['', 'deadbeef', SHA_315 + 'a', 'z'.repeat(64), 12345]) {
+      const { status, out } = await check({
+        meta: { ...base, version: '3.5.15', sha256: bad, size: EXE_315.length }, body: EXE_315,
+      });
+      assert.notStrictEqual(status, 0, `sha256 ${JSON.stringify(bad)} must be refused`);
+      assert.match(out, /no valid sha256/);
+    }
+  });
+
+  test('size that is not a positive safe integer -> BLOCK', async () => {
+    for (const bad of [0, -1, 1.5, '34', null, Number.MAX_SAFE_INTEGER + 2, NaN]) {
+      const { status, out } = await check({
+        meta: { ...base, version: '3.5.15', sha256: SHA_315, size: bad }, body: EXE_315,
+      });
+      assert.notStrictEqual(status, 0, `size ${JSON.stringify(bad)} must be refused`);
+      assert.match(out, /no valid "size"/);
+    }
+  });
+
+  test('POSITIVE CONTROL: a complete valid descriptor with matching bytes still PASSES', async () => {
+    const { status, out } = await check({ meta: meta315, body: EXE_315 });
+    assert.strictEqual(status, 0, `the checker must not be merely always-red:\n${out}`);
+    assert.match(out, /3\.5\.15 is published and the served bytes match/);
+  });
+});
+
+describe('the checker keeps its streaming hash and its timeout', () => {
+  const src = require('fs').readFileSync(SCRIPT, 'utf8');
+
+  test('the download is hashed INCREMENTALLY, not buffered whole', () => {
+    assert.match(src, /for await \(const chunk of r\.body\)/,
+      'the installer is ~92 MB; it must be hashed as it streams, not read into memory');
+    assert.ok(!/arrayBuffer\(\)|\.text\(\)|\.blob\(\)/.test(src),
+      'buffering the whole installer would reintroduce a memory cost this avoided');
+    assert.match(src, /createHash\('sha256'\)/);
+  });
+
+  test('both requests carry the configured timeout', () => {
+    const signals = src.match(/AbortSignal\.timeout\(TIMEOUT_MS\)/g) || [];
+    assert.ok(signals.length >= 2,
+      'latest.json AND the installer download must both time out rather than hang a deploy');
+    assert.match(src, /WH_DIST_TIMEOUT_MS/, 'the timeout must stay configurable');
+  });
+
+  test('production deployment does not rely on --skip-body', () => {
+    const sh = require('fs').readFileSync(path.join(BACKEND, '..', 'deploy-hostinger.sh'), 'utf8');
+    const code = sh.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n');
+    assert.ok(!/--skip-body/.test(code),
+      'the deploy pre-flight must verify the actual bytes; --skip-body is a diagnostic only');
+  });
 });

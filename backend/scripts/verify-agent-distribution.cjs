@@ -55,50 +55,93 @@ const ROOT = `${base}/api/crm/downloads/writehuman-agent/windows`;
 const problems = [];
 const TIMEOUT_MS = Number(process.env.WH_DIST_TIMEOUT_MS || 60000);
 
+/** What a non-object JSON body actually was, for an error an operator can act on. */
+function describe(v) {
+  if (v === null) return 'null';
+  if (Array.isArray(v)) return 'a JSON array';
+  return `a JSON ${typeof v} (${JSON.stringify(v)})`;
+}
+
 async function main() {
   // 1. Published metadata
-  let meta = null;
+  let body;
+  let fetched = false;
   try {
     const r = await fetch(`${ROOT}/latest.json`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
     if (!r.ok) problems.push(`latest.json returned HTTP ${r.status} — nothing is published at ${ROOT}`);
     else {
-      try { meta = await r.json(); } catch (e) { problems.push(`latest.json is not valid JSON: ${e.message}`); }
+      try { body = await r.json(); fetched = true; }
+      catch (e) { problems.push(`latest.json is not valid JSON: ${e.message}`); }
     }
   } catch (e) {
     problems.push(`latest.json could not be fetched: ${e.message}`);
   }
 
-  if (meta) {
-    if (meta.version !== expectedVersion) {
-      problems.push(`the download advertises ${JSON.stringify(meta.version)} but this tree would `
-        + `advertise ${expectedVersion}. Publish the installer before deploying, or field agents are `
-        + 'told to update to a version that is not downloadable.');
-    }
-    if (!meta.sha256) problems.push('published latest.json has no sha256 — the download cannot be verified');
-    if (localSha && meta.sha256 && meta.sha256 !== localSha) {
-      problems.push(`the published sha256 (${meta.sha256}) is not the local candidate `
-        + `(${localSha}). Same version string, different bytes.`);
+  // 2. SHAPE AND REQUIRED FIELDS, before anything is trusted.
+  //
+  // An earlier version put every check AND the download itself behind `if (meta)`. A 200 response
+  // whose JSON body was null, false, 0 or "" is falsy, so that branch was skipped entirely: no
+  // problem was recorded, the installer was never requested, and the run printed "published and
+  // the served bytes match" and exited 0 — even with --sha256 supplied and without --skip-body.
+  // Absent evidence must never read as verified evidence, so the shape is now asserted explicitly
+  // and each required field is validated on its own.
+  let meta = null;
+  if (fetched) {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      problems.push(`latest.json is ${describe(body)}, not a metadata object — nothing is published `
+        + 'here, or the endpoint is returning a placeholder');
+    } else {
+      meta = body;
+
+      if (typeof meta.version !== 'string' || meta.version.trim() === '') {
+        problems.push('published latest.json has no usable "version" string');
+      } else if (meta.version !== expectedVersion) {
+        problems.push(`the download advertises ${JSON.stringify(meta.version)} but this tree would `
+          + `advertise ${expectedVersion}. Publish the installer before deploying, or field agents `
+          + 'are told to update to a version that is not downloadable.');
+      }
+
+      if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(meta.sha256)) {
+        problems.push('published latest.json has no valid sha256 (64 hex characters) — the download '
+          + 'cannot be verified against anything');
+      } else if (localSha && meta.sha256.toLowerCase() !== localSha.toLowerCase()) {
+        problems.push(`the published sha256 (${meta.sha256}) is not the local candidate `
+          + `(${localSha}). Same version string, different bytes.`);
+      }
+
+      if (!Number.isSafeInteger(meta.size) || meta.size <= 0) {
+        problems.push(`published latest.json has no valid "size" (got ${JSON.stringify(meta.size)}) — `
+          + 'a positive safe integer is required to detect a truncated download');
+      }
     }
   }
 
-  // 2. The installer itself. Metadata that matches over a missing or truncated file is the
+  // Only a fully valid descriptor can be checked against bytes. If it is not valid we already have
+  // problems recorded, so skipping the download here can never produce a successful verdict.
+  const descriptorUsable = meta
+    && typeof meta.sha256 === 'string' && /^[0-9a-f]{64}$/i.test(meta.sha256)
+    && Number.isSafeInteger(meta.size) && meta.size > 0;
+
+  // 3. The installer itself. Metadata that matches over a missing or truncated file is the
   //    failure mode that looks healthiest from the outside.
-  if (meta && meta.sha256 && !skipBody) {
+  if (descriptorUsable && !skipBody) {
     try {
       const r = await fetch(`${ROOT}/latest`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!r.ok) {
         problems.push(`the installer download returned HTTP ${r.status} — latest.json advertises a `
           + 'release whose bytes are not served');
+      } else if (!r.body) {
+        problems.push('the installer download returned no body');
       } else {
         const h = crypto.createHash('sha256');
         let bytes = 0;
         for await (const chunk of r.body) { h.update(chunk); bytes += chunk.length; }
         const digest = h.digest('hex');
-        if (digest !== meta.sha256) {
+        if (digest !== meta.sha256.toLowerCase()) {
           problems.push(`the downloaded installer hashes to ${digest} but latest.json advertises `
             + `${meta.sha256} — the served file is not the published release`);
         }
-        if (meta.size !== undefined && meta.size !== null && bytes !== meta.size) {
+        if (bytes !== meta.size) {
           problems.push(`the downloaded installer is ${bytes} bytes but latest.json says ${meta.size}`);
         }
       }
@@ -114,8 +157,16 @@ async function main() {
     console.error('Publish the installer and its metadata, then re-run this check.');
     process.exit(1);
   }
-  console.log(`[agent-distribution] ${expectedVersion} is published and the served bytes match`
-    + (skipBody ? ' (METADATA ONLY — --skip-body was passed, the bytes were NOT verified)' : ''));
+
+  // METADATA-ONLY is a diagnostic, never a readiness verdict. Said in both the wording and the
+  // exit path so it cannot be mistaken for a full check in a deploy log.
+  if (skipBody) {
+    console.log(`[agent-distribution] METADATA ONLY for ${expectedVersion}: latest.json is `
+      + 'self-consistent, but --skip-body was passed so the installer BYTES WERE NOT VERIFIED. '
+      + 'This is a diagnostic, not distribution readiness, and must not gate a production deploy.');
+    return;
+  }
+  console.log(`[agent-distribution] ${expectedVersion} is published and the served bytes match`);
 }
 
 main().catch((e) => { console.error('[agent-distribution] check crashed:', e.message); process.exit(1); });
