@@ -20,6 +20,7 @@
  * 91 MB binary — be exercised deterministically on every pull request.
  */
 const test = require('node:test');
+const { describe } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
@@ -85,8 +86,14 @@ function metaFor(bytes, over = {}) {
   };
 }
 
-/** Lay out a fixture dist dir and run the gate against it. Returns the child's exit status. */
-function runGate({ exe, meta, rawMeta }) {
+/**
+ * Lay out a fixture dist dir and run the gate against it. Returns the child's exit status.
+ *
+ * `inheritTestContext` reproduces the environment a release gets cut from when something already
+ * ran node:test in the same shell — a wrapper script, an IDE task, a CI job that tests before
+ * deploying. That is not a contrived case, and it is the one that used to return a false pass.
+ */
+function runGate({ exe, meta, rawMeta, inheritTestContext = false }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-gate-'));
   try {
     if (exe) fs.writeFileSync(path.join(dir, 'WriteHuman-Agent-Setup-x64.exe'), exe);
@@ -97,7 +104,10 @@ function runGate({ exe, meta, rawMeta }) {
     // 0 regardless of its own failures. Leaving it in place made all eleven failure scenarios below
     // read as passes — the exact blindness this file was written to remove.
     const env = { ...process.env, WH_GATE_DIST_DIR: dir };
-    delete env.NODE_TEST_CONTEXT;
+    // Default: a clean shell. The runner itself is responsible for sanitising its own child, so
+    // these tests must be able to hand it a DIRTY environment on purpose.
+    if (inheritTestContext) env.NODE_TEST_CONTEXT = 'child-v8';
+    else delete env.NODE_TEST_CONTEXT;
     const r = spawnSync(process.execPath, [path.join(BACKEND, 'scripts', 'release-gate.cjs')], {
       cwd: BACKEND,
       encoding: 'utf8',
@@ -212,12 +222,14 @@ test('the deploy script invokes the release gate and aborts on failure', () => {
   assert.match(sh, /^set -euo pipefail$/m,
     'the gate only aborts the deploy because the script runs under `set -e`');
 
-  // The no-candidate branch must not be a silent pass: the advertised version has to already be
-  // served, confirmed read-only against the live metadata.
-  assert.match(sh, /windows\/latest\.json/,
-    'with no candidate dist the deploy must confirm the live download already serves this version');
-  assert.ok(/LIVE_VERSION/.test(sh) && /exit 1/.test(sh),
-    'a version mismatch against the live download must abort the deploy');
+  // Distribution readiness must be asked ALWAYS, not only when there is no local candidate. The
+  // inline curl this used to match was replaced by scripts/verify-agent-distribution.cjs, which
+  // checks more than the version string: it also requires the served BYTES to hash to the
+  // published sha256. See writehumanAgentDistribution.test.js for that behaviour.
+  assert.match(sh, /verify-agent-distribution\.cjs/,
+    'the deploy must confirm what is actually downloadable, not only what sits in dist/');
+  assert.match(sh, /--version "\$\{AGENT_SRC_VERSION\}"/,
+    'the distribution check must be asked about the version this deploy would advertise');
 
   // The gate must come BEFORE anything is uploaded, or it cannot prevent a bad publish.
   // Compared over EXECUTABLE lines only: this script's header comment describes the upload steps,
@@ -272,4 +284,61 @@ test('the gate decides from bytes, never from candidate self-description', () =>
   }
   // The one metadata field it is allowed to require is `signed`, and only to forbid overclaiming.
   assert.match(gate, /meta\.signed/);
+});
+
+// ── The runner's own environment ────────────────────────────────────────────────────────────────
+//
+// node:test sets NODE_TEST_CONTEXT for every file it runs. A nested `node --test` that inherits it
+// believes it is a reporting child of an outer run, SKIPS EXECUTION, and exits 0. Measured on
+// node v24.14.1 against the previous runner, with no installer and no latest.json:
+//
+//     clean environment            -> exit 1, no verdict
+//     NODE_TEST_CONTEXT=child-v8   -> exit 0, "candidate verified", and no test summary at all
+//
+// A release cut from any shell that had already run node:test would have been told the candidate
+// was verified while nothing ran. Stripping the variable inside the TEST harness (as the harness
+// above does for its own spawns) fixed the tests and left the real runner broken, so these cases
+// hand the runner a dirty environment deliberately and require it to clean up after itself.
+describe('the gate verifies regardless of an inherited test context', () => {
+  const scenarios = [
+    ['both files missing', () => ({})],
+    ['wrong hash', () => { const exe = synthInstaller(); return { exe, meta: metaFor(exe, { sha256: 'f'.repeat(64) }) }; }],
+    ['stale embedded source', () => {
+      const stale = Buffer.concat([REAL_AGENT, Buffer.from('\n// drifted\n')]);
+      const exe = synthInstaller({ agent: stale });
+      return { exe, meta: metaFor(exe) };
+    }],
+  ];
+
+  for (const [name, build] of scenarios) {
+    test(`INHERITED CONTEXT: ${name} still blocks the release`, () => {
+      const { status, out } = runGate({ ...build(), inheritTestContext: true });
+      assert.notStrictEqual(status, 0,
+        `with NODE_TEST_CONTEXT inherited, "${name}" must still fail — a skipped suite is not a pass`);
+      assert.ok(!/candidate verified/.test(out),
+        'the gate must not print a success verdict for a run that did not verify anything');
+    });
+  }
+
+  test('INHERITED CONTEXT: a valid candidate still passes, and really does run', () => {
+    const exe = synthInstaller();
+    const { status, out } = runGate({ exe, meta: metaFor(exe), inheritTestContext: true });
+    assert.strictEqual(status, 0, `a valid candidate must still verify in a dirty environment:\n${out}`);
+    assert.match(out, /candidate verified/);
+    // Proof of execution, not merely a zero status: both suites must report their own results.
+    assert.match(out, /writehumanAgentVersionDrift\.test\.js: \d+\/\d+ passed/);
+    assert.match(out, /writehumanInstallerEmbeddedSource\.test\.js: \d+\/\d+ passed/);
+  });
+
+  test('the runner strips the test context and proves each suite executed', () => {
+    const runner = fs.readFileSync(path.join(BACKEND, 'scripts', 'release-gate.cjs'), 'utf8');
+    assert.match(runner, /delete env\[v\]|delete env\.NODE_TEST_CONTEXT/,
+      'the RUNNER must sanitise its own child environment, not rely on its callers');
+    assert.match(runner, /NODE_TEST_CONTEXT/);
+    // A zero exit cannot distinguish "all passed" from "nothing ran", so the summary is parsed.
+    assert.ok(/# tests/.test(runner) && /did not execute/.test(runner),
+      'the runner must treat a missing TAP summary as a suite that did not run');
+    assert.match(runner, /skipped/,
+      'under the gate a skipped artifact assertion must not count as a pass');
+  });
 });
