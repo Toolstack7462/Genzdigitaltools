@@ -13,6 +13,7 @@ import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
 import { isOlder } from '../../lib/semver';
+import { startVisiblePolling } from '../../lib/visiblePolling';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
 import { reportIssue } from '../../features/clientAssistant/assistantEvents';
@@ -423,18 +424,13 @@ const ClientDashboardEnhanced = () => {
     getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {});
   }, [getDismissedAnnouncementIds, showInfo]);
 
-  useEffect(() => {
-    const POLL_MS = 45000;
-    const id = setInterval(() => { pollNotifications(); }, POLL_MS);
-    const onVisible = () => { if (document.visibilityState === 'visible') pollNotifications(); };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
-    };
-  }, [pollNotifications]);
+  // Visibility-GATED: the 45s cadence is unchanged while the tab is being looked at, and a return
+  // to the tab still polls immediately — but a hidden tab now issues nothing at all. Each tick is
+  // three backend requests (/client/announcements, /client/extension-notice,
+  // /extension/version-info), and that cost used to be paid for as long as the tab stayed open, by
+  // every client with a parked dashboard at once. Nothing here is user-visible: new announcements
+  // still arrive before anyone can read a stale screen.
+  useEffect(() => startVisiblePolling(pollNotifications, 45000), [pollNotifications]);
 
   // ── Presence heartbeat (admin "who's online" monitor) ──────────────────────
   // Lightweight, fail-safe, fire-and-forget: sends NO user content — just a tap
