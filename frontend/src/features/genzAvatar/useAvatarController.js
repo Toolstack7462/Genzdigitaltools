@@ -5,15 +5,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { useReducedMotion } from 'framer-motion';
 import { resolve, restingState } from './avatarStateMachine';
+import { createTimerTracker } from './timerTracker';
 
 export function useAvatarController(semantic, { paused = false } = {}) {
   const reduce = useReducedMotion();
   const [state, setState] = useState(() => resolve(semantic));
   const [blink, setBlink] = useState(false);
-  const timers = useRef(new Set());
-
-  const addTimer = (id) => { timers.current.add(id); return id; };
-  const clearAll = () => { timers.current.forEach((id) => clearTimeout(id)); timers.current.clear(); };
+  // Self-pruning timer set: ids leave it as they fire, so the blink loop cannot accumulate dead
+  // entries for the lifetime of a parked page. Lazy ref init — one tracker per mount.
+  const timersRef = useRef(null);
+  if (!timersRef.current) timersRef.current = createTimerTracker();
+  const timers = timersRef.current;
 
   // Apply semantic changes; a one-shot schedules its settle to a resting loop.
   useEffect(() => {
@@ -24,12 +26,11 @@ export function useAvatarController(semantic, { paused = false } = {}) {
     }
     setState(next);
     if (next.oneShot) {
-      const set = timers.current; // capture per exhaustive-deps (ref may change before cleanup)
-      const id = addTimer(setTimeout(() => setState(restingState(semantic)), next.durationMs));
-      return () => { clearTimeout(id); set.delete(id); };
+      const id = timers.set(() => setState(restingState(semantic)), next.durationMs);
+      return () => timers.clear(id);
     }
     return undefined;
-  }, [semantic, reduce]);
+  }, [semantic, reduce, timers]);
 
   // Natural blink — paused under reduced motion / hidden / sleeping.
   useEffect(() => {
@@ -38,21 +39,18 @@ export function useAvatarController(semantic, { paused = false } = {}) {
     let pending;
     const loop = () => {
       const delay = 2600 + Math.random() * 2800;
-      pending = addTimer(setTimeout(() => {
+      pending = timers.set(() => {
         if (!alive) return;
         setBlink(true);
-        pending = addTimer(setTimeout(() => { if (alive) { setBlink(false); loop(); } }, 150));
-      }, delay));
+        pending = timers.set(() => { if (alive) { setBlink(false); loop(); } }, 150);
+      }, delay);
     };
     loop();
-    return () => { alive = false; if (pending) clearTimeout(pending); };
-  }, [paused, reduce, state.expression]);
+    return () => { alive = false; timers.clear(pending); };
+  }, [paused, reduce, state.expression, timers]);
 
   // Final safety net: clear every timer on unmount (capture the ref per exhaustive-deps guidance).
-  useEffect(() => {
-    const set = timers.current;
-    return () => { set.forEach((id) => clearTimeout(id)); set.clear(); };
-  }, []);
+  useEffect(() => () => timers.clearAll(), [timers]);
 
   return { ...state, blink, reduced: reduce, paused };
 }
