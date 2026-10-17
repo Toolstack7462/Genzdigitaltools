@@ -1,0 +1,79 @@
+# Test-only PR check. Deliberately carries NO deployment credentials and NO secrets: it runs the
+# suites and the production build, and nothing else. deploy-frontend.yml stays the only thing that
+# can publish, and it still triggers solely on a push to main.
+#
+# WHY THIS EXISTS. Until now nothing ran on a pull request at all, so every gate in backend/tests —
+# including the deploy clean-room check that catches "Passenger boots into Cannot find module" —
+# only ever ran on someone's laptop. A PR could look perfectly healthy and still be undeployable.
+name: CI (tests only)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+# No secrets are referenced anywhere in this file; make the token read-only as well.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install
+        working-directory: backend
+        run: npm install --legacy-peer-deps
+      - name: Syntax check
+        working-directory: backend
+        run: npm run check
+      # Two suites in this repo are LOCAL pre-deploy gates that read artifacts a fresh clone does
+      # not have, so they can never pass in CI and are reported rather than failed:
+      #   - writehumanAgentVersionDrift  reads writehuman-v2/agent/dist/ (gitignored, ~90 MB exe)
+      # Everything else must pass.
+      - name: Tests
+        working-directory: backend
+        run: npm test
+
+  frontend:
+    name: Frontend tests + production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm install --legacy-peer-deps
+      - name: Tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: npx craco test --watchAll=false
+      # CI=false matches deploy-frontend.yml: this repo carries pre-existing exhaustive-deps
+      # warnings in unrelated admin/client pages, and warnings-as-errors would fail on those rather
+      # than on anything the PR changed.
+      - name: Production build
+        working-directory: frontend
+        env:
+          CI: 'false'
+          GENERATE_SOURCEMAP: 'false'
+        run: npm run build
+      # The committed bundle is a deployed artifact; deploy-frontend-only.sh ships it as-is. This
+      # fails the PR when frontend/src changed without a rebuild, which would silently ship stale UI.
+      - name: Committed bundle matches committed source
+        run: node -e "const{fingerprint}=require('./frontend/scripts/stamp-build.js');const fs=require('fs');const s=JSON.parse(fs.readFileSync('frontend/build/build-source.json','utf8'));const f=fingerprint();if(s.fingerprint!==f){console.error('::error::frontend/build is stale — run \`npm run build\` in frontend/ and commit the result');process.exit(1)}console.log('bundle matches source')"
