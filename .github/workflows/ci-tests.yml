@@ -38,13 +38,15 @@ jobs:
       - name: Syntax check
         working-directory: backend
         run: npm run check
-      # Two suites in this repo are LOCAL pre-deploy gates that read artifacts a fresh clone does
-      # not have, so they can never pass in CI and are reported rather than failed:
-      #   - writehumanAgentVersionDrift  reads writehuman-v2/agent/dist/ (gitignored, ~90 MB exe)
-      # Everything else must pass.
+      # `npm run test:ci` is `npm test` minus exactly ONE file:
+      # writehumanAgentVersionDrift.test.js, which asserts that the PUBLISHED installer matches the
+      # agent source. It reads writehuman-v2/agent/dist/latest.json + the ~90 MB .exe beside it,
+      # both gitignored and absent from any fresh checkout, so it can never pass in CI. It is a
+      # LOCAL pre-deploy gate by design (deploys are cut from a working copy) and stays in
+      # `npm test`, unmodified, with every assertion intact. Nothing else is excluded.
       - name: Tests
         working-directory: backend
-        run: npm test
+        run: npm run test:ci
 
   frontend:
     name: Frontend tests + production build
@@ -73,7 +75,9 @@ jobs:
           CI: 'false'
           GENERATE_SOURCEMAP: 'false'
         run: npm run build
-      # The committed bundle is a deployed artifact; deploy-frontend-only.sh ships it as-is. This
-      # fails the PR when frontend/src changed without a rebuild, which would silently ship stale UI.
-      - name: Committed bundle matches committed source
-        run: node -e "const{fingerprint}=require('./frontend/scripts/stamp-build.js');const fs=require('fs');const s=JSON.parse(fs.readFileSync('frontend/build/build-source.json','utf8'));const f=fingerprint();if(s.fingerprint!==f){console.error('::error::frontend/build is stale — run \`npm run build\` in frontend/ and commit the result');process.exit(1)}console.log('bundle matches source')"
+      # NOTE: the committed bundle is a deployed artifact (deploy-frontend-only.sh ships it as-is),
+      # and it IS gated — by backend/tests/frontendBuildFreshness.test.js in the backend job above,
+      # which recomputes the stamp with the repo's own scripts/stamp-build.js. A second check here
+      # would be a duplicate reimplementation of that comparison, and the first attempt at one got
+      # it wrong in two ways (fingerprint() returns an object, and the stamp key is
+      # `sourceFingerprint`), failing every run. One source of truth is the point.
