@@ -58,7 +58,37 @@ function isPoolSaturationError(err) {
   return /queue limit reached/i.test(String(err.message || ''));
 }
 
+/**
+ * Answer a request that failed only because the pool had no capacity, from INSIDE a route's own
+ * catch block.
+ *
+ * WHY THIS IS NEEDED. The central error handler in server-crm.js turns saturation into 503 +
+ * Retry-After, but it only ever sees errors that reach it. Most routes catch their own errors and
+ * return a hardcoded `500 { error: 'Failed to load …' }` — there are 41 such catches in
+ * routes/admin/proxyTools.js alone. A shed request inside one of those is reported as a server
+ * fault: the client cannot tell "retry in 5s" from "this is broken", and a retry storm is the
+ * natural response to a 500.
+ *
+ * Call it first in a catch block and return early when it returns true; otherwise fall through to
+ * the route's existing error response, unchanged.
+ *
+ *   } catch (err) {
+ *     if (respondIfDbBusy(err, res)) return;
+ *     ...existing handling...
+ *   }
+ *
+ * @returns {boolean} true when the response has been sent
+ */
+function respondIfDbBusy(err, res) {
+  if (!isPoolSaturationError(err)) return false;
+  try {
+    res.set('Retry-After', '5');
+    res.status(503).json({ error: 'Server busy, please retry', code: 'DB_BUSY', retryAfter: 5 });
+  } catch (_) { return false; }   // headers already sent — let the caller handle it
+  return true;
+}
+
 module.exports = {
-  poolLimits, isPoolSaturationError,
+  poolLimits, isPoolSaturationError, respondIfDbBusy,
   DEFAULT_CONNECTION_LIMIT, DEFAULT_QUEUE_LIMIT, SATURATION_CODES,
 };

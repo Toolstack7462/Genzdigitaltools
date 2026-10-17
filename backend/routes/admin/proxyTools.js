@@ -22,6 +22,7 @@ const ProxyAccount = require('../../models/proxy/ProxyAccount');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
+const { respondIfDbBusy } = require('../../db/poolLimits');
 const tools = require('../../utils/proxy/tools');
 const { verifyAccountCookies, maskEmail, applySupabaseRefresh, jwtExp, extractSupabaseSession } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
@@ -1367,6 +1368,7 @@ router.get('/:tool/agent-state', async (req, res) => {
       commandMinAgentVersion: agentCommands.MIN_AGENT_VERSION,
     });
   } catch (err) {
+    if (respondIfDbBusy(e, res)) return;   // shed load honestly: 503 + Retry-After, not 500
     console.error('Proxy agent-state error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to load agent state' });
   }
