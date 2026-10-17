@@ -145,10 +145,22 @@ test('the polled routes shed honestly; the deliberate fail-safes are left alone'
 
   // These two answered 500 on any failure. They are polled constantly (every open client dashboard
   // hits /extension/version-info every 45s; the admin page hits agent-state every 30s).
-  assert.match(read('routes/extension/index.js'), /respondIfDbBusy\(err, res\)/,
-    '/extension/version-info must shed with 503 rather than report a 500');
-  assert.match(read('routes/admin/proxyTools.js'), /respondIfDbBusy\(e, res\)/,
-    'the admin agent-state poll must shed with 503 rather than report a 500');
+  //
+  // The call is checked against the ENCLOSING CATCH PARAMETER, not as a bare string. The first
+  // version of this test matched /respondIfDbBusy\(e, res\)/ literally and happily passed while
+  // the code said `respondIfDbBusy(e, res)` inside `} catch (err) {` — an unbound identifier that
+  // would have thrown ReferenceError on the first real error, turning every failure on a polled
+  // admin route into a crash. `node --check` cannot see that either: it is valid syntax.
+  for (const file of ['routes/extension/index.js', 'routes/admin/proxyTools.js']) {
+    const src = read(file);
+    const calls = [...src.matchAll(/\}\s*catch\s*\(\s*(\w+)\s*\)\s*\{([\s\S]{0,400}?)respondIfDbBusy\(\s*(\w+)\s*,\s*res\s*\)/g)];
+    assert.ok(calls.length > 0, `${file} must shed with 503 rather than report a 500`);
+    for (const [, caught, , passed] of calls) {
+      assert.strictEqual(passed, caught,
+        `${file}: respondIfDbBusy(${passed}, res) sits inside \`catch (${caught})\` — ${passed} is `
+        + 'not bound there, so the first real error would throw ReferenceError instead of being handled');
+    }
+  }
 
   // NOT changed on purpose: /client/announcements and /client/extension-notice deliberately answer
   // a fail-safe 200 ("never break the dashboard"). Turning those into 503 would alter documented

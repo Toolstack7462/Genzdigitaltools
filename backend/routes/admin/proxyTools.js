@@ -1368,7 +1368,7 @@ router.get('/:tool/agent-state', async (req, res) => {
       commandMinAgentVersion: agentCommands.MIN_AGENT_VERSION,
     });
   } catch (err) {
-    if (respondIfDbBusy(e, res)) return;   // shed load honestly: 503 + Retry-After, not 500
+    if (respondIfDbBusy(err, res)) return;   // shed load honestly: 503 + Retry-After, not 500
     console.error('Proxy agent-state error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to load agent state' });
   }
