@@ -2,29 +2,33 @@
 /**
  * RELEASE GATE: the installer must actually CARRY the source this repo ships.
  *
- * WHY THIS TEST EXISTS. The agent suite that travels with a release candidate reports a healthy
- * number — 222 passing — and that number is identical whether or not the 91 MB installer is even
- * present. Inspecting what those tests read explains why:
+ * WHY THIS TEST EXISTS. The agent suite that travels with a release candidate reports 222 passing,
+ * and that number is identical whether or not the 91 MB installer is even present. Inspecting what
+ * those tests read explains why:
  *
  *   - tests/pe-checksum.test.js   builds a 513-byte synthetic PE with Buffer.alloc and hand-written
  *                                 MZ/PE headers.
  *   - tests/extraction.test.js    reads the shipped cookie-sync-agent.js, then assembles SYNTHETIC
  *                                 SEA payloads ("module.exports={fixture:true}").
  *
- * Neither ever opens the real executable. So "all tests pass" said nothing whatsoever about the
- * artifact a field agent would download — the one thing a release actually ships. That is the same
- * shape of hole as the 2026-08-26 drift (source bumped, installer never rebuilt), and
- * writehumanAgentVersionDrift only checks the version and SIZE recorded in latest.json, never the
- * bytes INSIDE the exe.
+ * Neither ever opens the real executable, so "all tests pass" said nothing about the artifact a
+ * field agent downloads. writehumanAgentVersionDrift only checks the version and SIZE recorded in
+ * latest.json, never the bytes INSIDE the exe.
  *
- * This gate opens the real PE and proves, byte for byte, that the SEA assets it carries are the
- * files in this repository. A rebuilt installer with stale embedded source fails here, as does a
- * source edit published against an old exe.
+ * TWO MODES, AND THE DIFFERENCE IS THE WHOLE POINT.
  *
- * IT IS A RELEASE GATE, NOT A PR CHECK. dist/ is gitignored (a ~90 MB binary does not belong in
- * git), so on a fresh clone there is nothing to verify and the gate reports that it cannot run
- * rather than inventing a pass. Run it from a working copy that holds the candidate dist, which is
- * exactly where a deploy is cut from. The four source-only drift assertions stay in PR CI.
+ *   WH_RELEASE_GATE unset (ordinary PR CI)
+ *       dist/ is gitignored, so a fresh clone has no candidate. The absence is reported as an
+ *       explicit skip, because there is genuinely nothing to verify.
+ *
+ *   WH_RELEASE_GATE=1 (npm run test:release-gate, i.e. cutting a release)
+ *       a missing, unreadable, corrupt or inconsistent candidate FAILS, with a non-zero exit code.
+ *       An earlier version of this file skipped in both modes and therefore exited 0 with no
+ *       artifacts at all: it could not block anything, which is the one job a release gate has.
+ *
+ * The candidate location is overridable with WH_GATE_DIST_DIR so the exit-code behaviour itself can
+ * be regression-tested against fixtures (see writehumanReleaseGateExit.test.js) without disturbing
+ * a real dist directory.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -34,25 +38,70 @@ const crypto = require('crypto');
 
 const ROOT = path.join(__dirname, '..', '..');
 const AGENT_DIR = path.join(ROOT, 'writehuman-v2', 'agent');
-const DIST = path.join(AGENT_DIR, 'dist');
+const DIST = process.env.WH_GATE_DIST_DIR || path.join(AGENT_DIR, 'dist');
 const EXE = path.join(DIST, 'WriteHuman-Agent-Setup-x64.exe');
 const META = path.join(DIST, 'latest.json');
+const REQUIRE_CANDIDATE = process.env.WH_RELEASE_GATE === '1';
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
-const present = fs.existsSync(EXE) && fs.existsSync(META);
 
-// A missing artifact is a PREREQUISITE, never a silent pass. Stated once, loudly.
-if (!present) {
-  test('RELEASE GATE SKIPPED — no candidate installer in writehuman-v2/agent/dist/', (t) => {
-    t.diagnostic('dist/ is gitignored, so a fresh clone has no artifact to verify.');
-    t.diagnostic('Before cutting a release, place the candidate exe + latest.json in dist/ and re-run.');
-    t.skip('no artifact present');
-  });
+/**
+ * Load the candidate, collecting every reason it cannot be verified rather than throwing at import
+ * time (a throw there aborts the file and reports a crash instead of a reason).
+ */
+function loadCandidate() {
+  const problems = [];
+  if (!fs.existsSync(EXE)) problems.push(`installer missing: ${EXE}`);
+  if (!fs.existsSync(META)) problems.push(`metadata missing: ${META}`);
+  if (problems.length) return { problems };
+
+  let bytes;
+  let meta;
+  try { bytes = fs.readFileSync(EXE); } catch (e) { problems.push(`installer unreadable: ${e.message}`); }
+  try { meta = JSON.parse(fs.readFileSync(META, 'utf8')); } catch (e) { problems.push(`metadata malformed: ${e.message}`); }
+  if (problems.length) return { problems };
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+    return { problems: ['metadata is not a JSON object'] };
+  }
+  for (const field of ['version', 'size', 'sha256']) {
+    if (meta[field] === undefined || meta[field] === null) problems.push(`metadata field missing: ${field}`);
+  }
+  if (problems.length) return { problems };
+
+  let extracted;
+  try {
+    const { extract } = require(path.join(AGENT_DIR, 'tools', 'extract-sea.cjs'));
+    extracted = extract(bytes);
+  } catch (e) {
+    problems.push(`installer is not a readable SEA image: ${e.message}`);
+  }
+  if (problems.length) return { problems };
+  return { bytes, meta, extracted };
+}
+
+const candidate = loadCandidate();
+
+if (candidate.problems) {
+  const detail = candidate.problems.map((p) => `  - ${p}`).join('\n');
+  if (REQUIRE_CANDIDATE) {
+    test('RELEASE GATE: a verifiable candidate installer is required', () => {
+      assert.fail(
+        'the release gate cannot verify a candidate installer:\n' + detail + '\n\n'
+        + 'A release must not be cut from this tree. Either build the installer\n'
+        + '  node writehuman-v2/agent/build-installer.mjs\n'
+        + 'or do not publish: every field agent would be offered a download that does not match\n'
+        + 'the source this repository ships, which is the 2026-08-26 failure.');
+    });
+  } else {
+    test('release gate skipped — no verifiable candidate in the dist directory', (t) => {
+      t.diagnostic('dist/ is gitignored, so a fresh clone has nothing to verify:');
+      candidate.problems.forEach((p) => t.diagnostic(`  ${p}`));
+      t.diagnostic('Run `npm run test:release-gate` before publishing; there this is a FAILURE.');
+      t.skip('no candidate present (WH_RELEASE_GATE is not set)');
+    });
+  }
 } else {
-  const { extract } = require(path.join(AGENT_DIR, 'tools', 'extract-sea.cjs'));
-  const bytes = fs.readFileSync(EXE);
-  const meta = JSON.parse(fs.readFileSync(META, 'utf8'));
-  const extracted = extract(bytes);   // static parse; never executes the image
+  const { bytes, meta, extracted } = candidate;
 
   test('latest.json describes the exe sitting beside it', () => {
     assert.strictEqual(meta.size, bytes.length,

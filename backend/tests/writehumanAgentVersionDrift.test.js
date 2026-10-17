@@ -115,9 +115,16 @@ test('the PUBLISHED installer is built from the current agent source', (t) => {
   // trusting the version and size recorded in latest.json. The other four assertions in this file
   // are source-only and run on every pull request.
   if (!fs.existsSync(DIST_META)) {
-    t.diagnostic(`No built installer at ${DIST_META} (dist/ is gitignored).`);
-    t.diagnostic(`Backend now demands agent ${v}; run \`npm run test:release-gate\` from a working`);
-    t.diagnostic('copy holding the candidate dist before publishing, or the download serves the old version.');
+    const detail = `No built installer at ${DIST_META}. Backend demands agent ${v}.`;
+    // Under the release gate a missing artifact is the failure this test exists to catch: it is
+    // exactly the 2026-08-26 state (version bumped, installer never rebuilt). In ordinary PR CI
+    // there is nothing to compare against, so it is reported as a skip instead.
+    if (process.env.WH_RELEASE_GATE === '1') {
+      assert.fail(detail + '\nRun `node writehuman-v2/agent/build-installer.mjs`, or do not publish: '
+        + 'the dashboard would advertise a download that does not exist.');
+    }
+    t.diagnostic(detail);
+    t.diagnostic('Run `npm run test:release-gate` before publishing; there this is a FAILURE.');
     return t.skip('no built installer present — enforced by the release gate');
   }
   assert.ok(fs.existsSync(DIST_META),

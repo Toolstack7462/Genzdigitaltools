@@ -44,6 +44,44 @@ fi
 
 # ── 0) known_hosts: libssh2 (curl) can only use an RSA host key — purge any
 #       ed25519/ecdsa entry for this host and pin ONLY the RSA key. ───────────
+# ── AGENT RELEASE GATE ──────────────────────────────────────────────────────────────────────────
+# This script ships routes/admin/proxyTools.js, which carries EXPECTED_AGENT_VERSION: the version
+# the admin dashboard advertises and the field agents are told to update to. Shipping a version the
+# download does not actually serve is the 2026-08-26 failure (source bumped, installer never
+# rebuilt: every agent refused commands and the dashboard offered an update that did not exist).
+#
+# Two cases, and neither is a silent pass:
+#   a candidate dist IS present  -> this working copy is cutting an agent release. The gate must
+#                                   verify it (embedded source byte-identical, hashes, PE checksum)
+#                                   and a failure aborts the deploy.
+#   no candidate dist            -> this deploy publishes no installer, so the version it advertises
+#                                   must ALREADY be served. That is confirmed read-only against the
+#                                   live metadata; a mismatch aborts.
+AGENT_API_BASE="${DEPLOY_API_BASE:-https://api.genzdigitalstore.com}"
+AGENT_SRC_VERSION="$(sed -n "s/^const AGENT_VERSION = '\([^']*\)'.*/\1/p" writehuman-v2/agent/cookie-sync-agent.js | head -1)"
+echo "==> Agent release gate (tree advertises ${AGENT_SRC_VERSION})"
+if [[ -f writehuman-v2/agent/dist/latest.json ]]; then
+  echo "    candidate dist present - verifying it before anything is uploaded"
+  ( cd backend && npm run --silent test:release-gate )   # set -e aborts the deploy on failure
+  echo "    release gate PASSED"
+else
+  LIVE_VERSION="$(curl -fsS --max-time 15 "${AGENT_API_BASE}/api/crm/downloads/writehuman-agent/windows/latest.json" 2>/dev/null \
+                  | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 || true)"
+  if [[ -z "${LIVE_VERSION}" ]]; then
+    echo "ERROR: no candidate dist here and the live agent metadata could not be read." >&2
+    echo "       Cannot confirm that ${AGENT_SRC_VERSION} is actually downloadable. Build the" >&2
+    echo "       installer (node writehuman-v2/agent/build-installer.mjs) or fix connectivity." >&2
+    exit 1
+  fi
+  if [[ "${LIVE_VERSION}" != "${AGENT_SRC_VERSION}" ]]; then
+    echo "ERROR: this deploy would advertise agent ${AGENT_SRC_VERSION}, but the download serves" >&2
+    echo "       ${LIVE_VERSION}. Every field agent would be told to update to a version that is" >&2
+    echo "       not published. Build and publish the installer first." >&2
+    exit 1
+  fi
+  echo "    no candidate dist; live download already serves ${LIVE_VERSION} - consistent"
+fi
+
 echo "==> Refreshing known_hosts (RSA only) for [${HOST}]:${PORT}"
 ssh-keygen -R "[${HOST}]:${PORT}" >/dev/null 2>&1 || true
 ssh-keyscan -t rsa -p "${PORT}" "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
