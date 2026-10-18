@@ -101,12 +101,65 @@ test('valid local candidate + remote installer MISSING entirely -> BLOCK', async
   assert.match(out, /latest\.json returned HTTP 404|nothing is published/);
 });
 
-test('remote metadata unreachable -> BLOCK (never assumed healthy)', async () => {
+test('remote metadata unreachable -> BLOCK, and reported as UNVERIFIED not NOT READY', async () => {
+  // An unreachable host blocks the deploy, but it is NOT evidence about what is published. The
+  // script used to print "this deploy would advertise a version the download does not serve" after
+  // a transport failure, which asserts something the run never observed. Exit 3 (UNVERIFIED) is
+  // deliberately distinct from exit 1 (an observed readiness failure).
   const r = spawnSync(process.execPath,
     [SCRIPT, '--base', 'http://127.0.0.1:1', '--version', '3.5.15', '--sha256', SHA_315],
     { encoding: 'utf8', cwd: BACKEND, env: { ...process.env, WH_DIST_TIMEOUT_MS: '2000' } });
-  assert.notStrictEqual(r.status, 0);
-  assert.match((r.stdout || '') + (r.stderr || ''), /could not be fetched|NOT READY/);
+  const out = (r.stdout || '') + (r.stderr || '');
+  assert.notStrictEqual(r.status, 0, 'a deploy must still refuse to proceed');
+  assert.strictEqual(r.status, 3, 'transport failure must exit 3, not the observed-failure code 1');
+  assert.match(out, /UNVERIFIED for 3\.5\.15/);
+  assert.match(out, /\[TRANSPORT\]/, 'the failure class must be named');
+  assert.match(out, /could not be reached/);
+  assert.ok(!/would advertise a version the download does not serve/.test(out),
+    'nothing was observed about production, so no claim about it may be printed');
+  assert.ok(!/Publish the installer and its metadata/.test(out),
+    'publishing is not the remedy for an unreachable host');
+  assert.match(out, /readiness is UNKNOWN/);
+});
+
+describe('failure classes are separated, and all of them still block', () => {
+  // Each class gets its own exit code and its own named remedy, so a deploy log cannot be read as
+  // the wrong kind of problem. Exit 1 = the host answered and contradicted readiness.
+  test('HTTP failure: metadata 404 -> exit 1, NOT READY, [HTTP]', async () => {
+    const { status, out } = await check({ metaStatus: 404 });
+    assert.strictEqual(status, 1);
+    assert.match(out, /NOT READY for 3\.5\.15/);
+    assert.match(out, /\[HTTP\] latest\.json returned HTTP 404/);
+    assert.match(out, /HTTP failure — the host answered/);
+  });
+
+  test('VERSION mismatch: remote serves 3.5.2 -> exit 1, [VERSION], named as a version mismatch', async () => {
+    const older = { ...meta315, version: '3.5.2', size: EXE_352.length, sha256: sha256(EXE_352) };
+    const { status, out } = await check({ meta: older, body: EXE_352 });
+    assert.strictEqual(status, 1);
+    assert.match(out, /\[VERSION\]/);
+    assert.match(out, /VERSION mismatch — published metadata names a different release/);
+    assert.ok(!/UNVERIFIED/.test(out), 'the host WAS reached, so this is an observed failure');
+  });
+
+  test('BYTE/HASH mismatch: metadata matches but bytes differ -> exit 1, [HASH]', async () => {
+    const { status, out } = await check({ meta: meta315, body: Buffer.from('different bytes') });
+    assert.strictEqual(status, 1);
+    assert.match(out, /\[HASH\]/);
+    assert.match(out, /BYTE\/HASH mismatch — the served file is not the published release/);
+  });
+
+  test('METADATA invalid: a falsy body -> exit 1, [METADATA], never a pass', async () => {
+    const { status, out } = await check({ metaRaw: 'null' });
+    assert.strictEqual(status, 1);
+    assert.match(out, /\[METADATA\]/);
+    assert.match(out, /METADATA invalid — the descriptor cannot be trusted/);
+  });
+
+  test('a usage error stays exit 2, distinct from both verdicts', async () => {
+    const r = spawnSync(process.execPath, [SCRIPT], { encoding: 'utf8', cwd: BACKEND });
+    assert.strictEqual(r.status, 2);
+  });
 });
 
 // ── Matching metadata, bad bytes: the failure mode that looks healthiest ─────────────────────────

@@ -30,6 +30,10 @@
  *        [--sha256 <local candidate sha256>] [--skip-body]
  *
  * Exit codes: 0 = the advertised version is genuinely downloadable. Non-zero = do not deploy.
+ *   1 = NOT READY   — host reached, readiness contradicted (HTTP / metadata / version / hash)
+ *   2 = usage error
+ *   3 = UNVERIFIED  — host never reached, so nothing was observed about what is published.
+ *                     Deliberately distinct from 1: "unreachable" is not "serving the wrong file".
  */
 const crypto = require('node:crypto');
 
@@ -52,8 +56,30 @@ if (!base || !expectedVersion) {
 }
 
 const ROOT = `${base}/api/crm/downloads/writehuman-agent/windows`;
+// Every problem carries the CLASS of failure, because the remedies differ and an unreachable host
+// is not evidence about what is published. Conflating them printed "this deploy would advertise a
+// version the download does not serve" after a proxy denial — asserting something about production
+// that the run never observed.
+//   TRANSPORT  never reached the host (DNS, TLS, proxy/policy denial, timeout)
+//   HTTP       reached it; it answered non-2xx
+//   METADATA   got a body; it is not a usable descriptor
+//   VERSION    descriptor valid, advertises a DIFFERENT version
+//   HASH       bytes served do not match the published sha256/size
 const problems = [];
+const problem = (kind, message) => problems.push({ kind, message });
+const kinds = () => new Set(problems.map(p => p.kind));
 const TIMEOUT_MS = Number(process.env.WH_DIST_TIMEOUT_MS || 60000);
+
+/** A transport failure is the request never completing — not completing with bad news. */
+function transportDetail(e) {
+  const parts = [e && e.message ? e.message : String(e)];
+  const c = e && e.cause;
+  if (c) {
+    if (c.code) parts.push(`code ${c.code}`);
+    if (c.message && c.message !== parts[0]) parts.push(c.message);
+  }
+  return parts.join('; ');
+}
 
 /** What a non-object JSON body actually was, for an error an operator can act on. */
 function describe(v) {
@@ -68,13 +94,13 @@ async function main() {
   let fetched = false;
   try {
     const r = await fetch(`${ROOT}/latest.json`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (!r.ok) problems.push(`latest.json returned HTTP ${r.status} — nothing is published at ${ROOT}`);
+    if (!r.ok) problem('HTTP', `latest.json returned HTTP ${r.status} — nothing is published at ${ROOT}`);
     else {
       try { body = await r.json(); fetched = true; }
-      catch (e) { problems.push(`latest.json is not valid JSON: ${e.message}`); }
+      catch (e) { problem('METADATA', `latest.json is not valid JSON: ${e.message}`); }
     }
   } catch (e) {
-    problems.push(`latest.json could not be fetched: ${e.message}`);
+    problem('TRANSPORT', `${ROOT}/latest.json could not be reached: ${transportDetail(e)}`);
   }
 
   // 2. SHAPE AND REQUIRED FIELDS, before anything is trusted.
@@ -88,29 +114,29 @@ async function main() {
   let meta = null;
   if (fetched) {
     if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      problems.push(`latest.json is ${describe(body)}, not a metadata object — nothing is published `
+      problem('METADATA', `latest.json is ${describe(body)}, not a metadata object — nothing is published `
         + 'here, or the endpoint is returning a placeholder');
     } else {
       meta = body;
 
       if (typeof meta.version !== 'string' || meta.version.trim() === '') {
-        problems.push('published latest.json has no usable "version" string');
+        problem('METADATA', 'published latest.json has no usable "version" string');
       } else if (meta.version !== expectedVersion) {
-        problems.push(`the download advertises ${JSON.stringify(meta.version)} but this tree would `
+        problem('VERSION', `the download advertises ${JSON.stringify(meta.version)} but this tree would `
           + `advertise ${expectedVersion}. Publish the installer before deploying, or field agents `
           + 'are told to update to a version that is not downloadable.');
       }
 
       if (typeof meta.sha256 !== 'string' || !/^[0-9a-f]{64}$/i.test(meta.sha256)) {
-        problems.push('published latest.json has no valid sha256 (64 hex characters) — the download '
+        problem('METADATA', 'published latest.json has no valid sha256 (64 hex characters) — the download '
           + 'cannot be verified against anything');
       } else if (localSha && meta.sha256.toLowerCase() !== localSha.toLowerCase()) {
-        problems.push(`the published sha256 (${meta.sha256}) is not the local candidate `
+        problem('HASH', `the published sha256 (${meta.sha256}) is not the local candidate `
           + `(${localSha}). Same version string, different bytes.`);
       }
 
       if (!Number.isSafeInteger(meta.size) || meta.size <= 0) {
-        problems.push(`published latest.json has no valid "size" (got ${JSON.stringify(meta.size)}) — `
+        problem('METADATA', `published latest.json has no valid "size" (got ${JSON.stringify(meta.size)}) — `
           + 'a positive safe integer is required to detect a truncated download');
       }
     }
@@ -128,32 +154,52 @@ async function main() {
     try {
       const r = await fetch(`${ROOT}/latest`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
       if (!r.ok) {
-        problems.push(`the installer download returned HTTP ${r.status} — latest.json advertises a `
+        problem('HTTP', `the installer download returned HTTP ${r.status} — latest.json advertises a `
           + 'release whose bytes are not served');
       } else if (!r.body) {
-        problems.push('the installer download returned no body');
+        problem('HTTP', 'the installer download returned no body');
       } else {
         const h = crypto.createHash('sha256');
         let bytes = 0;
         for await (const chunk of r.body) { h.update(chunk); bytes += chunk.length; }
         const digest = h.digest('hex');
         if (digest !== meta.sha256.toLowerCase()) {
-          problems.push(`the downloaded installer hashes to ${digest} but latest.json advertises `
+          problem('HASH', `the downloaded installer hashes to ${digest} but latest.json advertises `
             + `${meta.sha256} — the served file is not the published release`);
         }
         if (bytes !== meta.size) {
-          problems.push(`the downloaded installer is ${bytes} bytes but latest.json says ${meta.size}`);
+          problem('HASH', `the downloaded installer is ${bytes} bytes but latest.json says ${meta.size}`);
         }
       }
     } catch (e) {
-      problems.push(`the installer download failed: ${e.message}`);
+      problem('TRANSPORT', `${ROOT}/latest could not be reached: ${transportDetail(e)}`);
     }
   }
 
   if (problems.length) {
-    console.error(`[agent-distribution] NOT READY for ${expectedVersion}:`);
-    for (const p of problems) console.error(`  - ${p}`);
-    console.error('\nThis deploy would advertise a version the download does not serve.');
+    const k = kinds();
+    // Reached the host and it told us something is wrong => an OBSERVED readiness failure.
+    // Never reached it => nothing was observed about what is published. Both block a deploy; only
+    // the first licenses any statement about production.
+    const observed = k.has('HTTP') || k.has('METADATA') || k.has('VERSION') || k.has('HASH');
+    console.error(`[agent-distribution] ${observed ? 'NOT READY' : 'UNVERIFIED'} for ${expectedVersion}:`);
+    for (const p of problems) console.error(`  - [${p.kind}] ${p.message}`);
+
+    if (!observed) {
+      console.error('\nThe host was never reached, so this run observed NOTHING about what is');
+      console.error('published. That is not evidence production serves an older installer, nor that');
+      console.error('it serves the right one — distribution readiness is UNKNOWN.');
+      console.error('Check DNS, TLS, timeouts and any egress proxy or network policy for this host,');
+      console.error('then re-run. Do not publish anything to make this check pass.');
+      process.exit(3);   // still non-zero: a deploy must refuse to proceed
+    }
+
+    console.error('\nThis deploy would advertise a version the download does not serve:');
+    if (k.has('VERSION'))   console.error('  VERSION mismatch — published metadata names a different release.');
+    if (k.has('HASH'))      console.error('  BYTE/HASH mismatch — the served file is not the published release.');
+    if (k.has('HTTP'))      console.error('  HTTP failure — the host answered, but not with the artifact.');
+    if (k.has('METADATA'))  console.error('  METADATA invalid — the descriptor cannot be trusted.');
+    if (k.has('TRANSPORT')) console.error('  (a request also failed in transport; see [TRANSPORT] above)');
     console.error('Publish the installer and its metadata, then re-run this check.');
     process.exit(1);
   }

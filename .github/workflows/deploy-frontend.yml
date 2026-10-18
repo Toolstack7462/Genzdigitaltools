@@ -31,7 +31,15 @@ on:
     paths:
       - 'frontend/**'
       - '.github/workflows/deploy-frontend.yml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: >-
+          Commit/tag the server is believed to hold BEFORE this run (the gate's clean-room
+          baseline). Leave empty for HEAD~1. On a rollback, set it to the ref being rolled back
+          FROM — HEAD~1 of the rollback target is not the deployed state.
+        required: false
+        default: ''
 
 concurrency:
   group: deploy-frontend
@@ -61,10 +69,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # On a push to main the baseline is main's PREVIOUS commit: that is what the server holds
-      # before this deploy lands.
+      # BASELINE, stated explicitly for each way this workflow starts. The clean-room check models
+      # the tree the server already holds, so the baseline must be that — not simply "one commit
+      # back".
+      #
+      #   push to main        HEAD~1. A proxy, not a fact: this deploy is path-filtered to
+      #                       frontend/**, so a main commit that touched only the backend did not
+      #                       deploy, and HEAD~1 can therefore be a commit that was never shipped.
+      #                       It is the conservative choice available here — it can only make the
+      #                       baseline older, never newer, so the check cannot pass by assuming the
+      #                       server already has a module it does not.
+      #   workflow_dispatch   the baseline_ref input. Required for a rollback: HEAD~1 of the
+      #                       rollback TARGET is an even older commit, not the state being
+      #                       replaced, so the caller names the ref being rolled back from.
+      #
+      # The BACKEND is deployed manually by deploy-*.sh, so no CI run can know which commit is
+      # actually live on the API host. This baseline is the frontend deploy's own; the authoritative
+      # backend check is the pre-flight inside the deploy script, run from the operator's tree. The
+      # two are deliberately not conflated.
       - name: Resolve deploy baseline
-        run: echo "DEPLOY_BASELINE_REF=HEAD~1" >> "$GITHUB_ENV"
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline_ref }}
+        run: |
+          REF="${INPUT_BASELINE:-}"
+          if [ -z "$REF" ]; then REF='HEAD~1'; fi
+          echo "DEPLOY_BASELINE_REF=$REF" >> "$GITHUB_ENV"
+          echo "clean-room baseline: $REF"
+          # Resolve it here too, so a bad input fails with a clear message rather than inside a test.
+          git rev-parse --verify "$REF" >/dev/null || {
+            echo "::error::baseline_ref '$REF' does not resolve in this checkout"; exit 1; }
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
