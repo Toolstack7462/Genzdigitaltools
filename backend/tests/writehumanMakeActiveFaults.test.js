@@ -27,6 +27,7 @@
  * activation for the same device. The retry decision stays with the operator.
  */
 const test = require('node:test');
+const { describe } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('http');
 const path = require('path');
@@ -271,4 +272,88 @@ test('the activation diagnostic route is a GET and changes nothing', () => {
     "the only write must be guarded by the stale-expiry condition");
   assert.match(body, /can legitimately need to persist/,
     'the documented reason for that single write must stay with it');
+});
+
+/**
+ * THE PERSISTENCE BOUNDARY: which refusals prove nothing was queued, and which do not.
+ *
+ * "The request failed, so nothing happened" is false on this route, and an operator acting on that
+ * assumption will misread the next /activation. The boundary is `await account.save()`:
+ *
+ *   before it  404 No account · 404 DEVICE_UNKNOWN · 409 ALREADY_ACTIVE · 409 DEVICE_<STATE> ·
+ *              409 from validateTarget            -> nothing persisted
+ *   after it   400 Could not queue the capture command -> activation.fail() IS SAVED, so a failed
+ *              transaction exists and appears in /activation
+ *   unknown    500 / 503                          -> the throw may be either side of a save
+ *
+ * These assertions pin that ordering in the source, so a refactor cannot quietly move a refusal
+ * across the save and invalidate docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md section 5. They are
+ * structural by necessity: reaching the post-save paths for real needs a live database.
+ */
+describe('make-active persistence boundary', () => {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(BACKEND, 'routes', 'admin', 'proxyTools.js'), 'utf8');
+  const start = src.indexOf("make-active', requireCsrf");
+  assert.ok(start > -1, 'make-active route not found');
+  // The route body, up to the catch that closes it.
+  const route = src.slice(start, src.indexOf('Failed to start the activation', start));
+  const at = (needle) => route.indexOf(needle);
+
+  test('every pre-create refusal returns before the first save', () => {
+    const firstSave = at('await account.save()');
+    assert.ok(firstSave > -1, 'expected a save in the route');
+    for (const refusal of ["'No account'", 'DEVICE_UNKNOWN', "'ALREADY_ACTIVE'",
+      "'DEVICE_' + st.state", 'code: t.code']) {
+      const i = at(refusal);
+      assert.ok(i > -1, `refusal ${refusal} not found — update the capture doc if it moved`);
+      assert.ok(i < firstSave,
+        `${refusal} must be returned BEFORE any account.save(), or "nothing was queued" stops `
+        + 'being true for it and docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md section 5 is wrong');
+    }
+  });
+
+  test('the enqueue-failure path DOES persist, and persists a failure record', () => {
+    const fail = at('activation.fail(account');
+    const save = route.indexOf('await account.save()', fail);
+    const respond = at("code: q.code, error: 'Could not queue the capture command.'");
+    assert.ok(fail > -1 && save > -1 && respond > -1, 'the enqueue-failure path changed shape');
+    assert.ok(fail < save && save < respond,
+      'the 400 must be returned AFTER activation.fail() has been saved — that is precisely why a '
+      + '400 does not mean "nothing happened"');
+  });
+
+  test('activation.create failure is NOT followed by a save on that path', () => {
+    const create = at('activation.create(account');
+    const createRefusal = at("'Could not start the activation.'");
+    assert.ok(create > -1 && createRefusal > -1);
+    const between = route.slice(create, createRefusal);
+    assert.ok(!/await account\.save\(\)/.test(between),
+      'a create failure must not persist: the in-memory mutation is discarded with the request');
+  });
+
+  test('the success path saves before reporting success', () => {
+    const attach = at('activation.attachCommand(');
+    const save = route.indexOf('await account.save()', attach);
+    const ok = at('activation: activation.publicView(');
+    assert.ok(attach > -1 && save > -1 && ok > -1);
+    assert.ok(save < ok, 'a 200 must not be reported before the transaction is durable');
+  });
+
+  test('the capture doc states the boundary it depends on', () => {
+    const doc = fs.readFileSync(
+      path.join(BACKEND, '..', 'writehuman-v2', 'docs', 'MARK-ACTIVE-EVIDENCE-CAPTURE.md'), 'utf8');
+    assert.match(doc, /STATE-CHANGING/,
+      'the doc must not describe pressing Mark as Active as read-only');
+    assert.match(doc, /separate explicit approval/);
+    assert.match(doc, /INDETERMINATE/,
+      'the doc must record that a 500/503 does not prove nothing was persisted');
+    assert.match(doc, /failed activation record is persisted/,
+      'the doc must record that a 400 DOES persist a failure record');
+    assert.ok(/Never attach an older `failureCode`/.test(doc),
+      'the doc must forbid assigning an old failureCode to a new request');
+    for (const forbidden of ['HAR', 'Authorization']) {
+      assert.ok(doc.includes(forbidden),
+        `the doc must explicitly exclude ${forbidden} from what gets exported`);
+    }
+  });
 });
