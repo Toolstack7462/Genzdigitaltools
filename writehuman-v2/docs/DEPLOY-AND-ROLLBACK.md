@@ -1,46 +1,44 @@
 # Deployment path and rollback — candidate 3.5.15
 
-**Deployment ATTEMPTED and stopped before any write.** Controlled `workflow_dispatch` run
-[39121274719](https://github.com/Toolstack7462/Genzdigitaltools/actions/runs/39121274719) at
-`982b696`:
+## FRONTEND DEPLOYED — run 39127844059, SHA `5c3bd00`, 2026-10-18T12:40Z
 
-| job / step | result |
+Controlled single `workflow_dispatch` at `candidate/writehuman-3.5.15-integration`. `main` was not
+merged, so no merge-triggered second release could race it.
+
+| stage | result |
 |---|---|
-| Gate — backend syntax, `test:ci`, frontend tests, baseline resolved | **success** |
-| extension-ZIP check, build, sanity, never-overwrite-newer-extension | **success** |
-| **Install deploy key and PINNED host key** | **failure** — `Secret HOSTINGER_SSH_PRIVATE_KEY is not set in the 'production' environment` |
-| record rollback point, backup, SFTP upload, live verification | **skipped** |
+| Gate — backend syntax, `test:ci`, frontend tests | **success** |
+| Extension ZIP vs manifest; never-overwrite-newer-live-extension | **success** |
+| Install deploy key + **PINNED** host key (`ssh-keygen -F` verified) | **success** |
+| Unlock encrypted key | **success** |
+| Record live build (rollback point) | **success** 12:37:17Z |
+| Targeted timestamped backup | **success** 12:37:18Z → 12:37:25Z |
+| SFTP upload to BOTH web roots | **success** 12:37:25Z → 12:39:17Z (112 s) |
+| Verify live bundle on both domains | **success** — matched on the FIRST attempt, no retry |
+| Verify every asset is fetchable with a real JS/CSS content type | **success** (50 s) |
 
-Nothing was uploaded; no backup was needed because nothing was replaced. The fail-closed design
-worked: the credential step is the first thing that touches production and it refused to continue.
+**Live bundle:** `main.ce190adc.js`, source fingerprint `15eb6d3ecfcc…`, 295 inputs — the build this
+run produced from `5c3bd00`. Both roots serve it; the verify step asserts live-equals-built, so a
+partial upload could not have passed.
 
-Note the extension guard step **succeeded**, which required outbound HTTPS to both live domains — so
-**runner connectivity to the web roots is confirmed**, independently of this container's own network
-policy.
+**Backup location:** `~/deploy-backups/frontend-20261018T1237{18,19}Z/{main,app}.tar.gz` on the
+Hostinger account — outside both public web roots. Contains only the replaced deploy surface
+(`index.html`, `asset-manifest.json`, `build-source.json`, `.htaccess`, `static/`). No account-wide
+backup, no `.env`, no uploads, no database. `ls ~/deploy-backups/` confirms the exact name.
 
-**Remaining input: two repository/environment secrets** (see §6). Nothing else is outstanding for
-the frontend component.
+**Rollback point:** recorded in the run's job summary (live bundle + `sourceFingerprint` of both
+domains as they were immediately before the upload). Section 3 is the procedure.
 
-## 1. What a merge actually does
+### Still UNVERIFIED after this deploy — needs an authenticated session
 
-`.github/workflows/deploy-frontend.yml` triggers on **push to `main`** limited to
-`paths: frontend/**` and the workflow file itself. This branch changes `frontend/**`, so **merging
-PR #14 publishes the frontend to both live web roots** over SFTP:
+The runner proves the bytes are published and fetchable. It cannot sign in, so these are **not**
+claimed and must be checked in the browser (no production contact values are to be changed):
 
-- `genzdigitalstore.com/public_html`
-- `app.genzdigitalstore.com/public_html` (serves `/login`, `/client/*`, `/admin/*`)
-
-A merge is therefore a deployment, not a staging step.
-
-**Gate added in this branch.** That workflow previously ran no test suite: `ci-tests.yml` covers
-pull requests and non-`main` branches, so a merge went to production ungated — including past
-`frontendBuildFreshness` (is the committed bundle the one this source builds?) and
-`deployCleanRoom` (would the deployed tree resolve every module?). A `gate` job now runs the
-backend `test:ci`, the backend syntax check and the frontend tests, and `build-and-deploy` carries
-`needs: gate`.
-
-**The backend is NOT auto-deployed.** Every `deploy-*.sh` is manual and SFTP-based. The agent
-installer is likewise published by a separate manual step.
+- **Admin → Content → Support Contact** menu entry visible, page loads, current saved values shown.
+  Check once at a normal window and once inside **Business CRM at a 1024–1279px width** — that is
+  the exact gap this release closes.
+- **Zee** launcher opens, restores focus on close, and its support link carries the live number.
+- Login, client and admin routing; existing tools and sessions unaffected.
 
 ## 2. What this deploy would change
 
