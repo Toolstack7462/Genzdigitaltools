@@ -232,7 +232,7 @@ jobs:
             exit 1
           fi
           ssh-keygen -l -f "$D/id_deploy" >/dev/null 2>&1 \
-            || echo "::warning::Could not read the key's fingerprint without a passphrase — expected for an encrypted key; continuing.
+            || echo "::warning::Could not read the key's fingerprint without a passphrase — expected for an encrypted key; continuing."
           if ! ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null 2>&1; then
             echo "::error::HOSTINGER_SSH_KNOWN_HOSTS does not contain an entry for [${SFTP_HOST}]:${SFTP_PORT}. Generate it with the hPanel-published fingerprint and the bracketed host:port form."
             exit 1

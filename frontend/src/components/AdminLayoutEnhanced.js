@@ -75,10 +75,21 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   // ── Business CRM workspace mode (route-scoped) ────────────────────────────
   // Inside /admin/business/* the CRM renders its own full sidebar, so showing this one as well
-  // produced TWO full text sidebars and squeezed the content column on laptops. Here the global
-  // Admin nav collapses to an icon rail at >=1280px and hides entirely between 1024-1279px, where
-  // the CRM toolbar provides a "Back to Admin Console" control instead. Every other Admin page is
-  // untouched — `compact` is false and the original classes apply verbatim.
+  // produced TWO full text sidebars and squeezed the content column on laptops. The global Admin
+  // nav therefore collapses to a 72px ICON RAIL here. Every other Admin page is untouched —
+  // `compact` is false and the original classes apply verbatim.
+  //
+  // THE RAIL IS AVAILABLE FROM lg (1024px), NOT xl. It used to be `hidden xl:flex`, while the
+  // hamburger drawer is `lg:hidden` — so between 1024px and 1279px NEITHER existed and the CRM
+  // had no admin navigation at all: no Support Contact, no Blog, no Members, no way back to the
+  // console except editing the URL. That is an ordinary laptop window, and it is why the Support
+  // Contact entry "disappeared". An earlier comment here claimed the CRM toolbar offered a
+  // "Back to Admin Console" control instead; no such control exists anywhere in the frontend.
+  //
+  // The gap is closed by widening the RAIL's availability, not by restoring a full text sidebar —
+  // 72px does not reproduce the squeeze that the rail was introduced to fix. Rail entries carry
+  // aria-label and title, so each icon keeps an accessible name without a visible label.
+  // Pinned by components/__tests__/adminNavReachability.test.js.
   const crmWorkspace = location.pathname.startsWith('/admin/business');
 
   // RENDER HELPER, NOT A COMPONENT — call it, never write <renderSidebar />.
@@ -171,8 +182,9 @@ const AdminLayoutEnhanced = ({ children }) => {
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ background: 'var(--gradient-app)' }}>
-      {/* Desktop sidebar — icon rail at >=1280px inside the CRM, hidden 1024-1279px, full elsewhere */}
-      <div className={crmWorkspace ? 'hidden xl:flex w-[72px] flex-shrink-0' : 'hidden lg:flex w-56 flex-shrink-0'}>
+      {/* Desktop sidebar — 72px icon rail inside the CRM, full elsewhere; both from lg (1024px),
+          which is exactly where the hamburger drawer stops, so no width is left without nav. */}
+      <div className={crmWorkspace ? 'hidden lg:flex w-[72px] flex-shrink-0' : 'hidden lg:flex w-56 flex-shrink-0'}>
         {renderSidebar({ compact: crmWorkspace })}
       </div>
 

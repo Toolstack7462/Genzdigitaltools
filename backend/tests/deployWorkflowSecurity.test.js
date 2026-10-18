@@ -149,3 +149,99 @@ describe('deploy-frontend.yml: the reviewed release behaviour is preserved', () 
       'the asset check must assert real JS/CSS content types — a SPA fallback can answer 200');
   });
 });
+
+/**
+ * SHELL SYNTAX OF EVERY `run:` BLOCK.
+ *
+ * A production-capable workflow step is a shell script that nothing checks until it runs against
+ * the live host. One edit to this file left `echo "…continuing.` without its closing quote, which
+ * swallowed the REST of that step — including the `ssh-keygen -F` host-key pin verification — into
+ * a string literal. The step still exited non-zero for an unrelated reason, so the break was
+ * invisible: had the known_hosts secret been present, the pin check would simply not have run.
+ *
+ * `bash -n` parses without executing, so this is safe and fast. A dependency-free extractor is used
+ * because the backend has no YAML parser and this check must not add one.
+ */
+const { execFileSync } = require('child_process');
+const os = require('os');
+
+/** Pull every `run: |`-style block out of a workflow, with its step name for the failure message. */
+function runBlocks(yamlText) {
+  const lines = yamlText.split('\n');
+  const blocks = [];
+  let lastName = '<unnamed>';
+  for (let i = 0; i < lines.length; i++) {
+    const nameMatch = /^\s*-?\s*name:\s*(.+?)\s*$/.exec(lines[i]);
+    if (nameMatch) lastName = nameMatch[1];
+    const runMatch = /^(\s*)run:\s*[|>][-+]?\s*$/.exec(lines[i]);
+    if (!runMatch) continue;
+    const baseIndent = runMatch[1].length;
+    const body = [];
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const l = lines[j];
+      if (l.trim() === '') { body.push(''); continue; }
+      const indent = l.length - l.trimStart().length;
+      if (indent <= baseIndent) break;
+      body.push(l);
+    }
+    // Strip the common indentation so bash sees a normal script.
+    const indents = body.filter(l => l.trim()).map(l => l.length - l.trimStart().length);
+    const strip = indents.length ? Math.min(...indents) : 0;
+    blocks.push({ name: lastName, script: body.map(l => l.slice(strip)).join('\n') });
+    i = j - 1;
+  }
+  return blocks;
+}
+
+describe('every workflow run: block is valid shell', () => {
+  const WORKFLOWS = path.join(__dirname, '..', '..', '.github', 'workflows');
+
+  for (const file of fs.readdirSync(WORKFLOWS).filter(f => /\.ya?ml$/.test(f))) {
+    test(`${file}: all run blocks parse under bash -n`, () => {
+      const blocks = runBlocks(fs.readFileSync(path.join(WORKFLOWS, file), 'utf8'));
+      assert.ok(blocks.length > 0, `expected to find run: blocks in ${file}`);
+      const failures = [];
+      for (const b of blocks) {
+        const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-sh-')), 'step.sh');
+        fs.writeFileSync(tmp, b.script);
+        try {
+          execFileSync('bash', ['-n', tmp], { stdio: 'pipe' });
+        } catch (e) {
+          failures.push(`${b.name}: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+        } finally {
+          fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
+        }
+      }
+      assert.deepEqual(failures, [],
+        `shell syntax errors in ${file} — these steps would misbehave or silently skip commands`);
+    });
+  }
+
+  test('the extractor really does find the deploy workflow steps it must cover', () => {
+    // Guards against the extractor silently matching nothing, which would make the test vacuous.
+    const blocks = runBlocks(fs.readFileSync(path.join(WORKFLOWS, 'deploy-frontend.yml'), 'utf8'));
+    const names = blocks.map(b => b.name);
+    for (const required of ['Install deploy key and PINNED host key',
+      'Back up the files being replaced', 'Deploy via SFTP to BOTH web roots']) {
+      assert.ok(names.includes(required), `extractor missed the "${required}" step`);
+    }
+    // Self-consistent rather than an arbitrary floor: every `run: |` in the file must be found.
+    // Single-line `run: cmd` steps are intentionally not extracted — there is no multi-line script
+    // to mis-parse — so they are excluded from the count too.
+    const src = fs.readFileSync(path.join(WORKFLOWS, 'deploy-frontend.yml'), 'utf8');
+    const declared = (src.match(/^\s*run:\s*[|>][-+]?\s*$/gm) || []).length;
+    assert.equal(blocks.length, declared,
+      `extractor found ${blocks.length} multi-line run blocks but the file declares ${declared}`);
+    assert.ok(declared > 0, 'the deploy workflow must have multi-line run blocks to check');
+  });
+
+  test('an unterminated string IS caught (the defect this test exists for)', () => {
+    const broken = 'echo "unterminated\nssh-keygen -F host -f kh || exit 1\n';
+    const tmp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wf-neg-')), 'step.sh');
+    fs.writeFileSync(tmp, broken);
+    assert.throws(() => execFileSync('bash', ['-n', tmp], { stdio: 'pipe' }),
+      'bash -n must reject an unterminated string, or this whole check proves nothing');
+    fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
+  });
+});

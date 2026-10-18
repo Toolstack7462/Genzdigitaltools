@@ -16,15 +16,42 @@ const SOURCE_LABEL = {
   default: 'Built-in default',
 };
 
+/**
+ * MAY THE ADMIN WRITE? Only when the current values were actually READ.
+ *
+ * Two ways the read can fail, and both used to leave a blank-but-editable form:
+ *   - the GET itself fails                              -> `view` is null, `loadFailed` is true
+ *   - the GET succeeds but the server's row read failed  -> `storedAvailable: false`
+ *
+ * Either way the fields are blank for a reason that has nothing to do with what is stored — and an
+ * empty string on PUT means "clear to the fallback", so one Save would wipe the real support
+ * contact with no error anywhere, because the request succeeded. Blank-because-UNKNOWN must never
+ * be submittable; blank-because-genuinely-empty still is.
+ *
+ * A server predating `storedAvailable` omits the field; that counts as available, so an older API
+ * does not lock the editor.
+ *
+ * Exported for direct testing: this guard is the load-bearing part of the page.
+ */
+export function isStoredKnown({ loadFailed, view }) {
+  if (loadFailed) return false;
+  if (view == null) return false;
+  return view.storedAvailable !== false;
+}
+
 const AdminSupportContact = () => {
   const { showSuccess, showError } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [view, setView] = useState(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [form, setForm] = useState({ whatsappNumber: '', supportEmail: '' });
+
+  const storedKnown = isStoredKnown({ loadFailed, view });
 
   const apply = (data) => {
     setView(data);
+    setLoadFailed(false);
     setForm({
       whatsappNumber: data?.stored?.whatsappNumber ? `+${data.stored.whatsappNumber}` : '',
       supportEmail: data?.stored?.supportEmail || '',
@@ -36,7 +63,12 @@ const AdminSupportContact = () => {
       setLoading(true);
       const res = await api.get('/admin/support-settings');
       apply(res.data);
-    } catch (_) { showError('Failed to load support contact'); }
+    } catch (_) {
+      setLoadFailed(true);
+      setView(null);
+      setForm({ whatsappNumber: '', supportEmail: '' });
+      showError('Failed to load support contact');
+    }
     finally { setLoading(false); }
   }, [showError]);
 
@@ -47,7 +79,13 @@ const AdminSupportContact = () => {
       setSaving(true);
       const res = await api.put('/admin/support-settings', patch);
       apply(res.data);
-      showSuccess('Support contact saved. Live everywhere within about a minute.');
+      // TRUTHFUL, because two 60s layers stack and only one of them is cleared by this save:
+      // updateSupportContact() clears the in-memory cache of the worker that handled THIS request,
+      // but other Passenger workers keep their own copy for up to CACHE_TTL_MS (60s); and the
+      // public endpoint is served with `Cache-Control: public, max-age=60`, so a browser or CDN can
+      // hold the previous value for another 60s. Worst case is therefore ~2 minutes, and only on a
+      // visitor's NEXT page load. "Within about a minute" was optimistic.
+      showSuccess('Support contact saved. Visitors see it on their next page load, usually within a minute and at most about two.');
     } catch (err) {
       showError(err?.response?.data?.error || 'Failed to save support contact');
     } finally { setSaving(false); }
@@ -87,13 +125,38 @@ const AdminSupportContact = () => {
               </div>
             )}
 
+            {!storedKnown && (
+              <div className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 space-y-2 border-amber-300`}
+                   data-testid="support-stored-unavailable" role="alert">
+                <div className="text-sm font-bold text-amber-700">
+                  The saved support contact could not be read.
+                </div>
+                <p className="text-sm text-genz-navy">
+                  The fields below are blank because the current values are <strong>unknown</strong>,
+                  not because they are empty. Saving is disabled so an edit cannot overwrite them.
+                  Visitors are unaffected — the live contact above is still being served.
+                </p>
+                <button type="button" onClick={load} disabled={loading}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold border border-genz-border text-genz-navy hover:bg-genz-bg disabled:opacity-60"
+                  data-testid="support-retry">
+                  Try again
+                </button>
+              </div>
+            )}
+
             <form
               className={`${ADMIN_CARD_VARIANTS.default} rounded-2xl p-4 space-y-4`}
-              onSubmit={(e) => { e.preventDefault(); save({ whatsappNumber: form.whatsappNumber, supportEmail: form.supportEmail }); }}
+              onSubmit={(e) => {
+                e.preventDefault();
+                // Belt and braces: the button is disabled, but a form can also be submitted by
+                // pressing Enter in a field, so the guard lives on the handler too.
+                if (!storedKnown) return;
+                save({ whatsappNumber: form.whatsappNumber, supportEmail: form.supportEmail });
+              }}
             >
               <label className="block space-y-1.5">
                 <span className="text-sm font-semibold text-genz-navy">WhatsApp support number</span>
-                <input className={inputCls} inputMode="tel" autoComplete="off" maxLength={24}
+                <input className={inputCls} inputMode="tel" autoComplete="off" maxLength={24} disabled={!storedKnown}
                   placeholder={fallback ? fallback.whatsappDisplay : '+92 335 5500134'}
                   value={form.whatsappNumber}
                   onChange={e => setForm(f => ({ ...f, whatsappNumber: e.target.value }))}
@@ -103,7 +166,7 @@ const AdminSupportContact = () => {
 
               <label className="block space-y-1.5">
                 <span className="text-sm font-semibold text-genz-navy">Support email</span>
-                <input className={inputCls} type="email" autoComplete="off" maxLength={254}
+                <input className={inputCls} type="email" autoComplete="off" maxLength={254} disabled={!storedKnown}
                   placeholder={fallback ? fallback.email : 'admin@genzdigitalstore.com'}
                   value={form.supportEmail}
                   onChange={e => setForm(f => ({ ...f, supportEmail: e.target.value }))}
@@ -113,16 +176,20 @@ const AdminSupportContact = () => {
               <p className="flex items-start gap-2 text-xs text-genz-muted">
                 <Info size={14} className="mt-0.5 shrink-0" />
                 Leave a field empty to use the server default{fallback ? ` (${fallback.whatsappDisplay} · ${fallback.email})` : ''}.
-                Visitors pick up a change on their next page load; already-open pages keep the previous value until refreshed.
+                Visitors pick up a change on their next page load — usually within a minute, at most about two
+                (each server worker caches for 60s and the public response is cacheable for 60s).
+                Already-open pages keep the previous value until refreshed.
               </p>
 
               <div className="flex flex-wrap gap-2.5">
-                <button type="submit" disabled={saving}
+                <button type="submit" disabled={saving || !storedKnown}
+                  title={!storedKnown ? 'Disabled: the saved values could not be read' : undefined}
                   className="btn-grad inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold disabled:opacity-60">
                   {saving ? <Loader2 size={15} className="animate-spin" /> : <Save size={15} />} Save
                 </button>
-                <button type="button" disabled={saving}
-                  onClick={() => save({ whatsappNumber: '', supportEmail: '' })}
+                <button type="button" disabled={saving || !storedKnown}
+                  title={!storedKnown ? 'Disabled: the saved values could not be read' : undefined}
+                  onClick={() => { if (!storedKnown) return; save({ whatsappNumber: '', supportEmail: '' }); }}
                   className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-genz-border text-genz-navy hover:bg-genz-bg disabled:opacity-60">
                   <RotateCcw size={15} /> Reset to defaults
                 </button>
