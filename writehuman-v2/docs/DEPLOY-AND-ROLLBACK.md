@@ -41,7 +41,7 @@ roots. No live hash was read in this session (§5), so "currently served" is unc
 
 | | restores | rebuilds? | keeps the gate? |
 |---|---|---|---|
-| `deploy-frontend.yml` (workflow, SFTP, verifies live hash on both domains) | the **source** at the chosen ref | **YES** — runs `npm run build` and uploads what it produces | only if the ref carries the gate |
+| `deploy-frontend.yml` (workflow, SFTP, verifies live hash on both domains) | the **source** at the chosen ref | **YES** — runs `npm run build` and uploads what it produces, so the shipped bundle filename can differ from the committed one (§3.4a) | only if the ref carries the gate |
 | `deploy-frontend-only.sh` (manual) | the **committed `frontend/build/` artifact byte for byte** | no | n/a — no CI gate at all |
 
 The workflow is a **rebuild from source**, not an artifact restore. An earlier revision of this file
@@ -73,29 +73,88 @@ A `workflow_dispatch` run executes the workflow file **as it exists at the chose
 predates the `gate` job, so dispatching there deploys with **no test gate** — the reviewed safety
 checks would be silently absent from the very run you are relying on under pressure.
 
-### 3.4 Supported, pinned procedure: roll back the CONTENT, keep the WORKFLOW
+### 3.4 Supported, pinned procedure: restore the CONTENT, keep the WORKFLOW
 
 Restore only `frontend/` from the candidate onto current `main`, so the gate and every other
-reviewed check still apply:
+reviewed check still apply.
+
+> **`git checkout <ref> -- frontend/` DOES NOT WORK HERE, and an earlier revision of this file was
+> wrong to prescribe it.** That form is an **overlay**: it writes the files the ref has and *leaves
+> every tracked file the ref does not have*. Reproduced in a throwaway clone with a tracked
+> candidate-only frontend file added, it left the marker **and 181 other candidate-only files** in
+> place — new hashed bundle chunks among them — so the "rolled back" docroot is a **mixture of two
+> builds**, and `mirror -R` uploads both sets. 182 files still differed from the target.
+>
+> `git restore --source=… --staged --worktree` is **non-overlay**: files absent from the source are
+> removed from the index and the working tree, so the result equals the source exactly. Same
+> reproduction: marker removed, **0 files differing**, index matching, `backend/` and `.github/`
+> untouched. Pinned by `backend/tests/rollbackRestoreSemantics.test.js`.
+
+**Step 1 — restore the source exactly.**
 
 ```
 git fetch origin main && git switch -c rollback/frontend-restore origin/main
-git checkout rollback/frontend-pre-3.5.15 -- frontend/      # content only; .github/ untouched
-git commit -m "rollback: restore frontend to rollback/frontend-pre-3.5.15 (pre-3.5.15 candidate)"
+git restore --source=rollback/frontend-pre-3.5.15 --staged --worktree -- frontend/
+```
+
+**Step 2 — assert it, before building anything.** A restore that silently retained files is the
+failure this whole subsection exists to prevent, so verify rather than assume:
+
+```
+# the tracked frontend tree must equal the target, INCLUDING deletions
+git diff --quiet rollback/frontend-pre-3.5.15 -- frontend/         || { echo "worktree differs"; exit 1; }
+git diff --cached --quiet rollback/frontend-pre-3.5.15 -- frontend/ || { echo "index differs";    exit 1; }
+
+# and nothing outside frontend/ moved — the gate and the deploy-script fixes must survive
+git diff --quiet origin/main -- backend/ .github/                  || { echo "safety files changed"; exit 1; }
+```
+
+Both `--quiet` checks are required: `--staged` is what makes the *commit* correct, and a worktree
+match with a stale index would commit the wrong tree.
+
+**Do not run a blanket `git clean`.** The restore does not need one, and it would destroy
+uncommitted work. Untracked files survive the restore and do not make the tracked tree differ from
+the target — asserted by the regression.
+
+**Step 3 — rebuild, then commit.** See §3.4a: the target's committed bundle is stale, so it cannot
+be shipped as-is.
+
+```
+cd frontend && npm run build && cd ..      # regenerates build/ and re-stamps build-source.json
+git add -A frontend/ && git commit -m "rollback: restore frontend to the pre-3.5.15 source"
 git push -u origin rollback/frontend-restore
 ```
 
-Then either open a PR and merge it to `main` (the path filter re-triggers the deploy, through the
-gate), or dispatch the workflow at `rollback/frontend-restore` — a **branch** name, which
-`workflow_dispatch` accepts — passing `baseline_ref` = the ref being rolled back **from** (the
-`main` SHA then live), because `HEAD~1` of the restore commit is not the state being replaced.
+**Step 4 — deploy through the gate.** Either open a PR and merge to `main` (the path filter
+re-triggers the deploy, through the gate), or dispatch the workflow at `rollback/frontend-restore` —
+a **branch** name, which `workflow_dispatch` accepts — passing `baseline_ref` = the ref being rolled
+back **from** (the `main` SHA then live), because `HEAD~1` of the restore commit is not the state
+being replaced.
 
 Note the asymmetry: the **dispatch `ref` must be a branch or tag**, but **`baseline_ref` is resolved
 with `git rev-parse`, so a raw SHA is fine there** — and is usually the precise thing to pass.
 
-Confirm afterwards from the run's own *"Verify live bundle on both domains"* and *"assets are
-actually FETCHABLE"* steps. Expect `main.020d28e1.js` **or** a rebuild of that same source: the
-workflow rebuilds, so `stampedAt` moves even when the fingerprint does not.
+### 3.4a The rollback target's committed bundle is STALE — measured
+
+Running `frontendBuildFreshness` against `42a3aab`'s own tree **fails**: the stamp records source
+fingerprint `8a39ce486943…` while that same tree's 252 source files actually hash to
+`8eaddcc58c56…`. This is a pre-existing condition on `main`, not something the rollback introduces.
+
+Two consequences, both load-bearing:
+
+1. **A content-only rollback that commits the target's bundle as-is would fail the new `gate` job**,
+   because the gate runs `test:ci`, which includes that freshness check. Hence step 3: restore the
+   **source** exactly, then **rebuild**. After rebuilding the restored source the check passes 5/5.
+2. **A matching bundle filename proves nothing about source restoration — in either direction.**
+   - The *overlay* (wrong) restore reported `"mainBundle": "main.020d28e1.js"` — the correct old
+     filename — while 182 files still differed from the target.
+   - The *correct* restore plus rebuild produces **`main.93571142.js`**, a filename that matches
+     neither the candidate nor the committed old bundle, because the committed one is stale.
+
+   So never accept `main.020d28e1.js` appearing in `build-source.json` as evidence of a good
+   rollback. The evidence is the two `git diff --quiet` assertions in step 2, plus the freshness
+   check after the rebuild. Expect the rebuilt filename to differ from the historical one and verify
+   the live hash against **what this rollback build produced**, not against `main.020d28e1.js`.
 
 ### 3.5 Reverting the whole merge would also remove the gate — dry-run confirmed
 
