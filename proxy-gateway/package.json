@@ -5,7 +5,9 @@
   "description": "Generic Gen Z reverse-proxy gateway for HIX AI / BypassGPT (one deployment per tool/subdomain).",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/writehumanClientSessionAlignment.test.js",
+    "check": "node --check server.js"
   },
   "engines": {
     "node": ">=18"

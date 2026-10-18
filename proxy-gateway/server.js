@@ -931,7 +931,90 @@ function injectStorageReset(html, ctx) {
 // saved cookies always define the account and a stale session can never resurface. Within a
 // session (same jti) it skips, letting the SDK manage its own refreshed cookies. Only `sb-`
 // auth cookies are emitted — never any other cookie — and no value is ever logged.
-function injectSupabaseBrowserSession(html, session, ctx) {
+// ── Which Supabase session generation does a cookie header carry? ────────────────────────────
+// The @supabase/ssr cookie `sb-<ref>-auth-token` holds the session JSON, usually
+// `base64-<base64url(json)>` and sometimes split across `.0`/`.1`… chunks that must be joined in
+// order. We read ONE number out of it: the access token's `iat`. That is the generation stamp, it
+// is not a credential, and it is the only thing needed to answer "is this browser behind the
+// vault, level with it, or ahead of it?".
+//
+// Nothing here is logged beyond that number, and nothing is sent anywhere.
+function sbAuthCookiePairs(cookieHeader) {
+  const out = [];
+  for (const part of String(cookieHeader || '').split(';')) {
+    const t = part.trim(); if (!t) continue;
+    const i = t.indexOf('='); if (i < 0) continue;
+    const name = t.slice(0, i).trim();
+    if (/^sb-/.test(name)) out.push([name, t.slice(i + 1)]);
+  }
+  return out;
+}
+function sbSessionIat(cookieHeader) {
+  const pairs = sbAuthCookiePairs(cookieHeader).filter(([n]) => /-auth-token(\.\d+)?$/.test(n));
+  if (!pairs.length) return null;
+  // Join chunked values in index order; an unchunked cookie is simply the single value.
+  pairs.sort((a, b) => {
+    const ix = (n) => { const m = /\.(\d+)$/.exec(n); return m ? Number(m[1]) : -1; };
+    return ix(a[0]) - ix(b[0]);
+  });
+  let raw = pairs.map(([, v]) => v).join('');
+  try { raw = decodeURIComponent(raw); } catch (_) { /* already decoded */ }
+  if (raw.startsWith('base64-')) {
+    try { raw = Buffer.from(raw.slice(7), 'base64').toString('utf8'); } catch (_) { return null; }
+  }
+  let obj;
+  try { obj = JSON.parse(raw); } catch (_) { return null; }
+  const at = obj && (obj.access_token || (Array.isArray(obj) && obj[0]));
+  if (typeof at !== 'string') return null;
+  const seg = at.split('.')[1];
+  if (!seg) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(seg.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    return Number.isFinite(payload.iat) ? payload.iat : null;
+  } catch (_) { return null; }
+}
+
+/**
+ * Should this document load re-align the browser to the vault's Supabase session?
+ *
+ * WHY THIS IS A SERVER-SIDE DECISION NOW. It used to be made in the browser, by comparing a
+ * `__genz_sb` marker in localStorage against `lease:fingerprint`:
+ *
+ *     try{ var K="__genz_sb", J="<jti>:<fp>";
+ *          if(localStorage.getItem(K)===J) return;    // …then clear + set the sb- cookies
+ *     }catch(e){}
+ *
+ * Two failures came out of that. First, the whole injection hung off a localStorage READ inside a
+ * try/catch: where localStorage on the gateway origin is unavailable or throws — strict tracking
+ * protection, a partitioned context, storage disabled — the catch swallowed it and the vault
+ * session was NEVER materialised, so the member saw WriteHuman's own logged-out page while every
+ * server-side signal stayed healthy. Second, the marker records what we last injected, not what
+ * the browser currently holds, so a browser that had drifted could still be skipped.
+ *
+ * The browser already tells us what it holds: its `sb-` cookies arrive on this very request. So
+ * compare generations by the access token's `iat` and decide here.
+ *
+ *   browser has none / unreadable  → inject. There is nothing to lose.
+ *   browser is BEHIND the vault    → inject. This is the reported case: the source rotated (or
+ *                                    signed in again), the vault holds the live session, and the
+ *                                    member's copy is a dead generation.
+ *   browser is LEVEL or AHEAD      → leave it alone. The in-browser SDK rotates the session it
+ *                                    was given, and overwriting a newer generation with an older
+ *                                    one would log a working member out.
+ *
+ * @returns {{inject:boolean, reason:string, vaultIat:number|null, browserIat:number|null}}
+ */
+function shouldAlignBrowserSession(browserCookieHeader, vaultCookieHeader) {
+  const vaultIat = sbSessionIat(vaultCookieHeader);
+  const browserIat = sbSessionIat(browserCookieHeader);
+  if (browserIat == null) return { inject: true, reason: 'browser_has_no_readable_session', vaultIat, browserIat };
+  if (vaultIat == null) return { inject: false, reason: 'vault_generation_unreadable', vaultIat, browserIat };
+  if (browserIat < vaultIat) return { inject: true, reason: 'browser_behind_vault', vaultIat, browserIat };
+  if (browserIat > vaultIat) return { inject: false, reason: 'browser_ahead_of_vault', vaultIat, browserIat };
+  return { inject: false, reason: 'same_generation', vaultIat, browserIat };
+}
+
+function injectSupabaseBrowserSession(html, session, ctx, req) {
   if (!SUPABASE_BROWSER_SESSION) return html;
   if (!ctx || ctx.capture || ctx.asset) return html;          // never during admin capture / asset proxy
   if (!session || !session.cookieHeader) return html;
@@ -954,16 +1037,23 @@ function injectSupabaseBrowserSession(html, session, ctx) {
   // member already on the page kept the stale injected session for the rest of the lease. Now the
   // next document load after a rotation re-injects the current session; same lease + unchanged
   // cookies is still a no-op, so the SDK keeps managing its own session in between.
-  const fp = crypto.createHash('sha256').update(sb.map(p => p[0] + '=' + p[1]).join(';')).digest('hex').slice(0, 16);
-  safeLog('supabase_session_injected', { lease_id: jti, sb_cookie_count: sb.length });
+  // Decide from what the browser actually sent, not from a marker we wrote earlier. The generation
+  // numbers are iat seconds — safe to log, and they are the correlation identifier that lets a
+  // launch be traced from the vault to the member's page.
+  const decision = shouldAlignBrowserSession(req && req.headers && req.headers.cookie, session.cookieHeader);
+  safeLog('supabase_session_align', {
+    lease_id: jti, sb_cookie_count: sb.length, align: decision.inject,
+    reason: decision.reason, vault_gen: decision.vaultIat, browser_gen: decision.browserIat,
+  });
+  if (!decision.inject) return html;
   const data = JSON.stringify(sb);
-  const script = '<script>(function(){try{var K="__genz_sb",J=' + JSON.stringify(jti + ':' + fp) + ';'
-    + 'if(localStorage.getItem(K)===J)return;'                                    // once per lease + session version
-    + 'var C=' + data + ';'
+  const script = '<script>(function(){try{var C=' + data + ';'
     + 'try{document.cookie.split(";").forEach(function(c){var n=c.split("=")[0].trim();'
     + 'if(/^sb-/.test(n)){document.cookie=n+"=; Path=/; Max-Age=0; SameSite=Lax";}});}catch(e){}'  // clear stale
     + 'for(var i=0;i<C.length;i++){try{document.cookie=C[i][0]+"="+C[i][1]+"; Path=/; SameSite=Lax";}catch(e){}}' // inject new
-    + 'try{localStorage.setItem(K,J);}catch(e){}'
+    // The marker is kept for diagnostics only. Nothing depends on reading it back, so storage
+    // being unavailable can no longer silence the whole injection.
+    + 'try{localStorage.setItem("__genz_sb",' + JSON.stringify(jti) + ');}catch(e){}'
     + '}catch(e){}})();</script>';
   const m = html.match(/<head[^>]*>/i);
   if (m) return html.replace(m[0], m[0] + script);
@@ -1172,9 +1262,10 @@ function proxy(req, res, isHtmlNav, session, ctx) {
             // Client-side-auth SPA (WriteHuman): seed the vault's Supabase session cookies into
             // the browser so the in-browser SDK hydrates a logged-in app. Inserted before the
             // storage-reset call below so it EXECUTES AFTER the reset (last <head> insert runs
-            // first), letting the reset clear stale localStorage without wiping this injector's
-            // per-lease marker. Opt-in (SUPABASE_BROWSER_SESSION) → no-op for every other tool.
-            html = injectSupabaseBrowserSession(html, session, ctx);
+            // first). Whether to seed at all is decided SERVER-SIDE from the generation the
+            // browser just sent — see shouldAlignBrowserSession — so storage being unavailable
+            // can no longer silence it. Opt-in (SUPABASE_BROWSER_SESSION) → no-op elsewhere.
+            html = injectSupabaseBrowserSession(html, session, ctx, req);
             html = injectCaptchaShim(html);
             // Last <head> insert → runs FIRST: wipe stale per-account browser storage for a
             // fresh lease BEFORE the bootstrap re-seeds vault storage and the app boots, so
