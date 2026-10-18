@@ -105,37 +105,37 @@ jobs:
           run 'echo "is WH_AGENT_DIST_DIR overridden? (presence only, no value):"; for f in "$API/.env" "$HOME/.env"; do [ -f "$f" ] && echo "  $f -> $(grep -c "^WH_AGENT_DIST_DIR=" "$f" 2>/dev/null) matching key(s)"; done'
           run 'find "$HOME" -maxdepth 2 -name "WriteHuman-Agent-Setup*.exe" -printf "%p\t%s bytes\n" 2>/dev/null | head -10 || true'
 
-          say "2a. WHERE IS THE NODE APP, ACTUALLY?"
-          # The first run probed ~/domains/api.genzdigitalstore.com/nodejs and every file read
-          # MISSING while the live API answered HTTP 200 — so that assumed path is wrong. Find it.
-          run 'ls -1 "$HOME/domains" 2>/dev/null | head -20'
-          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs" 2>&1 | head -25'
-          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/routes" 2>&1 | head -15'
-          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/routes/admin" 2>&1 | head -15'
-          run 'find "$HOME" -maxdepth 4 -name "server-crm.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
-          run 'find "$HOME" -maxdepth 8 -path "*/routes/admin/proxyTools.js" -printf "%p\t%s bytes\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
-          run 'find "$HOME" -maxdepth 8 -name "agentDownload.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
-          run 'find "$HOME" -maxdepth 3 -name ".htaccess" -path "*api*" -printf "%p\n" 2>/dev/null | head -5'
+          say "2a. WHICH DIRECTORY IS THE RUNNING NODE PROCESS ACTUALLY EXECUTING FROM?"
+          # Two earlier runs were invalidated by guesses about this path, and the third resolved it
+          # with `find | head -1`, which returned /home/.../wh-rollback-20260829-212153 — a ROLLBACK
+          # SNAPSHOT. Every marker count from that run described the snapshot, not the running code.
+          # The process table is the only authority on what is running: /proc/<pid>/cwd.
+          run 'for p in $(pgrep -u "$(whoami)" node 2>/dev/null | head -6); do printf "pid %s cwd=%s args=%s\n" "$p" "$(readlink -f /proc/$p/cwd 2>/dev/null || echo "?")" "$(tr "\0" " " < /proc/$p/cmdline 2>/dev/null | cut -c1-110)"; done; echo "node pids: $(pgrep -u "$(whoami)" -c node 2>/dev/null || echo 0)"'
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs" 2>&1 | head -30'
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/routes/admin" 2>&1 | head -20'
+          run 'find "$HOME" -maxdepth 8 -path "*/routes/admin/proxyTools.js" -printf "%p\t%s\t%TY-%Tm-%Td\n" 2>/dev/null | head -8'
 
-          say "2. DEPLOYED BACKEND REVISION — does the running code decorate devices[].state?"
-          # Resolve API from the real location rather than the assumption.
-          APIR="$(find "$HOME" -maxdepth 8 -path "*/routes/admin/proxyTools.js" 2>/dev/null | head -1)"
-          if [ -n "$APIR" ]; then export API="$(dirname "$(dirname "$(dirname "$APIR")")")"; fi
-          run 'echo "resolved API root: ${API:-<unresolved>}"'
-          run 'test -f "$API/routes/admin/proxyTools.js" && echo "proxyTools.js present, $(stat -c %s "$API/routes/admin/proxyTools.js") bytes, mtime $(stat -c %y "$API/routes/admin/proxyTools.js")" || echo "proxyTools.js MISSING"'
-          run 'F="$API/routes/admin/proxyTools.js"; for pat in "dv.state = st.state" "dv.stateReason = st.reason" "dv.canActivate" "deviceViewsAll.forEach" "respondIfDbBusy" "EXPECTED_AGENT_VERSION"; do printf "  %-34s %s\n" "$pat" "$(grep -c -F "$pat" "$F" 2>/dev/null || echo 0)"; done'
-          run 'test -f "$API/routes/proxy/agentDownload.js" && echo "agentDownload.js present, $(stat -c %s "$API/routes/proxy/agentDownload.js") bytes" || echo "agentDownload.js MISSING"'
-          run 'test -f "$API/db/poolLimits.js" && echo "poolLimits.js present" || echo "poolLimits.js ABSENT (the module proxyTools requires at load)"'
-          run 'F="$API/utils/proxy/deviceState.js"; test -f "$F" && echo "deviceState.js present, stateOf: $(grep -c "function stateOf" "$F")" || echo "deviceState.js MISSING"'
-          run 'F="$API/utils/proxy/deviceSync.js"; test -f "$F" && echo "deviceSync.js present, publicDevice: $(grep -c "function publicDevice" "$F")" || echo "deviceSync.js MISSING"'
+          say "2. DEPLOYED BACKEND REVISION — does the RUNNING code decorate devices[].state?"
+          # Resolve from the live process first; fall back to the domains path, and NEVER to a
+          # rollback/backup snapshot.
+          CW="$(for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do c="$(readlink -f /proc/$p/cwd 2>/dev/null)"; [ -f "$c/server-crm.js" ] && echo "$c" && break; done)"
+          if [ -n "${CW:-}" ]; then export API="$CW"; else export API="$HOME/domains/api.genzdigitalstore.com/nodejs"; fi
+          export APISRC="$([ -n "${CW:-}" ] && echo "live /proc cwd" || echo "domains path (no node process matched)")"
+          run 'echo "API root: $API  (source: $APISRC)"'
+          run 'F="$API/routes/admin/proxyTools.js"; if [ -f "$F" ]; then echo "proxyTools.js $(stat -c %s "$F") bytes mtime $(stat -c %y "$F" | cut -c1-19)"; else echo "proxyTools.js MISSING under $API"; fi'
+          run 'F="$API/routes/admin/proxyTools.js"; printf "markers:"; for pat in "dv.state = st.state" "dv.stateReason" "dv.canActivate" "deviceViewsAll" "respondIfDbBusy" "EXPECTED_AGENT_VERSION" "stateOf(" "agentOutdated"; do printf " %s=%s" "$pat" "$(grep -c -F "$pat" "$F" 2>/dev/null || echo 0)"; done; echo'
+          run 'printf "modules:"; for m in routes/proxy/agentDownload.js db/poolLimits.js utils/proxy/deviceState.js utils/proxy/deviceSync.js; do printf " %s=%s" "$(basename "$m")" "$([ -f "$API/$m" ] && echo yes || echo NO)"; done; echo'
+          run 'F="$API/utils/proxy/deviceState.js"; [ -f "$F" ] && printf "deviceState.js %s bytes mtime %s stateOf=%s\n" "$(stat -c %s "$F")" "$(stat -c %y "$F" | cut -c1-19)" "$(grep -c "stateOf" "$F")" || echo "deviceState.js absent"'
+          run 'F="$API/utils/proxy/deviceSync.js"; [ -f "$F" ] && printf "deviceSync.js %s bytes mtime %s publicDevice=%s\n" "$(stat -c %s "$F")" "$(stat -c %y "$F" | cut -c1-19)" "$(grep -c "publicDevice" "$F")" || echo "deviceSync.js absent"'
+          run 'echo "agent-state route shape:"; grep -n -m6 -E "devices:|deviceViews|state:|stateReason" "$API/routes/admin/proxyTools.js" 2>/dev/null | cut -c1-120'
 
           say "3. PUBLIC DOWNLOAD ROUTE, AS THE BROWSER SEES IT"
           run 'curl -s -o /dev/null -w "latest.json -> HTTP %{http_code} (%{content_type})\n" --max-time 25 https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows/latest.json'
-          run 'curl -s --max-time 25 https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows/latest.json | head -c 600; echo'
-          run 'curl -s -o /dev/null -D - --max-time 30 -r 0-0 https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows/latest | grep -iE "^HTTP/|content-type|content-disposition|x-agent-|content-range|content-length" | head -10'
+          run 'curl -s --max-time 25 https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows/latest.json | tr -d "\n " | head -c 400; echo'
+          run 'curl -s -o /dev/null -D - --max-time 30 -r 0-0 https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows/latest | tr -d "\r" | grep -iE "^HTTP/|content-type:|content-disposition:|x-agent-|content-range:" | head -8'
 
           say "4. SERVED FRONTEND BUILD ON BOTH ROOTS"
-          run 'for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do printf "%s -> " "$d"; curl -s --max-time 20 "$d/build-source.json?cb=$RANDOM" | tr -d " \n" | head -c 200; echo; done'
+          run 'for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do printf "%s -> " "$d"; curl -s --max-time 20 "$d/build-source.json?cb=$RANDOM" | tr -d " \n" | head -c 180; echo; done'
           REMOTE
           RC=$?
           echo "ssh exit=$RC"
@@ -145,26 +145,21 @@ jobs:
           { echo "## WriteHuman download + device-state facts"; echo ''; echo '```'; cat wh.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           cat wh.txt
 
-          # The job summary is not retrievable through the API from every client, and neither are
-          # raw logs. ::notice:: annotations ARE, so the handful of facts this run exists to
-          # establish are emitted as annotations too — compact, one per line, no secrets.
+          # Raw logs and job summaries are not retrievable from this client; ::notice:: annotations
+          # are. GitHub keeps at most TEN notice annotations per step, and the previous run emitted
+          # seventeen — the seven that mattered least silently vanished. This step now emits NINE,
+          # each a fact this run exists to establish.
           emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
-          val() { grep -m1 -E "$1" wh.txt | tr -d '\r' | cut -c1-400; }
-          emit "dist-dir"      "$(grep -A4 'PUBLISHED INSTALLER DIRECTORY' wh.txt | grep -m1 -E 'DIRECTORY DOES NOT EXIST|total|writehuman-agent' || echo 'no line')"
-          emit "latest-json"   "$(sed -n '/--- latest.json ---/,/=====/p' wh.txt | tr -d '\n' | cut -c1-400 || echo 'NO latest.json')"
-          emit "exe"           "$(val 'exe bytes|NO EXE AT THE DEFAULT PATH')  $(val 'exe sha256')"
-          emit "dist-override" "$(val 'matching key')"
-          emit "found-exes"    "$(grep -m3 'WriteHuman-Agent-Setup.*exe' wh.txt | tr '\n' ' ' | cut -c1-300)"
-          emit "api-root"      "$(val 'resolved API root')"
-          emit "app-locations" "$(grep -m4 -E 'server-crm.js|proxyTools.js\t|agentDownload.js\t' wh.txt | tr '\n' '|' | cut -c1-400)"
-          emit "routes-dir"    "$(sed -n '/routes\/admin/,$p' wh.txt | grep -m8 -E '^-rw|^d' | tr -s ' ' | cut -d' ' -f9 | tr '\n' ' ' | cut -c1-350)"
-          emit "proxyTools"    "$(val 'proxyTools.js present|proxyTools.js MISSING')"
-          emit "state-markers" "$(grep -E '^\s+(dv\.state|dv\.stateReason|dv\.canActivate|deviceViewsAll|respondIfDbBusy|EXPECTED_AGENT)' wh.txt | tr -s ' ' | tr '\n' '|' | cut -c1-400)"
-          emit "poolLimits"    "$(val 'poolLimits.js (present|ABSENT)')"
-          emit "agentDownload" "$(val 'agentDownload.js present|agentDownload.js MISSING')"
-          emit "public-meta"   "$(val 'latest.json -> HTTP')  $(grep -m1 -E '^\{|"version"' wh.txt | cut -c1-200)"
-          emit "public-exe"    "$(grep -iE '^HTTP/|x-agent-version|x-agent-sha256|content-range|content-disposition' wh.txt | tr '\n' '|' | cut -c1-400)"
-          emit "served-build"  "$(grep -m2 'sourceFingerprint' wh.txt | tr '\n' '|' | cut -c1-400)"
+          val() { grep -m1 -E "$1" wh.txt | tr -d '\r' | cut -c1-420; }
+          emit "node-procs"    "$(grep -m3 -E '^pid [0-9]+ cwd=' wh.txt | tr '\n' '|' | cut -c1-420)"
+          emit "api-root"      "$(val '^API root:')"
+          emit "proxyTools"    "$(val 'proxyTools.js [0-9]+ bytes|proxyTools.js MISSING')"
+          emit "state-markers" "$(val '^markers:')"
+          emit "modules"       "$(val '^modules:')"
+          emit "device-utils"  "$(val 'deviceState.js')  ::  $(val 'deviceSync.js')"
+          emit "route-shape"   "$(sed -n '/agent-state route shape:/,/^=====/p' wh.txt | grep -m5 -E '^ *[0-9]+:' | tr '\n' '|' | cut -c1-420)"
+          emit "public-dl"     "$(val 'latest.json -> HTTP')  $(grep -m1 -oE '"version":"[^"]+","size":[0-9]+' wh.txt)  $(grep -m1 -oiE 'x-agent-version:.*|x-agent-sha256:.*' wh.txt | cut -c1-90)"
+          emit "served-build"  "$(grep -m2 -E 'genzdigitalstore.com -> ' wh.txt | tr '\n' '|' | cut -c1-420)"
 
       - name: Collect read-only measurements
         env:
