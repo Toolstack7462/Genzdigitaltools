@@ -161,6 +161,46 @@ jobs:
           emit "public-dl"     "$(val 'latest.json -> HTTP')  $(grep -m1 -oE '"version":"[^"]+","size":[0-9]+' wh.txt)  $(grep -m1 -oiE 'x-agent-version:.*|x-agent-sha256:.*' wh.txt | cut -c1-90)"
           emit "served-build"  "$(grep -m2 -E 'genzdigitalstore.com -> ' wh.txt | tr '\n' '|' | cut -c1-420)"
 
+      - name: Pin the deployed backend revision (read-only)
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > rev.txt 2>rev.err <<'REMOTE'
+          set -u
+          run() { timeout 120 bash -c "$1" 2>&1 | head -30 || echo "(unavailable)"; }
+          # The app does NOT run from ~/domains/<host>/nodejs. hPanel serves it from
+          # hbuilds/current -> hbuilds/versions/<uuid>/nodejs, which is why three earlier runs read
+          # a stale tree. Resolve it the same way the process table did.
+          CW="$(for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do c="$(readlink -f /proc/$p/cwd 2>/dev/null)"; [ -f "$c/server-crm.js" ] && echo "$c" && break; done)"
+          export API="${CW:-$HOME/domains/api.genzdigitalstore.com/nodejs}"
+          run 'echo "API=$API"'
+          run 'L="$HOME/domains/api.genzdigitalstore.com/hbuilds/current"; printf "current -> %s\n" "$(readlink -f "$L" 2>/dev/null || echo "(no such link)")"'
+          # File identity, so the deployed revision can be matched against repo blobs offline.
+          run 'cd "$API" && for f in routes/admin/proxyTools.js utils/proxy/deviceState.js utils/proxy/deviceSync.js routes/proxy/agentDownload.js server-crm.js; do if [ -f "$f" ]; then printf "%s %s %s\n" "$(sha256sum "$f" | cut -c1-16)" "$(stat -c %s "$f")" "$f"; else printf "ABSENT %s\n" "$f"; fi; done'
+          # What the running route actually emits for a device, verbatim from the deployed file.
+          run 'cd "$API" && grep -n -E "dv\.state|dv\.stateReason|dv\.canActivate|stateOf\(|healthSignals" routes/admin/proxyTools.js | head -14 | cut -c1-150'
+          run 'cd "$API" && printf "contract:"; for pat in healthSignals EXPECTED_AGENT_VERSION agentOutdated expectedAgentVersion telemetryFrozen onlineDeviceCount; do printf " %s=%s" "$pat" "$(grep -c -F "$pat" routes/admin/proxyTools.js)"; done; echo'
+          run 'cd "$API" && printf "deviceState states: "; grep -m1 -E "^const STATES" utils/proxy/deviceState.js | cut -c1-140; printf "UNKNOWN in deviceState.js: %s\n" "$(grep -c -w UNKNOWN utils/proxy/deviceState.js)"'
+          run 'cd "$API" && printf "publicDevice fields: "; sed -n "/function publicDevice/,/^}/p" utils/proxy/deviceSync.js | grep -oE "^ *[a-zA-Z]+:" | tr -d " :" | tr "\n" " " | cut -c1-300; echo'
+          run 'cd "$API" && ls -la | head -20'
+          run 'cd "$API" && test -f build-source.json && cat build-source.json | tr -d "\n " | cut -c1-240 || echo "(no backend build stamp)"'
+          REMOTE
+          RC=$?; echo "ssh exit=$RC"
+          if [ ! -s rev.txt ]; then echo "::error::no output"; head -5 rev.err || true; exit 1; fi
+          if grep -qiE 'BEGIN [A-Z ]*PRIVATE KEY|mysql://|DATABASE_URL=|JWT_SECRET=' rev.txt; then
+            echo "::error::captured output matched a secret-shaped pattern; not publishing it"; exit 1; fi
+          { echo "## Deployed backend revision"; echo ''; echo '```'; cat rev.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat rev.txt
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "api"        "$(grep -m1 '^API=' rev.txt)  $(grep -m1 'current ->' rev.txt)"
+          emit "hashes"     "$(grep -E '\.js$' rev.txt | tr '\n' '|' | cut -c1-420)"
+          emit "emit-lines" "$(grep -m6 -E '^[0-9]+: *(dv\.|.*stateOf\()' rev.txt | tr '\n' '|' | cut -c1-420)"
+          emit "contract"   "$(grep -m1 '^contract:' rev.txt | cut -c1-420)"
+          emit "dstates"    "$(grep -m1 'deviceState states:' rev.txt | cut -c1-300)  $(grep -m1 'UNKNOWN in deviceState' rev.txt)"
+          emit "pubfields"  "$(grep -m1 'publicDevice fields:' rev.txt | cut -c1-420)"
+          emit "api-stamp"  "$(grep -m1 -E 'sourceFingerprint|no backend build stamp' rev.txt | cut -c1-300)"
+
       - name: Collect read-only measurements
         env:
           # Via env, never `${{ }}` inside the script: a workflow_dispatch input interpolated into
