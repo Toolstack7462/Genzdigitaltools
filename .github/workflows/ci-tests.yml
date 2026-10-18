@@ -1,0 +1,83 @@
+# Test-only PR check. Deliberately carries NO deployment credentials and NO secrets: it runs the
+# suites and the production build, and nothing else. deploy-frontend.yml stays the only thing that
+# can publish, and it still triggers solely on a push to main.
+#
+# WHY THIS EXISTS. Until now nothing ran on a pull request at all, so every gate in backend/tests —
+# including the deploy clean-room check that catches "Passenger boots into Cannot find module" —
+# only ever ran on someone's laptop. A PR could look perfectly healthy and still be undeployable.
+name: CI (tests only)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+# No secrets are referenced anywhere in this file; make the token read-only as well.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install
+        working-directory: backend
+        run: npm install --legacy-peer-deps
+      - name: Syntax check
+        working-directory: backend
+        run: npm run check
+      # `npm run test:ci` is `npm test` minus exactly ONE file:
+      # writehumanAgentVersionDrift.test.js, which asserts that the PUBLISHED installer matches the
+      # agent source. It reads writehuman-v2/agent/dist/latest.json + the ~90 MB .exe beside it,
+      # both gitignored and absent from any fresh checkout, so it can never pass in CI. It is a
+      # LOCAL pre-deploy gate by design (deploys are cut from a working copy) and stays in
+      # `npm test`, unmodified, with every assertion intact. Nothing else is excluded.
+      - name: Tests
+        working-directory: backend
+        run: npm run test:ci
+
+  frontend:
+    name: Frontend tests + production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm install --legacy-peer-deps
+      - name: Tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: npx craco test --watchAll=false
+      # CI=false matches deploy-frontend.yml: this repo carries pre-existing exhaustive-deps
+      # warnings in unrelated admin/client pages, and warnings-as-errors would fail on those rather
+      # than on anything the PR changed.
+      - name: Production build
+        working-directory: frontend
+        env:
+          CI: 'false'
+          GENERATE_SOURCEMAP: 'false'
+        run: npm run build
+      # NOTE: the committed bundle is a deployed artifact (deploy-frontend-only.sh ships it as-is),
+      # and it IS gated — by backend/tests/frontendBuildFreshness.test.js in the backend job above,
+      # which recomputes the stamp with the repo's own scripts/stamp-build.js. A second check here
+      # would be a duplicate reimplementation of that comparison, and the first attempt at one got
+      # it wrong in two ways (fingerprint() returns an object, and the stamp key is
+      # `sourceFingerprint`), failing every run. One source of truth is the point.

@@ -1263,7 +1263,11 @@ router.get('/:tool/agent-state', async (req, res) => {
     const workingUnverified = working && hs.verification.state === 'failed';
 
     const reportedVersion = (activeDeviceView && activeDeviceView.agentVersion) || (legacyRep && legacyRep.version) || null;
-    const agentOutdated = reportedVersion ? (reportedVersion !== EXPECTED_AGENT_VERSION) : null;
+    // "update available" must mean the agent is strictly OLDER, not merely different. A raw string
+    // inequality flagged a NEWER agent too, so a machine on 3.5.13 against an expected 3.5.2 was told
+    // "update available → 3.5.2" — a prompt to DOWNGRADE — and '3.5.13' vs '3.5.2' is exactly the pair a
+    // string compare orders backwards. atLeast() is the semver comparator this route already imports.
+    const agentOutdated = reportedVersion ? !agentCommands.atLeast(reportedVersion, EXPECTED_AGENT_VERSION) : null;
     const cand = account.candidate || null;
     return res.json({
       ...base,

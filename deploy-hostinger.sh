@@ -99,6 +99,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
+  -T backend/db/poolLimits.js                 "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   -T backend/utils/email.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/email.js" \
   -T backend/utils/supportContact.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/supportContact.js" \
   -T backend/models/SupportSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/models/SupportSettings.js" \

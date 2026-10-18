@@ -36,6 +36,7 @@ if command -v node >/dev/null 2>&1; then
   echo "==> Pre-flight: node --check both files"
   node --check backend/routes/admin/writehumanV2.js
   node --check backend/server-crm.js
+  node --check backend/db/poolLimits.js
   echo "    OK"
 fi
 
@@ -57,6 +58,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/routes/proxy/agentDownload.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentDownload.js" \
   -T backend/cron/retentionScheduler.js "sftp://${HOST}:${PORT}${API_ROOT}/cron/retentionScheduler.js" \
   -T backend/server-crm.js                "sftp://${HOST}:${PORT}${API_ROOT}/server-crm.js" \
+  -T backend/db/poolLimits.js             "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   -T backend/utils/supportContact.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/supportContact.js" \
   -T backend/models/SupportSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/models/SupportSettings.js" \
   -T backend/routes/admin/supportSettings.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/supportSettings.js" \

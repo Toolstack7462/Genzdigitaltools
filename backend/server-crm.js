@@ -1,4 +1,5 @@
 const express = require('express');
+const { isPoolSaturationError } = require('./db/poolLimits');
 const helmet = require('helmet'); // FIX24: security headers
 const mysqlAdapter = require('./db/mysqlAdapter');
 const cors = require('cors');
@@ -477,6 +478,14 @@ app.use((err, req, res, next) => {
 
   if (err.name === 'ValidationError') {
     return res.status(400).json({ error: 'Validation failed', details: err.details });
+  }
+  // The database has no capacity right now — the bounded pool queue refused this request rather
+  // than letting it wait on a connection that is not coming (db/poolLimits.js). That is shedding,
+  // not a fault: answer 503 with Retry-After so the caller backs off and retries, instead of a 500
+  // that reads as a bug and invites an immediate retry into the same saturation.
+  if (isPoolSaturationError(err)) {
+    res.set('Retry-After', '5');
+    return res.status(503).json({ error: 'Server busy, please retry', code: 'DB_BUSY', retryAfter: 5 });
   }
   if (err.name === 'MongoError' || err.name === 'database adapterError' || err.code === 'ECONNREFUSED') {
     return res.status(500).json({ error: 'Database error' });
