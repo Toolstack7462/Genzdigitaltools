@@ -177,11 +177,14 @@ jobs:
           [ "$newer" = "0" ] && echo "SAFE_TO_PUBLISH" || echo "REFUSE_NEWER_LIVE"
           REMOTE
           cat extpre.txt
+          { echo "## Extension before"; echo ''; echo '```'; cat extpre.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # Emitted BEFORE the guards: when the run refuses, the live versions are the one thing
+          # needed to decide what to do next, and a summary this client cannot read is no help.
+          echo "::notice title=ext-before::$(grep -m2 '^live ' extpre.txt | tr '\n' '|' | cut -c1-400)"
+          echo "::notice title=ext-guard::$(grep -m2 -E 'LIVE_IS_NEWER|SAFE_TO_PUBLISH|REFUSE_NEWER_LIVE' extpre.txt | tr '\n' '|' | cut -c1-300)"
           grep -q BACKUP_FAILED extpre.txt && { echo "::error::a rollback copy could not be verified; nothing was changed"; exit 1; }
           grep -q REFUSE_NEWER_LIVE extpre.txt && { echo "::error::a docroot already serves a NEWER package than this branch — refusing to overwrite someone else's release"; exit 1; }
           grep -q SAFE_TO_PUBLISH extpre.txt || { echo "::error::could not establish the live state"; head -5 extpre.err || true; exit 1; }
-          { echo "## Extension before"; echo ''; echo '```'; cat extpre.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice title=ext-before::$(grep -m2 '^live ' extpre.txt | tr '\n' '|' | cut -c1-400)"
 
       - name: Upload to both docroots, verify on the host, then promote
         run: |
