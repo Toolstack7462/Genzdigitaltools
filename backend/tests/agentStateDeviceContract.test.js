@@ -24,8 +24,25 @@
  * reads "unknown" is the one the route adds. A backend older than that decoration therefore
  * produces exactly this picture — and a FRONTEND deploy cannot fix it.
  *
- * These assertions pin the contract in THIS tree so it cannot regress. They say nothing about which
- * build is currently running on the API host; that remains unverified from here.
+ * MEASURED SINCE, AND IT CHANGES THE CONCLUSION. The running API was located from the process
+ * table (/proc/<pid>/cwd) rather than guessed: it executes from
+ * domains/api.genzdigitalstore.com/hbuilds/current -> hbuilds/versions/<uuid>/nodejs, NOT from
+ * domains/api.genzdigitalstore.com/nodejs, which is a stale tree. The live
+ * routes/admin/proxyTools.js is 109105 bytes, sha256 13014feea227ea43…, which is byte-identical to
+ * this repository's blob ff6ec55b — so the decoration pass IS deployed, and the live file contains
+ * `dv.state = st.state`, `dv.stateReason`, `dv.canActivate` at lines 1125-1128. The live
+ * utils/proxy/deviceState.js (8275 B, sha 6f85b6476270ac23…) contains zero occurrences of the
+ * string UNKNOWN.
+ *
+ * So the API now carries the field whose absence produced that badge. What the screenshot showed is
+ * consistent with the backend that was running at the time, not with the one running now, and the
+ * remaining "unknown" surfaces were in the PAGE: four separate facts (an absent devices[].state, a
+ * reported healthSignals.agent.state === 'UNKNOWN', the same for chrome, and an unreported
+ * browserAuthCookies) all rendered as the same bare word, discarding the reason the server sent
+ * with it. Those are fixed in frontend/src/pages/admin/writeHumanStateLabels.js (28 tests).
+ *
+ * These assertions pin the contract in THIS tree so it cannot regress. The hashes above were
+ * measured read-only on 2026-10-18; they are evidence about one moment, not a standing guarantee.
  */
 const test = require('node:test');
 const { describe } = require('node:test');

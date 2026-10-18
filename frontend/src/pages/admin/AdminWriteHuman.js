@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import startVisiblePolling from '../../lib/visiblePolling';
 import { createLatestOnly } from '../../lib/latestOnly';
+import { META, validateAgentBuild, downloadControl, publishedSummary, updateAvailability, expectationMismatch } from './agentBuildMeta';
+import { deviceStateBadge, agentSignalBadge, chromeSignalBadge, signInBadge } from './writeHumanStateLabels';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
 import {
@@ -37,10 +39,6 @@ const dur = (sec) => sec == null ? '—' : sec < 60 ? `${sec}s` : sec < 3600 ? `
 
 // The canonical device states, and how each should read at a glance. They come from the server
 // (utils/proxy/deviceState.js) so the page never invents its own idea of what a machine is.
-const STATE_TONE = {
-  ACTIVE: 'ok', READY: 'ok', STANDBY: 'mut', OFFLINE: 'warn',
-  ERROR: 'bad', REVOKED: 'bad', SUPERSEDED: 'mut', UNINSTALLED: 'mut',
-};
 // Result codes that are the system working normally — never worth an amber badge on a device row.
 const QUIET_CODES = ['PROMOTED', 'HEARTBEAT', 'COOKIE_BUNDLE_UNCHANGED', 'STANDBY_ROUTINE_REFRESH', 'OK'];
 
@@ -91,7 +89,10 @@ const AdminWriteHuman = () => {
   const [alert, setAlert] = useState(null);       // { emailMasked, emailSet, enabled, source, smtpConfigured }
   const [alertEmail, setAlertEmail] = useState('');
   const [savingAlert, setSavingAlert] = useState(false);
-  const [agentBuild, setAgentBuild] = useState(null);   // { version, sha256, size, downloadUrl }
+  // The published installer, as its own request with its own status. `null` used to mean
+  // "loading", "nothing published" and "the check failed" all at once, and all three rendered a
+  // live download button with no version on it.
+  const [agentMeta, setAgentMeta] = useState({ status: META.LOADING, build: null, reason: null });
   // The live Mark Active transaction and its REAL stage. This is what replaced an indefinite
   // "syncing": every activation ends, and until it does the operator can see which step it is on
   // and on which machine.
@@ -127,12 +128,36 @@ const AdminWriteHuman = () => {
     try { const r = await writeHumanV2Admin.getAlertConfig(); setAlert(r.data); } catch (_) {}
   }, []);
   useEffect(() => { loadAlert(); }, [loadAlert]);
-  // One-time fetch of the published installer's version + checksum for the download button.
-  useEffect(() => {
-    let alive = true;
-    writeHumanV2Admin.getAgentBuild().then((r) => { if (alive && r.data?.ok) setAgentBuild(r.data); }).catch(() => {});
-    return () => { alive = false; };
+  // The published installer's version, size and digest. Fetched on mount and on an explicit
+  // Refresh — NOT on the 30s poll, and never by downloading the installer itself: this is one
+  // small JSON request, and the 92MB exe is only ever fetched when an operator clicks the link.
+  const metaGate = useRef(createLatestOnly());
+  const loadAgentBuild = useCallback(async () => {
+    const ticket = metaGate.current.issue();
+    setAgentMeta((m) => (m.status === META.LOADING ? m : { ...m, status: META.LOADING }));
+    try {
+      const r = await writeHumanV2Admin.getAgentBuild();
+      if (!metaGate.current.accept(ticket)) return;
+      const v = validateAgentBuild(r.data);
+      setAgentMeta(v.ok
+        ? { status: META.READY, build: v.build, reason: null }
+        : { status: META.INVALID, build: null, reason: v.reason });
+    } catch (e) {
+      if (!metaGate.current.accept(ticket)) return;
+      // The route answers 404 with a plain reason when nothing has been published. That is a fact
+      // about the server, not a failed request, and the two must not read the same.
+      const status = e.response?.status;
+      const msg = e.response?.data?.error || e.response?.data?.message || '';
+      if (status === 404) setAgentMeta({ status: META.UNPUBLISHED, build: null, reason: msg || 'no build published' });
+      else setAgentMeta({ status: META.ERROR, build: null, reason: msg || e.message || `HTTP ${status || 'error'}` });
+    }
   }, []);
+  useEffect(() => { loadAgentBuild(); }, [loadAgentBuild]);
+
+  // Refresh is the ONE deliberate path that re-reads everything the page shows, installer metadata
+  // included. It used to refresh the dashboard only, so a newly published installer stayed
+  // invisible until a full page reload.
+  const refreshAll = useCallback(() => { loadState(); loadLogs(); loadAgentBuild(); }, [loadState, loadLogs, loadAgentBuild]);
 
   // Save recipient and/or enable-toggle. Empty email clears the dashboard override (env fallback).
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(alertEmail.trim());
@@ -363,13 +388,20 @@ const AdminWriteHuman = () => {
     : ver === 'due' ? 'verification due' : ver === 'failed' ? 'verification failed' : '—';
   const verTone = ver === 'recent' ? 'ok' : ver === 'due' ? 'mut' : ver === 'failed' ? 'bad' : 'mut';
 
-  const agLabel = agentState === 'ONLINE' ? 'online' : agentState === 'RECONNECTING' ? 'reconnecting'
-    : agentState === 'OFFLINE' ? 'offline' : 'unknown';
-  const agTone = agentState === 'ONLINE' ? 'ok' : agentState === 'OFFLINE' ? 'warn' : agentState === 'RECONNECTING' ? 'warn' : 'mut';
-
+  // The server says WHY it has no heartbeat ("No agent has ever reported." vs "No current report
+  // from the active source."). Both used to render as the single word "unknown".
+  const agentBadge = agentSignalBadge(hs?.agent);
+  const chromeBadge = chromeSignalBadge(hs?.chrome);
   const cdpUp = chromeState === 'CONNECTED';
-  const chromeLabel = chromeState === 'CONNECTED' ? 'connected' : chromeState === 'DISCONNECTED' ? 'disconnected' : 'unknown';
-  const cdpTone = chromeState === 'CONNECTED' ? 'ok' : chromeState === 'DISCONNECTED' ? 'warn' : 'mut';
+
+  // The installer facts, each from its own source and none standing in for another.
+  const dl = downloadControl({
+    status: agentMeta.status, build: agentMeta.build, reason: agentMeta.reason,
+    href: `${getApiBaseUrl()}/downloads/writehuman-agent/windows/latest`,
+  });
+  const published = publishedSummary(agentMeta);
+  const upd = updateAvailability({ installedVersion: ag?.version || null, publishedVersion: agentMeta.build?.version || null });
+  const mismatch = expectationMismatch({ expectedVersion: state?.expectedAgentVersion || null, publishedVersion: agentMeta.build?.version || null });
 
   const syncLabel = syncState === 'FRESH' ? 'fresh' : syncState === 'BEHIND' ? 'behind'
     : syncState === 'NEVER_SYNCED' ? 'never synced' : syncState === 'FAILED' ? 'failed' : '—';
@@ -427,12 +459,22 @@ const AdminWriteHuman = () => {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <a href={`${getApiBaseUrl()}/downloads/writehuman-agent/windows/latest`} download
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-90"
-            title={agentBuild ? `v${agentBuild.version} · ${agentBuild.size ? Math.round(agentBuild.size/1048576) : '?'} MB · SHA-256 ${agentBuild.sha256?.slice(0,16)}…` : 'Windows agent installer'}>
-            <Download size={15} /> Download Windows Agent{agentBuild ? ` v${agentBuild.version}` : ''}
-          </a>
-          <button onClick={loadState} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-slate-800 hover:bg-slate-700"><RefreshCw size={15} /> Refresh</button>
+          {/* The link exists only when the server has told us what it would serve. While the check
+              is in flight, failed, or says nothing is published, this is a disabled control that
+              states which of those it is — not an enabled button that downloads a 404 body. */}
+          {dl.enabled ? (
+            <a href={dl.href} download title={dl.title}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:opacity-90">
+              <Download size={15} /> {dl.label}
+            </a>
+          ) : (
+            <button type="button" onClick={dl.retry ? loadAgentBuild : undefined} disabled={!dl.retry}
+              title={dl.title + (dl.retry ? ' Click to check again.' : '')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-slate-600 bg-slate-100 border border-slate-200 disabled:opacity-60 enabled:hover:bg-slate-200">
+              {dl.kind === META.LOADING ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} {dl.label}
+            </button>
+          )}
+          <button onClick={refreshAll} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[13px] font-semibold text-white bg-slate-800 hover:bg-slate-700"><RefreshCw size={15} /> Refresh</button>
         </div>
       </div>
 
@@ -517,8 +559,8 @@ const AdminWriteHuman = () => {
             <StatCard icon={ShieldCheck} label="Session" value={<Badge tone={stTone}>{sessionLabel}</Badge>} color="from-blue-500 to-cyan-500" />
             <StatCard icon={CheckCircle2} label="Verification" value={<Badge tone={verTone}>{verLabel}</Badge>} color="from-emerald-500 to-green-600" />
             <StatCard icon={Server} label="Active source" value={<Badge tone={srcTone}>{activeSource ? activeSource.name || activeSource.deviceId : 'none yet'}</Badge>} color="from-indigo-500 to-blue-600" />
-            <StatCard icon={Activity} label="Agent" value={<Badge tone={agTone}>{agLabel}</Badge>} color="from-emerald-500 to-teal-500" />
-            <StatCard icon={Chrome} label="Chrome / CDP" value={<Badge tone={cdpTone}>{chromeLabel}</Badge>} color="from-violet-500 to-fuchsia-500" />
+            <StatCard icon={Activity} label="Agent" value={<span title={agentBadge.title}><Badge tone={agentBadge.tone}>{agentBadge.label}</Badge></span>} color="from-emerald-500 to-teal-500" />
+            <StatCard icon={Chrome} label="Chrome / CDP" value={<span title={chromeBadge.title}><Badge tone={chromeBadge.tone}>{chromeBadge.label}</Badge></span>} color="from-violet-500 to-fuchsia-500" />
             <StatCard icon={Cookie} label="Cookie sync" value={<Badge tone={syncTone}>{syncLabel}</Badge>} color="from-amber-500 to-orange-500" />
           </div>
           {hs?.summary && (
@@ -621,7 +663,7 @@ const AdminWriteHuman = () => {
                             function the command router and the promotion policy use — so the
                             dashboard can no longer show a device as available while the router
                             considers it unaddressable. */}
-                        <Badge tone={STATE_TONE[d.state] || 'mut'}>{(d.state || 'unknown').toLowerCase()}</Badge>
+                        {(() => { const b = deviceStateBadge(d); return <span title={b.title}><Badge tone={b.tone}>{b.label}</Badge></span>; })()}
                         {activation?.inFlight && activation.targetDeviceId === d.deviceId && <Badge tone="warn">activating…</Badge>}
                         {d.lastResultCode && !QUIET_CODES.includes(d.lastResultCode) && <Badge tone="warn">{d.lastResultCode}</Badge>}
                       </p>
@@ -681,9 +723,7 @@ const AdminWriteHuman = () => {
               <Row k="Overall"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
               <Row k="Session"><Badge tone={stTone}>{sessionLabel}</Badge></Row>
               <Row k="Client route"><span title={hs?.clientRoute?.reason || ''}><Badge tone={routeTone}>{routeLabel}</Badge></span></Row>
-              <Row k="Sign-in">{a.browserAuthCookies == null
-                ? <Badge tone="mut">{a.telemetryFrozen ? 'unknown · no device reporting' : 'unknown'}</Badge>
-                : loggedOut ? <Badge tone="bad">signed out</Badge> : <Badge tone="ok">signed in</Badge>}</Row>
+              <Row k="Sign-in">{(() => { const b = signInBadge(a, loggedOut); return <span title={b.title}><Badge tone={b.tone}>{b.label}</Badge></span>; })()}</Row>
               <Row k="Stored status">{a.status || '—'} / {a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>
@@ -716,7 +756,22 @@ const AdminWriteHuman = () => {
             <Panel icon={Cpu} title="Agent diagnostics" tint="text-violet-500">
               {ag ? (<>
                 <Row k="Host">{ag.host || '—'}</Row>
-                <Row k="Agent version">{ag.version || '—'} {state?.agentOutdated ? <Badge tone="warn">update available → {state.expectedAgentVersion}</Badge> : state?.agentOutdated === false ? <Badge tone="ok">latest</Badge> : null}</Row>
+                {/* THREE SEPARATE FACTS, which one line used to merge into a false claim:
+                      · what is INSTALLED on the machine that reported (ag.version)
+                      · what the public download actually SERVES (agentMeta, from latest.json)
+                      · whether an update can therefore be installed (computed from those two)
+                    `state.agentOutdated` / `state.expectedAgentVersion` come from the backend's
+                    EXPECTED_AGENT_VERSION constant, which is a policy value and not downloadable.
+                    Production proved why that distinction matters: the constant and the published
+                    installer disagreed, so the dashboard advertised an update to a version the
+                    download does not serve. The constant is still shown — as the server's
+                    expectation, labelled as such — and a disagreement is named outright. */}
+                <Row k="Agent version">{ag.version || '—'}</Row>
+                <Row k="Published installer">{published.text}</Row>
+                <Row k="Update">{<span title={upd.detail || ''}><Badge tone={upd.tone}>{upd.text}</Badge></span>}</Row>
+                {mismatch.mismatch && (
+                  <Row k="Version policy"><span className="text-amber-700 font-normal text-[12.5px]">{mismatch.text}</span></Row>
+                )}
                 <Row k="CDP / Chrome">{cdpUp ? <Badge tone="ok">cdp 200</Badge> : <Badge tone="bad">cdp {ag.cdp || '?'}</Badge>} {ag.chrome ? <Badge tone="ok">chrome</Badge> : <Badge tone="warn">no chrome</Badge>}</Row>
                 <Row k="Polls · auth cookies">{(ag.pollCount ?? '—') + ' · ' + (ag.authCookies ?? '—')}</Row>
                 <Row k="Uptime">{dur(ag.uptimeSec)}</Row>
