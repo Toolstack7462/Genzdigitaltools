@@ -184,3 +184,140 @@ test('the polled routes shed honestly; the deliberate fail-safes are left alone'
   assert.match(profile, /fail-safe: never break the dashboard/,
     'the announcements fail-safe is intentional and must not be silently converted to 503');
 });
+
+/**
+ * WHERE SATURATION ACTUALLY SURFACES — read out of db/mysqlAdapter.js, not assumed.
+ *
+ * The claim these tests pin is narrow and it matters for the operator-facing documentation: a
+ * saturation error is NOT confined to the first query a route runs. It can be raised by ANY
+ * `pool.query()`, which includes the one behind `document.save()`. That is what makes a 503 on a
+ * state-changing route indeterminate rather than safe to retry.
+ *
+ * No failure path is invented here. The faults injected are exactly the errors mysql2 raises when
+ * `connectionLimit`/`queueLimit` are reached or the server refuses the connection, delivered
+ * through the adapter's own documented `__test.setPool` seam.
+ */
+const adapter = require('../db/mysqlAdapter');
+
+function saturatedPool(err, { failAfter = 0 } = {}) {
+  let seen = 0;
+  return {
+    calls: [],
+    pool: {
+      query: async function (sql, params = []) {
+        this.calls = (this.calls || []).concat([{ sql, params }]);
+        seen += 1;
+        if (seen > failAfter) throw err;
+        return [[]];
+      },
+    },
+    get count() { return seen; },
+  };
+}
+
+const SATURATION_FAULTS = [
+  Object.assign(new Error('Too many connections'), { code: 'ER_CON_COUNT_ERROR' }),
+  Object.assign(new Error('User already has more than max_user_connections'), { code: 'ER_TOO_MANY_USER_CONNECTIONS' }),
+  Object.assign(new Error('User has exceeded the max_connections resource'), { code: 'ER_USER_LIMIT_REACHED' }),
+  new Error('Queue limit reached.'),
+];
+
+test('ADAPTER: a saturation error propagates from any query, unretried', async () => {
+  const Model = adapter.createModel('PoolSatProbe', {});
+  try {
+    for (const fault of SATURATION_FAULTS) {
+      const fake = saturatedPool(fault);
+      adapter.__test.setPool(fake.pool);
+      await assert.rejects(() => Model.findOne({ _id: 'x' }).exec(), (e) => e === fault,
+        `${fault.code || fault.message} must reach the caller unchanged`);
+      // One attempt only: saturation is not a dead socket, so the adapter's single
+      // dead-connection retry must not apply to it or the pool is hit twice per request.
+      assert.strictEqual(fake.count, 1,
+        `${fault.code || fault.message} must NOT be retried — retrying a shed request doubles the `
+        + 'load that caused the shedding');
+      assert.ok(isPoolSaturationError(fault),
+        'this fault must also be the one the route classifier recognises, or the two disagree');
+    }
+  } finally { adapter.__test.setPool(null); }
+});
+
+test('ADAPTER: document.save() runs through the same query layer, so it can be shed too', async () => {
+  // This is the fact the capture document depends on: `await account.save()` is not immune to
+  // saturation, so a 503 from a route whose catch wraps its saves cannot mean "nothing was tried".
+  const Model = adapter.createModel('PoolSatSaveProbe', {});
+  const fault = Object.assign(new Error('Too many connections'), { code: 'ER_CON_COUNT_ERROR' });
+  try {
+    const fake = saturatedPool(fault);
+    adapter.__test.setPool(fake.pool);
+    const doc = new Model.Document(Model, { _id: 'probe1', state: 'before' });
+    doc.state = 'after';
+    await assert.rejects(() => doc.save(), (e) => e === fault,
+      'save() must surface the saturation error rather than swallowing it');
+    assert.strictEqual(fake.count, 1, 'the write must not be retried into a saturated pool');
+  } finally { adapter.__test.setPool(null); }
+});
+
+test('ADAPTER: a dropped idle connection IS still retried once (unchanged behaviour)', async () => {
+  // The existing one-shot retry must survive the above: it is what fixed the intermittent
+  // "Login failed" 500s. Only saturation is excluded from it.
+  const Model = adapter.createModel('PoolDeadConnProbe', {});
+  try {
+    const dead = Object.assign(new Error('Connection lost: The server closed the connection.'),
+      { code: 'PROTOCOL_CONNECTION_LOST' });
+    const fake = saturatedPool(dead, { failAfter: 0 });
+    let seen = 0;
+    adapter.__test.setPool({
+      query: async () => { seen += 1; if (seen === 1) throw dead; return [[]]; },
+    });
+    await Model.findOne({ _id: 'x' }).exec();
+    assert.strictEqual(seen, 2, 'a dead pooled socket must still get its single retry');
+    assert.ok(!isPoolSaturationError(dead),
+      'a dead connection must not be classified as saturation, or it would be shed as 503');
+    void fake;
+  } finally { adapter.__test.setPool(null); }
+});
+
+test('ADAPTER: the pushdown fallback must not escalate a shed query into a full scan', async () => {
+  // Found by the test above. _candidateRows and countDocuments swallow a failed fast-path query
+  // and fall back to reading the whole table. That fallback is for servers that cannot RUN the
+  // optimised SQL (no generated column, no JSON functions) — never for a pool that had no
+  // connection to give. Absorbing saturation there turns one shed PK lookup into a second,
+  // far more expensive query against the database that was already the bottleneck.
+  const Model = adapter.createModel('PoolSatFallbackProbe', {});
+  try {
+    for (const fault of SATURATION_FAULTS) {
+      for (const criteria of [{ _id: 'x' }, { _id: { $in: ['x', 'y'] } }, { tool: 'writehuman' }]) {
+        const fake = saturatedPool(fault);
+        adapter.__test.setPool(fake.pool);
+        await assert.rejects(() => Model.findOne(criteria).exec(), (e) => e === fault);
+        assert.strictEqual(fake.count, 1,
+          `${JSON.stringify(criteria)} / ${fault.code || fault.message}: the shed query must `
+          + 'surface, not trigger a full-table-scan fallback onto the same saturated pool');
+      }
+      const fake = saturatedPool(fault);
+      adapter.__test.setPool(fake.pool);
+      await assert.rejects(() => Model.countDocuments({}), (e) => e === fault);
+      assert.strictEqual(fake.count, 1,
+        'countDocuments must not answer a shed COUNT(*) by loading every row to count in JS');
+    }
+  } finally { adapter.__test.setPool(null); }
+});
+
+test('ADAPTER: the unsupported-SQL fallback still works (the guard is saturation-only)', async () => {
+  // The guard must not break the compatibility path it sits in: an old MariaDB without JSON
+  // functions, or a missing generated column, must STILL fall back to the full scan.
+  const Model = adapter.createModel('PoolSatCompatProbe', {});
+  try {
+    let calls = 0;
+    adapter.__test.setPool({
+      query: async (sql) => {
+        calls += 1;
+        if (/JSON_EXTRACT|WHERE `?tool/.test(sql)) throw new Error('FUNCTION JSON_EXTRACT does not exist');
+        return [[{ data: JSON.stringify({ _id: 'r1', tool: 'writehuman' }) }]];
+      },
+    });
+    const found = await Model.findOne({ tool: 'writehuman' }).exec();
+    assert.ok(found && found._id === 'r1', 'the full-scan fallback must still answer the query');
+    assert.ok(calls >= 2, 'the fallback must have been taken, not short-circuited by the guard');
+  } finally { adapter.__test.setPool(null); }
+});

@@ -1722,9 +1722,15 @@ router.post('/:tool/devices/:deviceId/make-active', requireCsrf, async (req, res
       note: 'Queued for ' + (dev.name || dev.deviceId) + ' only. That machine captures and verifies its own WriteHuman session; the current session keeps serving until the capture passes.',
     });
   } catch (err) {
-    // No DB capacity is not a failed activation: nothing was promoted, nothing was queued, and the
-    // previous working source is untouched. Say 503 + Retry-After so the operator knows to try the
-    // same click again shortly, rather than a 500 that reads as "activation is broken".
+    // Classify a request the bounded pool queue shed as 503 + Retry-After rather than a 500 that
+    // reads as "activation is broken". That classifies the FAILURE only; it says nothing about
+    // state. This catch wraps the whole handler body, including both account.save() calls, so a
+    // saturation error raised at either save lands here and is answered with the same 503 as one
+    // raised before any mutation — and the body carries no stage, so the response cannot say which
+    // await failed. A 503 is therefore exactly as indeterminate as the 500: it is NOT a safe-retry
+    // signal, and Retry-After is a pacing header, not a claim that nothing was applied. The next
+    // decision belongs to the operator and must be made against correlated activation state from
+    // GET /:tool/activation — see writehuman-v2/docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md section 5.
     //
     // This deliberately does NOT retry by itself. A capture-and-activate is state-changing and its
     // outcome is uncertain once issued, so re-issuing it automatically could mint a second

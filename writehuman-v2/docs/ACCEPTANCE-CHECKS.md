@@ -132,11 +132,28 @@ added no capacity evidence while still touching production.
 - **No claim is made that the downtime is resolved.** Unbounded queueing is a *credible* mechanism
   for the 502/503 pattern; D5 correlated with D1 is what would confirm or refute it.
 
-The smallest change that would make D1/D3/D4 answerable without new infrastructure: extend
-`/api/crm/health` with the pool's `connectionLimit`, `queueLimit`, and mysql2's
-`pool.pool._allConnections.length` / `_freeConnections.length`, plus a counter of `DB_BUSY`
-responses. All non-secret, all server-authoritative. **Not done here** — it adds an endpoint field
-and needs approval.
+### Observability: not proposed as a change to public `/health`
+
+An earlier revision of this document suggested extending `GET /api/crm/health` with pool counters.
+**That suggestion is withdrawn.** `/api/crm/health` is a public, unauthenticated endpoint, and
+adding capacity figures to it would publish the shape of the infrastructure — pool width, queue
+depth, how close the database is to its ceiling — to anyone who asks, as an incidental change
+riding along with an unrelated branch. Load-bearing information about where the system breaks does
+not belong on an endpoint whose whole purpose is to be reachable without credentials.
+
+If pool observability is wanted later it should be requested and reviewed on its own terms, and
+should be:
+
+- **access-controlled** — behind admin authentication, not on the public health check;
+- **lightweight** — counters already held in memory, read without issuing a query, so the
+  diagnostic cannot itself add load to a saturated pool;
+- **explicit about its limits** — `connectionLimit`, `queueLimit` and mysql2's live
+  `_allConnections` / `_freeConnections` lengths plus a `DB_BUSY` counter would answer *D3* and
+  *D4* for this Node process only. They would say nothing about D1 (entry processes, CPU, RAM — a
+  host-level measure), nothing about D5 (restarts/OOM), and nothing about other processes sharing
+  the same MySQL user. A single instance's view of its own pool is not the plan's capacity.
+
+**Nothing of the sort is added in this branch.**
 
 ## E. Release prerequisites that remain
 

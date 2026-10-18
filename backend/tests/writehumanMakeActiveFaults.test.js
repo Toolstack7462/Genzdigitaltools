@@ -7,14 +7,26 @@
  * so a request shed by the bounded pool queue (db/poolLimits.js) was reported to the operator as a
  * broken activation. The distinction matters here more than anywhere else in the admin surface:
  *
- *   503 DB_BUSY  nothing was queued, nothing was promoted, the previous source still serves.
- *                Clicking again shortly is correct and safe.
- *   500          something went wrong that a retry will not fix.
+ *   503 DB_BUSY  the request was shed for want of DB capacity — a transport-level failure.
+ *   500          something else went wrong.
  *
- * These tests mount the REAL router in express and drive it over HTTP, so the assertions are about
- * the shipped handler rather than a copy of its logic. The fault is injected at the first await in
- * the route — ProxyAccount.find — which is BEFORE any state change, so no activation is created,
- * no command is queued and no source is switched by any case here.
+ * WHAT 503 DB_BUSY DOES **NOT** MEAN. It is not a safe-retry signal and these tests must not be
+ * read as establishing one. respondIfDbBusy() is called from the route's single outer catch, which
+ * wraps the entire handler body — including activation.fail() + its save and
+ * activation.attachCommand() + its save — so a saturation error raised at either save is answered
+ * with the same 503 as one raised before any mutation. The response body carries no stage field, so
+ * it cannot say which await failed. For the operator a 503 is exactly as indeterminate as a 500;
+ * the next decision has to come from correlated activation state via GET /:tool/activation.
+ * docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md section 5 is the operator-facing form of this.
+ *
+ * SCOPE OF THE INJECTION — READ THIS BEFORE CITING THESE TESTS. They mount the REAL router in
+ * express and drive it over HTTP, so the assertions are about the shipped handler rather than a
+ * copy of its logic. But the fault is injected at the FIRST await only — ProxyAccount.find — so
+ * that is the only scenario they prove. They establish that saturation is classified 503 and that
+ * a real fault still reads 500; they establish nothing about a throw at either save, which the
+ * same catch would classify identically. Reaching those saves for real needs a live database, so
+ * the persistence ordering they depend on is pinned structurally in the final describe block
+ * instead.
  *
  * WHAT IS STUBBED, AND WHY THAT DOES NOT HIDE ANYTHING. requireAuth / requireAdmin / requireCsrf
  * are replaced with pass-throughs so these tests exercise error classification rather than
@@ -355,5 +367,76 @@ describe('make-active persistence boundary', () => {
       assert.ok(doc.includes(forbidden),
         `the doc must explicitly exclude ${forbidden} from what gets exported`);
     }
+  });
+});
+
+/**
+ * WHY A 503 ON THIS ROUTE IS INDETERMINATE — the two source facts the capture document rests on.
+ *
+ * An earlier revision of these files claimed a 503 DB_BUSY was the one safe-to-retry response,
+ * "because it comes from the first await, before any mutation". That was wrong: the first-await
+ * injection above is the only scenario it was ever tested in, while the classifier is reachable
+ * from every await the handler makes. These assertions pin the two facts that make the claim
+ * false, so it cannot be reintroduced by a reader of the tests above.
+ */
+describe('make-active: a 503 does not identify the failure stage', () => {
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(BACKEND, 'routes', 'admin', 'proxyTools.js'), 'utf8');
+  const start = src.indexOf("make-active', requireCsrf");
+  const end = src.indexOf('Failed to start the activation', start);
+  assert.ok(start > -1 && end > start, 'make-active route not found');
+
+  test('the DB_BUSY classifier is in a catch that encloses BOTH saves', () => {
+    const body = src.slice(start, end);
+    const shed = body.indexOf('respondIfDbBusy(err, res)');
+    assert.ok(shed > -1, 'the shedding call moved — recheck what the catch now covers');
+    const saves = [...body.matchAll(/await account\.save\(\)/g)].map(m => m.index);
+    assert.equal(saves.length, 2, 'this route is expected to have exactly two saves');
+    // The single `catch (err)` that contains respondIfDbBusy opens AFTER both saves, which is
+    // precisely why a throw at either of them is answered with the same 503.
+    const catchAt = body.lastIndexOf('} catch (err) {', shed);
+    assert.ok(catchAt > -1, 'respondIfDbBusy is not inside a catch (err) block');
+    for (const save of saves) {
+      assert.ok(save < catchAt,
+        'an account.save() sits OUTSIDE the catch that sheds 503 — if that is now true the '
+        + 'capture document section 5 can be narrowed; until then a 503 may come from either save');
+    }
+    assert.equal(body.indexOf('} catch (', 0) , catchAt,
+      'the handler must still have exactly one catch: a per-await catch would let the response '
+      + 'name the stage, which is the only thing that would make a 503 interpretable');
+  });
+
+  test('the 503 body carries no stage, activationId or targetDeviceId', async () => {
+    nextFault = new Error('Queue limit reached.');
+    const r = await post(MAKE_ACTIVE);
+    assert.equal(r.status, 503);
+    for (const field of ['stage', 'stageAt', 'activationId', 'targetDeviceId', 'persisted']) {
+      assert.equal(r.json[field], undefined,
+        `the 503 must not imply stage information it cannot know — found ${field}`);
+    }
+    assert.deepEqual(Object.keys(r.json).sort(), ['code', 'error', 'retryAfter'],
+      'the 503 body shape changed; if it now reports a stage, update the capture document');
+  });
+
+  test('neither the route nor these tests claim a 503 is safe to retry', () => {
+    const doc = fs.readFileSync(
+      path.join(BACKEND, '..', 'writehuman-v2', 'docs', 'MARK-ACTIVE-EVIDENCE-CAPTURE.md'), 'utf8');
+    const here = fs.readFileSync(__filename, 'utf8');
+    // Assembled from fragments so this check does not match its own source.
+    const withdrawn = new RegExp([
+      ['retrying is', 'explicitly safe'].join(' '),
+      ['correct', 'and safe'].join(' '),
+      ['nothing was promoted,', 'nothing was queued'].join(' '),
+    ].join('|'));
+    for (const [name, text] of [['the route', src], ['the capture doc', doc], ['this suite', here]]) {
+      assert.ok(!withdrawn.test(text), `${name} still carries the withdrawn safe-retry claim`);
+    }
+    assert.match(doc, /INDETERMINATE too|is INDETERMINATE/,
+      'the capture doc must classify 503 DB_BUSY as indeterminate alongside 500');
+    assert.match(doc, /correlated activation state|Decide on correlated activation state/,
+      'the capture doc must route the decision through correlated activation state');
+    // Tolerant of the comment's line wrapping ("// " between words).
+    assert.match(src.replace(/\s*\n\s*\/\/\s*/g, ' '), /NOT a safe-retry signal/,
+      'the route comment must say what a 503 does not mean, where the next reader will see it');
   });
 });

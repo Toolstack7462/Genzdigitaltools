@@ -157,3 +157,27 @@ test('the manifest never ships tests or local secrets', () => {
     assert.ok(!/(^|\/)\.env/.test(f), 'env files must never be deployed: ' + f);
   }
 });
+
+test('every test file on disk is actually registered in npm test and test:ci', () => {
+  // `test` and `test:ci` name their suites explicitly, so a new tests/*.test.js file runs only if
+  // someone remembered to add it. A forgotten entry is silent: the suite passes locally when run
+  // by hand, never runs in CI, and reads as green either way. This caught exactly that.
+  const fs = require('fs');
+  const pathMod = require('path');
+  const pkg = JSON.parse(fs.readFileSync(pathMod.join(__dirname, '..', 'package.json'), 'utf8'));
+  const onDisk = fs.readdirSync(__dirname).filter(f => f.endsWith('.test.js')).sort();
+  assert.ok(onDisk.length > 50, 'expected to find the test suite on disk');
+  for (const script of ['test', 'test:ci']) {
+    const cmd = pkg.scripts[script];
+    assert.ok(cmd, `package.json is missing the ${script} script`);
+    const missing = onDisk.filter(f => !cmd.includes('tests/' + f));
+    assert.deepEqual(missing, [],
+      `these suites exist but are not run by \`npm run ${script}\` — add them, or they are green `
+      + 'only because nothing executes them');
+    // And nothing listed that no longer exists, which would make the runner exit non-zero.
+    for (const ref of cmd.match(/tests\/[\w.-]+\.test\.js/g) || []) {
+      assert.ok(fs.existsSync(pathMod.join(__dirname, '..', ref)),
+        `${script} refers to ${ref}, which does not exist`);
+    }
+  }
+});

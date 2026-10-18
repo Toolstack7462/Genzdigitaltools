@@ -114,15 +114,46 @@ Read from the route in `backend/routes/admin/proxyTools.js`. The boundary is `aw
 | `200` | Yes — activation saved, command attached and queued |
 | `500` / `503 DB_BUSY` | **INDETERMINATE** — the throw may have occurred before or after either `await account.save()` |
 
+### `503 DB_BUSY` is INDETERMINATE too — it is not a safe-retry signal
+
+Nothing in this branch makes it one. It belongs in the same row as `500`, for two reasons read out
+of the source rather than assumed:
+
+1. **The classifier sits in the route's single outer `catch (err)`.** That `catch` wraps the whole
+   handler body — the opening `ProxyAccount.find`, *and* `activation.fail()` + its
+   `account.save()`, *and* `activation.attachCommand()` + its `account.save()`. `respondIfDbBusy()`
+   is reached from any of them, so a saturation error raised at either save is reported with exactly
+   the same `503` as one raised before any mutation.
+2. **The response carries no stage.** The body is `{ ok: false, error, code: 'DB_BUSY',
+   retryAfter: 5 }` with a `Retry-After: 5` header — no `stage`, no `activationId`, no
+   `targetDeviceId`. From the response alone the operator cannot tell which `await` failed.
+
+What the code paths were traced to do (`backend/db/mysqlAdapter.js`, `backend/utils/proxy/`):
+
+- Every persistence step goes `account.save()` -> `_upsertRaw()` -> `runQuery()` -> `pool.query()`.
+  Saturation codes are not in `DEAD_CONN_CODES`, so `runQuery` propagates them **without** its
+  single dead-connection retry.
+- `activation.create()` and `agentCommands.enqueue()` are **in-memory only** — neither awaits
+  anything. A queued command reaches the target device only after an `account.save()` commits.
+- `ActivityLog.log()` swallows its own errors, so the audit write cannot be the source of this
+  `503`.
+
+That narrows the mechanism. It does **not** license reading a `503` as proof that nothing was
+applied: the operator holds a status code, not a stack trace, and `Retry-After` is a pacing header,
+not a statement about state.
+
 Consequences for the operator:
 
 - A `400` means a transaction **was** recorded. Do not read the next `/activation` as "nothing
   happened".
-- A `500` or `503` means **unknown**. Read `/activation` and compare `activationId`/`stageAt` against
-  your attempt before concluding anything, and before pressing again.
-- **`503 DB_BUSY` is the one case where retrying is explicitly safe**, because that response is
-  returned from the first `await` in the route, before any mutation. It is still a retry of a
-  state-changing operation, so it needs the same approval as any other attempt.
+- A `500` **and a `503 DB_BUSY` alike** mean **unknown**. Treat them identically.
+- **Decide on correlated activation state, never on the status code.** Read `GET …/activation` and
+  apply section 4's rules — its `activationId` must match the one in your response, or its
+  `targetDeviceId` must match the device you targeted with a `stageAt` at or after your attempt.
+  Only once that read shows no transaction for *your* attempt is a second press a fresh attempt
+  rather than a possible duplicate.
+- A second press is still a press of a state-changing button and needs the same separate approval
+  as the first (see the banner at the top).
 
 ## 6. What must not be done to obtain evidence
 
