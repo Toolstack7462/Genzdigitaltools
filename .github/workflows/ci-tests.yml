@@ -26,7 +26,24 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
     steps:
+      # Full history: deployCleanRoom.test.js builds the pre-deploy server tree from the commit
+      # being deployed ONTO. The default shallow checkout cannot resolve any such ref, and the test
+      # used to skip silently — so the one gate that catches "Passenger boots into Cannot find
+      # module" never actually ran in CI. It now fails rather than skips when CI is set, so this
+      # must stay. The repository's history is ~30 MB; this is a one-off clone cost per job.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The baseline is what the server already holds, not this branch's previous commit: for a
+      # pull request that is the base branch's tip; for a branch push it is origin/main, since main
+      # is what any deploy would be cut onto.
+      - name: Resolve deploy baseline
+        run: |
+          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
+            echo "DEPLOY_BASELINE_REF=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_ENV"
+          else
+            echo "DEPLOY_BASELINE_REF=origin/main" >> "$GITHUB_ENV"
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

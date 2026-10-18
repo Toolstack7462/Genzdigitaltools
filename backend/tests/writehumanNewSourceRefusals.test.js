@@ -139,49 +139,89 @@ describe('new source: the latched-ERROR trap, which rewrites the evidence', () =
   });
 });
 
-describe('FINDING: supersede is decided by name and lastSeenAt, never by pairedAt', () => {
+describe('supersede: what the heuristic can and cannot refuse', () => {
   /**
-   * CHARACTERIZATION OF A DEFECT-SHAPED PATH — not changed here.
+   * CORRECTION TO AN EARLIER CLAIM IN THIS FILE.
    *
-   * isSupersededDevice() calls a device superseded when another non-revoked device shares its
-   * `name` and has a NEWER `lastSeenAt`. It never consults `pairedAt`. "Newest heartbeat wins" is
-   * not the same rule as "newest enrolment wins", and they disagree in exactly the scenario the
-   * incident describes: the agent is reinstalled on a machine (a reinstall mints a fresh deviceId),
-   * but the OLD agent is still running and still heartbeating from that same host. The old record
-   * then has the newer lastSeenAt, so the NEW record — the one the operator just paired and is
-   * trying to activate — is the one judged superseded.
+   * An earlier revision presented the supersede heuristic as a strong candidate for
+   * "new source -> Mark as Active fails", on a fixture that cannot occur: a device paired one
+   * minute ago whose last heartbeat was eleven minutes ago. Pairing IS contact, so `lastSeenAt`
+   * cannot predate `pairedAt`.
    *
-   * This fits the single symptom in hand. It is NOT asserted to be the cause: `DEVICE_SUPERSEDED`
-   * in the operator's error would support it, any other code would rule it out. The rule is left
-   * exactly as it is until that evidence exists, because loosening a supersede check on a
-   * hypothesis risks addressing a command to a stale enrolment of a working source.
+   * More importantly, `isSupersededDevice()` returns false for ANY online device — its second
+   * guard is `if (isOnline(dev, staleMs)) return false`. So the heuristic cannot refuse a device
+   * that is heartbeating, however many same-named records exist. It only ever relabels an OFFLINE
+   * device's refusal: without it that device gets `DEVICE_OFFLINE`, with it `DEVICE_SUPERSEDED`
+   * (the supersede check runs before `requireOnline`). It cannot block a healthy new source.
+   *
+   * `DEVICE_SUPERSEDED` therefore identifies a refusal CATEGORY, not a root cause, and it does not
+   * on its own distinguish the heuristic from an explicit `supersededBy` written by re-enrolment.
+   * No speculative `pairedAt` fix is implemented and no eligibility rule is weakened.
    */
-  test('a newly paired device loses to an older record that is still heartbeating', () => {
+  test('CONTROL: an ONLINE new device is never superseded, even by a more recent sibling', () => {
+    // The case the earlier claim needed and never tested: the new device is healthy and online,
+    // and an older same-named record heartbeated even more recently.
     const fresh = newDevice({
       deviceId: 'agent_fresh', name: 'RDP-01',
-      pairedAt: ago(60000), lastSeenAt: ago(STALE_MS + 60000), // paired now, gone quiet since
+      pairedAt: ago(120000), lastSeenAt: ago(60000), // paired 2 min ago, seen 1 min ago: online
     });
-    const stale = newDevice({
-      deviceId: 'agent_stale', name: 'RDP-01',
-      pairedAt: ago(90 * 24 * 3600 * 1000), lastSeenAt: ago(5000), // old enrolment, still alive
+    const older = newDevice({
+      deviceId: 'agent_older', name: 'RDP-01',
+      pairedAt: ago(90 * 24 * 3600 * 1000), lastSeenAt: ago(1000), // seen MORE recently
     });
-    const account = accountWith([stale, fresh]);
+    const account = accountWith([older, fresh]);
+    assert.ok(new Date(older.lastSeenAt) > new Date(fresh.lastSeenAt),
+      'the fixture must have the OLDER record heartbeating more recently');
 
-    assert.equal(deviceSync.isSupersededDevice(account, fresh, STALE_MS), true,
-      'current behaviour: the NEWER enrolment is judged superseded by the OLDER one');
-    assert.ok(new Date(fresh.pairedAt) > new Date(stale.pairedAt),
-      'and it is the newer enrolment by pairedAt — the field the rule does not read');
-
+    assert.equal(deviceSync.isSupersededDevice(account, fresh, STALE_MS), false,
+      'an online device must never be judged superseded — isOnline() short-circuits the heuristic');
     const t = agentCommands.validateTarget(account, fresh.deviceId, TARGET_OPTS);
-    assert.equal(t.code, 'DEVICE_SUPERSEDED',
-      'so Mark as Active refuses the new source with DEVICE_SUPERSEDED — this is the code that '
-      + 'would confirm this path, and its absence that would rule it out');
+    assert.ok(t.ok,
+      `a healthy online new source must pass, got ${t.code} — the heuristic cannot be the cause `
+      + 'of a refusal for a device that is actually running');
   });
 
-  test('the ordering rule still protects the case it was written for', () => {
-    // A genuinely abandoned old row, with the live one being the newer enrolment: the old row must
-    // still be superseded. Any future fix must keep this true.
-    const live = newDevice({ deviceId: 'agent_live', name: 'RDP-01', pairedAt: ago(60000), lastSeenAt: ago(5000) });
+  test('the heuristic only ever relabels an OFFLINE refusal, and needs a plausible timeline', () => {
+    // A plausible stale device: paired three days ago, last heard from 40 minutes ago (so it is
+    // offline), while the same machine's newer enrolment is live.
+    const stale = newDevice({
+      deviceId: 'agent_stale', name: 'RDP-01',
+      pairedAt: ago(3 * 24 * 3600 * 1000), lastSeenAt: ago(40 * 60000),
+    });
+    const live = newDevice({
+      deviceId: 'agent_live', name: 'RDP-01',
+      pairedAt: ago(10 * 60000), lastSeenAt: ago(30000),
+    });
+    assert.ok(new Date(stale.lastSeenAt) >= new Date(stale.pairedAt),
+      'a device cannot have been seen before it was paired');
+
+    const withSibling = accountWith([live, stale]);
+    assert.equal(deviceSync.isSupersededDevice(withSibling, stale, STALE_MS), true);
+    assert.equal(agentCommands.validateTarget(withSibling, stale.deviceId, TARGET_OPTS).code,
+      'DEVICE_SUPERSEDED');
+
+    // The SAME offline device, with no sibling, is refused as offline instead. That difference is
+    // the heuristic's entire effect on this route: which name the refusal carries.
+    const alone = accountWith([stale]);
+    assert.equal(deviceSync.isSupersededDevice(alone, stale, STALE_MS), false);
+    assert.equal(agentCommands.validateTarget(alone, stale.deviceId, TARGET_OPTS).code,
+      'DEVICE_OFFLINE');
+  });
+
+  test('explicit supersededBy is a DIFFERENT cause that shares the code', () => {
+    // Written by re-enrolment rather than inferred. It refuses even an ONLINE device, so it is the
+    // only way a heartbeating new source can see DEVICE_SUPERSEDED — which is why the code alone
+    // does not identify which of the two happened.
+    const online = newDevice({ deviceId: 'agent_online', supersededBy: 'agent_newer' });
+    assert.equal(deviceSync.isSupersededDevice(accountWith([online]), online, STALE_MS), false,
+      'the heuristic does not fire here — the flag is what refuses it');
+    assert.equal(agentCommands.validateTarget(accountWith([online]), online.deviceId, TARGET_OPTS).code,
+      'DEVICE_SUPERSEDED',
+      'so the same code covers an explicit flag and an inferred offline sibling');
+  });
+
+  test('the heuristic still protects the case it was written for', () => {
+    const live = newDevice({ deviceId: 'agent_live', name: 'RDP-01', pairedAt: ago(600000), lastSeenAt: ago(5000) });
     const dead = newDevice({ deviceId: 'agent_dead', name: 'RDP-01', pairedAt: ago(90 * 24 * 3600 * 1000), lastSeenAt: ago(STALE_MS + 60000) });
     const account = accountWith([live, dead]);
     assert.equal(deviceSync.isSupersededDevice(account, dead, STALE_MS), true);
@@ -194,5 +234,96 @@ describe('FINDING: supersede is decided by name and lastSeenAt, never by pairedA
     assert.equal(
       deviceSync.isSupersededDevice(accountWith([act, other], 'agent_act'), act, STALE_MS), false,
       'the working source must never be demoted by this heuristic');
+  });
+});
+
+describe('correlation: targetDeviceId + stageAt does NOT identify an attempt', () => {
+  /**
+   * CORRECTION TO THE CAPTURE DOCUMENT'S §4 RULE.
+   *
+   * It said `/activation` could be treated as describing your attempt when no activationId was
+   * returned, provided its `targetDeviceId` matched the device you targeted AND its `stageAt` was
+   * at or after your attempt. That is unsound. An OLDER activation for the SAME device keeps
+   * advancing while the agent works on it, so its `stageAt` moves past the timestamp of a LATER
+   * request that was refused before `activation.create()` was ever called. Both halves of the
+   * predicate then hold while the record describes a different, earlier attempt.
+   *
+   * Timestamps alone are not proof. Without an attempt-specific identifier the status is UNKNOWN.
+   */
+  const activation = require('../utils/proxy/activation');
+
+  test('an older activation advancing after a failed newer request satisfies the old rule', () => {
+    const dev = newDevice({ deviceId: 'agent_target', name: 'RDP-01' });
+    const account = accountWith([dev]);
+
+    // 10 minutes ago: a Mark as Active was accepted for this device and is still in flight.
+    const earlier = new Date(Date.now() - 600000);
+    const first = activation.create(account, { device: dev, issuedBy: 'admin1', now: earlier, ttlMs: 3600000 });
+    assert.ok(first.ok);
+    const firstId = first.activation.activationId;
+
+    // NOW: the operator presses again and is refused BEFORE activation.create() — so no record
+    // exists for this attempt. (Any pre-create refusal does this; see the differential above.)
+    const attemptAt = new Date();
+
+    // A moment later the agent advances the EARLIER activation.
+    const adv = activation.advance(account, {
+      activationId: firstId, stage: 'OPENING_CHROME', fromAgent: true,
+      now: new Date(attemptAt.getTime() + 5000),
+    });
+    assert.ok(adv.ok && !adv.noop, 'the earlier activation must actually have advanced');
+
+    const live = activation.current(account, new Date(attemptAt.getTime() + 6000));
+    assert.equal(live.activationId, firstId, 'the record on the account is still the EARLIER one');
+
+    // The withdrawn predicate, applied literally:
+    const deviceMatches = live.targetDeviceId === dev.deviceId;
+    const stageAtAfterAttempt = new Date(live.stageAt).getTime() >= attemptAt.getTime();
+    assert.ok(deviceMatches && stageAtAfterAttempt,
+      'both halves of the old rule hold here — which is exactly the problem');
+    assert.notEqual(live.activationId, null);
+
+    // ...and it is wrong: this record is not the operator's attempt. Nothing was created for it.
+    assert.ok(new Date(live.createdAt).getTime() < attemptAt.getTime(),
+      'the record predates the attempt it would have been attributed to');
+  });
+
+  test('only an activationId match is conclusive; otherwise the status stays UNKNOWN', () => {
+    const dev = newDevice({ deviceId: 'agent_target' });
+    const account = accountWith([dev]);
+    const earlier = new Date(Date.now() - 600000);
+    const first = activation.create(account, { device: dev, issuedBy: 'admin1', now: earlier, ttlMs: 3600000 });
+    const live = activation.current(account, new Date());
+
+    // The corrected rule, as the capture document now states it.
+    const correlates = (record, attempt) =>
+      !!(record && attempt.activationId && record.activationId === attempt.activationId);
+
+    assert.equal(correlates(live, { activationId: first.activation.activationId }), true,
+      'a returned activationId that matches IS conclusive');
+    assert.equal(correlates(live, { activationId: null }), false,
+      'no returned id means no correlation — UNKNOWN, not "probably mine"');
+    assert.equal(correlates(live, { activationId: 'act_somethingelse' }), false,
+      'a different id means the record is NOT this attempt');
+    assert.equal(correlates(null, { activationId: 'act_x' }), false,
+      'a null activation correlates with nothing');
+  });
+
+  test('the capture and incident documents state the corrected rule', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const docs = path.join(__dirname, '..', '..', 'writehuman-v2', 'docs');
+    const capture = fs.readFileSync(path.join(docs, 'MARK-ACTIVE-EVIDENCE-CAPTURE.md'), 'utf8');
+    const incident = fs.readFileSync(path.join(docs, 'MARK-ACTIVE-INCIDENT.md'), 'utf8');
+    // Assembled so this check does not match its own source.
+    const withdrawn = new RegExp(['`targetDeviceId` matches the', 'device you targeted \\*\\*and\\*\\*'].join(''));
+    assert.ok(!withdrawn.test(capture),
+      'the capture document still carries the withdrawn targetDeviceId+stageAt rule');
+    for (const [name, doc] of [['capture', capture], ['incident', incident]]) {
+      assert.match(doc, /UNKNOWN/,
+        `the ${name} document must retain UNKNOWN status without an attempt-specific identifier`);
+    }
+    assert.match(capture, /not proof|never proof/,
+      'the capture document must say timestamps alone are not proof');
   });
 });

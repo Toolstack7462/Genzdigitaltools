@@ -78,9 +78,19 @@ transaction**, possibly for another device.
 
 Rules:
 
-- Treat `/activation` as describing your attempt **only if** its `activationId` matches the one in
-  your `make-active` response, **or** (when no id was returned) its `targetDeviceId` matches the
-  device you targeted **and** its `stageAt` is at or after your attempt's timestamp.
+- Treat `/activation` as describing your attempt **only if** its `activationId` matches an
+  `activationId` returned in your own `make-active` response. That is the only conclusive test.
+- **`targetDeviceId` + `stageAt` is NOT a substitute, and an earlier revision of this document was
+  wrong to offer it as one.** An older activation for the *same* device keeps advancing while the
+  agent works on it, so its `stageAt` moves past the timestamp of a later request that was refused
+  before `activation.create()` was ever called. Both halves of that test then hold while the record
+  describes a different, earlier attempt. Pinned by
+  `backend/tests/writehumanNewSourceRefusals.test.js`.
+- **Timestamps alone are never proof.** With no `activationId` to match — which is the case for
+  every pre-create refusal, and for a `500`/`503` that returned no body fields — the persistence
+  status of your attempt is **UNKNOWN**. Record it as UNKNOWN and look for corroborating evidence
+  (a server log line, an activity-log entry, the device's own report) rather than attributing the
+  nearest record to yourself.
 - If `activation` is `null`, that is consistent with a pre-create refusal. It is **not** evidence
   about your attempt either way.
 - **Never attach an older `failureCode` to a new request.** A stale `ACCOUNT_MISMATCH` from last
@@ -148,10 +158,10 @@ Consequences for the operator:
   happened".
 - A `500` **and a `503 DB_BUSY` alike** mean **unknown**. Treat them identically.
 - **Decide on correlated activation state, never on the status code.** Read `GET …/activation` and
-  apply section 4's rules — its `activationId` must match the one in your response, or its
-  `targetDeviceId` must match the device you targeted with a `stageAt` at or after your attempt.
-  Only once that read shows no transaction for *your* attempt is a second press a fresh attempt
-  rather than a possible duplicate.
+  apply section 4's rule: only an `activationId` that matches one your own response returned
+  correlates. A `503`/`500` returns no `activationId`, so for those the correlation cannot be made
+  at all and the status stays **UNKNOWN** until corroborating evidence exists. UNKNOWN is not a
+  licence to press again — it is the reason to go and find the corroboration first.
 - A second press is still a press of a state-changing button and needs the same separate approval
   as the first (see the banner at the top).
 

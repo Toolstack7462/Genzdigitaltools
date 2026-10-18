@@ -1730,7 +1730,11 @@ router.post('/:tool/devices/:deviceId/make-active', requireCsrf, async (req, res
     // await failed. A 503 is therefore exactly as indeterminate as the 500: it is NOT a safe-retry
     // signal, and Retry-After is a pacing header, not a claim that nothing was applied. The next
     // decision belongs to the operator and must be made against correlated activation state from
-    // GET /:tool/activation — see writehuman-v2/docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md section 5.
+    // GET /:tool/activation. Only a matching activationId correlates, and this response returns
+    // none — so after a 503 the persistence status of the attempt is UNKNOWN until corroborating
+    // evidence exists. A matching targetDeviceId with a later stageAt is NOT a substitute: an
+    // older activation for the same device keeps advancing and would satisfy it. See
+    // writehuman-v2/docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md sections 4 and 5.
     //
     // This deliberately does NOT retry by itself. A capture-and-activate is state-changing and its
     // outcome is uncertain once issued, so re-issuing it automatically could mint a second

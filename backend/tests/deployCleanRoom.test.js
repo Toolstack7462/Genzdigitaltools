@@ -74,9 +74,17 @@ function requiresIn(treeRoot, rel) {
 }
 
 /**
- * Layer 1, built ONCE and reused: the committed backend tree at HEAD~1 — what the live server is
- * presumed to already hold. HEAD~1 rather than HEAD is deliberate: it leaves this branch's NEW
- * modules out of the baseline, which is exactly the condition that breaks a real deploy.
+ * The baseline ref: the committed backend tree the live server is presumed to already hold. It
+ * must NOT be HEAD, because leaving this branch's new modules out of the baseline is exactly the
+ * condition that breaks a real deploy.
+ *
+ * DEPLOY_BASELINE_REF overrides it so CI can name the commit actually deployed — for a pull request
+ * that is the base branch, not this branch's previous commit. HEAD~1 is the local default.
+ */
+const BASELINE_REF = process.env.DEPLOY_BASELINE_REF || 'HEAD~1';
+
+/**
+ * Layer 1, built ONCE and reused.
  *
  * Materialised by streaming every blob through ONE `git cat-file --batch` process. The obvious
  * alternatives are both worse here: a `git show` per file spawned several thousand processes and
@@ -85,10 +93,10 @@ function requiresIn(treeRoot, rel) {
  */
 function buildBaseline(tmpBase) {
   const baseDir = path.join(tmpBase, 'baseline');
-  const files = git(['ls-tree', '-r', '--name-only', 'HEAD~1', 'backend/'])
+  const files = git(['ls-tree', '-r', '--name-only', BASELINE_REF, 'backend/'])
     .split('\n').filter(f => f.endsWith('.js'));
 
-  const input = files.map(f => `HEAD~1:${f}`).join('\n') + '\n';
+  const input = files.map(f => `${BASELINE_REF}:${f}`).join('\n') + '\n';
   const out = execFileSync('git', ['cat-file', '--batch'], {
     cwd: ROOT, input, maxBuffer: 512 * 1024 * 1024,
   });
@@ -132,10 +140,24 @@ function deployScripts() {
 }
 
 test('every deploy script produces a tree that resolves all its own modules', (t) => {
+  // A shallow checkout cannot resolve the baseline, and this test then silently skipped — which
+  // is how it ran on nobody's machine while reading as green in CI. A missing baseline is a
+  // CONFIGURATION fault, not an intended skip, so under CI it fails and names the remedy. Locally
+  // (a fresh single-commit clone) it still skips, because there genuinely is no prior tree.
   let baseline;
-  try { baseline = git(['rev-parse', 'HEAD~1']).trim(); }
-  catch (_) { return t.skip('needs at least two commits to model the pre-deploy server state'); }
-  assert.ok(baseline, 'baseline commit resolved');
+  try { baseline = git(['rev-parse', BASELINE_REF]).trim(); }
+  catch (_) { baseline = null; }
+  if (!baseline) {
+    const how = `baseline ref "${BASELINE_REF}" could not be resolved`;
+    if (process.env.CI) {
+      assert.fail(
+        `${how}. This check models a real deploy and MUST run in CI. The checkout is shallow: `
+        + 'give actions/checkout `fetch-depth: 0` (or fetch enough history) and set '
+        + 'DEPLOY_BASELINE_REF to the commit being deployed onto — the PR base sha, or origin/main '
+        + 'for a branch push. Do not let this skip.');
+    }
+    return t.skip(`${how} — needs at least two commits to model the pre-deploy server state`);
+  }
 
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-deploy-'));
   const failures = [];

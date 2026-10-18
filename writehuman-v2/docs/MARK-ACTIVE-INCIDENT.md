@@ -1,7 +1,8 @@
 # Mark as Active — the original incident: differential diagnosis
 
-**Status: NOT DIAGNOSED. One candidate path is confirmed to exist in the code; it is not confirmed
-to be the cause.**
+**Status: NOT DIAGNOSED, and no candidate is confirmed.** The differential below is a shortlist
+built from the code; every field of the actual failure is still **UNKNOWN**. The supersede lead that
+an earlier revision called strong is corrected in §4 — it cannot refuse an online device.
 
 This file is the investigation. `MARK-ACTIVE-EVIDENCE-CAPTURE.md` is the procedure for getting the
 one field that would close it.
@@ -53,7 +54,7 @@ are returned **before** any command is minted, so each is a `409`/`404` with not
 | 1 | Agent installed but has not heartbeated yet | `DEVICE_OFFLINE` | **Strongly** — pairing and first heartbeat are separate steps |
 | 2 | Last heartbeat older than the 10-min window (`PROXY_AGENT_STALE_MIN`) | `DEVICE_OFFLINE` | **Strongly** |
 | 3 | Paired without completing key enrolment (`keyHash` absent) | `DEVICE_NO_CREDENTIAL` | Plausibly |
-| 4 | Older enrolment of the same machine still heartbeating — **see §4** | `DEVICE_SUPERSEDED` | **Strongly** |
+| 4 | Explicit `supersededBy` from re-enrolment, **or** an offline device with a live same-named sibling — **see §4** | `DEVICE_SUPERSEDED` | Only if the device is **not** online |
 | 5 | Agent below `MIN_ACTIVATION_AGENT_VERSION` (3.5.0) | `ACTIVATION_VERSION_UNSUPPORTED` | Plausibly — an old build on the new machine |
 | 6 | Agent below `MIN_AGENT_VERSION` (3.4.0), or not reporting a version | `COMMAND_VERSION_UNSUPPORTED` | Plausibly |
 | 7 | A device record that is revoked / uninstalled | `DEVICE_REVOKED` / `DEVICE_UNINSTALLED` | Unlikely for a new pairing |
@@ -62,37 +63,43 @@ are returned **before** any command is minted, so each is a `409`/`404` with not
 | 10 | Command queued, device then failed the capture or the expected-account check | `200` first, failure later in `/activation` | Possible — would NOT look like a failed press |
 | 11 | DB saturation or another server fault | `503 DB_BUSY` / `500` | Possible; **indeterminate**, see capture doc §5 |
 
-Rows 1–8 are each a single distinct code, which is why one screenshot resolves this. Rows 10 and 11
-are the two that a status code alone does **not** resolve.
+**No single code uniquely diagnoses this incident.** A code narrows the list; it does not close it.
+Rows 1 and 2 share `DEVICE_OFFLINE` and are told apart only by the heartbeat timeline; row 4's code
+covers two distinct causes (§4); row 9's code describes a *latch* rather than the first failure
+(§5); rows 10 and 11 are not resolved by a status code at all. Treat a captured code as the field
+that picks a shortlist, then corroborate it — and where it cannot be corroborated, the status stays
+**UNKNOWN**.
 
-## 4. The one defect-shaped finding: supersede ignores `pairedAt`
+## 4. Supersede: a weak lead, corrected
 
-`deviceSync.isSupersededDevice()` judges a device superseded when another non-revoked device shares
-its `name` and has a **newer `lastSeenAt`**. It never reads `pairedAt`.
+An earlier revision of this file presented `deviceSync.isSupersededDevice()` as a strong candidate
+for this incident. **That was overstated and is corrected here.**
 
-"Newest heartbeat wins" is not the same rule as "newest enrolment wins", and the two disagree in
-precisely the scenario the symptom describes:
+The rule does decide by `name` and `lastSeenAt` and never reads `pairedAt`. But its second guard is
+`if (isOnline(dev, staleMs)) return false`, so **it cannot refuse a device that is heartbeating** —
+however many same-named records exist, and even when an older one heartbeated more recently. A
+control test pins exactly that: a healthy, online, credentialled new source passes every gate with
+an older sibling seen more recently.
 
-> The agent is reinstalled on a machine — a reinstall mints a fresh `deviceId`, so a second record
-> appears with the same `name`. The **old** agent is still installed and still heartbeating from
-> that host. The old record therefore carries the newer `lastSeenAt`, and the **new** record — the
-> one just paired, the one the operator is trying to activate — is the one judged superseded.
-> `Mark as Active` then refuses it with `DEVICE_SUPERSEDED`.
+The earlier fixture was also impossible: a device paired one minute ago whose last heartbeat was
+eleven minutes ago. Pairing *is* contact, so `lastSeenAt` cannot predate `pairedAt`. The replacement
+fixture is a plausible stale device — paired three days ago, last heard from forty minutes ago.
 
-This is confirmed to be the code's actual behaviour (`writehumanNewSourceRefusals.test.js`,
-*"a newly paired device loses to an older record that is still heartbeating"* — it also asserts the
-new record is the newer one by `pairedAt`, the field the rule does not consult).
+**What the heuristic actually does on this route** is relabel an *offline* device's refusal: the
+supersede check runs before `requireOnline`, so the same offline device is refused
+`DEVICE_SUPERSEDED` when a live same-named sibling exists and `DEVICE_OFFLINE` when it does not.
+That is its entire effect here. It cannot block a working new source, so it is **not** an
+explanation for a device the operator believes is running.
 
-**It is not confirmed to be the cause of the incident.** `DEVICE_SUPERSEDED` in the operator's
-error would support it; **any other code rules it out.**
+**`DEVICE_SUPERSEDED` identifies a refusal category, not a root cause.** Two different causes share
+it: an explicit `supersededBy` flag written by re-enrolment (which *does* refuse an online device,
+and is the only way a heartbeating new source sees this code), and the offline-sibling heuristic.
+The code alone does not say which, so it narrows the search without closing it.
 
-**Deliberately not changed here.** The rule's job is to stop a command being addressed to a stale
-enrolment of a working source, and a test pins that it still does that (an abandoned old row is
-still superseded; the active source is never superseded whatever the heartbeats say). Loosening a
-supersede check on a hypothesis, with no error code to confirm it, risks addressing a
-capture-and-activate to the wrong enrolment of a live source — a worse outcome than the refusal.
-When the evidence arrives, the fix to evaluate is tie-breaking on `pairedAt` when both records are
-for the same name, not removing the check.
+**Nothing is changed.** No `pairedAt` tie-break is implemented — that would be a speculative fix to
+a rule that has not been shown to refuse anything the incident describes, and loosening a supersede
+check risks addressing a capture-and-activate to a stale enrolment of a live source. Tests pin that
+the rule still supersedes a genuinely abandoned row and never demotes the active source.
 
 ## 5. Why a second press reports a different cause
 
@@ -116,8 +123,11 @@ In order of how much it settles, cheapest first — **none of it requires a new 
    attempt.
 3. **The admin device list** for that account at the time: two records with the same `name`, and
    which one was heartbeating, decides §4 directly.
-4. **Server logs** around the timestamp: `Proxy make-active error:` is logged only for the `500`
-   path, so its *absence* is itself informative — it argues against row 11.
+4. **Server logs** around the timestamp. Note what this log can and cannot show: the handler calls
+   `respondIfDbBusy(err, res)` and **returns before** `console.error('Proxy make-active error:', …)`
+   runs, so a shed request is answered `503` and logged **nothing**. The absence of that line
+   therefore does **not** rule out saturation — it only rules out the `500` branch. A *present*
+   line is useful evidence; an absent one is not.
 
 Until at least (1) exists, no fix should be written for this incident. The `DB_BUSY` work on this
 route is error-reporting hygiene and is **not** a candidate cause; it is row 11's reporting, not
