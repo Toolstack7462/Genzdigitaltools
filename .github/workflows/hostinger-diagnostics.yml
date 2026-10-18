@@ -124,6 +124,24 @@ jobs:
           { echo "## WriteHuman download + device-state facts"; echo ''; echo '```'; cat wh.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           cat wh.txt
 
+          # The job summary is not retrievable through the API from every client, and neither are
+          # raw logs. ::notice:: annotations ARE, so the handful of facts this run exists to
+          # establish are emitted as annotations too — compact, one per line, no secrets.
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          val() { grep -m1 -E "$1" wh.txt | tr -d '\r' | cut -c1-400; }
+          emit "dist-dir"      "$(grep -A4 'PUBLISHED INSTALLER DIRECTORY' wh.txt | grep -m1 -E 'DIRECTORY DOES NOT EXIST|total|writehuman-agent' || echo 'no line')"
+          emit "latest-json"   "$(sed -n '/--- latest.json ---/,/=====/p' wh.txt | tr -d '\n' | cut -c1-400 || echo 'NO latest.json')"
+          emit "exe"           "$(val 'exe bytes|NO EXE AT THE DEFAULT PATH')  $(val 'exe sha256')"
+          emit "dist-override" "$(val 'matching key')"
+          emit "found-exes"    "$(grep -m3 'WriteHuman-Agent-Setup.*exe' wh.txt | tr '\n' ' ' | cut -c1-300)"
+          emit "proxyTools"    "$(val 'proxyTools.js present|proxyTools.js MISSING')"
+          emit "state-markers" "$(grep -E '^\s+(dv\.state|dv\.stateReason|dv\.canActivate|deviceViewsAll|respondIfDbBusy|EXPECTED_AGENT)' wh.txt | tr -s ' ' | tr '\n' '|' | cut -c1-400)"
+          emit "poolLimits"    "$(val 'poolLimits.js (present|ABSENT)')"
+          emit "agentDownload" "$(val 'agentDownload.js present|agentDownload.js MISSING')"
+          emit "public-meta"   "$(val 'latest.json -> HTTP')  $(grep -m1 -E '^\{|"version"' wh.txt | cut -c1-200)"
+          emit "public-exe"    "$(grep -iE '^HTTP/|x-agent-version|x-agent-sha256|content-range|content-disposition' wh.txt | tr '\n' '|' | cut -c1-400)"
+          emit "served-build"  "$(grep -m2 'sourceFingerprint' wh.txt | tr '\n' '|' | cut -c1-400)"
+
       - name: Collect read-only measurements
         env:
           # Via env, never `${{ }}` inside the script: a workflow_dispatch input interpolated into
