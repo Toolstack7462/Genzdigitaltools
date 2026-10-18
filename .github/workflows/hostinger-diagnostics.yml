@@ -162,29 +162,26 @@ jobs:
         with:
           node-version: '22'
 
-      # GATE 1 — the committed ZIP is built from the committed source, and the code inside it is
-      # the fixed code. "Correctly identified matching artifact": the version is new AND the bytes
-      # carry the change.
-      - name: Verify the package against its source
+      # GATE 1 — build the artifact FROM THE LIVE PACKAGE, and prove what changed inside it.
+      #
+      # NOT from chrome-extension/. Measured on 2026-10-18: the served package is v3.9.35 with 48
+      # entries, its js/background.js is 171,372 bytes, and 29 files differ from this branch with 10
+      # live-only — while this repository's source is v3.9.31 with 40 entries and a 158,947-byte
+      # background.js. Versions 3.9.32-3.9.35 were published from a tree that is not in git, so
+      # building from source would DELETE ten files and revert twenty-nine.
+      #
+      # patch-live-extension.mjs therefore takes the live bytes, changes exactly one file, bumps the
+      # version, and refuses outright if the live code is not the shape it expects or has already
+      # been fixed. It then re-opens its own output and proves the entry count, permissions, key and
+      # every other file are untouched.
+      - name: Patch the live package and verify the result
         run: |
           set -euo pipefail
-          node scripts/build-extension.mjs --check
+          sudo apt-get update && sudo apt-get install -y zip unzip
           cd chrome-extension && npm test && cd ..
-          node -e '
-            const fs = require("fs"), crypto = require("crypto");
-            const zip = "frontend/public/downloads/genz-digital-store-extension.zip";
-            const buf = fs.readFileSync(zip);
-            const sha = crypto.createHash("sha256").update(buf).digest("hex");
-            const man = JSON.parse(fs.readFileSync("chrome-extension/manifest.json", "utf8"));
-            const bg = fs.readFileSync("chrome-extension/js/background.js", "utf8");
-            const code = bg.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
-            if (/(?<!require)[Oo]rchestrator\.executeLogin\(/.test(code)) { console.error("::error::a bare orchestrator.executeLogin call site is still in the packaged source"); process.exit(1); }
-            if (!/requireOrchestrator\(\)\.executeLogin\(/.test(code)) { console.error("::error::the packaged source does not use the accessor"); process.exit(1); }
-            const other = crypto.createHash("sha256").update(fs.readFileSync("frontend/build/downloads/genz-digital-store-extension.zip")).digest("hex");
-            if (other !== sha) { console.error("::error::the two committed ZIPs differ"); process.exit(1); }
-            fs.appendFileSync(process.env.GITHUB_ENV, `EXT_VERSION=${man.version}\nEXT_SHA=${sha}\nEXT_SIZE=${buf.length}\n`);
-            console.log(`::notice title=package::v${man.version}  ${buf.length} bytes  sha256 ${sha}  (both copies identical, source verified)`);
-          '
+          node scripts/patch-live-extension.mjs --out "$RUNNER_TEMP/extout"
+          ls -la "$RUNNER_TEMP/extout"
+          echo "EXT_ZIP=$RUNNER_TEMP/extout/genz-digital-store-extension.zip" >> "$GITHUB_ENV"
 
       - name: Install deploy key and PINNED host key
         env:
@@ -266,7 +263,7 @@ jobs:
           set -euo pipefail
           LFTP_COMMON="set sftp:auto-confirm no; set sftp:connect-program \"ssh -a -x -i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes\"; set net:max-retries 5; set net:timeout 60;"
           UP="$RUNNER_TEMP/extup"; rm -rf "$UP"; mkdir -p "$UP"
-          cp frontend/public/downloads/genz-digital-store-extension.zip "$UP/.staging-ext-$STAMP.zip"
+          cp "$EXT_ZIP" "$UP/.staging-ext-$STAMP.zip"
           for target in domains/genzdigitalstore.com/public_html/downloads domains/app.genzdigitalstore.com/public_html/downloads; do
             attempt=1
             while :; do
