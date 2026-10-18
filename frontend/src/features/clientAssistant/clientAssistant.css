@@ -17,7 +17,7 @@
 
 .cga-launcher {
   position: relative;
-  width: 60px; height: 60px;
+  width: 62px; height: 62px;
   border-radius: 9999px;
   border: none;
   background: #fff;
@@ -77,8 +77,10 @@
   right: calc(16px + env(safe-area-inset-right, 0px));
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   z-index: 70;
-  width: 370px; max-width: calc(100vw - 32px);
-  max-height: min(620px, calc(100vh - 32px));
+  /* 336px, not 370: the six-button stack that forced the old width is gone. Heights are bounded by
+     the viewport in both states, and dvh is used so a mobile keyboard shrinks the panel instead of
+     pushing the input off-screen. */
+  width: 336px; max-width: calc(100vw - 24px);
   display: flex; flex-direction: column;
   background: #fff; border: 1px solid #E2E8F0; border-radius: 18px;
   box-shadow: 0 18px 50px rgba(7, 27, 51, 0.28);
@@ -165,4 +167,144 @@
     width: auto; max-width: none; max-height: 82vh; border-radius: 16px;
   }
   .cga-launcher-wrap { right: calc(12px + env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────────────────────
+   ZEE — redesigned panel. Two states in one panel, a compact chip row, a one-step-at-a-time
+   stepper and a mobile bottom sheet. Nothing here shrinks body text to buy space: the space comes
+   from removing the permanent six-button stack and from compacting the avatar once a conversation
+   starts.
+   ──────────────────────────────────────────────────────────────────────────────────────────── */
+
+.cga-panel-welcome { height: 482px; max-height: calc(100dvh - 96px); }
+.cga-panel-chat    { height: 520px; max-height: calc(100dvh - 96px); }
+
+/* Header. Compact in both states; in CHAT it carries Zee at 32px and the status line. */
+.cga-head {
+  flex: 0 0 auto; min-height: 46px; padding: 0 8px 0 12px;
+  display: flex; align-items: center; gap: 9px;
+  border-bottom: 1px solid #EDF2F7; background: #FBFDFE;
+}
+.cga-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 9999px; background: var(--genz-success, #16A34A); }
+.cga-title  { margin: 0; font-size: 13px; font-weight: 700; color: var(--genz-navy, #071B33); }
+.cga-status { margin: 1px 0 0; font-size: 11px; color: var(--genz-muted, #5B6B7C); }
+.cga-panel-chat .cga-status { color: var(--genz-teal, #0E9F9A); font-weight: 600; }
+
+/* WELCOME hero — Zee's presence lives here and only here. */
+.cga-hero {
+  flex: 0 0 auto; position: relative;
+  padding: 14px 20px 2px; display: flex; flex-direction: column; align-items: center;
+}
+.cga-halo {
+  position: absolute; top: 6px; left: 50%; width: 132px; height: 132px; margin-left: -66px;
+  border-radius: 9999px; pointer-events: none;
+  background: radial-gradient(circle at 50% 45%, rgba(6, 182, 212, 0.17), rgba(6, 182, 212, 0) 68%);
+}
+.cga-hello { margin: 4px 0 0; font-size: 16px; font-weight: 700; color: var(--genz-navy, #071B33); }
+.cga-sub   { margin: 5px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--genz-muted, #5B6B7C); text-align: center; }
+
+/* Three ranked chips. 42px rows, icon + label, the first one tinted as the lead suggestion. */
+.cga-chips { display: flex; flex-direction: column; gap: 8px; }
+.cga-chip {
+  box-sizing: border-box; width: 100%; min-height: 42px;
+  display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  border: 1px solid #E2E8F0; border-radius: 12px; background: #fff; cursor: pointer; text-align: left;
+  font-size: 13px; font-weight: 600; color: var(--genz-navy, #071B33);
+  transition: border-color 0.14s ease, background 0.14s ease, transform 0.14s ease;
+}
+.cga-chip:first-child { border-color: #BFE6EE; background: #F2FBFD; }
+.cga-chip:hover { border-color: var(--genz-cyan, #06B6D4); transform: translateY(-1px); }
+.cga-chip:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: 2px; }
+.cga-chip > svg { flex: 0 0 auto; color: var(--genz-teal, #0E9F9A); }
+
+.cga-morelink {
+  box-sizing: border-box; margin-top: 2px; width: 100%; min-height: 38px;
+  display: flex; align-items: center; justify-content: space-between; padding: 0 12px;
+  border: 0; border-radius: 10px; background: transparent; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; color: var(--genz-blue, #2563EB);
+}
+.cga-morelink:hover { background: #F4F8FC; }
+.cga-morelink:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: 2px; }
+
+/* MORE HELP — every remaining supported topic, grouped, nothing lost. */
+.cga-more-group + .cga-more-group { margin-top: 14px; }
+.cga-more-head {
+  margin: 0 0 6px; padding: 0 10px;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase;
+  color: var(--genz-muted, #5B6B7C);
+}
+.cga-more-btn {
+  box-sizing: border-box; width: 100%; min-height: 36px; text-align: left; padding: 0 10px;
+  font-size: 12.5px; color: var(--genz-navy, #071B33);
+  border: 0; border-radius: 9px; background: transparent; cursor: pointer;
+}
+.cga-more-btn:hover { background: #F4F8FC; }
+.cga-more-btn:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: -1px; }
+
+/* ONE STEP AT A TIME — replaces the whole-<ol> dump. */
+.cga-stepcard {
+  margin-top: 10px; box-sizing: border-box;
+  border: 1px solid #DCE6F0; border-radius: 14px; background: #fff; padding: 10px 12px 12px;
+}
+.cga-stepmeta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cga-stepcount {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--genz-muted, #5B6B7C); flex: 0 0 auto;
+}
+.cga-steptitle {
+  font-size: 11px; font-weight: 600; color: var(--genz-teal, #0E9F9A);
+  text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cga-progress { margin-top: 8px; height: 3px; border-radius: 9999px; background: #E8EFF5; overflow: hidden; }
+.cga-progress-fill { display: block; height: 3px; border-radius: 9999px; background: var(--genz-teal, #0E9F9A); transition: width 0.22s ease; }
+.cga-step-text { margin: 10px 0 0; font-size: 13px; line-height: 1.5; color: var(--genz-navy, #071B33); }
+.cga-steprow { margin-top: 11px; display: flex; align-items: center; gap: 7px; }
+.cga-stepnav {
+  width: 34px; height: 34px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid #E2E8F0; border-radius: 10px; background: #fff; color: var(--genz-muted, #5B6B7C);
+  cursor: pointer;
+}
+.cga-stepnav:disabled { opacity: 0.4; cursor: not-allowed; }
+.cga-stepnav:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: 2px; }
+.cga-steprow .cga-btn-primary { flex: 1 1 auto; justify-content: center; }
+
+/* Footer: input always visible, human support always one tap away. */
+.cga-foot { flex: 0 0 auto; padding: 9px 12px 10px; border-top: 1px solid #EDF2F7; background: #FBFDFE; }
+.cga-send {
+  width: 38px; height: 38px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 10px; background: var(--genz-navy, #071B33); color: #fff; cursor: pointer;
+}
+.cga-send:disabled { opacity: 0.45; cursor: not-allowed; }
+.cga-send:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: 2px; }
+.cga-footrow { margin-top: 7px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cga-support {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; font-weight: 600; color: var(--genz-blue, #2563EB);
+  border: 0; background: transparent; cursor: pointer; padding: 3px 2px;
+}
+.cga-support:hover { text-decoration: underline; }
+.cga-support:focus-visible { outline: 3px solid var(--genz-blue, #2563EB); outline-offset: 2px; }
+
+/* MOBILE — bottom sheet. ONE scroll region (.cga-body); the header and footer are fixed, so there
+   are no competing nested scrollers. dvh + safe-area keeps the input above the keyboard, and the
+   full width removes any chance of horizontal overflow. */
+@media (max-width: 640px) {
+  .cga-panel,
+  .cga-panel-welcome,
+  .cga-panel-chat {
+    left: 0; right: 0; bottom: 0; width: 100%; max-width: 100%;
+    height: auto; max-height: 86dvh;
+    border-radius: 20px 20px 0 0;
+  }
+  .cga-foot { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
+  .cga-hero { padding-top: 10px; }
+  /* Comfortable touch targets on the controls a thumb actually hits. */
+  .cga-input, .cga-send, .cga-chip { min-height: 44px; }
+  .cga-send { width: 44px; height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cga-chip, .cga-progress-fill { transition: none !important; }
 }

@@ -50,7 +50,7 @@ export default function ClientGuideLauncher() {
         aria-label={prompt ? 'Open Gen Z Guide — help available' : 'Open Gen Z Guide support assistant'}
         onClick={openAssistant}
       >
-        <AvatarRenderer semantic={prompt ? 'warning' : (avatarState || 'idle')} size={44} />
+        <AvatarRenderer semantic={prompt ? 'warning' : (avatarState || 'idle')} size={46} />
         {prompt && <span className="cga-dot" aria-hidden="true" />}
       </button>
     </div>
