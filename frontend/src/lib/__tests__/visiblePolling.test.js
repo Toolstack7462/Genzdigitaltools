@@ -257,3 +257,95 @@ describe('startVisiblePolling — event pairing and overlap', () => {
     stop();
   });
 });
+
+// ── OPT-IN BOUNDED BACKOFF ────────────────────────────────────────────────────────────────────
+// A server refusing requests is not helped by being asked again on the same cadence. With
+// maxBackoffSteps > 0 each consecutive FAILED group sits out 2^k - 1 ticks (k capped), and the
+// first success restores the normal cadence. Default (0) must behave exactly as before, which the
+// tests above already cover.
+describe('bounded backoff', () => {
+  // Same harness as the suite above, plus a microtask flush: backoff state is decided in the
+  // promise handlers, so the pending rejection must settle before the next tick is advanced.
+  const flush = async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); };
+  beforeEach(() => {
+    jest.useFakeTimers();
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  });
+  afterEach(() => { jest.useRealTimers(); });
+
+  test('default: a failing poll keeps the fixed cadence', async () => {
+    let calls = 0;
+    const stop = startVisiblePolling(() => { calls += 1; return Promise.reject(new Error('x')); }, 1000);
+    for (let i = 0; i < 4; i++) { jest.advanceTimersByTime(1000); await flush(); }
+    stop();
+    expect(calls).toBe(4);   // no backoff unless asked for
+  });
+
+  test('consecutive failures skip an increasing, CAPPED number of ticks', async () => {
+    const seen = [];
+    const stop = startVisiblePolling(() => { seen.push('try'); return Promise.reject(new Error('x')); },
+      1000, { maxBackoffSteps: 3 });
+    // tick1 -> attempt (fail, skip 1); tick2 skipped; tick3 attempt (fail, skip 3);
+    // ticks 4,5,6 skipped; tick7 attempt (fail, skip 7) …
+    const attemptsAfter = [];
+    for (let i = 1; i <= 16; i++) { jest.advanceTimersByTime(1000); await flush(); attemptsAfter.push(seen.length); }
+    stop();
+    expect(attemptsAfter[0]).toBe(1);   // tick 1
+    expect(attemptsAfter[1]).toBe(1);   // tick 2 skipped
+    expect(attemptsAfter[2]).toBe(2);   // tick 3
+    expect(attemptsAfter[5]).toBe(2);   // ticks 4-6 skipped
+    expect(attemptsAfter[6]).toBe(3);   // tick 7
+    // Capped: never more than 2^3-1 = 7 skipped ticks between attempts.
+    expect(seen.length).toBeGreaterThanOrEqual(4);
+    expect(seen.length).toBeLessThan(16);
+  });
+
+  test('one success resets the cadence immediately', async () => {
+    let calls = 0;
+    let fail = true;
+    const stop = startVisiblePolling(() => {
+      calls += 1;
+      return fail ? Promise.reject(new Error('x')) : Promise.resolve();
+    }, 1000, { maxBackoffSteps: 3 });
+    jest.advanceTimersByTime(1000); await flush();   // attempt 1, fails -> skip 1
+    expect(calls).toBe(1);
+    fail = false;
+    jest.advanceTimersByTime(1000); await flush();   // skipped
+    expect(calls).toBe(1);
+    jest.advanceTimersByTime(1000); await flush();   // attempt 2, succeeds -> reset
+    expect(calls).toBe(2);
+    jest.advanceTimersByTime(1000); await flush();   // back to every tick
+    expect(calls).toBe(3);
+    jest.advanceTimersByTime(1000); await flush();
+    expect(calls).toBe(4);
+    stop();
+  });
+
+  test('returning to the tab FORCES a poll even while backing off', async () => {
+    // Backing off must never make the page look dead to somebody actually looking at it.
+    let calls = 0;
+    const stop = startVisiblePolling(() => { calls += 1; return Promise.reject(new Error('x')); },
+      1000, { maxBackoffSteps: 3 });
+    jest.advanceTimersByTime(1000); await flush();   // attempt 1 -> skip 1
+    expect(calls).toBe(1);
+    document.dispatchEvent(new Event('visibilitychange'));   // user returns
+    await flush();
+    expect(calls).toBe(2);
+    stop();
+  });
+
+  test('backoff never starts a second overlapping group', async () => {
+    let active = 0; let maxActive = 0;
+    let release;
+    const stop = startVisiblePolling(() => {
+      active += 1; maxActive = Math.max(maxActive, active);
+      return new Promise((_, rej) => { release = () => { active -= 1; rej(new Error('x')); }; });
+    }, 1000, { maxBackoffSteps: 3 });
+    jest.advanceTimersByTime(1000); await flush();
+    jest.advanceTimersByTime(1000); await flush();
+    jest.advanceTimersByTime(1000); await flush();
+    expect(maxActive).toBe(1);
+    release(); await flush();
+    stop();
+  });
+});

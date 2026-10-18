@@ -55,16 +55,85 @@ describe('isStoredKnown: the write guard', () => {
     expect(isStoredKnown({ loadFailed: false, view: undefined })).toBe(false);
   });
 
-  test('an older server that omits storedAvailable is treated as available', () => {
-    // Forward compatibility: a deployed API predating the flag must not lock the editor.
-    expect(isStoredKnown({ loadFailed: false, view: { stored: { whatsappNumber: '', supportEmail: '' } } })).toBe(true);
+  test('only an explicit true permits; an explicit false blocks', () => {
+    expect(isStoredKnown({ loadFailed: false, view: ok({ storedAvailable: true }) })).toBe(true);
+    expect(isStoredKnown({ loadFailed: false, view: ok({ storedAvailable: false }) })).toBe(false);
   });
 
-  test('only an explicit false blocks — truthy or absent values do not', () => {
-    for (const v of [true, undefined, 1, 'yes']) {
-      expect(isStoredKnown({ loadFailed: false, view: { storedAvailable: v } })).toBe(true);
+  test('a MALFORMED availability flag fails safe', () => {
+    // A broken contract is not permission to write. Anything present that is not exactly true or
+    // false means the response cannot be trusted about what is stored.
+    for (const v of [null, 0, 1, '', 'false', 'true', 'yes', {}, []]) {
+      expect(isStoredKnown({ loadFailed: false, view: ok({ storedAvailable: v }) }))
+        .toBe(false);
     }
-    expect(isStoredKnown({ loadFailed: false, view: { storedAvailable: false } })).toBe(false);
+  });
+
+  test('a MALFORMED stored block fails safe', () => {
+    for (const stored of [null, undefined, 'nope', 42, []]) {
+      expect(isStoredKnown({ loadFailed: false, view: { storedAvailable: true, stored } })).toBe(false);
+    }
+    // Right shape, wrong field types.
+    expect(isStoredKnown({ loadFailed: false, view: { storedAvailable: true, stored: { whatsappNumber: 923001234567, supportEmail: '' } } })).toBe(false);
+    expect(isStoredKnown({ loadFailed: false, view: { storedAvailable: true, stored: { whatsappNumber: '', supportEmail: { a: 1 } } } })).toBe(false);
+  });
+});
+
+describe('MIXED VERSIONS: the backend half of this fix is not deployed yet', () => {
+  // Production today runs a backend that does NOT send storedAvailable, so the flag check alone
+  // would be inert and the page would still offer to clear real values. The fallback uses a
+  // consistency check between two fields the CURRENT response already carries: contact.source is
+  // 'admin' only when the row was read and held a valid value, so 'admin' plus blank stored values
+  // is a contradiction and means the admin-view read failed.
+  const legacy = (over = {}) => ({
+    contact: { whatsappNumber: '923355500134', email: 'a@b.c', source: 'admin' },
+    stored: { whatsappNumber: '', supportEmail: '', updatedAt: null },
+    fallback: { whatsappNumber: '923355500134', email: 'a@b.c', source: 'default' },
+    ...over,   // deliberately NO storedAvailable
+  });
+
+  test('legacy backend + blank stored + source "admin" = read failed -> BLOCKED', () => {
+    expect(isStoredKnown({ loadFailed: false, view: legacy() })).toBe(false);
+  });
+
+  test('legacy backend + blank stored + source "env" = genuinely empty -> editable', () => {
+    // An admin configuring the contact for the first time must still be able to save.
+    const v = legacy({ contact: { whatsappNumber: '923355500134', email: 'a@b.c', source: 'env' } });
+    expect(isStoredKnown({ loadFailed: false, view: v })).toBe(true);
+  });
+
+  test('legacy backend + blank stored + source "default" = genuinely empty -> editable', () => {
+    const v = legacy({ contact: { whatsappNumber: '923355500134', email: 'a@b.c', source: 'default' } });
+    expect(isStoredKnown({ loadFailed: false, view: v })).toBe(true);
+  });
+
+  test('legacy backend + stored values present -> editable whatever the source', () => {
+    for (const source of ['admin', 'env', 'default']) {
+      const v = legacy({
+        contact: { whatsappNumber: '923355500134', email: 'a@b.c', source },
+        stored: { whatsappNumber: '923001234567', supportEmail: 'help@x.com', updatedAt: null },
+      });
+      expect(isStoredKnown({ loadFailed: false, view: v })).toBe(true);
+    }
+  });
+
+  test('legacy backend with ONE stored field set is still editable', () => {
+    // Only a fully blank stored block is contradictory; a partially configured record is not.
+    const v = legacy({ stored: { whatsappNumber: '923001234567', supportEmail: '', updatedAt: null } });
+    expect(isStoredKnown({ loadFailed: false, view: v })).toBe(true);
+  });
+
+  test('legacy backend with no contact block at all -> treated as empty, editable', () => {
+    // Without a source there is nothing to contradict; do not lock the editor on missing data.
+    const v = legacy({ contact: undefined });
+    expect(isStoredKnown({ loadFailed: false, view: v })).toBe(true);
+  });
+
+  test('the NEW backend contract still wins over the fallback', () => {
+    // Once the backend sends the flag, it is authoritative in both directions.
+    expect(isStoredKnown({ loadFailed: false, view: { ...legacy(), storedAvailable: true } })).toBe(true);
+    const withValues = legacy({ stored: { whatsappNumber: '923001234567', supportEmail: 'h@x.c' } });
+    expect(isStoredKnown({ loadFailed: false, view: { ...withValues, storedAvailable: false } })).toBe(false);
   });
 });
 

@@ -245,3 +245,40 @@ describe('every workflow run: block is valid shell', () => {
     fs.rmSync(path.dirname(tmp), { recursive: true, force: true });
   });
 });
+
+/**
+ * SCRIPT INJECTION VIA WORKFLOW EXPRESSIONS.
+ *
+ * `${{ inputs.x }}` or `${{ github.event.* }}` pasted inside a `run:` block is substituted as TEXT
+ * before the shell sees it, so a crafted value executes as a command in the job — which here is the
+ * job holding the production deploy key. The safe form is to pass the value through `env:` and
+ * reference it as "$VAR", which the shell treats as data.
+ *
+ * I introduced exactly this defect while writing the diagnostics workflow, so it is now asserted
+ * across every workflow rather than remembered.
+ */
+describe('no workflow interpolates untrusted input into a shell block', () => {
+  const WORKFLOWS = path.join(__dirname, '..', '..', '.github', 'workflows');
+  // `inputs.*` and `github.event.*` are attacker-influenceable; `secrets.*` and static `env`/`vars`
+  // are not, and secrets must be passed via env anyway (asserted separately above).
+  const UNSAFE = /\$\{\{\s*(inputs\.|github\.event\.|github\.head_ref)/;
+
+  for (const file of fs.readdirSync(WORKFLOWS).filter(f => /\.ya?ml$/.test(f))) {
+    test(`${file}: run blocks contain no untrusted expression interpolation`, () => {
+      const text = fs.readFileSync(path.join(WORKFLOWS, file), 'utf8');
+      const offenders = runBlocks(text)
+        .filter(b => UNSAFE.test(b.script))
+        .map(b => b.name);
+      assert.deepEqual(offenders, [],
+        'pass the value through env: and reference it as "$VAR" instead — interpolating it into the '
+        + 'script lets a crafted input run commands in a job that holds deploy credentials');
+    });
+  }
+
+  test('the guard is real: it flags an interpolated input', () => {
+    const sample = '- name: bad\n  run: |\n    echo "${{ inputs.note }}"\n';
+    const blocks = runBlocks(sample);
+    assert.equal(blocks.length, 1, 'extractor must find the sample block');
+    assert.ok(UNSAFE.test(blocks[0].script), 'the pattern must match an interpolated input');
+  });
+});

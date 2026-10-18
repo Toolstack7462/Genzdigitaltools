@@ -1,0 +1,173 @@
+# READ-ONLY Hostinger diagnostics. Measures the actual hosting account so resource claims can be
+# evidence-based instead of asserted.
+#
+# WHAT THIS IS NOT: it writes nothing, restarts nothing, deletes nothing and installs nothing. Every
+# command is a read. It is manual-dispatch only — never on push — and bounded by a job timeout and
+# per-command timeouts so a slow host cannot hold the runner.
+#
+# It runs against the HOSTINGER ACCOUNT over the same pinned-host-key SSH used by the deploy, not
+# against the GitHub runner (runner CPU/RAM says nothing about the shared host).
+#
+# SECRETS: never printed. The key goes to RUNNER_TEMP at 0600; host-key checking is strict and
+# pinned, exactly as in deploy-frontend.yml. No .env, connection string, private log or customer
+# data is read or echoed — the MySQL section uses SHOW STATUS only, via the credentials already on
+# the host, and prints counters, never values.
+name: Hostinger diagnostics (read-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 'Why this sample was taken (recorded in the summary)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hostinger-diagnostics
+  cancel-in-progress: false
+
+env:
+  SFTP_HOST: '147.79.103.253'
+  SFTP_PORT: '65002'
+  SFTP_USER: 'u171982351'
+  API_ROOT: '/home/u171982351/domains/api.genzdigitalstore.com/nodejs'
+  MAIN_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html'
+  APP_WEB: '/home/u171982351/domains/app.genzdigitalstore.com/public_html'
+
+jobs:
+  measure:
+    name: Measure the hosting account
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Install deploy key and PINNED host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "::error::HOSTINGER_SSH_PRIVATE_KEY and HOSTINGER_SSH_KNOWN_HOSTS must both be set in the 'production' environment."
+            exit 1
+          fi
+          D="$RUNNER_TEMP/diag-ssh"
+          mkdir -p "$D" && chmod 700 "$D"
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$D/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$D/known_hosts"
+          chmod 600 "$D/id_deploy" "$D/known_hosts"
+          ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null \
+            || { echo "::error::the pinned host key does not cover [${SFTP_HOST}]:${SFTP_PORT}"; exit 1; }
+          echo "SSH_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Unlock the key if encrypted
+        env:
+          SSH_PASSPHRASE: ${{ secrets.HOSTINGER_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PASSPHRASE:-}" ]; then echo "key treated as unencrypted"; exit 0; fi
+          eval "$(ssh-agent -s)" >/dev/null
+          ASK="$SSH_DIR/askpass.sh"; umask 077
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$SSH_PASSPHRASE"\n' > "$ASK"; chmod 700 "$ASK"
+          SSH_ASKPASS="$ASK" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 ssh-add "$SSH_DIR/id_deploy" >/dev/null 2>&1 \
+            || { echo "::error::ssh-add rejected the key"; exit 1; }
+          rm -f "$ASK"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+      - name: Collect read-only measurements
+        env:
+          # Via env, never `${{ }}` inside the script: a workflow_dispatch input interpolated into
+          # a shell block is a command-injection vector, even on a manual-only workflow.
+          DIAG_NOTE: ${{ inputs.note }}
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          STAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # One SSH session, one heredoc: fewer entry processes than a command per metric, which
+          # matters on a host whose process ceiling is the thing being measured.
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > diag.txt 2>diag.err <<'REMOTE'
+          set -u
+          say() { printf '\n===== %s =====\n' "$1"; }
+          run() { timeout 25 bash -c "$1" 2>&1 | head -40 || echo "(unavailable)"; }
+
+          say "IDENTITY AND PLAN"
+          run 'whoami; hostname; uname -sr'
+          run 'cat /etc/*release 2>/dev/null | head -3'
+          run 'command -v hpanel >/dev/null && echo hpanel-cli-present || echo "no hpanel CLI (plan limits must come from the panel)"'
+
+          say "CLOUDLINUX LVE LIMITS AND USAGE (account-wide)"
+          run 'command -v lvectl >/dev/null && lvectl list 2>/dev/null | head -5 || echo "(lvectl not available to this user)"'
+          run 'command -v lveinfo >/dev/null && lveinfo --period=today --show-columns EP,CPU,MEM 2>/dev/null | head -10 || echo "(lveinfo not available)"'
+          run 'cat /proc/user_beancounters 2>/dev/null | head -20 || echo "(no user_beancounters)"'
+
+          say "PROCESSES: ACCOUNT-WIDE vs THIS APPLICATION"
+          run 'ps -u "$(whoami)" -o pid,etimes,pcpu,pmem,rss,comm --sort=-rss | head -25'
+          run 'echo "account process count: $(ps -u "$(whoami)" --no-headers | wc -l)"'
+          run 'echo "node processes: $(pgrep -u "$(whoami)" -c node 2>/dev/null || echo 0)"'
+          run 'ps -u "$(whoami)" -o pid,etimes,rss,args --sort=-rss | grep -i "[n]ode" | head -10'
+
+          say "MEMORY AND LOAD (shared host — context only)"
+          run 'free -m 2>/dev/null | head -3'
+          run 'cat /proc/loadavg'
+
+          say "DISK AND INODES"
+          run 'df -h "$HOME" | tail -2'
+          run 'df -i "$HOME" | tail -2'
+          run 'du -sh "$HOME" 2>/dev/null'
+          run 'for d in domains/genzdigitalstore.com/public_html domains/app.genzdigitalstore.com/public_html domains/api.genzdigitalstore.com/nodejs deploy-backups; do [ -e "$HOME/$d" ] && printf "%s\t%s\t%s files\n" "$(du -sh "$HOME/$d" 2>/dev/null | cut -f1)" "$d" "$(find "$HOME/$d" -type f 2>/dev/null | wc -l)"; done'
+
+          say "ACCUMULATED HASHED BUILD ASSETS (not deleted — rollback and open clients need them)"
+          run 'for w in domains/genzdigitalstore.com/public_html domains/app.genzdigitalstore.com/public_html; do [ -d "$HOME/$w/static/js" ] && printf "%s: %s js chunks, %s\n" "$w" "$(find "$HOME/$w/static/js" -name "*.js" | wc -l)" "$(du -sh "$HOME/$w/static" | cut -f1)"; done'
+          run 'ls -1 "$HOME/domains/app.genzdigitalstore.com/public_html/static/js"/main.*.js 2>/dev/null | tail -8'
+          run 'ls -1dt "$HOME/deploy-backups"/* 2>/dev/null | head -10; echo "backup total: $(du -sh "$HOME/deploy-backups" 2>/dev/null | cut -f1)"'
+
+          say "NODE APPLICATION: RESTARTS AND MEMORY EXHAUSTION"
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/tmp/restart.txt" 2>/dev/null || echo "(no passenger restart marker)"'
+          run 'find "$HOME" -maxdepth 3 -name "*.log" -newermt "-7 days" -printf "%p\t%s bytes\t%TY-%Tm-%Td\n" 2>/dev/null | head -15'
+          run 'grep -rliE "out of memory|heap out of memory|killed" "$HOME"/logs 2>/dev/null | head -5 || echo "(no accessible OOM evidence)"'
+
+          say "ENDPOINT RATES AND ERROR CODES (access logs, if readable)"
+          run 'ls -la "$HOME"/logs 2>/dev/null | head -15 || echo "(no ~/logs directory — rates must come from the panel)"'
+          run 'L=$(ls -1t "$HOME"/logs/*access*log 2>/dev/null | head -1); [ -n "$L" ] && { echo "log: $L"; echo "lines: $(wc -l < "$L")"; echo "--- status codes ---"; awk "{print \$9}" "$L" | sort | uniq -c | sort -rn | head -10; echo "--- top endpoints ---"; awk "{print \$7}" "$L" | sed "s/?.*//" | sort | uniq -c | sort -rn | head -15; } || echo "(no readable access log)"'
+          run 'L=$(ls -1t "$HOME"/logs/*access*log 2>/dev/null | head -1); [ -n "$L" ] && { echo "--- 502/503 count ---"; awk "\$9==502||\$9==503" "$L" | wc -l; } || true'
+
+          say "MYSQL: CONNECTIONS AND QUEUE BEHAVIOUR (SHOW STATUS only — counters, never values)"
+          run 'command -v mysql >/dev/null && echo mysql-client-present || echo "(no mysql client)"'
+          run 'command -v mysql >/dev/null && mysql --defaults-file="$HOME/.my.cnf" -N -e "SHOW GLOBAL STATUS WHERE Variable_name IN (\"Threads_connected\",\"Threads_running\",\"Max_used_connections\",\"Aborted_connects\",\"Connection_errors_max_connections\",\"Slow_queries\",\"Questions\",\"Uptime\")" 2>/dev/null || echo "(no usable ~/.my.cnf — MySQL counters need credentials this diagnostic will not read from app config)"'
+          run 'command -v mysql >/dev/null && mysql --defaults-file="$HOME/.my.cnf" -N -e "SHOW GLOBAL VARIABLES WHERE Variable_name IN (\"max_connections\",\"max_user_connections\",\"wait_timeout\",\"slow_query_log\")" 2>/dev/null || true'
+
+          say "CRON AND BACKGROUND JOBS (duplication across workers)"
+          run 'crontab -l 2>/dev/null | grep -v "^#" | head -20 || echo "(no crontab for this user)"'
+
+          say "SAMPLE TAKEN"
+          run 'date -u +%Y-%m-%dT%H:%M:%SZ'
+          REMOTE
+          RC=$?
+          echo "ssh exit=$RC"
+          if [ "$RC" -ne 0 ] && [ ! -s diag.txt ]; then
+            echo "::error::diagnostics session failed and produced no output"
+            head -5 diag.err || true
+            exit 1
+          fi
+          # Defence in depth: the collector reads no secrets, but scan the captured text before it
+          # is published to the job summary, and stop rather than print a match.
+          if grep -qiE 'BEGIN [A-Z ]*PRIVATE KEY|password[[:space:]]*=|mysql://|DATABASE_URL|JWT_SECRET|[A-Za-z0-9+/]{40,}={0,2}$' diag.txt; then
+            echo "::error::captured output matched a secret-shaped pattern; not publishing it"
+            exit 1
+          fi
+          {
+            echo "## Hostinger read-only sample — $STAMP"
+            echo ""
+            [ -n "${DIAG_NOTE:-}" ] && printf '_Reason: %s_\n\n' "$DIAG_NOTE"
+            echo '```'
+            cat diag.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "---- collected ----"
+          cat diag.txt

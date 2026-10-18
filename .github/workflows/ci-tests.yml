@@ -38,9 +38,15 @@ jobs:
       # pull request that is the base branch's tip; for a branch push it is origin/main, since main
       # is what any deploy would be cut onto.
       - name: Resolve deploy baseline
+        env:
+          # Via env, not `${{ }}` inside the script: interpolating a workflow expression into a
+          # shell block substitutes it as TEXT before the shell parses it. A base SHA is not
+          # realistically hostile, but the pattern is, and this job's sibling holds deploy
+          # credentials. Asserted repo-wide by backend/tests/deployWorkflowSecurity.test.js.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [ -n "${{ github.event.pull_request.base.sha }}" ]; then
-            echo "DEPLOY_BASELINE_REF=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_ENV"
+          if [ -n "${PR_BASE_SHA:-}" ]; then
+            echo "DEPLOY_BASELINE_REF=$PR_BASE_SHA" >> "$GITHUB_ENV"
           else
             echo "DEPLOY_BASELINE_REF=origin/main" >> "$GITHUB_ENV"
           fi

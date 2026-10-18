@@ -15,8 +15,14 @@
 /**
  * @param {() => void} fn            the poll to run
  * @param {number} intervalMs        cadence while visible
- * @param {{ pollOnShow?: boolean }} [opts]  poll immediately when the tab becomes visible/focused
- *                                           (default true)
+ * @param {{ pollOnShow?: boolean, maxBackoffSteps?: number }} [opts]
+ *        pollOnShow        poll immediately when the tab becomes visible/focused (default true)
+ *        maxBackoffSteps   OPT-IN bounded backoff. 0 (default) keeps the previous fixed cadence
+ *                          exactly, so existing callers are unchanged. With n > 0, each
+ *                          consecutive FAILED poll group skips 2^k - 1 ticks (k capped at n), and
+ *                          the first success resets it. A server that is refusing requests is not
+ *                          helped by being asked again on the same cadence; this backs off without
+ *                          a second timer or any rescheduling.
  * @returns {() => void}             stop — clears the timer and removes every listener
  */
 export function startVisiblePolling(fn, intervalMs, opts = {}) {
@@ -39,24 +45,43 @@ export function startVisiblePolling(fn, intervalMs, opts = {}) {
     return () => clearInterval(fid);
   }
 
+  const maxBackoffSteps = Number.isFinite(opts.maxBackoffSteps) && opts.maxBackoffSteps > 0
+    ? Math.floor(opts.maxBackoffSteps) : 0;
+
   let id = null;
   let inFlight = false;          // a poll GROUP is running — never start a second one
   let lastShowRunAt = -Infinity; // when an event-driven poll last started (for pairing dedupe)
   let stopped = false;
+  let failures = 0;              // consecutive failed groups (backoff only)
+  let skipTicks = 0;             // ticks to sit out before the next attempt (backoff only)
 
   const settle = () => { inFlight = false; };
+  const onOk = () => {
+    inFlight = false;
+    failures = 0; skipTicks = 0;   // recovered: back to the normal cadence immediately
+  };
+  const onFail = () => {
+    inFlight = false;
+    if (!maxBackoffSteps) return;
+    failures += 1;
+    const k = Math.min(failures, maxBackoffSteps);
+    skipTicks = Math.pow(2, k) - 1;   // 1 failure -> skip 1, 2 -> skip 3, 3 -> skip 7 …
+  };
 
   // Run one poll group. `fn`'s promise defines the group, so fn MUST resolve only once every
   // request it issued has settled — a promise that settles on the first of several releases the
   // guard while the rest are still outstanding.
-  const run = () => {
+  const run = ({ force = false } = {}) => {
     if (stopped || inFlight) return false;
+    // Backoff: sit out this tick. A user-driven return to the tab forces a poll regardless, so
+    // backing off never makes the page feel dead to someone actually looking at it.
+    if (!force && skipTicks > 0) { skipTicks -= 1; return false; }
     inFlight = true;
     let p;
-    try { p = fn(); } catch { settle(); return false; }   // synchronous throw
-    if (!p || typeof p.then !== 'function') { settle(); return true; }   // synchronous fn
+    try { p = fn(); } catch { onFail(); return false; }   // synchronous throw
+    if (!p || typeof p.then !== 'function') { onOk(); return true; }   // synchronous fn
     // Both handlers, so a rejected poll releases the guard AND is never an unhandled rejection.
-    Promise.resolve(p).then(settle, settle);
+    Promise.resolve(p).then(onOk, onFail);
     return true;
   };
 
@@ -72,7 +97,7 @@ export function startVisiblePolling(fn, intervalMs, opts = {}) {
     if (!visible()) { stopTimer(); return; }
     if (pollOnShow) {
       const now = Date.now();
-      if (now - lastShowRunAt >= showDedupeMs) { lastShowRunAt = now; run(); }
+      if (now - lastShowRunAt >= showDedupeMs) { lastShowRunAt = now; run({ force: true }); }
     }
     start();
   };

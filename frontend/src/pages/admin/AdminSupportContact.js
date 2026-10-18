@@ -19,24 +19,55 @@ const SOURCE_LABEL = {
 /**
  * MAY THE ADMIN WRITE? Only when the current values were actually READ.
  *
- * Two ways the read can fail, and both used to leave a blank-but-editable form:
- *   - the GET itself fails                              -> `view` is null, `loadFailed` is true
- *   - the GET succeeds but the server's row read failed  -> `storedAvailable: false`
+ * An empty string on PUT means "clear to the fallback", so a blank-but-editable form is a data-loss
+ * weapon: one Save wipes the live support contact, and the request SUCCEEDS, so nothing warns
+ * anybody. The fields may only be editable when we know what is stored.
  *
- * Either way the fields are blank for a reason that has nothing to do with what is stored — and an
- * empty string on PUT means "clear to the fallback", so one Save would wipe the real support
- * contact with no error anywhere, because the request succeeded. Blank-because-UNKNOWN must never
- * be submittable; blank-because-genuinely-empty still is.
+ * THREE SIGNALS, IN ORDER. The first is the contract; the second exists because the backend half of
+ * this fix is NOT YET DEPLOYED, so in production today `storedAvailable` is absent.
  *
- * A server predating `storedAvailable` omits the field; that counts as available, so an older API
- * does not lock the editor.
+ *   1. `storedAvailable === true`   -> read succeeded. Editable.
+ *      `storedAvailable === false`  -> read failed. NOT editable.
+ *      Anything else present (null, 0, "", "false", {}) is MALFORMED and fails safe: not editable.
+ *      A malformed flag is a broken contract, and a broken contract is not permission to write.
+ *
+ *   2. FLAG ABSENT (a backend predating this fix, which is what is live right now). Fall back to a
+ *      consistency check between the two values the response already carries. `contact.source` is
+ *      'admin' only when the row was read AND held a valid value (utils/supportContact.js). So
+ *      `source === 'admin'` with BOTH stored fields blank is a contradiction: the effective contact
+ *      came out of that row, so the row cannot be empty — the admin-view read must have failed and
+ *      been reported as blanks. Not editable.
+ *      `source` of 'env'/'default' with blank stored values is consistent with a genuinely empty
+ *      record, so that stays editable: an admin setting the contact for the first time must be able
+ *      to.
+ *
+ *   3. `stored` missing, not an object, or carrying non-string fields -> malformed. Not editable.
+ *
+ * A failed GET (`loadFailed`) is not editable either, whatever is left in state.
  *
  * Exported for direct testing: this guard is the load-bearing part of the page.
  */
 export function isStoredKnown({ loadFailed, view }) {
   if (loadFailed) return false;
-  if (view == null) return false;
-  return view.storedAvailable !== false;
+  if (view == null || typeof view !== 'object') return false;
+
+  // (3) the stored block itself must be well formed before anything is believed about it.
+  const stored = view.stored;
+  if (stored == null || typeof stored !== 'object' || Array.isArray(stored)) return false;
+  for (const k of ['whatsappNumber', 'supportEmail']) {
+    const v = stored[k];
+    if (v !== undefined && typeof v !== 'string') return false;
+  }
+
+  // (1) the explicit contract, when the running backend speaks it.
+  const flag = view.storedAvailable;
+  if (flag !== undefined) return flag === true;
+
+  // (2) cross-version fallback for a backend that does not send the flag yet.
+  const blank = !stored.whatsappNumber && !stored.supportEmail;
+  const fromAdminRow = view.contact && view.contact.source === 'admin';
+  if (blank && fromAdminRow) return false;
+  return true;
 }
 
 const AdminSupportContact = () => {
