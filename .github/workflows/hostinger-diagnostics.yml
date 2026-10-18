@@ -90,8 +90,13 @@ jobs:
           ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > wh.txt 2>wh.err <<'REMOTE'
           set -u
           say() { printf '\n===== %s =====\n' "$1"; }
+          # EXPORTED, not a plain shell variable: run() executes each probe through `bash -c`, which
+          # is a fresh shell. An unexported API expanded to the empty string there, so every
+          # `test -f "$API/..."` tested /routes/... at the filesystem ROOT and reported MISSING.
+          # Two earlier runs drew conclusions from exactly that artifact. HOME worked only because
+          # the environment exports it.
           run() { timeout 120 bash -c "$1" 2>&1 | head -40 || echo "(unavailable)"; }
-          API="$HOME/domains/api.genzdigitalstore.com/nodejs"
+          export API="$HOME/domains/api.genzdigitalstore.com/nodejs"
 
           say "1. PUBLISHED INSTALLER DIRECTORY (WH_AGENT_DIST_DIR default ~/writehuman-agent)"
           run 'ls -la "$HOME/writehuman-agent" 2>&1 || echo "DIRECTORY DOES NOT EXIST"'
@@ -104,15 +109,18 @@ jobs:
           # The first run probed ~/domains/api.genzdigitalstore.com/nodejs and every file read
           # MISSING while the live API answered HTTP 200 — so that assumed path is wrong. Find it.
           run 'ls -1 "$HOME/domains" 2>/dev/null | head -20'
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs" 2>&1 | head -25'
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/routes" 2>&1 | head -15'
+          run 'ls -la "$HOME/domains/api.genzdigitalstore.com/nodejs/routes/admin" 2>&1 | head -15'
           run 'find "$HOME" -maxdepth 4 -name "server-crm.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
-          run 'find "$HOME" -maxdepth 5 -path "*/routes/admin/proxyTools.js" -printf "%p\t%s bytes\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
-          run 'find "$HOME" -maxdepth 5 -name "agentDownload.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
+          run 'find "$HOME" -maxdepth 8 -path "*/routes/admin/proxyTools.js" -printf "%p\t%s bytes\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
+          run 'find "$HOME" -maxdepth 8 -name "agentDownload.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
           run 'find "$HOME" -maxdepth 3 -name ".htaccess" -path "*api*" -printf "%p\n" 2>/dev/null | head -5'
 
           say "2. DEPLOYED BACKEND REVISION — does the running code decorate devices[].state?"
           # Resolve API from the real location rather than the assumption.
-          APIR="$(find "$HOME" -maxdepth 5 -path "*/routes/admin/proxyTools.js" 2>/dev/null | head -1)"
-          if [ -n "$APIR" ]; then API="$(dirname "$(dirname "$(dirname "$APIR")")")"; fi
+          APIR="$(find "$HOME" -maxdepth 8 -path "*/routes/admin/proxyTools.js" 2>/dev/null | head -1)"
+          if [ -n "$APIR" ]; then export API="$(dirname "$(dirname "$(dirname "$APIR")")")"; fi
           run 'echo "resolved API root: ${API:-<unresolved>}"'
           run 'test -f "$API/routes/admin/proxyTools.js" && echo "proxyTools.js present, $(stat -c %s "$API/routes/admin/proxyTools.js") bytes, mtime $(stat -c %y "$API/routes/admin/proxyTools.js")" || echo "proxyTools.js MISSING"'
           run 'F="$API/routes/admin/proxyTools.js"; for pat in "dv.state = st.state" "dv.stateReason = st.reason" "dv.canActivate" "deviceViewsAll.forEach" "respondIfDbBusy" "EXPECTED_AGENT_VERSION"; do printf "  %-34s %s\n" "$pat" "$(grep -c -F "$pat" "$F" 2>/dev/null || echo 0)"; done'
@@ -149,6 +157,7 @@ jobs:
           emit "found-exes"    "$(grep -m3 'WriteHuman-Agent-Setup.*exe' wh.txt | tr '\n' ' ' | cut -c1-300)"
           emit "api-root"      "$(val 'resolved API root')"
           emit "app-locations" "$(grep -m4 -E 'server-crm.js|proxyTools.js\t|agentDownload.js\t' wh.txt | tr '\n' '|' | cut -c1-400)"
+          emit "routes-dir"    "$(sed -n '/routes\/admin/,$p' wh.txt | grep -m8 -E '^-rw|^d' | tr -s ' ' | cut -d' ' -f9 | tr '\n' ' ' | cut -c1-350)"
           emit "proxyTools"    "$(val 'proxyTools.js present|proxyTools.js MISSING')"
           emit "state-markers" "$(grep -E '^\s+(dv\.state|dv\.stateReason|dv\.canActivate|deviceViewsAll|respondIfDbBusy|EXPECTED_AGENT)' wh.txt | tr -s ' ' | tr '\n' '|' | cut -c1-400)"
           emit "poolLimits"    "$(val 'poolLimits.js (present|ABSENT)')"
