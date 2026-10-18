@@ -43,7 +43,11 @@ on:
 
 concurrency:
   group: deploy-frontend
-  cancel-in-progress: true
+  # NOT cancel-in-progress: cancelling a run mid-`mirror` leaves a web root holding half of two
+  # builds, which is the white-page failure mode the asset-fetchability step exists to catch. A
+  # second request queues behind this one instead, so there is never more than one release writing
+  # to the docroots at a time.
+  cancel-in-progress: false
 
 env:
   SFTP_HOST: '147.79.103.253'
@@ -129,6 +133,10 @@ jobs:
   build-and-deploy:
     needs: gate
     runs-on: ubuntu-latest
+    # The deployment credentials live ONLY in this protected environment, so its reviewers and
+    # branch rules gate every production write. The gate job above deliberately has no environment
+    # and therefore no access to them.
+    environment: production
     # Bounds the worst case now that the SFTP step retries (3 attempts + backoff).
     timeout-minutes: 30
     steps:
@@ -178,16 +186,144 @@ jobs:
       - name: Install lftp
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Deploy via SFTP to BOTH web roots
+      # ─── SSH KEY AUTHENTICATION ───────────────────────────────────────────────────────────────
+      # Replaces the SFTP password. Three requirements, all FAIL CLOSED — a missing or unusable
+      # credential stops the release before a single byte is written, rather than falling back to
+      # anything weaker:
+      #
+      #   HOSTINGER_SSH_PRIVATE_KEY   the deploy key (protected `production` environment)
+      #   HOSTINGER_SSH_KNOWN_HOSTS   the server's host key as a known_hosts line, obtained from a
+      #                               TRUSTED CHANNEL (Hostinger hPanel → SSH access), NOT from
+      #                               ssh-keyscan against the host we are about to trust
+      #   HOSTINGER_SSH_PASSPHRASE    only if the key is encrypted
+      #
+      # Host-key checking is STRICT and PINNED. `ssh-keyscan` is deliberately not used: scanning
+      # the host and then trusting what it returns authenticates nothing. `StrictHostKeyChecking`
+      # is never set to `no`/`accept-new`, and lftp's own `sftp:auto-confirm` is forced OFF.
+      #
+      # Nothing here is ever echoed. The key is written to $RUNNER_TEMP (outside the repository and
+      # outside every web root), mode 0600, and the runner is ephemeral.
+      - name: Install deploy key and PINNED host key
         env:
-          LFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
-          if [ -z "${LFTP_PASSWORD:-}" ]; then
-            echo "::error::Secret SFTP_PASSWORD is not set. Add it in Settings → Secrets and variables → Actions."
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "::error::Secret HOSTINGER_SSH_PRIVATE_KEY is not set in the 'production' environment. Deployment stopped before any write."
             exit 1
           fi
-          # --env-password keeps the password out of the process arg list (not in `ps`).
+          if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "::error::Secret HOSTINGER_SSH_KNOWN_HOSTS is not set. It must contain the server's host key as a known_hosts line for [${SFTP_HOST}]:${SFTP_PORT}, taken from Hostinger hPanel (a trusted channel) — not from ssh-keyscan. Host-key checking is not disabled to work around this."
+            exit 1
+          fi
+          D="$RUNNER_TEMP/deploy-ssh"
+          mkdir -p "$D" && chmod 700 "$D"
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$D/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$D/known_hosts"
+          chmod 600 "$D/id_deploy" "$D/known_hosts"
+          # Validate shape without printing contents.
+          # A shape probe only. It is a WARNING, not a gate: an old-format encrypted PEM key cannot
+          # be inspected without its passphrase, and failing here would block an authorized deploy
+          # over a cosmetic check. Authentication itself is the real gate, a few steps below.
+          if ! grep -q 'PRIVATE KEY' "$D/id_deploy"; then
+            echo "::error::HOSTINGER_SSH_PRIVATE_KEY does not look like a private key file (no PRIVATE KEY header). Check the secret was stored whole, including header and footer lines."
+            exit 1
+          fi
+          ssh-keygen -l -f "$D/id_deploy" >/dev/null 2>&1 \
+            || echo "::warning::Could not read the key's fingerprint without a passphrase — expected for an encrypted key; continuing.
+          if ! ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null 2>&1; then
+            echo "::error::HOSTINGER_SSH_KNOWN_HOSTS does not contain an entry for [${SFTP_HOST}]:${SFTP_PORT}. Generate it with the hPanel-published fingerprint and the bracketed host:port form."
+            exit 1
+          fi
+          echo "SSH_DIR=$D" >> "$GITHUB_ENV"
+          echo "Deploy key installed; host key PINNED for [${SFTP_HOST}]:${SFTP_PORT}."
+          echo "Pinned host key fingerprint(s):"
+          ssh-keygen -l -f "$D/known_hosts" | sed 's/^/  /'
+
+      # An encrypted key cannot be used non-interactively by lftp, so it is unlocked once into an
+      # agent for this job only. The passphrase reaches ssh-add through SSH_ASKPASS, never argv.
+      - name: Unlock the deploy key if it is encrypted
+        env:
+          SSH_PASSPHRASE: ${{ secrets.HOSTINGER_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          # Guarded here rather than in a step-level `if:`: the `secrets` context is not dependably
+          # available in step conditions, and an unset passphrase simply means an unencrypted key.
+          if [ -z "${SSH_PASSPHRASE:-}" ]; then
+            echo "No HOSTINGER_SSH_PASSPHRASE set — treating the deploy key as unencrypted."
+            exit 0
+          fi
+          eval "$(ssh-agent -s)" >/dev/null
+          ASK="$RUNNER_TEMP/deploy-ssh/askpass.sh"
+          umask 077
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$SSH_PASSPHRASE"\n' > "$ASK"
+          chmod 700 "$ASK"
+          SSH_ASKPASS="$ASK" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 \
+            ssh-add "$SSH_DIR/id_deploy" >/dev/null 2>&1 \
+            || { echo "::error::ssh-add rejected the key — HOSTINGER_SSH_PASSPHRASE does not match HOSTINGER_SSH_PRIVATE_KEY."; exit 1; }
+          rm -f "$ASK"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+          echo "Key unlocked into a job-scoped agent."
+
+      # Records what is live BEFORE anything is overwritten, so the rollback target is a measured
+      # fact rather than an assumption about what main contains. Read-only HTTPS; no credentials.
+      - name: Record the current live build (rollback point)
+        run: |
+          set -euo pipefail
+          {
+            echo "### Rollback point (captured before this deploy)"
+            echo
+            echo "| domain | live bundle | live sourceFingerprint |"
+            echo "|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for d in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            B="$(curl -s --max-time 25 "$d/index.html?cb=pre$RANDOM" | grep -o 'main\.[a-z0-9]*\.js' | head -1 || true)"
+            F="$(curl -s --max-time 25 "$d/build-source.json?cb=pre$RANDOM" \
+                  | tr -d ' \n' | sed -n 's/.*"sourceFingerprint":"\([0-9a-f]*\)".*/\1/p' || true)"
+            echo "| $d | ${B:-<unreadable>} | ${F:-<unreadable>} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "pre-deploy: $d -> bundle=${B:-<unreadable>} fingerprint=${F:-<unreadable>}"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deploying \`$GITHUB_SHA\` (ref \`$GITHUB_REF\`)." >> "$GITHUB_STEP_SUMMARY"
+
+      # Targeted, timestamped, OUTSIDE the web roots. Only the files this deploy replaces are
+      # archived (index.html, the manifests, the stamp, static/) — not the account, not uploads,
+      # not .env, not databases. If the host refuses SSH exec the deploy STOPS: shipping without a
+      # recorded rollback point is not a trade this workflow makes.
+      - name: Back up the files being replaced
+        run: |
+          set -euo pipefail
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          REMOTE_BACKUP="deploy-backups/frontend-$STAMP"
+          SSH_OPTS="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          if ! ssh $SSH_OPTS "$SFTP_USER@$SFTP_HOST" "mkdir -p ~/$REMOTE_BACKUP" 2>/dev/null; then
+            echo "::error::Could not open an SSH session to create the backup directory. Deployment stopped BEFORE any upload — no rollback point could be recorded."
+            exit 1
+          fi
+          for pair in "main:$MAIN_WEB" "app:$APP_WEB"; do
+            label="${pair%%:*}"; root="${pair#*:}"
+            # -C into the root and archive only the deploy surface; missing paths are skipped.
+            # shellcheck disable=SC2086
+            ssh $SSH_OPTS "$SFTP_USER@$SFTP_HOST" \
+              "cd '$root' 2>/dev/null && tar czf ~/$REMOTE_BACKUP/$label.tar.gz --ignore-failed-read \
+                 index.html asset-manifest.json build-source.json .htaccess static 2>/dev/null; \
+               ls -l ~/$REMOTE_BACKUP/$label.tar.gz" \
+              || { echo "::error::Backup of the $label root failed. Deployment stopped before any upload."; exit 1; }
+          done
+          echo "BACKUP_PATH=~/$REMOTE_BACKUP" >> "$GITHUB_ENV"
+          {
+            echo "**Backup:** \`~/$REMOTE_BACKUP/{main,app}.tar.gz\` on the Hostinger account"
+            echo "(outside both public web roots; contains only the replaced deploy surface)."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy via SFTP to BOTH web roots
+        run: |
+          set -euo pipefail
           # mirror -R = upload local→remote (incremental; no --delete, so server-only
           # files like the app root's own .htaccess are never wiped). --no-perms because
           # the shared host rejects chmod. *.map source maps are not published.
@@ -196,7 +332,9 @@ jobs:
           # connections, so a parallel mirror dies with "max-retries exceeded". We force
           # ONE serial connection (mirror:use-pget-n 1, no --parallel) and give it
           # generous retries/reconnect — matching the single-connection manual deploy.
-          common="set sftp:auto-confirm yes; set net:max-retries 5; set net:timeout 40; set net:persist-retries 5; set net:reconnect-interval-base 5; set mirror:parallel-transfer-count 1; set mirror:use-pget-n 1;"
+          # Host-key checking stays ON: auto-confirm OFF, and the transport is ssh with the PINNED
+          # known_hosts. lftp cannot silently accept a changed host key.
+          common="set sftp:auto-confirm no; set sftp:connect-program \"ssh -a -x -i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes\"; set net:max-retries 5; set net:timeout 40; set net:persist-retries 5; set net:reconnect-interval-base 5; set mirror:parallel-transfer-count 1; set mirror:use-pget-n 1;"
 
           # WHY THIS RETRIES: lftp's net:max-retries only covers reconnects *inside* one
           # invocation. When the shared host refuses the SSH channel outright — CloudLinux
@@ -210,7 +348,7 @@ jobs:
             attempt=1; max=3
             while :; do
               echo "==> $label (attempt $attempt/$max)"
-              if lftp -u "$SFTP_USER" --env-password "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+              if lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
                    "$common mirror -R -c --no-perms --verbose --exclude-glob *.map $extra frontend/build/ $target/; bye"; then
                 echo "==> $label: OK"
                 return 0
