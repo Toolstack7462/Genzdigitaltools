@@ -292,14 +292,35 @@ jobs:
           ssh $O "$SFTP_USER@$SFTP_HOST" "WH_SIZE='$WH_SIZE' WH_SHA='$WH_SHA' WH_VERSION='$WH_VERSION' bash -s" > verify.txt 2>verify.err <<'REMOTE'
           set -u
           B="https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows"
+          D="$HOME/writehuman-agent"
+          # WHAT IS ON DISK, RIGHT HERE, FIRST. The previous attempt promoted successfully and the
+          # public route still answered 3.5.3, and with only the HTTP answer in hand there was no way
+          # to tell "the files were not replaced" from "something in front of the route is serving a
+          # cached answer". So state the disk truth beside the HTTP truth.
+          echo "--- on disk now ---"
+          echo "disk exe: $(stat -c %s "$D/WriteHuman-Agent-Setup-x64.exe") bytes sha256 $(sha256sum "$D/WriteHuman-Agent-Setup-x64.exe" | cut -d' ' -f1)"
+          printf 'disk meta: '; tr -d '\n' < "$D/latest.json"; echo
+          ls -la "$D" | head -10
           cd "$(mktemp -d)"
-          echo "--- metadata as a browser sees it ---"
-          curl -s -o meta.json -w "latest.json HTTP %{http_code} %{content_type}\n" --max-time 30 "$B/latest.json"
+          # Parsed with grep, not node: a parse that silently returns empty reads as a mismatch and
+          # sends a publish to rollback for the wrong reason, which is what happened last time.
+          read_meta() {
+            v="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' meta.json | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
+            s="$(grep -oE '"size"[[:space:]]*:[[:space:]]*[0-9]+' meta.json | head -1 | grep -oE '[0-9]+$')"
+            h="$(grep -oE '"sha256"[[:space:]]*:[[:space:]]*"[0-9a-f]{64}"' meta.json | head -1 | grep -oE '[0-9a-f]{64}')"
+          }
+          echo "--- metadata as a browser sees it (up to 4 tries, 15s apart) ---"
+          v=""; s=""; h=""
+          for i in 1 2 3 4; do
+            curl -s -o meta.json -D mhdr.txt -w "try $i: latest.json HTTP %{http_code} %{content_type}\n" --max-time 30 "$B/latest.json?cb=$RANDOM"
+            read_meta
+            echo "  public says: version=$v size=$s sha256=$h"
+            [ "$v" = "$WH_VERSION" ] && break
+            sleep 15
+          done
           tr -d '\n' < meta.json; echo
-          v="$(node -e 'const m=require("./meta.json");process.stdout.write(String(m.version||""))' 2>/dev/null || true)"
-          s="$(node -e 'const m=require("./meta.json");process.stdout.write(String(m.size||""))' 2>/dev/null || true)"
-          h="$(node -e 'const m=require("./meta.json");process.stdout.write(String(m.sha256||""))' 2>/dev/null || true)"
-          echo "public says: version=$v size=$s sha256=$h"
+          echo "--- response headers in front of the route ---"
+          grep -iE '^(HTTP/|cache-control|age|x-litespeed|cf-cache|x-cache|etag|last-modified)' mhdr.txt | tr -d '\r' | sed 's/^/  /'
           if [ "$v" = "$WH_VERSION" ] && [ "$s" = "$WH_SIZE" ] && [ "$h" = "$WH_SHA" ]; then echo "META_MATCHES"; else echo "META_MISMATCH"; fi
           echo "--- ONE COMPLETE STREAMED DOWNLOAD, hashed from the bytes ---"
           curl -s -D hdr.txt -o - --max-time 300 "$B/latest" | sha256sum | cut -d' ' -f1 > dl.sha
@@ -319,7 +340,8 @@ jobs:
           cat verify.txt
           { echo "## Public verification"; echo ''; echo '```'; cat verify.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
-          emit "public-meta"  "$(grep -m1 'public says:' verify.txt) | $(grep -m1 -E 'META_(MATCHES|MISMATCH)' verify.txt)"
+          emit "on-disk"      "$(grep -m1 'disk exe:' verify.txt) | $(grep -m1 'disk meta:' verify.txt | cut -c1-240)"
+          emit "public-meta"  "$(grep -E 'public says:' verify.txt | tail -1) | $(grep -m1 -E 'META_(MATCHES|MISMATCH)' verify.txt) | $(grep -iE '^  (cache-control|age|x-litespeed|cf-cache|x-cache)' verify.txt | tr '\n' ' ' | cut -c1-160)"
           emit "public-bytes" "$(grep -m1 'downloaded sha256:' verify.txt) | $(grep -m1 -E 'BYTES_(MATCH|MISMATCH)' verify.txt) | $(grep -m1 -E 'LENGTH_(MATCHES|MISMATCH)' verify.txt)"
           emit "headers"      "$(grep -iE 'x-agent-|content-disposition|content-length' verify.txt | tr '\n' '|' | cut -c1-400)"
           emit "domains"      "$(grep -E 'genzdigitalstore.com -> ' verify.txt | tr '\n' '|' | cut -c1-400)"
