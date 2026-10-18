@@ -40,7 +40,7 @@ on:
         required: false
         default: ''
       confirm:
-        description: 'Type PUBLISH to promote the installer. Anything else is a dry run.'
+        description: 'PUBLISH to promote the installer, GATEWAY to deploy the WriteHuman gateway fix. Anything else is a dry run.'
         required: true
         default: ''
 
@@ -59,6 +59,205 @@ env:
   ARTIFACT: 'writehuman-v2/agent/dist/WriteHuman-Agent-Setup-x64.exe'
 
 jobs:
+  # ── The WriteHuman client gateway, deployed on its own ────────────────────────────────────────
+  # The gateway is a SEPARATE Passenger application from the API: it is not touched by the main
+  # branch's auto-deploy, so this fix cannot ride along with a backend release. One file changes
+  # (proxy-gateway/server.js), and the live copy is backed up and hash-verified first.
+  #
+  # WHAT THE CHANGE DOES. injectSupabaseBrowserSession decided whether to seed the member's browser
+  # with the vault's Supabase session by reading a `__genz_sb` marker out of localStorage inside a
+  # try/catch. Where storage on the gateway origin is unavailable or throws, the catch swallowed it
+  # and the session was NEVER seeded — the member sees WriteHuman's own logged-out page while every
+  # server-side signal stays healthy. The decision is now made server-side from the generation
+  # (access-token `iat`) the browser sent: behind the vault, seed; level or ahead, leave it alone.
+  #
+  # RESTART: Passenger's documented restart file, which the gateway's own .htaccess names
+  # (PassengerRestartDir .../tmp). No process is killed and nothing else on the account restarts.
+  gateway:
+    name: Deploy the WriteHuman gateway session-alignment fix
+    if: ${{ inputs.confirm == 'GATEWAY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # GATE 1 — the change has to pass its own tests on the runner before it reaches the host.
+      - name: Run the gateway's integration tests
+        working-directory: proxy-gateway
+        run: |
+          set -euo pipefail
+          node --check server.js
+          npm test
+
+      - name: Install deploy key and PINNED host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "::error::HOSTINGER_SSH_PRIVATE_KEY and HOSTINGER_SSH_KNOWN_HOSTS must both be set in the 'production' environment."
+            exit 1
+          fi
+          D="$RUNNER_TEMP/gw-ssh"
+          mkdir -p "$D" && chmod 700 "$D"
+          umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$D/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$D/known_hosts"
+          chmod 600 "$D/id_deploy" "$D/known_hosts"
+          grep -q 'PRIVATE KEY' "$D/id_deploy" || { echo "::error::the stored key has no PRIVATE KEY header"; exit 1; }
+          ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null 2>&1 \
+            || { echo "::error::known_hosts has no entry for [${SFTP_HOST}]:${SFTP_PORT}; host-key checking is NOT being disabled"; exit 1; }
+          echo "SSH_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Unlock the key if encrypted
+        env:
+          SSH_PASSPHRASE: ${{ secrets.HOSTINGER_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PASSPHRASE:-}" ]; then echo "key treated as unencrypted"; exit 0; fi
+          eval "$(ssh-agent -s)" >/dev/null
+          ASK="$SSH_DIR/askpass.sh"; umask 077
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$SSH_PASSPHRASE"\n' > "$ASK"; chmod 700 "$ASK"
+          SSH_ASKPASS="$ASK" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 ssh-add "$SSH_DIR/id_deploy" >/dev/null 2>&1 \
+            || { echo "::error::ssh-add rejected the key"; exit 1; }
+          rm -f "$ASK"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      # GATE 2 — identify the live file and keep a hash-verified copy of it.
+      - name: Back up the live gateway, hash-verified
+        id: gwbackup
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' bash -s" > gwpre.txt 2>gwpre.err <<'REMOTE'
+          set -u
+          G="$HOME/writehuman-gateway"
+          B="$G/backup-server-$STAMP.js"
+          [ -f "$G/server.js" ] || { echo "NO_SERVER_JS"; exit 0; }
+          echo "live server.js: $(stat -c %s "$G/server.js") bytes sha256 $(sha256sum "$G/server.js" | cut -d' ' -f1) mtime $(stat -c %y "$G/server.js" | cut -c1-19)"
+          cp -p "$G/server.js" "$B"
+          a="$(sha256sum "$G/server.js" | cut -d' ' -f1)"; b="$(sha256sum "$B" | cut -d' ' -f1)"
+          if [ "$a" = "$b" ]; then echo "backup VERIFIED $B"; else echo "BACKUP_FAILED"; fi
+          echo "markers now: HOST_GUARD_INDIRECT=$(grep -c HOST_GUARD_INDIRECT_RE "$G/server.js") align=$(grep -c shouldAlignBrowserSession "$G/server.js")"
+          REMOTE
+          cat gwpre.txt
+          grep -q 'backup VERIFIED' gwpre.txt || { echo "::error::could not take a verified backup of the live gateway; nothing was changed"; head -5 gwpre.err || true; exit 1; }
+          { echo "## Gateway before"; echo ''; echo '```'; cat gwpre.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=gw-before::$(grep -m1 'live server.js:' gwpre.txt) | $(grep -m1 'markers now:' gwpre.txt)"
+
+      - name: Upload, syntax-check on the host, then restart
+        run: |
+          set -euo pipefail
+          LFTP_COMMON="set sftp:auto-confirm no; set sftp:connect-program \"ssh -a -x -i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes\"; set net:max-retries 5; set net:timeout 60;"
+          UP="$RUNNER_TEMP/gwup"; rm -rf "$UP"; mkdir -p "$UP"
+          cp proxy-gateway/server.js "$UP/.staging-server-$STAMP.js"
+          attempt=1
+          while :; do
+            echo "==> uploading the gateway (attempt $attempt/3)"
+            if (cd "$UP" && lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+                 "$LFTP_COMMON cd writehuman-gateway; put -c .staging-server-$STAMP.js; bye"); then break; fi
+            if [ "$attempt" -ge 3 ]; then echo "::error::upload failed; nothing was changed"; exit 1; fi
+            attempt=$((attempt + 1)); sleep $((attempt * 10))
+          done
+          LOCAL_SHA="$(sha256sum proxy-gateway/server.js | cut -d' ' -f1)"
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' LOCAL_SHA='$LOCAL_SHA' bash -s" > gwput.txt 2>gwput.err <<'REMOTE'
+          set -u
+          G="$HOME/writehuman-gateway"
+          S="$G/.staging-server-$STAMP.js"
+          sh="$(sha256sum "$S" | cut -d' ' -f1)"
+          echo "staged: $(stat -c %s "$S") bytes sha256 $sh"
+          if [ "$sh" != "$LOCAL_SHA" ]; then echo "STAGING_MISMATCH"; rm -f "$S"; exit 0; fi
+          # A file that does not parse must never become server.js: Passenger would then serve 503
+          # to every member on the next request.
+          if ! node --check "$S" 2>/dev/null; then
+            if ! /opt/alt/alt-nodejs22/root/bin/node --check "$S" 2>/dev/null; then
+              echo "SYNTAX_FAILED"; rm -f "$S"; exit 0
+            fi
+          fi
+          echo "syntax OK on the host"
+          mv -f "$S" "$G/server.js"
+          echo "installed: $(stat -c %s "$G/server.js") bytes sha256 $(sha256sum "$G/server.js" | cut -d' ' -f1)"
+          mkdir -p "$G/tmp" && touch "$G/tmp/restart.txt"
+          echo "restart requested via Passenger restart file"
+          echo "GATEWAY_OK"
+          REMOTE
+          cat gwput.txt
+          grep -q STAGING_MISMATCH gwput.txt && { echo "::error::the uploaded gateway did not hash to the local file; staging deleted, nothing installed"; exit 1; }
+          grep -q SYNTAX_FAILED   gwput.txt && { echo "::error::the uploaded gateway did not parse on the host; staging deleted, nothing installed"; exit 1; }
+          grep -q GATEWAY_OK      gwput.txt || { echo "::error::install did not complete"; head -5 gwput.err || true; exit 1; }
+          { echo "## Gateway install"; echo ''; echo '```'; cat gwput.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # GATE 3 — the gateway still answers, still contains the host-guard defusal, and now reports
+      # the alignment decision. A member page needs a lease, so this checks what is reachable
+      # without one: the health route, and that the lease wall is still a wall.
+      - name: Verify the gateway is serving
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > gwver.txt 2>gwver.err <<'REMOTE'
+          set -u
+          G="$HOME/writehuman-gateway"
+          echo "on disk: $(stat -c %s "$G/server.js") bytes sha256 $(sha256sum "$G/server.js" | cut -d' ' -f1)"
+          echo "markers: HOST_GUARD_INDIRECT=$(grep -c HOST_GUARD_INDIRECT_RE "$G/server.js") align=$(grep -c shouldAlignBrowserSession "$G/server.js") routeCheck=$(grep -c routeCheck "$G/server.js")"
+          for i in 1 2 3 4 5; do
+            code="$(curl -s -o h.json -w '%{http_code}' --max-time 25 "https://writehuman1.genzdigitalstore.com/__genz/health?cb=$RANDOM")"
+            echo "try $i: /__genz/health HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 8
+          done
+          head -c 420 h.json; echo
+          printf 'no-lease request -> '
+          curl -s -o /dev/null -w 'HTTP %{http_code}\n' --max-time 25 "https://writehuman1.genzdigitalstore.com/"
+          rm -f h.json
+          REMOTE
+          cat gwver.txt
+          { echo "## Gateway verification"; echo ''; echo '```'; cat gwver.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "gw-disk"   "$(grep -m1 'on disk:' gwver.txt) | $(grep -m1 'markers:' gwver.txt)"
+          emit "gw-health" "$(grep -E '/__genz/health HTTP' gwver.txt | tail -1) | $(grep -m1 -oE '\{"ok".{0,200}' gwver.txt)"
+          emit "gw-wall"   "$(grep -m1 'no-lease request ->' gwver.txt)"
+          grep -qE '/__genz/health HTTP 200' gwver.txt || { echo "::error::the gateway is not answering its health route after the restart"; exit 1; }
+          grep -q 'align=1' gwver.txt || grep -q 'align=2' gwver.txt || grep -q 'align=3' gwver.txt \
+            || { echo "::error::the installed gateway does not contain the alignment decision"; exit 1; }
+
+      - name: Roll the gateway back
+        if: ${{ failure() && steps.gwbackup.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' bash -s" > gwrb.txt 2>&1 <<'REMOTE'
+          set -u
+          G="$HOME/writehuman-gateway"; B="$G/backup-server-$STAMP.js"
+          [ -f "$B" ] || { echo "NO_BACKUP"; exit 0; }
+          cp -p "$B" "$G/server.js"
+          rm -f "$G/.staging-server-$STAMP.js"
+          mkdir -p "$G/tmp" && touch "$G/tmp/restart.txt"
+          echo "restored $(sha256sum "$G/server.js" | cut -d' ' -f1) and requested a restart"
+          echo "ROLLED_BACK"
+          REMOTE
+          cat gwrb.txt
+          { echo "## Gateway rollback"; echo ''; echo '```'; cat gwrb.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::the gateway was rolled back to the pre-deploy file"
+
   publish:
     name: Publish the verified 3.5.15 installer
     runs-on: ubuntu-latest
