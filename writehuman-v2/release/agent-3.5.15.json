@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "THE PUBLISH MANIFEST. The installer itself cannot live in this repository — it is 91,807,232",
+    "bytes and writehuman-v2/agent/dist/ is gitignored — so this file is what the publish workflow",
+    "enforces: the bytes it is handed must match this version, size and digest exactly, or nothing",
+    "is promoted. It is not a description of what is published; it is the gate on what may be.",
+    "",
+    "Measured locally with `node backend/scripts/release-gate.cjs` (5/5): the EXE's embedded agent",
+    "source is byte-identical to writehuman-v2/agent/cookie-sync-agent.js in this tree, whose",
+    "AGENT_VERSION is 3.5.15, and the PE header checksum matches the bytes.",
+    "",
+    "builtAt is null on purpose. The only timestamp available is the ZIP member mtime of the EXE",
+    "(2026-10-17T14:26:00Z), which records when the archive was written, not when the binary was",
+    "built, and an archive time presented as a build time is a fabrication."
+  ],
+  "product": "WriteHuman Universal Agent",
+  "file": "WriteHuman-Agent-Setup-x64.exe",
+  "version": "3.5.15",
+  "size": 91807232,
+  "sha256": "14015d575b25a538269521d2d1b4d9f4c43f309d89f0bd4d8dd451b9a5c654d3",
+  "arch": "x64",
+  "signed": false,
+  "builtAt": null,
+  "buildId": "3.5.15-retry-rc1",
+  "originalFilename": "WriteHuman-Agent-Setup-3.5.15-x64-OFFLINE-RC1.exe",
+  "fullPackageSha256": "0a603f9ca8d66300f5689b9c4bba60f609b53c0fc5290315d37aeb9bd6a0238c",
+  "embeddedAgentSha256": "0dacfd686af9f67c58e47e774de8ef5a4d29c8e6fed6ad53a0cf9b0952fd2431",
+  "embeddedBootstrapSha256": "f40e6943dc804096f38c01eb368072dad23548c56bd600f27ca0a870f8a40eb4",
+  "stockNodeBase": "node v24.14.1 win-x64, sha256 58e74bf02fc5bbacc41dcb8bef089961cd5bddd37830b87784e4fc624d145d1f (official SHASUMS256.txt)",
+  "notVerified": [
+    "nativeWindowsBuild",
+    "windowsInstallation",
+    "liveRecovery",
+    "authenticodeSignature"
+  ]
+}
