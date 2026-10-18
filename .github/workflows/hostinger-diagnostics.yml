@@ -40,7 +40,7 @@ on:
         required: false
         default: ''
       confirm:
-        description: 'PUBLISH = installer, GATEWAY = gateway fix, EXTENSION = extension package. Anything else is a dry run.'
+        description: 'PUBLISH = installer, GATEWAY = gateway, EXTENSION = extension package, EXTCHECK = read the live package. Anything else is a dry run.'
         required: true
         default: ''
 
@@ -59,6 +59,70 @@ env:
   ARTIFACT: 'writehuman-v2/agent/dist/WriteHuman-Agent-Setup-x64.exe'
 
 jobs:
+  # ── READ-ONLY: what is the LIVE extension, and does it still carry the defect? ───────────────
+  # The newer-live guard refused a release and reported why: both docroots serve v3.9.35, while
+  # this repository's chrome-extension/ source is 3.9.31. Versions 3.9.32-3.9.35 were therefore
+  # published from somewhere that is not this branch, so the repo tree is NOT the live code and
+  # shipping it would overwrite four releases' worth of unknown changes.
+  #
+  # Before deciding anything, read the live package. The runner has open internet, so it fetches
+  # the served ZIP itself — nothing is written and the host is not touched.
+  extcheck:
+    name: Inspect the live extension package (read-only)
+    if: ${{ inputs.confirm == 'EXTCHECK' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download and inspect what clients are being served
+        run: |
+          set -euo pipefail
+          mkdir -p live && cd live
+          for o in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            n="$(echo "$o" | sed 's#https://##; s#\.#_#g')"
+            code="$(curl -sL -o "$n.zip" -w '%{http_code}' --max-time 120 "$o/downloads/genz-digital-store-extension.zip?cb=$RANDOM")"
+            echo "ORIGIN $o -> HTTP $code $(stat -c %s "$n.zip") bytes sha256 $(sha256sum "$n.zip" | cut -d' ' -f1)"
+          done
+          Z=genzdigitalstore_com.zip
+          mkdir -p x && (cd x && unzip -q -o "../$Z")
+          echo "ENTRIES $(unzip -Z1 "$Z" | wc -l)"
+          node -e 'const m=require("./x/manifest.json");console.log("MANIFEST version="+m.version+" mv="+m.manifest_version+" perms="+(m.permissions||[]).slice().sort().join(",")+" hostperms="+((m.host_permissions||[]).length))'
+          node -e '
+            const fs = require("fs");
+            const src = fs.readFileSync("x/js/background.js", "utf8");
+            const code = src.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
+            const bare = (code.match(/(?<!require)[Oo]rchestrator\.executeLogin\(/g) || []).length;
+            const viaAccessor = (code.match(/requireOrchestrator\(\)\.executeLogin\(/g) || []).length;
+            const out = {
+              liveBytes: src.length,
+              bareCallSites: bare,
+              viaAccessor,
+              declaresNull: /let orchestrator = null/.test(code),
+              assignsInInitialize: /orchestrator = getOrchestrator\(\)/.test(code),
+              hasAccessor: /function requireOrchestrator\(/.test(code),
+            };
+            console.log("LIVEBG " + JSON.stringify(out));
+            console.log("VERDICT " + (out.hasAccessor ? "ALREADY_FIXED" : (bare > 0 ? "DEFECT_PRESENT" : "SHAPE_CHANGED")));
+          '
+          node -e '
+            const fs = require("fs"), crypto = require("crypto");
+            const h = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 16);
+            const live = h("x/js/background.js"), repo = h("../chrome-extension/js/background.js");
+            console.log("BGHASH live=" + live + " (" + fs.statSync("x/js/background.js").size + "B) repo=" + repo + " (" + fs.statSync("../chrome-extension/js/background.js").size + "B) " + (live === repo ? "IDENTICAL" : "DIFFERENT"));
+          '
+          (cd x && find . -type f | sed 's#^\./##' | sort | while read -r f; do
+            if [ -f "../../chrome-extension/$f" ]; then
+              a="$(sha256sum "$f" | cut -c1-12)"; b="$(sha256sum "../../chrome-extension/$f" | cut -c1-12)"
+              if [ "$a" != "$b" ]; then echo "DIFF $f"; fi
+            else
+              echo "LIVEONLY $f"
+            fi
+          done) | head -40
+      - name: Emit the findings
+        if: always()
+        run: echo "::notice title=note::read-only inspection of the live extension package; nothing was written"
+
   # ── The Chrome extension package ─────────────────────────────────────────────────────────────
   # A frontend upload does not update an already-installed extension, and the extension is not
   # part of the API's deployment either. What a client receives is the ZIP sitting in the two web
