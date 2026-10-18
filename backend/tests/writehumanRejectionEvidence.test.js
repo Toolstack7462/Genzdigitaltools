@@ -84,7 +84,7 @@ test('a later PROMOTION does not erase the evidence of the earlier refusal', asy
   nextVerify = { result: 'unknown', httpStatus: 0, reason: 'readonly_no_exchange' };
   await ingestCandidate(acct, TOOL, row, bundle(now - 5400).cookies, {});
   const before = acct.lastRejectedCandidate;
-  nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };
+  nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
   const ok = await ingestCandidate(acct, TOOL, row, bundle(now - 60).cookies, {});
   assert.strictEqual(ok.code, 'PROMOTED');
   assert.strictEqual(acct.candidate.status, 'promoted');

@@ -34,7 +34,7 @@ require.cache[leasePath] = {
 const logPath = require.resolve('../models/ActivityLog');
 require.cache[logPath] = { id: logPath, filename: logPath, loaded: true, exports: { log: async () => {} } };
 const verifyMod = require('../utils/proxy/verify');
-verifyMod.verifyAccountCookies = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com' });
+verifyMod.verifyAccountCookies = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' });
 require('../utils/proxy/healthAlerts').onVerifyApplied = async () => {};
 
 const deviceSync = require('../utils/proxy/deviceSync');
