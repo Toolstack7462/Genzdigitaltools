@@ -1,44 +1,54 @@
 # Deployment path and rollback — candidate 3.5.15
 
-## FRONTEND DEPLOYED — run 39127844059, SHA `5c3bd00`, 2026-10-18T12:40Z
+## Release record (corrected against the run logs)
 
-Controlled single `workflow_dispatch` at `candidate/writehuman-3.5.15-integration`. `main` was not
-merged, so no merge-triggered second release could race it.
+I could not read the job logs from this environment — GitHub serves them from an Azure blob host the
+network policy denies — so the bundle identities below are **operator-supplied from the run log**,
+not read by me. An earlier revision of this file stated `main.ce190adc.js`; that was **derived from
+a local build and was wrong**. Corrected without redeploying merely to change a filename.
 
-| stage | result |
-|---|---|
-| Gate — backend syntax, `test:ci`, frontend tests | **success** |
-| Extension ZIP vs manifest; never-overwrite-newer-live-extension | **success** |
-| Install deploy key + **PINNED** host key (`ssh-keygen -F` verified) | **success** |
-| Unlock encrypted key | **success** |
-| Record live build (rollback point) | **success** 12:37:17Z |
-| Targeted timestamped backup | **success** 12:37:18Z → 12:37:25Z |
-| SFTP upload to BOTH web roots | **success** 12:37:25Z → 12:39:17Z (112 s) |
-| Verify live bundle on both domains | **success** — matched on the FIRST attempt, no retry |
-| Verify every asset is fetchable with a real JS/CSS content type | **success** (50 s) |
+| run | source SHA | live bundle after | bundle before | backup |
+|---|---|---|---|---|
+| [39127844059](https://github.com/Toolstack7462/Genzdigitaltools/actions/runs/39127844059) | `5c3bd00` | **`main.e75a918d.js`** | `main.7b35b271.js` (both roots) | `~/deploy-backups/frontend-20261018T123718Z/` |
+| [39130872984](https://github.com/Toolstack7462/Genzdigitaltools/actions/runs/39130872984) | `c775b1a` | the bundle that run built (see its log) | `main.e75a918d.js` | `~/deploy-backups/frontend-20261018T132033Z/` |
 
-**Live bundle:** `main.ce190adc.js`, source fingerprint `15eb6d3ecfcc…`, 295 inputs — the build this
-run produced from `5c3bd00`. Both roots serve it; the verify step asserts live-equals-built, so a
-partial upload could not have passed.
+Source fingerprint for `5c3bd00`: `15eb6d3ecfcc…`.
 
-**Backup location:** `~/deploy-backups/frontend-20261018T1237{18,19}Z/{main,app}.tar.gz` on the
-Hostinger account — outside both public web roots. Contains only the replaced deploy surface
-(`index.html`, `asset-manifest.json`, `build-source.json`, `.htaccess`, `static/`). No account-wide
-backup, no `.env`, no uploads, no database. `ls ~/deploy-backups/` confirms the exact name.
+### The committed bundle is NOT the deployed bundle
 
-**Rollback point:** recorded in the run's job summary (live bundle + `sourceFingerprint` of both
-domains as they were immediately before the upload). Section 3 is the procedure.
+`deploy-frontend.yml` runs `npm run build` on the runner and uploads **that**. The committed
+`frontend/build/` is a different build of the same source — webpack content hashes depend on the
+resolved dependency tree, and the runner's `npm install` need not match a local one. Evidence: this
+tree's committed stamp for `5c3bd00` was `main.ce190adc.js` while the runner published
+`main.e75a918d.js` from the same commit.
 
-### Still UNVERIFIED after this deploy — needs an authenticated session
+Consequences: never identify a live bundle from the committed stamp (that is the mistake above);
+only `deploy-frontend-only.sh` ships the committed bytes; and `frontendBuildFreshness` proves the
+committed build matches the committed SOURCE, which is a staleness check, not a statement about
+production.
 
-The runner proves the bytes are published and fetchable. It cannot sign in, so these are **not**
-claimed and must be checked in the browser (no production contact values are to be changed):
+### What the deploy verified, and what it did not
 
-- **Admin → Content → Support Contact** menu entry visible, page loads, current saved values shown.
-  Check once at a normal window and once inside **Business CRM at a 1024–1279px width** — that is
-  the exact gap this release closes.
-- **Zee** launcher opens, restores focus on close, and its support link carries the live number.
-- Login, client and admin routing; existing tools and sessions unaffected.
+| check | run 39127844059 | what it proves |
+|---|---|---|
+| `index.html` references the expected bundle on both roots | **PASS**, first attempt | the right build landed |
+| every JS/CSS asset returns 200 with a real JS/CSS content type | **PASS** | no SPA-fallback HTML served as JavaScript |
+| **byte integrity of uploaded files** | **NOT CHECKED** | a content-type check is not a hash comparison; a corrupted-but-servable file would pass |
+| **backup readability / restore viability** | **NOT CHECKED** | the step confirmed `tar czf` exited and listed the archive; it did not `tar -tzf` it, verify required members or test an extraction. An archive listing is not a usable restore |
+| **authenticated behaviour** (admin menu, Support Contact values, Zee, routing) | **NOT CHECKED** | the runner cannot sign in |
+
+## Component status — tracked separately
+
+| component | state | evidence |
+|---|---|---|
+| **Frontend** (both roots) | **VERIFIED LIVE at `c775b1a`** | run 39130872984, all stages pass |
+| **Running backend** (API host) | **UNVERIFIED** — not deployed by this or any run here. Build unknown; last changed by a manual `deploy-*.sh` at an unknown commit | no read access from this environment |
+| **Installed Windows Agent** (RDP) | **UNTOUCHED**, not reinstalled | no action taken |
+| **Published installer** | **NOT PUBLISHED** for 3.5.15; distribution check UNVERIFIED | `verify-agent-distribution.cjs` exit 3 |
+
+**A frontend deploy does not deploy backend fixes.** Everything under `backend/` on this branch —
+the `getAdminView` `storedAvailable` flag, the pool-saturation shedding, the five deploy-script
+module fixes — is **tested but not deployed**.
 
 ## 2. What this deploy would change
 
