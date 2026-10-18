@@ -25,6 +25,7 @@ echo "==> [1/2] Uploading + restart"
 curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/admin/proxyTools.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
   `# required by proxyTools.js at module load — must ship together or the API boots into "Cannot find module"` \
+  -T backend/db/poolLimits.js        "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   -T backend/utils/proxy/agentCommands.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
   -T backend/utils/proxy/deviceState.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceState.js" \
   -T backend/utils/proxy/activation.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/activation.js" \

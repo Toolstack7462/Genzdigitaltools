@@ -11,6 +11,7 @@
  */
 
 const mysql = require('mysql2/promise');
+const { poolLimits, isPoolSaturationError } = require('./poolLimits');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 
@@ -129,11 +130,17 @@ async function connect() {
 
   const parsed = parseDatabaseUrl(databaseUrl);
   connectionInfo = parsed;
+  // Pool sizing + the BOUNDED wait queue. `queueLimit: 0` (mysql2's unbounded queue) let a slow
+  // MySQL accumulate an unlimited backlog of requests, each pinning a socket and its closures until
+  // the process died or the proxy gave up — a 502/503 with no obvious cause. A bounded queue sheds
+  // the overflow immediately instead. See db/poolLimits.js; MYSQL_QUEUE_LIMIT=0 restores the old
+  // behaviour without a code change.
+  const limits = poolLimits(process.env);
   pool = mysql.createPool({
     uri: databaseUrl,
     waitForConnections: true,
-    connectionLimit: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
-    queueLimit: 0,
+    connectionLimit: limits.connectionLimit,
+    queueLimit: limits.queueLimit,
     timezone: 'Z',
     charset: 'utf8mb4',
     multipleStatements: false,
@@ -143,7 +150,7 @@ async function connect() {
     // bounded idle lifetime make the pool recycle stale connections instead.
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
-    maxIdle: Number(process.env.MYSQL_CONNECTION_LIMIT || 10),
+    maxIdle: limits.connectionLimit,
     idleTimeout: 60000,
   });
 
@@ -204,6 +211,16 @@ async function runQuery(sql, params) {
     }
     throw err;
   }
+}
+
+// The pushdown/COUNT fast paths below fall back to a full scan when the server cannot run the
+// optimised SQL (missing generated column, JSON functions unsupported on an old MariaDB). That
+// fallback must NEVER absorb a capacity failure: a shed query means the pool had nothing to give,
+// and answering it by escalating a primary-key lookup into a whole-table read puts MORE load on
+// the database that was already the bottleneck — twice per request, at the worst possible moment.
+// Saturation is rethrown so it reaches the route, which sheds it as 503 instead.
+function rethrowIfSaturated(err) {
+  if (isPoolSaturationError(err)) throw err;
 }
 
 // Real DB liveness check (runs an actual query) — for the /health endpoint so it
@@ -721,10 +738,11 @@ function createModel(name, options = {}) {
         try {
           const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE id = ?`, [idv]);
           return rows.map(r => deserializeData(r.data));
-        } catch (_) { /* fall through to full scan */ }
+        } catch (err) { rethrowIfSaturated(err); /* else fall through to full scan */ }
       }
       if (idv && typeof idv === 'object' && Array.isArray(idv.$in)) {
-        try { return await this._getRawByIds(idv.$in); } catch (_) { /* fall through */ }
+        try { return await this._getRawByIds(idv.$in); }
+        catch (err) { rethrowIfSaturated(err); /* else fall through */ }
       }
       const key = pushableStringKey(c);
       if (key) {
@@ -732,7 +750,7 @@ function createModel(name, options = {}) {
           const { sql, params } = whereForStringKey(table, key, c[key]);
           const [rows] = await runQuery(`SELECT data FROM \`${table}\` WHERE ${sql}`, params);
           return rows.map(r => deserializeData(r.data));
-        } catch (_) { /* generated column / JSON functions unsupported → full scan */ }
+        } catch (err) { rethrowIfSaturated(err); /* generated column / JSON functions unsupported → full scan */ }
       }
       return this._allRows();
     }
@@ -786,7 +804,7 @@ function createModel(name, options = {}) {
           const [r] = await runQuery(`SELECT COUNT(*) AS c FROM \`${table}\` WHERE id = ?`, [c._id]);
           return Number(r[0].c) || 0;
         }
-      } catch (_) { /* fall back to the exact JS count */ }
+      } catch (err) { rethrowIfSaturated(err); /* else fall back to the exact JS count */ }
       return (await this._findRaw(criteria)).length;
     }
 

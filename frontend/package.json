@@ -61,7 +61,8 @@
     "start": "craco start",
     "build": "craco build",
     "test": "craco test",
-    "postbuild": "node scripts/stamp-build.js"
+    "postbuild": "node scripts/stamp-build.js",
+    "zee:acceptance": "node scripts/zee-browser-acceptance.cjs"
   },
   "browserslist": {
     "production": [

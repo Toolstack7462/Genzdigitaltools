@@ -147,15 +147,35 @@ async function updateSupportContact(patch, actorId) {
   return getSupportContact({ fresh: true });
 }
 
-/** Raw admin-stored values (for the admin form), plus the effective contact. */
+/**
+ * Raw admin-stored values (for the admin form), plus the effective contact.
+ *
+ * `storedAvailable` is load-bearing and must not be dropped. This used to seed `stored` with empty
+ * strings and swallow a failed or timed-out read, so a transient DB problem returned EXACTLY what
+ * "nothing has ever been saved" returns. The admin form fills itself from `stored`, and `''` on PUT
+ * means "clear to the fallback" — so a blank form plus one Save destroyed the real support contact,
+ * with no error anywhere, because the request had succeeded.
+ *
+ * The caller can now tell the two apart: `storedAvailable: false` means the values are UNKNOWN, not
+ * empty, and nothing may be written back from that state. The public path is deliberately
+ * unchanged — `contact` and `fallback` still resolve from the env/built-in chain during an outage,
+ * so visitors never see a broken wa.me link.
+ */
 async function getAdminView() {
   const contact = await getSupportContact({ fresh: true });
   let stored = { whatsappNumber: '', supportEmail: '', updatedAt: null };
+  let storedAvailable = true;
   try {
     const row = await withTimeout(readRow(), DB_READ_TIMEOUT_MS);
     if (row) stored = { whatsappNumber: row.whatsappNumber || '', supportEmail: row.supportEmail || '', updatedAt: row.updatedAt || null };
-  } catch (_) { /* contact already reflects the fallback */ }
-  return { contact, stored, fallback: baseContact() };
+  } catch (err) {
+    // A read that did not happen is not an empty record. Report it as such rather than inventing
+    // values the admin form would then offer to save over the real ones.
+    storedAvailable = false;
+    stored = { whatsappNumber: '', supportEmail: '', updatedAt: null };
+    console.error('[supportContact] admin read failed, reporting stored values as unavailable:', err.message);
+  }
+  return { contact, stored, storedAvailable, fallback: baseContact() };
 }
 
 function _resetCacheForTests() { cache = null; }

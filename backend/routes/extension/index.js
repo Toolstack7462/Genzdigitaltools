@@ -1,4 +1,5 @@
 const express = require('express');
+const { respondIfDbBusy } = require('../../db/poolLimits');
 const crypto = require('crypto');
 const router = express.Router();
 const User = require('../../models/User');
@@ -159,6 +160,10 @@ router.get('/version-info', async (req, res) => {
       downloadPath: '/downloads/genz-digital-store-extension.zip',
     });
   } catch (err) {
+    // No DB capacity is not a server fault: answer 503 + Retry-After so the dashboard poll backs
+    // off, instead of a 500 that reads as broken and invites an immediate retry into the same
+    // saturation. Every other failure keeps its existing response.
+    if (respondIfDbBusy(err, res)) return;
     console.error('version-info error:', err.message);
     res.status(500).json({ error: 'Failed to read version info' });
   }

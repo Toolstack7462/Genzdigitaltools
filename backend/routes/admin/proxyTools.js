@@ -22,6 +22,7 @@ const ProxyAccount = require('../../models/proxy/ProxyAccount');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
+const { respondIfDbBusy } = require('../../db/poolLimits');
 const tools = require('../../utils/proxy/tools');
 const { verifyAccountCookies, maskEmail, applySupabaseRefresh, jwtExp, extractSupabaseSession } = require('../../utils/proxy/verify');
 const { normalizeCookieBundle, buildCookieHeader, countCookies, cookieNames, hasSessionCookie } = require('../../utils/proxy/cookies');
@@ -1061,7 +1062,7 @@ const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
-const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.2';
+const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.15';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1263,7 +1264,11 @@ router.get('/:tool/agent-state', async (req, res) => {
     const workingUnverified = working && hs.verification.state === 'failed';
 
     const reportedVersion = (activeDeviceView && activeDeviceView.agentVersion) || (legacyRep && legacyRep.version) || null;
-    const agentOutdated = reportedVersion ? (reportedVersion !== EXPECTED_AGENT_VERSION) : null;
+    // "update available" must mean the agent is strictly OLDER, not merely different. A raw string
+    // inequality flagged a NEWER agent too, so a machine on 3.5.13 against an expected 3.5.2 was told
+    // "update available → 3.5.2" — a prompt to DOWNGRADE — and '3.5.13' vs '3.5.2' is exactly the pair a
+    // string compare orders backwards. atLeast() is the semver comparator this route already imports.
+    const agentOutdated = reportedVersion ? !agentCommands.atLeast(reportedVersion, EXPECTED_AGENT_VERSION) : null;
     const cand = account.candidate || null;
     return res.json({
       ...base,
@@ -1363,6 +1368,7 @@ router.get('/:tool/agent-state', async (req, res) => {
       commandMinAgentVersion: agentCommands.MIN_AGENT_VERSION,
     });
   } catch (err) {
+    if (respondIfDbBusy(err, res)) return;   // shed load honestly: 503 + Retry-After, not 500
     console.error('Proxy agent-state error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to load agent state' });
   }
@@ -1716,6 +1722,24 @@ router.post('/:tool/devices/:deviceId/make-active', requireCsrf, async (req, res
       note: 'Queued for ' + (dev.name || dev.deviceId) + ' only. That machine captures and verifies its own WriteHuman session; the current session keeps serving until the capture passes.',
     });
   } catch (err) {
+    // Classify a request the bounded pool queue shed as 503 + Retry-After rather than a 500 that
+    // reads as "activation is broken". That classifies the FAILURE only; it says nothing about
+    // state. This catch wraps the whole handler body, including both account.save() calls, so a
+    // saturation error raised at either save lands here and is answered with the same 503 as one
+    // raised before any mutation — and the body carries no stage, so the response cannot say which
+    // await failed. A 503 is therefore exactly as indeterminate as the 500: it is NOT a safe-retry
+    // signal, and Retry-After is a pacing header, not a claim that nothing was applied. The next
+    // decision belongs to the operator and must be made against correlated activation state from
+    // GET /:tool/activation. Only a matching activationId correlates, and this response returns
+    // none — so after a 503 the persistence status of the attempt is UNKNOWN until corroborating
+    // evidence exists. A matching targetDeviceId with a later stageAt is NOT a substitute: an
+    // older activation for the same device keeps advancing and would satisfy it. See
+    // writehuman-v2/docs/MARK-ACTIVE-EVIDENCE-CAPTURE.md sections 4 and 5.
+    //
+    // This deliberately does NOT retry by itself. A capture-and-activate is state-changing and its
+    // outcome is uncertain once issued, so re-issuing it automatically could mint a second
+    // activation for the same device. The retry decision stays with the operator.
+    if (respondIfDbBusy(err, res)) return;
     console.error('Proxy make-active error:', err.message);
     return res.status(500).json({ ok: false, error: 'Failed to start the activation' });
   }

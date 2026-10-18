@@ -13,8 +13,10 @@ import api from '../../services/api';
 import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
 import { isOlder } from '../../lib/semver';
+import { startVisiblePolling } from '../../lib/visiblePolling';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
+import { reportIssue } from '../../features/clientAssistant/assistantEvents';
 import StealthWriterCard from '../../components/StealthWriterCard';
 import RenewPlanLink from '../../components/RenewPlanLink';
 import { useStealthSummary } from '../../hooks/useStealthSummary';
@@ -398,42 +400,46 @@ const ClientDashboardEnhanced = () => {
   // never toggles the loading skeleton, never re-fetches tools, and reuses the
   // dismissed/snooze state — so there is no second notification system and no
   // duplicate cards (the announcement list is replaced wholesale, keyed by _id).
+  // All three requests run CONCURRENTLY (as they always have), but this function no longer resolves
+  // until EVERY one has settled. The caller's in-flight guard keys off this promise, so a promise
+  // that settled on the first request would release the guard while the other two were still
+  // outstanding — letting the next tick overlap them. Each branch keeps its own catch, so the group
+  // never rejects and a single failing request can never disrupt the dashboard.
   const pollNotifications = useCallback(async () => {
-    // 1) Announcements — replace wholesale (dedupes), honour per-client dismissals.
-    try {
-      const r = await api.get('/client/announcements');
-      const dismissed = getDismissedAnnouncementIds();
-      const list = (r.data?.announcements || []).filter(a => !dismissed.has(a._id));
-      setAnnouncements(list);
-      // Toast only for genuinely NEW announcements (baseline set on first load).
-      const seen = seenAnnouncementIdsRef.current;
-      if (seen) {
-        const fresh = list.filter(a => !seen.has(a._id));
-        if (fresh.length === 1) showInfo(`New announcement: ${fresh[0].title}`);
-        else if (fresh.length > 1) showInfo(`${fresh.length} new announcements`);
-        fresh.forEach(a => seen.add(a._id));
-      } else {
-        seenAnnouncementIdsRef.current = new Set(list.map(a => a._id));
-      }
-    } catch (_) { /* fail-safe: never disrupt the dashboard */ }
-    // 2) Admin "please update" notice (self-clears server-side once up to date).
-    api.get('/client/extension-notice').then(r => setExtNotice(r.data?.notice || null)).catch(() => {});
-    // 3) Published version info — re-evaluates outdated / mandatory client-side.
-    getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {});
+    await Promise.all([
+      // 1) Announcements — replace wholesale (dedupes), honour per-client dismissals.
+      (async () => {
+        try {
+          const r = await api.get('/client/announcements');
+          const dismissed = getDismissedAnnouncementIds();
+          const list = (r.data?.announcements || []).filter(a => !dismissed.has(a._id));
+          setAnnouncements(list);
+          // Toast only for genuinely NEW announcements (baseline set on first load).
+          const seen = seenAnnouncementIdsRef.current;
+          if (seen) {
+            const fresh = list.filter(a => !seen.has(a._id));
+            if (fresh.length === 1) showInfo(`New announcement: ${fresh[0].title}`);
+            else if (fresh.length > 1) showInfo(`${fresh.length} new announcements`);
+            fresh.forEach(a => seen.add(a._id));
+          } else {
+            seenAnnouncementIdsRef.current = new Set(list.map(a => a._id));
+          }
+        } catch (_) { /* fail-safe: never disrupt the dashboard */ }
+      })(),
+      // 2) Admin "please update" notice (self-clears server-side once up to date).
+      api.get('/client/extension-notice').then(r => setExtNotice(r.data?.notice || null)).catch(() => {}),
+      // 3) Published version info — re-evaluates outdated / mandatory client-side.
+      getLatestExtension(installedVersionRef.current).then(info => setExtInfo(info)).catch(() => {}),
+    ]);
   }, [getDismissedAnnouncementIds, showInfo]);
 
-  useEffect(() => {
-    const POLL_MS = 45000;
-    const id = setInterval(() => { pollNotifications(); }, POLL_MS);
-    const onVisible = () => { if (document.visibilityState === 'visible') pollNotifications(); };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', onVisible);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', onVisible);
-    };
-  }, [pollNotifications]);
+  // Visibility-GATED: the 45s cadence is unchanged while the tab is being looked at, and a return
+  // to the tab still polls immediately — but a hidden tab now issues nothing at all. Each tick is
+  // three backend requests (/client/announcements, /client/extension-notice,
+  // /extension/version-info), and that cost used to be paid for as long as the tab stayed open, by
+  // every client with a parked dashboard at once. Nothing here is user-visible: new announcements
+  // still arrive before anyone can read a stale screen.
+  useEffect(() => startVisiblePolling(pollNotifications, 45000), [pollNotifications]);
 
   // ── Presence heartbeat (admin "who's online" monitor) ──────────────────────
   // Lightweight, fail-safe, fire-and-forget: sends NO user content — just a tap
@@ -669,6 +675,20 @@ const ClientDashboardEnhanced = () => {
       }
       // Tool genuinely removed from the dashboard list → message is now consistent.
     }
+
+    // Offer Gen Z Guide proactive, step-by-step troubleshooting for this real launch failure.
+    // Non-sensitive only (code + tool name + a safe retry); the assistant decides whether to
+    // auto-open (at most once per issue per session) or show a dismissible prompt.
+    try {
+      reportIssue({
+        code: result?.error || 'TOOL_LAUNCH_FAILED',
+        source: 'tool_launch',
+        toolId,
+        toolName: tool?.name,
+        recoverable: true,
+        retry: () => openTool(toolId),
+      });
+    } catch (_) { /* assistant is optional — never block the open flow */ }
 
     showToolError(sanitizeError(result));
   }, [bridgeReady, extMustUpdate, openTool, sanitizeError]);

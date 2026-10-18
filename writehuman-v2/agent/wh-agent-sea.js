@@ -21,9 +21,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const crypto = require('crypto');
+const BUILD_ID = '3.5.15-retry-rc1';
 
 const APP_DIR_NAME = path.join('GenZDigitalTools', 'WriteHumanAgent');
-const INSTALL_DIR = path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), APP_DIR_NAME);
+// Installed modes must survive logon without the installer's shell overrides.
+const EXECUTABLE_INSTALL_DIR=path.basename(String(process.execPath||'')).toLowerCase()==='writehumanagent.exe'?path.dirname(process.execPath):null;
+const INSTALL_DIR = process.env.WHV2_INSTALL_DIR || (process.env.WHV2_CONFIG ? path.dirname(path.resolve(process.env.WHV2_CONFIG)) :
+  EXECUTABLE_INSTALL_DIR || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), APP_DIR_NAME));
 const INSTALLED_EXE = path.join(INSTALL_DIR, 'WriteHumanAgent.exe');
 const TASK_NAME = 'WriteHumanUniversalAgent';
 const AGENT_ASSET = 'cookie-sync-agent.js';
@@ -34,7 +39,15 @@ const AGENT_ASSET = 'cookie-sync-agent.js';
 const CREDS_DIR = path.join(INSTALL_DIR, 'creds');
 const CREDS_FILE = path.join(CREDS_DIR, 'agent-device.json');
 const STAND_DOWN_FILE = path.join(CREDS_DIR, 'stood-down.json');
-const CONFIG_FILE = path.join(INSTALL_DIR, 'config.json');
+function installedConfigPath(){
+  try{const m=JSON.parse(fs.readFileSync(path.join(INSTALL_DIR,'installed.json'),'utf8'));
+    if(typeof m.configPath==='string'&&path.isAbsolute(m.configPath)&&/\.json$/i.test(m.configPath))return m.configPath;
+    const name=typeof m.configName==='string'&&/^[^\\/]+\.json$/i.test(m.configName)?m.configName:'config.json';
+    return path.join(INSTALL_DIR,name);
+  }catch(_){return path.join(INSTALL_DIR,'config.json');}
+}
+const CONFIG_FILE = process.env.WHV2_CONFIG || installedConfigPath();
+
 const LOCK_FILE = path.join(INSTALL_DIR, 'agent.lock');
 const INSTALLED_MARKER = path.join(INSTALL_DIR, 'installed.json');
 // Where Windows lists installed software for the current user. A per-user install with no entry
@@ -62,16 +75,84 @@ function selfAgentVersion() {
 }
 /** The version recorded by whichever installer last wrote INSTALLED_EXE. */
 function installedAgentVersion() {
-  try { return JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'installed.json'), 'utf8')).agentVersion || null; }
+  try { return JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'installed.json'), 'utf8').replace(/^\uFEFF/, '')).agentVersion || null; }
   catch (_) { return null; }
 }
 /** Stamp what we just installed, so the next run can compare versions instead of guessing. */
 function writeInstalledMarker() {
-  try {
-    fs.writeFileSync(path.join(INSTALL_DIR, 'installed.json'),
-      JSON.stringify({ agentVersion: selfAgentVersion(), installedAt: new Date().toISOString() }, null, 2),
-      { encoding: 'ascii' });
-  } catch (_) { /* non-fatal: worst case the next run treats this as an upgrade and repairs */ }
+  const value = { agentVersion: selfAgentVersion(), buildId: BUILD_ID,
+    configName:path.basename(CONFIG_FILE),
+    ...(path.resolve(path.dirname(CONFIG_FILE)).toLowerCase()!==path.resolve(INSTALL_DIR).toLowerCase()?{configPath:path.resolve(CONFIG_FILE)}:{}),
+    sourceSha256: sha256(agentSource()), executableSha256: sha256(fs.readFileSync(INSTALLED_EXE)),
+    installedAt: new Date().toISOString() };
+  const temp = INSTALLED_MARKER + '.' + process.pid + '.tmp';
+  fs.writeFileSync(temp, JSON.stringify(value, null, 2), {encoding:'utf8', mode:0o600});
+  fs.renameSync(temp, INSTALLED_MARKER);
+}
+
+function sha256(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
+function psLiteral(value) { return "'" + String(value).replace(/'/g, "''") + "'"; }
+function readJsonStrict(file) { return JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')); }
+function validatePackage() {
+  const source = agentSource();
+  if (!source || source.length < 500 || selfAgentVersion() !== '3.5.15') throw new Error('Invalid embedded Agent package.');
+  new (require('vm').Script)(source, {filename:'embedded-cookie-sync-agent.js'});
+  let buildMethod=sea?'unknown':'source-only';
+  if(sea){
+    try{
+      const method=JSON.parse(sea.getAsset('build-manifest.json','utf8')).buildMethod;
+      if(['cross-platform','windows-native'].includes(method))buildMethod=method;
+    }catch(_){}
+  }
+  return {product:'WriteHuman Agent',version:selfAgentVersion(),buildId:BUILD_ID,
+    sourceSha256:sha256(source),nodeVersion:process.version,platform:process.platform,arch:process.arch,
+    packaging:sea?'windows-node-sea':'source-only',buildMethod,recoveryOffByDefault:true};
+}
+function compareVersion(a,b) {
+  const parse=v=>{ if(!/^\d+\.\d+\.\d+$/.test(String(v)))throw new Error('Invalid Agent version metadata.');return v.split('.').map(Number); };
+  const x=parse(a),y=parse(b);
+  for(let i=0;i<3;i++){if(x[i]!==y[i])return x[i]>y[i]?1:-1;}return 0;
+}
+function validateUpgrade() {
+  validatePackage();
+  if (fs.existsSync(INSTALLED_EXE)) {
+    if (!fs.existsSync(CONFIG_FILE)) throw new Error('Existing Agent configuration is missing. No running Agent was changed.');
+    const cfg=readJsonStrict(CONFIG_FILE);
+    if (!cfg || typeof cfg!=='object' || Array.isArray(cfg)) throw new Error('Existing configuration is invalid.');
+    const version=installedAgentVersion();
+    if(version && compareVersion(version,selfAgentVersion())>0) throw new Error('Refusing to downgrade a newer Agent.');
+  }
+}
+
+// Back up before stopping anything. Access control failure stops the upgrade.
+function backupInstallation() {
+  if (!fs.existsSync(INSTALLED_EXE)) return null;
+  const root=path.join(path.dirname(INSTALL_DIR),'AgentBackups');
+  fs.mkdirSync(root,{recursive:true});
+  const dir=fs.mkdtempSync(path.join(root,selfAgentVersion()+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'-'));
+  const cmd="$ErrorActionPreference='Stop';$sid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"+
+    "& icacls.exe "+psLiteral(dir)+" '/inheritance:r' '/grant:r' (('*'+$sid)+':(OI)(CI)F') | Out-Null;"+
+    "if($LASTEXITCODE -ne 0){exit 1}";
+  const secured=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',cmd],{stdio:'ignore',windowsHide:true,timeout:15000});
+  if(secured.status!==0) throw new Error('Could not secure the local backup. Upgrade cancelled.');
+  const files=[];
+  const paths=effectiveStatePaths();
+  const entries=[['WriteHumanAgent.exe',INSTALLED_EXE],[path.basename(CONFIG_FILE),CONFIG_FILE],['installed.json',INSTALLED_MARKER],
+    ['private/device.json',paths.device],['private/stand-down.json',paths.standDown],
+    ['private/recovery.json',paths.recovery],['private/source-credential.dpapi',paths.vault]];
+  for(const [backup,source] of entries){
+    if(!fs.existsSync(source))continue;
+    const destination=path.join(dir,backup);fs.mkdirSync(path.dirname(destination),{recursive:true});
+    fs.copyFileSync(source,destination);
+    const digest=sha256(fs.readFileSync(source));
+    if(digest!==sha256(fs.readFileSync(destination)))throw new Error('Backup integrity check failed.');
+    files.push({source,backup,sha256:digest});
+  }
+  // Contents and path mapping stay under the secured local backup ACL. Do not
+  // export this manifest or restore state automatically during binary rollback.
+  fs.writeFileSync(path.join(dir,'backup-manifest.json'),JSON.stringify({schema:1,files},null,2),{mode:0o600});
+  log('Private rollback backup:',dir);
+  return dir;
 }
 
 /**
@@ -80,15 +161,31 @@ function writeInstalledMarker() {
  * (already timestamped, cookie-value-free) log lines would go nowhere — which is exactly how a
  * silent failure hides. Bounded so it cannot grow without limit.
  */
+function logSettings(){
+  const cfg=readCfg(),bounded=(value,min,max,fallback)=>Number.isFinite(Number(value))&&Number(value)>=min?Math.min(max,Math.floor(Number(value))):fallback;
+  return {maxBytes:bounded(process.env.WHV2_LOG_MAX_BYTES??cfg.logMaxBytes,65536,20*1024*1024,5*1024*1024),
+    retainedFiles:bounded(process.env.WHV2_LOG_RETAINED_FILES??cfg.logRetainedFiles,1,10,3)};
+}
 function attachLogFile() {
   try {
     const logDir = path.join(INSTALL_DIR, 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     const logPath = path.join(logDir, 'agent.log');
-    try { if (fs.existsSync(logPath) && fs.statSync(logPath).size > 5 * 1024 * 1024) fs.renameSync(logPath, logPath + '.1'); } catch (_) {}
-    const stream = fs.createWriteStream(logPath, { flags: 'a' });
+    const {maxBytes:max,retainedFiles}=logSettings();
+    // Synchronous bounded writes avoid unhandled asynchronous stream errors.
+    // Logging failures are swallowed; they must never terminate recovery.
     const tee = (orig) => (...args) => {
-      try { stream.write(args.map(String).join(' ') + '\n'); } catch (_) {}
+      try {
+        const line=args.map(String).join(' ').slice(0,16384)+'\n';
+        if(fs.existsSync(logPath)&&fs.statSync(logPath).size+Buffer.byteLength(line)>max){
+          for(let n=retainedFiles;n>=1;n--){
+            const dest=logPath+'.'+n,src=n===1?logPath:logPath+'.'+(n-1);
+            if(fs.existsSync(dest))fs.unlinkSync(dest);
+            if(fs.existsSync(src))fs.renameSync(src,dest);
+          }
+        }
+        fs.appendFileSync(logPath,line,{encoding:'utf8',mode:0o600});
+      } catch (_) {}
       try { orig(...args); } catch (_) {}
     };
     console.log = tee(console.log.bind(console));
@@ -105,9 +202,21 @@ function runAgent() {
   m.filename = path.join(INSTALL_DIR, AGENT_ASSET);
   m.paths = Module._nodeModulePaths(INSTALL_DIR);
   // The agent guards its own start with `require.main === module`; give it that so it boots.
-  process.env.WHV2_CONFIG = process.env.WHV2_CONFIG || path.join(INSTALL_DIR, 'config.json');
+  process.env.WHV2_CONFIG = process.env.WHV2_CONFIG || CONFIG_FILE;
   m._compile(src.replace('if (require.main === module) start();', 'start();'), m.filename);
 }
+
+function localReviewAgent(){
+  const Module=require('module'),m=new Module(INSTALLED_EXE,null);
+  m.filename=path.join(INSTALL_DIR,AGENT_ASSET);m.paths=Module._nodeModulePaths(INSTALL_DIR);
+  process.env.WHV2_CONFIG=process.env.WHV2_CONFIG||CONFIG_FILE;
+  // Compile without invoking start(): this mode must never enroll, poll, decrypt
+  // a vault, access Chrome or submit credentials.
+  m._compile(agentSource(),m.filename);
+  return m.exports;
+}
+function acknowledgeRecoveryChallenge(){return localReviewAgent().acknowledgeResolvedChallenge(true);}
+function authorizeSessionLimitRecovery(){return localReviewAgent().authorizeSessionLimitRecovery(true);}
 
 function selfPath() { return process.execPath; }   // the running exe
 
@@ -133,16 +242,22 @@ function ensureDirs() {
 
 // ── Dedicated "WriteHuman Chrome" ────────────────────────────────────────────
 // A separate persistent profile, its own debug port, localhost-only. Ported from the proven RDP
-// launcher (commit e30b9ba) with ONE deliberate change for a personal machine: the original did
-// `taskkill /im chrome.exe /f`, which is fine on a dedicated RDP but would kill the user's everyday
-// Chrome here. This kills ONLY the process holding OUR user-data-dir, and clears only OUR lock, so
-// the everyday profile is never touched.
+// launcher. Recovery never kills Chrome or removes profile locks; an unavailable
+// debugging port alone is not proof that a process is safe to terminate.
 const CHROME_ROOT = path.join(path.dirname(INSTALL_DIR), 'WriteHumanChrome');
 const CHROME_PROFILE_DIR = path.join(CHROME_ROOT, 'UserData');
 const DEFAULT_CDP_PORT = 9315;   // not Chrome's usual 9222, to avoid colliding with any other tool
 
-function readCfg() { try { return JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'config.json'), 'utf8')); } catch (_) { return {}; } }
-function cdpPort() { const m = String(readCfg().cdpUrl || '').match(/:(\d+)/); return m ? Number(m[1]) : DEFAULT_CDP_PORT; }
+function readCfg() { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '')); } catch (_) { return {}; } }
+function cdpPort() {
+  // Fresh installs explicitly write 9315. An existing legacy config without
+  // cdpUrl uses the Agent's 9222 default; launching on 9315 would never reconnect it.
+  const raw=process.env.WHV2_CDP_URL||readCfg().cdpUrl||'http://127.0.0.1:9222';
+  const u=new URL(raw);
+  if(u.protocol!=='http:'||!['127.0.0.1','localhost','::1','[::1]'].includes(u.hostname)||u.username||u.password)throw new Error('Invalid local CDP URL.');
+  return Number(u.port||80);
+}
+function chromeProfileDir(){return process.env.WHV2_CHROME_PROFILE||readCfg().chromeProfile||CHROME_PROFILE_DIR;}
 
 async function cdpUp(port, timeoutMs) {
   try {
@@ -161,35 +276,16 @@ function findChromeExe() {
   return null;
 }
 
-/** Kill ONLY chrome.exe processes whose command line contains our dedicated user-data-dir. */
-function killOurStrayChrome() {
-  try {
-    const needle = CHROME_PROFILE_DIR.toLowerCase();
-    // WMIC is deprecated but universally present; the CIM query returns pid+commandline.
-    const ps = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | " +
-      "Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains(" + JSON.stringify(needle) + ") } | " +
-      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
-    spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore', timeout: 15000 });
-  } catch (_) {}
-}
-
-/**
- * Idempotent launch of the dedicated WriteHuman Chrome.
- *   - CDP already up  -> no-op (never disturbs a healthy session, never a second instance).
- *   - otherwise       -> kill only OUR stray chrome, clear OUR lock, launch with the debug +
- *                        anti-throttle flags, poll until the port opens, retry up to 3x.
- * The anti-throttle flags keep WriteHuman's Supabase auto-refresh timer alive when the desktop is
- * locked/occluded, so the browser rotates its token before it expires — the whole reason the
- * original RDP stayed logged in for weeks.
- */
+/** Launch once, retaining existing Chrome processes and profile locks. */
 async function launchChrome() {
   const port = cdpPort();
   if (await cdpUp(port, 4000)) { log('WriteHuman Chrome already running (CDP up on', port + ')'); return true; }
   const exe = findChromeExe();
   if (!exe) { log('Chrome not found — install Google Chrome, then reopen WriteHuman Chrome'); return false; }
-  fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+  const profile=chromeProfileDir();
+  fs.mkdirSync(profile, { recursive: true });
   const args = [
-    '--user-data-dir=' + CHROME_PROFILE_DIR,
+    '--user-data-dir=' + profile,
     '--remote-debugging-port=' + port,
     '--remote-debugging-address=127.0.0.1',   // bind CDP to loopback only, never public
     '--no-first-run', '--no-default-browser-check',
@@ -197,20 +293,15 @@ async function launchChrome() {
     '--disable-renderer-backgrounding', '--disable-session-crashed-bubble',
     'https://writehuman.ai',
   ];
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    killOurStrayChrome();
-    await new Promise(r => setTimeout(r, 1500));
-    for (const lk of ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'lockfile']) {
-      try { fs.unlinkSync(path.join(CHROME_PROFILE_DIR, lk)); } catch (_) {}
-    }
-    try { spawn(exe, args, { detached: true, stdio: 'ignore' }).unref(); } catch (e) { log('chrome spawn failed:', e.message); }
-    for (let i = 0; i < 12; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      if (await cdpUp(port, 3000)) { log('WriteHuman Chrome up on', port, '(attempt', attempt + ')'); return true; }
-    }
-    log('attempt', attempt, 'did not open CDP', port + '; retrying');
+  // Chrome arbitrates profile ownership. A missing debug port does not authorize
+  // killing any process or deleting a lock, even for a dedicated profile.
+  try { spawn(exe,args,{detached:true,stdio:'ignore'}).unref(); }
+  catch (_) { log('Chrome launch failed'); return false; }
+  for(let i=0;i<12;i++){
+    await new Promise(r=>setTimeout(r,2000));
+    if(await cdpUp(port,3000)){log('WriteHuman Chrome up on',port);return true;}
   }
-  log('ERROR: WriteHuman Chrome CDP did not open after 3 attempts');
+  log('ERROR: WriteHuman Chrome CDP did not become ready; existing processes and profile locks were retained');
   return false;
 }
 
@@ -223,11 +314,11 @@ function createChromeShortcuts() {
   for (const lnk of targets) {
     const ps = [
       '$w = New-Object -ComObject WScript.Shell;',
-      '$s = $w.CreateShortcut(' + JSON.stringify(lnk) + ');',
-      '$s.TargetPath = ' + JSON.stringify(INSTALLED_EXE) + ';',
+      '$s = $w.CreateShortcut(' + psLiteral(lnk) + ');',
+      '$s.TargetPath = ' + psLiteral(INSTALLED_EXE) + ';',
       "$s.Arguments = '--launch-chrome';",
-      '$s.WorkingDirectory = ' + JSON.stringify(INSTALL_DIR) + ';',
-      '$s.Description = ' + JSON.stringify('Open the dedicated WriteHuman Chrome') + ';',
+      '$s.WorkingDirectory = ' + psLiteral(INSTALL_DIR) + ';',
+      '$s.Description = ' + psLiteral('Open the dedicated WriteHuman Chrome') + ';',
       '$s.Save();',
     ].join(' ');
     try { spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore', timeout: 15000 }); } catch (_) {}
@@ -236,7 +327,7 @@ function createChromeShortcuts() {
 
 /** Write config.json only if absent, so a reinstall never clobbers a working setup. */
 function writeDefaultConfig() {
-  const cfgPath = path.join(INSTALL_DIR, 'config.json');
+  const cfgPath = CONFIG_FILE;
   if (fs.existsSync(cfgPath)) return;
   const cfg = {
     ingestUrl: process.env.WHV2_INGEST_URL || 'https://api.genzdigitalstore.com/api/crm/proxy/agent/writehuman/cookies',
@@ -267,8 +358,16 @@ function writeDefaultConfig() {
 // The installer now ASKS the server what it thinks of this machine's credential before deciding
 // what kind of install this is.
 
-function readInstalledCfg() { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch (_) { return {}; } }
-function readCreds() { try { return JSON.parse(fs.readFileSync(CREDS_FILE, 'utf8')); } catch (_) { return null; } }
+function readInstalledCfg() { try { return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8').replace(/^\uFEFF/, '')); } catch (_) { return {}; } }
+function effectiveStatePaths(){
+  const cfg=readCfg();
+  const device=process.env.WHV2_DEVICE_STATE||cfg.deviceStateFile||CREDS_FILE;
+  return {device,standDown:process.env.WHV2_STAND_DOWN||cfg.standDownFile||path.join(path.dirname(device),'stood-down.json'),
+    recovery:process.env.WHV2_RELOGIN_STATE||cfg.reloginStateFile||path.join(path.dirname(device),'agent-relogin.json'),
+    vault:process.env.WHV2_CREDENTIAL_VAULT||cfg.credentialVaultFile||path.join(path.dirname(device),'source-credential.dpapi'),
+    lock:process.env.WHV2_LOCK_FILE||cfg.lockFile||LOCK_FILE};
+}
+function readCreds() { try { return JSON.parse(fs.readFileSync(effectiveStatePaths().device, 'utf8')); } catch (_) { return null; } }
 
 /** …/agent/writehuman/cookies -> …/agent/writehuman/<endpoint> */
 function apiUrl(endpoint) {
@@ -293,7 +392,7 @@ function apiUrl(endpoint) {
  */
 async function probeCredential() {
   const creds = readCreds();
-  const localStandDown = fs.existsSync(STAND_DOWN_FILE);
+  const localStandDown = fs.existsSync(effectiveStatePaths().standDown);
   if (!creds || !creds.deviceId || !creds.deviceKey) {
     return { have: false, localStandDown };
   }
@@ -305,16 +404,16 @@ async function probeCredential() {
       signal: AbortSignal.timeout(15000),
     });
     let body = null; try { body = await r.json(); } catch (_) {}
-    if (r.ok && body && body.ok) return { have: true, ok: true, state: body.deviceState || null, deviceId: creds.deviceId, localStandDown };
+    if (r.ok && body && body.ok) return { have: true, ok: true, state: ['ACTIVE','STANDBY','PENDING','AUTHORIZED','REVOKED','UNINSTALLED','SUPERSEDED'].includes(body.deviceState)?body.deviceState:null, deviceId: creds.deviceId, localStandDown };
     if (r.status === 403 && body) {
-      return { have: true, ok: false, reauthorize: body.reauthorize !== false, code: body.code || null, hint: body.hint || null, deviceId: creds.deviceId, localStandDown };
+      return { have: true, ok: false, reauthorize: body.reauthorize !== false, code: diagnosticCode(body.code)||'unknown', hint: null, deviceId: creds.deviceId, localStandDown };
     }
     return { have: true, unreachable: true, status: r.status, deviceId: creds.deviceId, localStandDown };
   } catch (e) {
     // A local stand-down marker is evidence the SERVER already refused this credential, recorded
     // when we could still reach it. Trust it when the network is down now.
     if (localStandDown) return { have: true, ok: false, reauthorize: true, code: 'LOCAL_STAND_DOWN', deviceId: creds.deviceId, localStandDown };
-    return { have: true, unreachable: true, error: e.message, deviceId: creds.deviceId, localStandDown };
+    return { have: true, unreachable: true, error: 'transport_error', deviceId: creds.deviceId, localStandDown };
   }
 }
 
@@ -331,20 +430,22 @@ async function probeCredential() {
  * human. The revoked row on the server stays revoked — nothing here un-revokes anything.
  */
 function archiveIdentity(reason) {
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  let archived = null;
-  try {
-    if (fs.existsSync(CREDS_FILE)) {
-      archived = path.join(CREDS_DIR, 'agent-device.retired-' + stamp + '.json');
-      fs.renameSync(CREDS_FILE, archived);
+  const files=effectiveStatePaths();
+  const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+  const moves=[];
+  try{
+    for(const source of [files.device,files.standDown]){
+      if(!fs.existsSync(source))continue;
+      const destination=source+'.retired-'+stamp+'.json';
+      fs.renameSync(source,destination);moves.push({source,destination});
     }
-  } catch (e) {
-    // If it cannot be renamed it MUST still go, or the agent will pick the dead credential up again.
-    try { fs.unlinkSync(CREDS_FILE); archived = '(deleted)'; } catch (_) {}
+  }catch(_){
+    let restored=true;
+    for(const move of moves.reverse())try{fs.renameSync(move.destination,move.source);}catch(_){restored=false;}
+    throw new Error(restored?'Identity archival failed; original files were retained.':'Identity archival failed; restore the secured backup before restarting.');
   }
-  try { if (fs.existsSync(STAND_DOWN_FILE)) fs.unlinkSync(STAND_DOWN_FILE); } catch (_) {}
-  log('retired the local identity (' + (reason || 'credential rejected') + '); archived:', archived || 'none');
-  return archived;
+  log('Local identity archived after explicit reauthorization approval');
+  return moves.find(x=>x.source===files.device)?.destination||null;
 }
 
 /** Tell the server this machine is gone, while we still hold the credential to prove it. */
@@ -359,8 +460,8 @@ async function reportUninstallToServer() {
       signal: AbortSignal.timeout(15000),
     });
     let body = null; try { body = await r.json(); } catch (_) {}
-    return { reported: !!(body && body.ok), status: r.status, body };
-  } catch (e) { return { reported: false, error: e.message }; }
+    return { reported: !!(body && body.ok), status: r.status, body:body?{ok:body.ok===true,alreadyRetired:body.alreadyRetired===true,activeSourceCleared:body.activeSourceCleared===true,code:diagnosticCode(body.code)||'unknown'}:null };
+  } catch (e) { return { reported: false, error: 'transport_error' }; }
 }
 
 /** Delete a file or a whole directory, best effort. Never throws. */
@@ -383,32 +484,30 @@ function removeUninstallEntry() {
  */
 function scheduleSelfDelete() {
   try {
-    // Written to a temp .cmd and launched, rather than passed inline as `cmd /c "<script>"`.
-    // Inline was tried first and silently did nothing: the command contains a quoted path, and
-    // cmd.exe's /c quote handling strips the outer quotes of the whole string, so the rmdir
-    // received a mangled argument and failed with no error anybody would ever see. The observable
-    // result was an "uninstall complete" message with a 91 MB exe still sitting on disk.
-    //
-    // The retry loop matters too: Windows can hold the image of a just-exited process briefly, and
-    // one attempt at t+3s is a coin flip. Five attempts over ~15s is not.
-    const bat = path.join(os.tmpdir(), 'wh-uninstall-' + process.pid + '.cmd');
-    const lines = [
-      '@echo off',
-      'setlocal',
-      'set TARGET=' + INSTALL_DIR,
-      'for /L %%i in (1,1,5) do (',
-      '  timeout /t 3 /nobreak >nul 2>&1',
-      '  rmdir /s /q "%TARGET%" >nul 2>&1',
-      '  if not exist "%TARGET%" goto done',
-      ')',
-      ':done',
-      'del /f /q "%~f0" >nul 2>&1',
-      '',
-    ].join('\r\n');
-    fs.writeFileSync(bat, lines, { encoding: 'ascii' });
-    spawn('cmd', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true, cwd: os.tmpdir() }).unref();
+    // Never recursively remove a configured installation folder: it can contain
+    // other tools. Only delete our executable, then remove the directory if empty.
+    const ps="$ErrorActionPreference='SilentlyContinue';"+
+      'for($i=0;$i -lt 5;$i++){Start-Sleep -Seconds 3;Remove-Item -LiteralPath '+psLiteral(INSTALLED_EXE)+
+      ' -Force;if(!(Test-Path -LiteralPath '+psLiteral(INSTALLED_EXE)+')){break}};'+
+      'if((Test-Path -LiteralPath '+psLiteral(INSTALL_DIR)+') -and !(Get-ChildItem -LiteralPath '+psLiteral(INSTALL_DIR)+
+      ' -Force)){Remove-Item -LiteralPath '+psLiteral(INSTALL_DIR)+'}';
+    spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command',ps],{detached:true,stdio:'ignore',windowsHide:true,cwd:os.tmpdir()}).unref();
     return true;
-  } catch (e) { log('self-delete could not be scheduled:', e.message); return false; }
+  }catch(_){log('Executable deletion could not be scheduled');return false;}
+}
+
+function purgeOwnedChromeProfile(profile){
+  // A custom path may contain unrelated data. Retain it for operator review.
+  if(path.resolve(profile).toLowerCase()!==path.resolve(CHROME_PROFILE_DIR).toLowerCase())return false;
+  try{
+    const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+      "$ErrorActionPreference='Stop';ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | Select-Object -ExpandProperty ProcessId) -Compress"],
+      {encoding:'utf8',windowsHide:true,timeout:10000});
+    // Fail closed on unreadable process inventory. Never force-close Chrome.
+    if(result.status!==0)return false;
+    const ids=JSON.parse(result.stdout);if(!Array.isArray(ids)||ids.length)return false;
+    return rmrf(profile);
+  }catch(_){return false;}
 }
 
 /**
@@ -428,6 +527,7 @@ function scheduleSelfDelete() {
 async function doUninstall(opts) {
   const o = opts || {};
   const steps = [];
+  const files=effectiveStatePaths(),profile=chromeProfileDir();
 
   const server = await reportUninstallToServer();
   // Three distinct outcomes, said as three distinct sentences. Collapsing them into "device marked
@@ -454,24 +554,24 @@ async function doUninstall(opts) {
 
   // The credential and the identity go even if the directory removal is later blocked, so a
   // half-finished uninstall can never leave a machine able to authenticate.
-  for (const f of [CREDS_FILE, STAND_DOWN_FILE, CONFIG_FILE, LOCK_FILE, INSTALLED_MARKER]) rmrf(f);
-  rmrf(CREDS_DIR);
-  steps.push('config, identity and credential: removed');
-
-  if (o.removeChromeProfile) {
-    killOurStrayChrome();
-    sleepSync(1500);
-    rmrf(CHROME_ROOT);
+  const failed=[];
+  for(const f of [files.device,files.standDown,files.recovery,files.vault,files.lock,CONFIG_FILE,INSTALLED_MARKER]){
+    try{fs.unlinkSync(f);}catch(e){if(e.code!=='ENOENT')failed.push(f);}
+  }
+  // Remove only empty owned directories; retain archived identities and other files.
+  for(const d of [CREDS_DIR,path.join(INSTALL_DIR,'config')]){try{fs.rmdirSync(d);}catch(_){}}
+  steps.push(failed.length?'config/identity cleanup: INCOMPLETE — review local files':'config, identity and credential: removed');
+  if(o.removeChromeProfile&&purgeOwnedChromeProfile(profile)){
     steps.push('WriteHuman Chrome profile: removed (you will need to sign in again next time)');
-  } else {
-    steps.push('WriteHuman Chrome profile: KEPT at ' + CHROME_ROOT);
+  }else{
+    steps.push('WriteHuman Chrome profile: KEPT at '+profile+(o.removeChromeProfile?' — close Chrome and review this path before manual deletion':''));
   }
 
   const scheduled = scheduleSelfDelete();
   steps.push('program files: ' + (scheduled ? 'removed after exit' : 'left at ' + INSTALL_DIR + ' (remove by hand)'));
 
   log('uninstall complete:\n  - ' + steps.join('\n  - '));
-  return { ok: true, steps, server };
+  return { ok: failed.length===0, steps, server };
 }
 
 const UNINSTALL_LNK = () => path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'),
@@ -502,11 +602,11 @@ function registerUninstallEntry() {
 
   const ps = [
     '$w = New-Object -ComObject WScript.Shell;',
-    '$s = $w.CreateShortcut(' + JSON.stringify(UNINSTALL_LNK()) + ');',
-    '$s.TargetPath = ' + JSON.stringify(INSTALLED_EXE) + ';',
+    '$s = $w.CreateShortcut(' + psLiteral(UNINSTALL_LNK()) + ');',
+    '$s.TargetPath = ' + psLiteral(INSTALLED_EXE) + ';',
     "$s.Arguments = '--uninstall';",
-    '$s.WorkingDirectory = ' + JSON.stringify(INSTALL_DIR) + ';',
-    '$s.Description = ' + JSON.stringify('Remove the WriteHuman Agent from this computer') + ';',
+    '$s.WorkingDirectory = ' + psLiteral(INSTALL_DIR) + ';',
+    '$s.Description = ' + psLiteral('Remove the WriteHuman Agent from this computer') + ';',
     '$s.Save();',
   ].join(' ');
   try { spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'ignore', timeout: 15000 }); } catch (_) {}
@@ -534,10 +634,10 @@ function registerAutoStart() {
   const lnk = STARTUP_LNK();
   const ps = [
     "$w = New-Object -ComObject WScript.Shell;",
-    "$s = $w.CreateShortcut(" + JSON.stringify(lnk) + ");",
-    "$s.TargetPath = " + JSON.stringify(INSTALLED_EXE) + ";",
+    "$s = $w.CreateShortcut(" + psLiteral(lnk) + ");",
+    "$s.TargetPath = " + psLiteral(INSTALLED_EXE) + ";",
     "$s.Arguments = '--agent';",
-    "$s.WorkingDirectory = " + JSON.stringify(INSTALL_DIR) + ";",
+    "$s.WorkingDirectory = " + psLiteral(INSTALL_DIR) + ";",
     "$s.WindowStyle = 7;",
     "$s.Description = 'WriteHuman Universal Agent';",
     "$s.Save();",
@@ -578,7 +678,7 @@ function messageBox(message, title, buttons /* OK|OKCancel|YesNo|YesNoCancel|Ret
 /** Is a healthy agent already running? Fresh singleton lock (<10 min) whose PID is alive. */
 function isAgentRunning() {
   try {
-    const lk = JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'agent.lock'), 'utf8'));
+    const lk = JSON.parse(fs.readFileSync(effectiveStatePaths().lock, 'utf8'));
     if (!lk || !lk.pid) return false;
     const fresh = lk.at && (Date.now() - new Date(lk.at).getTime()) < 10 * 60000;
     if (!fresh) return false;
@@ -588,14 +688,19 @@ function isAgentRunning() {
 
 /**
  * Stop a running installed agent so its exe can be replaced (a running exe is locked on Windows).
- * Kills ONLY our installed image — the installer itself runs from a different filename
- * (WriteHuman-Agent-Setup-*.exe), and the dedicated Chrome is a separate process, so neither is
- * touched. The server keeps serving the last verified bundle while the agent is briefly down; the
+ * Kills only other processes at our exact installed image path. The current
+ * installer/uninstaller PID is always excluded, including installed --uninstall. The server keeps serving the last verified bundle while the agent is briefly down; the
  * 'Starting Agent' stage brings it back with the SAME device identity (creds are never removed).
  */
 function stopRunningAgent() {
-  try { const lk = JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'agent.lock'), 'utf8')); if (lk && lk.pid) { try { process.kill(lk.pid); } catch (_) {} } } catch (_) {}
-  try { spawnSync('taskkill', ['/f', '/im', 'WriteHumanAgent.exe'], { windowsHide: true, timeout: 15000 }); } catch (_) {}
+  // Do not trust a stale PID file and never use taskkill /IM: another Windows
+  // user's Agent may have the same image name. Match the full installed path.
+  const cmd="$ErrorActionPreference='Stop';$target="+psLiteral(INSTALLED_EXE)+";"+
+    "Get-CimInstance Win32_Process -Filter \"Name='WriteHumanAgent.exe'\" | "+
+    "Where-Object {$_.ProcessId -ne "+process.pid+" -and $_.ExecutablePath -and [String]::Equals($_.ExecutablePath,$target,[StringComparison]::OrdinalIgnoreCase)} | "+
+    "ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop}";
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',cmd],{stdio:'ignore',windowsHide:true,timeout:15000});
+  if(result.status!==0)throw new Error('Could not stop only this installed Agent. No image-name-wide kill was attempted.');
 }
 
 /**
@@ -630,10 +735,10 @@ function copyWithRetry(src, dst) {
 function installedSameBuild() {
   try {
     if (!fs.existsSync(INSTALLED_EXE)) return false;
-    const mine = selfAgentVersion();
-    const theirs = installedAgentVersion();
-    if (!mine || !theirs) return false;
-    return mine === theirs;
+    const marker=readJsonStrict(INSTALLED_MARKER);
+    return marker.agentVersion===selfAgentVersion() && marker.buildId===BUILD_ID &&
+      marker.sourceSha256===sha256(agentSource()) &&
+      sha256(fs.readFileSync(INSTALLED_EXE))===sha256(fs.readFileSync(selfPath()));
   } catch (_) { return false; }
 }
 
@@ -641,13 +746,27 @@ function installedSameBuild() {
  * Run the ordered install stages, printing each to the console (for terminal runs) and stopping at
  * the first failure with its own exit code. Returns { ok, code, stage, error }.
  */
-function runStages(isRepair) {
+function startInstalledAgent() {
+  return new Promise((resolve,reject)=>{
+    let child,settled=false;
+    const timer=setTimeout(()=>done(new Error('Agent spawn timed out.')),10000);
+    const done=(error)=>{
+      if(settled)return;settled=true;clearTimeout(timer);
+      if(error)reject(error);else{child.unref();resolve();}
+    };
+    try {
+      child=spawn(INSTALLED_EXE,['--agent'],{detached:true,stdio:'ignore',cwd:INSTALL_DIR,windowsHide:true});
+      child.once('error',()=>done(new Error('Could not start the installed Agent process.')));
+      child.once('spawn',()=>done());
+    } catch(_){done(new Error('Could not spawn the installed Agent process.'));}
+  });
+}
+
+async function runStages(isRepair,existingBackup) {
+  let backup=existingBackup||null;
   const stages = [
-    ['Verifying installer', () => {
-      // The exe IS the package (SEA). Confirm the bundled agent asset is present and non-trivial.
-      const src = agentSource();
-      if (!src || src.length < 500) { const e = new Error('bundled agent asset missing'); e.exit = EXIT.PKG_INVALID; throw e; }
-    }],
+    ['Verifying installer', () => { validateUpgrade(); }],
+    ['Backing up existing installation', () => { if(!backup)backup=backupInstallation(); }],
     ['Installing WriteHuman Agent', () => {
       try {
         ensureDirs();
@@ -656,6 +775,7 @@ function runStages(isRepair) {
           // copy with retries while the handle releases. Fresh install: nothing to stop.
           if (fs.existsSync(INSTALLED_EXE)) stopRunningAgent();
           copyWithRetry(selfPath(), INSTALLED_EXE);
+          if(sha256(fs.readFileSync(selfPath()))!==sha256(fs.readFileSync(INSTALLED_EXE))) throw new Error('Installed executable checksum mismatch.');
         }
         writeDefaultConfig();   // preserves an existing config + device identity (early-returns if present)
         writeInstalledMarker();  // records the agent version just installed, for upgrade detection
@@ -670,34 +790,33 @@ function runStages(isRepair) {
       // was an undocumented command-line flag.
       registerUninstallEntry();
     }],
-    ['Opening WriteHuman Chrome', () => {
+    ['Opening WriteHuman Chrome', async () => {
       try {
-        fs.mkdirSync(CHROME_PROFILE_DIR, { recursive: true });
+        fs.mkdirSync(chromeProfileDir(), { recursive: true });
         createChromeShortcuts();
       } catch (e) { e.exit = EXIT.CHROME_FAILED; throw e; }
-      launchChrome().catch(() => {});   // idempotent; no-op if CDP already up
+      const ready=await launchChrome(); // Await the real result instead of exiting with a pending launch.
+      if(!ready){const e=new Error('Dedicated Chrome did not become ready. The backup is retained.');e.exit=EXIT.CHROME_FAILED;throw e;}
     }],
-    ['Starting Agent', () => {
-      try {
-        const child = spawn(INSTALLED_EXE, ['--agent'], { detached: true, stdio: 'ignore', cwd: INSTALL_DIR });
-        child.unref();
-      } catch (e) { e.exit = EXIT.AGENT_FAILED; throw e; }
+    ['Starting Agent', async () => {
+      try { await startInstalledAgent(); }
+      catch(e){e.exit=EXIT.AGENT_FAILED;throw e;}
     }],
   ];
   for (const [name, fn] of stages) {
     log((isRepair ? 'repair: ' : '') + name + '…');
-    try { fn(); }
-    catch (e) { return { ok: false, code: e.exit || EXIT.FILE_FAILED, stage: name, error: e.message }; }
+    try { await fn(); }
+    catch (e) { return { ok: false, code: e.exit || EXIT.FILE_FAILED, stage: name, error: e.message, backup }; }
   }
-  return { ok: true, code: isRepair ? EXIT.REPAIRED : EXIT.SUCCESS, stage: null, error: null };
+  return { ok: true, code: isRepair ? EXIT.REPAIRED : EXIT.SUCCESS, stage: null, error: null, backup };
 }
 
 /** Confirm the agent process actually came up within a short window (visible pending vs. failed). */
-function waitForAgent(timeoutMs) {
+async function waitForAgent(timeoutMs) {
   const deadline = Date.now() + (timeoutMs || 30000);
   while (Date.now() < deadline) {
     if (isAgentRunning()) return true;
-    sleepSync(750);   // real sleep, no child process (see sleepSync)
+    await new Promise(resolve=>setTimeout(resolve,750));
   }
   return isAgentRunning();
 }
@@ -716,6 +835,14 @@ function waitForAgent(timeoutMs) {
  *   D  nothing here                fresh install
  */
 async function runInstaller() {
+  validateUpgrade();
+  if(process.env.WHV2_SILENT!=='1' && messageBox(
+    'WriteHuman Agent 3.5.15 - RELEASE CANDIDATE\n\n'+
+    'This package contains the runtime and recovery code. No build tools are downloaded.\n\n'+
+    'Install only on your authorized Windows source RDP as its existing Agent user. A private backup is made before an upgrade. Settings, enrollment and the source Chrome profile are retained.\n\n'+
+    'Existing enabled recovery may run after upgrade. Global session reset requires a separate scoped consent or valid time-limited authorization, and remains limited to once per 24 hours.\n\n'+
+    'This package has not been executed on Windows by the author; local installation and real provider login need verification. Continue?',
+    'WriteHuman Agent - offline installation','OKCancel','Information')!=='OK') return;
   const fresh = !fs.existsSync(INSTALLED_EXE);
   const probe = fresh ? { have: false } : await probeCredential();
 
@@ -732,10 +859,11 @@ async function runInstaller() {
       'the browser, and this computer gets a brand-new identity. The old one is not reused.\n\n' +
       'OK → Reinstall and re-authorize      Cancel → Close',
       'WriteHuman Agent — re-authorization needed', 'OKCancel', 'Warning');
-    if (choice === 'Cancel') process.exit(EXIT.ALREADY);
+    if(choice!=='OK')return;
+    const backup=backupInstallation();
     stopRunningAgent();
     archiveIdentity(probe.code || 'credential rejected');
-    return finishInstall(false, { reauthorized: true });
+    return finishInstall(false, { reauthorized: true, backup });
   }
 
   // A. Healthy, current, and running. Do not reinstall or spawn a duplicate — offer the choices,
@@ -750,7 +878,7 @@ async function runInstaller() {
       'No   →  Repair installation\n' +
       'Cancel →  Uninstall or close',
       'WriteHuman Agent', 'YesNoCancel', 'Information');
-    if (r === 'Yes') { launchChrome().catch(() => {}); process.exit(EXIT.ALREADY); }
+    if (r === 'Yes') { await launchChrome(); process.exit(EXIT.ALREADY); }
     if (r === 'No') return finishInstall(true);
     // Cancel is the "anything else" branch, and the only place an operator can reach Uninstall from
     // a double-click. It asks again before doing anything destructive.
@@ -776,28 +904,29 @@ async function interactiveUninstall() {
     'Also remove WriteHuman Chrome profile data?\n\n' +
     'This profile holds your WriteHuman login on this computer.\n\n' +
     'No  → Keep it (recommended). You stay signed in.\n' +
-    'Yes → Delete it. You will have to sign in to WriteHuman again here.',
+    'Yes → Delete the default dedicated profile if Chrome is closed. Custom profiles are kept for manual review.',
     'WriteHuman Agent — Uninstall', 'YesNo', 'Question');
   const res = await doUninstall({ removeChromeProfile: keep === 'Yes' });
   messageBox(
-    'WriteHuman Agent has been removed from this computer.\n\n' +
+    (res.ok?'WriteHuman Agent removal completed.':'Agent removal needs manual cleanup.')+'\n\n' +
     res.steps.map(s => '• ' + s).join('\n') + '\n\n' +
     'The WriteHuman session stored on the server is unchanged, and no other computer was\n' +
     'automatically made the active source.',
     'WriteHuman Agent — Uninstalled', 'OK', 'Information');
-  process.exit(EXIT.SUCCESS);
+  process.exit(res.ok?EXIT.SUCCESS:EXIT.FILE_FAILED);
 }
 
-function finishInstall(isRepair, opts) {
+async function finishInstall(isRepair, opts) {
   const o = opts || {};
-  const res = runStages(isRepair);
+  const res = await runStages(isRepair,o.backup);
   if (!res.ok) {
     const codeName = Object.keys(EXIT).find(k => EXIT[k] === res.code) || 'FILE_FAILED';
     log('installation FAILED at:', res.stage, '-', res.error, '(exit', res.code + ')');
     messageBox(
       'Installation failed while: ' + res.stage + '.\n\n' +
       'Error code: ' + codeName + '\n' +
-      'Log: ' + path.join(INSTALL_DIR, 'logs', 'agent.log') + '\n\n' +
+      'Log: ' + path.join(INSTALL_DIR, 'logs', 'agent.log') + '\n' +
+      (res.backup ? 'Private backup: '+res.backup+'\n\n' : '\n') +
       'Double-click the installer again to retry or repair.',
       'WriteHuman Agent — Installation failed', 'OK', 'Error');
     process.exit(res.code);
@@ -805,7 +934,7 @@ function finishInstall(isRepair, opts) {
 
   // Success path: confirm the agent actually started so we show a truthful message. A cold SEA
   // (~90 MB) plus first enrolment/CDP handshake can take >12s, so give it a real window.
-  const up = waitForAgent(30000);
+  const up = await waitForAgent(30000);
   log('installation complete. agent', up ? 'running' : 'starting (pending)');
   const statusLine = up ? 'Agent status: Running' : 'Agent status: Starting…';
   const pendingNote = o.reauthorized
@@ -825,13 +954,152 @@ function finishInstall(isRepair, opts) {
     'Mark Active for it in the dashboard when they want the session to move here.\n\n' +
     'Yes → Open WriteHuman Chrome now      No → Close',
     'WriteHuman Agent — ' + (o.reauthorized ? 'Re-authorizing' : (isRepair ? 'Repair complete' : 'Installed')), 'YesNo', 'Information');
-  if (r === 'Yes') launchChrome().catch(() => {});
+  if (r === 'Yes') await launchChrome();
   process.exit(up ? res.code : EXIT.ENROL_PENDING);
+}
+
+const DIAGNOSTIC_CODES=new Set(('MONITORING LOGIN_REQUIRED PAGE_RECHECK RELOAD_ONCE LOGIN_CONTROL_FOUND NAVIGATION FORM_READY EMAIL_SUBMITTED LOGIN_SUBMITTED BROWSER_CANDIDATE BACKEND_VERIFIED SYNC_RESUMED FAILED MANUAL_ACTION VERIFY_PENDING DISABLED '+
+  'SESSION_CHECK LOGIN_UI_MISSING PAGE_RELOAD_REQUESTED PAGE_RELOAD_COMPLETED LOGIN_CLICKED LOGIN_FORM_READY CREDENTIALS_AVAILABLE PROVIDER_AUTHENTICATED BACKEND_VERIFICATION_PENDING BACKEND_VERIFICATION_REJECTED RECOVERY_FAILED RECOVERY_RETRY_ELIGIBLE MANUAL_INTERVENTION_REQUIRED RECOVERY_BLOCKED RETRY_WAIT page_reload_timeout page_wait_timeout recovery_deadline_exceeded multiple_approved_tabs page_wait_completed loading session_limit authenticated login_required login_entry editor_busy disabled not_active_source stood_down already_running unsupported_platform '+
+  'confirmed wrong_credentials mfa_required captcha_required rate_limited account_restricted wrong_account state_unreadable state_unwritable submission_outcome_unknown '+
+  'session_limit_requires_manual_reset session_limit_live_authorization_required session_limit_control_unverified session_limit_reset_budget_exhausted session_limit_reset_failed session_limit_after_reset '+
+  'browser_authenticated_pending_verification already_authenticated verification_pending source_page_busy no_tab no_vault login_form_not_found password_form_not_found '+
+  'cdp_not_local cdp_unreachable cdp_discovery_failed cdp_chrome_too_old cdp_cookie_read_failed cdp_read_failed no_profile_proof wrong_chrome_profile untrusted_cdp_page unapproved_login_origin unapproved_form_action ambiguous_login_form invalid_login_config '+
+  'field_not_found_or_bad_origin field_set_failed login_form_changed submit_not_found submit_still_disabled source_page_changed login_entry_changed login_navigation_failed '+
+  'relogin_state_unwritable cdp_ws_error cdp_ws_closed cdp_connect_timeout cdp_session_timeout cdp_command_failed cdp_command_timeout recovery_exception '+
+  'budget_exhausted cooldown no_logout_evidence visible_login_entry visible_login_form provider_session_expired auth_cookie_absent startup_auth_cookie_absent '+
+  'reload_requested login_control_clicked login_page_requested existing_form browser_autofill local_vault '+
+  'PROMOTED COOKIE_BUNDLE_UNCHANGED VERIFICATION_INCONCLUSIVE SESSION_EXPIRED ACCOUNT_MISMATCH STALE_BUNDLE REPLAY_REJECTED STANDBY_ROUTINE_REFRESH DEVICE_REVOKED DEVICE_UNINSTALLED DEVICE_SUPERSEDED '+
+  'unconfirmed_verification_timeout unconfirmed_visible_logout rejected response unknown challenge_review_acknowledged captcha_halt_revalidated captcha_recheck_deferred captcha_review_required').split(/\s+/));
+function diagnosticCode(value){
+  if(typeof value!=='string')return null;
+  if(DIAGNOSTIC_CODES.has(value))return value;
+  if(value.startsWith('unconfirmed_')&&DIAGNOSTIC_CODES.has(value.slice(12)))return value;
+  if(value.startsWith('halted_')&&DIAGNOSTIC_CODES.has(value.slice(7)))return value;
+  return null;
+}
+function workflowStatus() {
+  const cfg=readCfg();
+  const deviceFile=process.env.WHV2_DEVICE_STATE||cfg.deviceStateFile||CREDS_FILE;
+  const stateFile=process.env.WHV2_RELOGIN_STATE||cfg.reloginStateFile||path.join(path.dirname(deviceFile),'agent-relogin.json');
+  const vault=process.env.WHV2_CREDENTIAL_VAULT||cfg.credentialVaultFile||path.join(path.dirname(deviceFile),'source-credential.dpapi');
+  let st={},readable=true;try{st=readJsonStrict(stateFile);}catch(e){if(e.code!=='ENOENT'){st={haltedReason:'state_unreadable'};readable=false;}}
+  if(!st||typeof st!=='object'||Array.isArray(st)){st={haltedReason:'state_unreadable'};readable=false;}
+  for(const key of ['attempts','sessionLimitResets','captchaAutoResumes'])if(st[key]!=null&&(!Array.isArray(st[key])||!st[key].every(Number.isFinite)))readable=false;
+  for(const key of ['pendingVerification','captchaHaltPreSubmit'])if(st[key]!=null&&typeof st[key]!=='boolean')readable=false;
+  if(st.captchaRecheckAt!=null&&(!Number.isFinite(st.captchaRecheckAt)||st.captchaRecheckAt<0))readable=false;
+  if(Array.isArray(st.captchaAutoResumes)&&st.captchaAutoResumes.some(n=>n<0))readable=false;
+  if(st.incident!=null&&(typeof st.incident!=='object'||Array.isArray(st.incident)||!/^[a-f0-9-]{36}$/.test(String(st.incident.id))))readable=false;
+  for(const key of ['reloaded','navigationClicked','routeNavigated','emailSubmitted','credentialSubmitted','closed'])if(st.incident?.[key]!=null&&typeof st.incident[key]!=='boolean')readable=false;
+  if(st.captchaHaltPreSubmit===true&&st.incident?.credentialSubmitted!==false)readable=false;
+  const raw=process.env.WHV2_RELOGIN!=null?process.env.WHV2_RELOGIN:cfg.reloginEnabled;
+  const enabled=/^(1|true|yes)$/i.test(String(raw||''));
+  const lastOutcome=diagnosticCode(st.lastOutcome);
+  const halted=!readable?'state_unreadable':diagnosticCode(st.haltedReason)||(st.haltedReason?'state_unreadable':null);
+  const unresolved=st.pendingVerification===true||(st.incident?.credentialSubmitted===true&&st.incident.closed!==true);
+  const resetEnabled=/^(1|true|yes)$/i.test(String(process.env.WHV2_SESSION_LIMIT_SIGNOUT_ALL||cfg.sessionLimitSignOutAll||''));
+  const consent=process.env.WHV2_SESSION_LIMIT_CONSENT||cfg.sessionLimitConsent;
+  const until=Date.parse(process.env.WHV2_SESSION_LIMIT_AUTHORIZED_UNTIL||cfg.sessionLimitLiveAuthorizationUntil||'');
+  return {version:selfAgentVersion(),buildId:BUILD_ID,installedVersion:installedAgentVersion(),
+    autoReloginConfigured:enabled,vaultFilePresent:fs.existsSync(vault),
+    stage:!enabled?'DISABLED':halted?'MANUAL_ACTION':st.pendingVerification===true?'VERIFY_PENDING':diagnosticCode(st.incident?.stage)||'MONITORING',
+    stageScope:'last_recovery_incident',browserLoginVerified:false,
+    lastOutcome,haltedReason:halted,pendingVerification:st.pendingVerification===true,
+    recoveryStateReadable:readable,submissionUnresolved:unresolved,
+    sessionLimitRecoveryAuthorized:resetEnabled&&(consent==='official-provider-session-limit-v1'||(Number.isFinite(until)&&until>Date.now()&&until-Date.now()<=86400000)),
+    captchaRecoveryMode:halted==='captcha_required'&&readable&&!unresolved&&st.captchaHaltPreSubmit===true&&st.incident?.stage==='MANUAL_ACTION'&&!st.incident.closed?'bounded_automatic_recheck':halted?'operator_review_required':'not_halted',
+    lastBlock:st.lastBlock?{reason:diagnosticCode(st.lastBlock.reason),at:typeof st.lastBlock.at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(st.lastBlock.at)?st.lastBlock.at:null}:null,
+    incident:st.incident&&/^[a-f0-9-]{36}$/.test(String(st.incident.id))?{id:st.incident.id,stage:diagnosticCode(st.incident.stage),closed:st.incident.closed===true,credentialSubmitted:typeof st.incident.credentialSubmitted==='boolean'?st.incident.credentialSubmitted:null}:null,
+    manualRequired:!!halted,
+    haltedAt:typeof st.haltedAt==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(st.haltedAt)?st.haltedAt:null,
+    note:'Stage and lastBlock describe saved history, not the current browser or retry eligibility. Use --recovery-diagnostics for a read-only current observation; browser presence alone does not prove backend synchronization.'};
+}
+
+function diagnosticExport(){
+  const events=[];
+  // Read only the bounded tail of known local log files. Never attach raw logs,
+  // config, device keys, vaults, page URLs, account names or backup directories.
+  for(const suffix of [...Array.from({length:logSettings().retainedFiles},(_,i)=>'.'+(logSettings().retainedFiles-i)),'']){
+    let fd;
+    try{
+      const file=path.join(INSTALL_DIR,'logs','agent.log'+suffix),size=fs.statSync(file).size;
+      fd=fs.openSync(file,'r');const data=Buffer.alloc(Math.min(size,256*1024));
+      fs.readSync(fd,data,0,data.length,Math.max(0,size-data.length));
+      for(const line of data.toString('utf8').split('\n')){
+        const m=line.match(/^\[(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z)\] \[wh-v2-agent\] (recovery_transition|relogin_page_wait) (\{.*\})$/);
+        if(!m)continue;
+        let raw;try{raw=JSON.parse(m[3]);}catch(_){continue;}
+        if(m[2]==='relogin_page_wait'){
+          const reason=diagnosticCode(raw.reason);if(!['page_wait_completed','page_wait_timeout'].includes(reason))continue;
+          const item={at:m[1],event:'PAGE_WAIT_OBSERVATION',reason,state:diagnosticCode(raw.state)};
+          for(const k of ['duration_ms','samples','transient_errors'])if(Number.isFinite(raw[k])&&raw[k]>=0)item[k]=raw[k];
+          for(const k of ['document_changed','page_ready'])if(typeof raw[k]==='boolean')item[k]=raw[k];
+          events.push(item);if(events.length>200)events.shift();continue;
+        }
+        const stage=diagnosticCode(raw.stage);if(!stage)continue;
+        const item={at:m[1],stage,event:diagnosticCode(raw.event),reason:diagnosticCode(raw.reason)};
+        if(typeof raw.build_id==='string'&&/^3\.\d+\.\d+-(?:recovery|regression|audit|captcha|retry)-rc\d{1,3}$/.test(raw.build_id))item.buildId=raw.build_id;
+        if(/^[a-f0-9-]{36}$/.test(String(raw.incident_id)))item.incident_id=raw.incident_id;
+        for(const k of ['duration_ms','stage_duration_ms','attempt_count'])if(Number.isFinite(raw[k])&&raw[k]>=0)item[k]=raw[k];
+        if(typeof raw.manual_required==='boolean')item.manual_required=raw.manual_required;
+        if(typeof raw.next_retry_at==='string'&&/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(raw.next_retry_at))item.next_retry_at=raw.next_retry_at;
+        events.push(item);if(events.length>200)events.shift();
+      }
+    }catch(_){}finally{if(fd!=null)try{fs.closeSync(fd);}catch(_){}}
+  }
+  return {schema:1,createdAt:new Date().toISOString(),package:validatePackage(),workflow:workflowStatus(),events,
+    validation:'Local diagnostics only; no Windows/provider acceptance is implied.'};
+}
+
+function rollbackCompatibility(){
+  let cfg;try{cfg=readJsonStrict(CONFIG_FILE);}catch(_){return {allowed:false,reason:'configuration_unreadable'};}
+  if(!cfg||typeof cfg!=='object'||Array.isArray(cfg))return {allowed:false,reason:'configuration_unreadable'};
+  // A temporary environment override cannot guarantee safety at the next logon.
+  if([cfg.reloginEnabled,process.env.WHV2_RELOGIN].some(raw=>/^(1|true|yes)$/i.test(String(raw||''))))
+    return {allowed:false,reason:'disable_recovery_before_incompatible_rollback'};
+  let st;
+  try{st=readJsonStrict(effectiveStatePaths().recovery);}catch(e){
+    return e.code==='ENOENT'?{allowed:true,reason:'recovery_disabled_no_incident'}:{allowed:false,reason:'state_unreadable'};
+  }
+  if(!st||typeof st!=='object'||Array.isArray(st))return {allowed:false,reason:'state_unreadable'};
+  if(st.pendingVerification===true||(st.incident&&st.incident.closed!==true))return {allowed:false,reason:'unresolved_recovery_incident'};
+  return {allowed:true,reason:'recovery_disabled_no_open_incident'};
 }
 
 function main() {
   const args = process.argv.slice(2).map(a => String(a).toLowerCase());
   const arg = args[0] || '';
+
+  // No configuration, credential decryption, browser or network access.
+  if (arg === '--package-info' || arg === '--self-test') {
+    console.log(JSON.stringify(validatePackage()));
+    return;
+  }
+  if (arg === '--workflow-status') {
+    console.log(JSON.stringify(workflowStatus(),null,2));return;
+  }
+  if(arg==='--connection-check'){
+    localReviewAgent().connectionStatus().then(connection=>console.log(JSON.stringify({package:validatePackage(),connection},null,2)))
+      .catch(()=>{console.error('Connection diagnostic could not complete.');process.exitCode=1;});return;
+  }
+  if(arg==='--recovery-diagnostics'){
+    localReviewAgent().recoveryDiagnostics().then(current=>console.log(JSON.stringify({...diagnosticExport(),current},null,2)))
+      .catch(()=>{console.error('Recovery diagnostic could not complete.');process.exitCode=1;});return;
+  }
+  if(arg==='--diagnostics'){
+    localReviewAgent().connectionStatus().then(connection=>console.log(JSON.stringify({...diagnosticExport(),connection},null,2)))
+      .catch(()=>{console.error('Connection diagnostic could not complete.');process.exitCode=1;});return;
+  }
+  if(arg==='--rollback-check'){
+    console.log(JSON.stringify(rollbackCompatibility()));return;
+  }
+  if(arg==='--acknowledge-resolved-challenge'){
+    acknowledgeRecoveryChallenge().then(result=>{console.log(JSON.stringify(result));process.exitCode=result.ok?0:1;})
+      .catch(()=>{console.error('Challenge review could not complete.');process.exitCode=1;});return;
+  }
+  if(arg==='--authorize-session-limit-recovery'){
+    authorizeSessionLimitRecovery().then(result=>{console.log(JSON.stringify(result));process.exitCode=result.ok?0:1;})
+      .catch(()=>{console.log(JSON.stringify({ok:false,code:'configuration_write_failed'}));process.exitCode=1;});return;
+  }
 
   if (arg === '--uninstall') {
     // Silent/scripted uninstall (also what QuietUninstallString in Add/Remove Programs invokes),
@@ -840,7 +1108,7 @@ function main() {
     const purge = args.includes('--purge-chrome-profile');
     if (silent) {
       doUninstall({ removeChromeProfile: purge })
-        .then(() => process.exit(EXIT.SUCCESS))
+        .then(result => process.exit(result.ok?EXIT.SUCCESS:EXIT.FILE_FAILED))
         .catch((e) => { log('uninstall failed:', e.message); process.exit(EXIT.FILE_FAILED); });
     } else {
       interactiveUninstall().catch((e) => { log('uninstall failed:', e.message); process.exit(EXIT.FILE_FAILED); });

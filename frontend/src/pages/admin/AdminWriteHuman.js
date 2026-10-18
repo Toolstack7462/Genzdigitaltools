@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import startVisiblePolling from '../../lib/visiblePolling';
 import { createLatestOnly } from '../../lib/latestOnly';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
@@ -150,17 +151,37 @@ const AdminWriteHuman = () => {
   // requests an hour for a system whose state changes every few MINUTES - the account has hit its
   // process ceiling before, and a status page is a silly way to spend it. Device heartbeats are
   // 2-5 minutes apart, so 30s still shows a change within one heartbeat, and Refresh is immediate.
+  //
+  // THREE GAPS THIS USED TO HAVE, all of which cost the shared host:
+  //   * NO VISIBILITY GATING. A parked admin tab kept polling for as long as it was open. Browsers
+  //     throttle a hidden tab but never stop it, so the floor was "forever, slower", paid per tab.
+  //   * NO OVERLAP PROTECTION ACROSS THE GROUP. `setInterval` fired every 30s regardless of whether
+  //     the previous tick's loadState + loadLogs had finished. When the database was slow — exactly
+  //     when it matters — ticks piled up and added load to a server already struggling.
+  //   * NO BACKOFF. A failing endpoint was re-asked on the same cadence indefinitely.
+  //
+  // startVisiblePolling (lib/visiblePolling.js, 20 tests) handles all three: it runs only while the
+  // tab is visible, treats the returned promise as ONE group that must settle before another starts,
+  // collapses the paired visibilitychange+focus burst into a single catch-up poll, backs off on
+  // consecutive failures up to a cap, and releases every timer and listener on unmount.
+  //
+  // PRESERVED DELIBERATELY: the initial load still happens here and immediately (the helper only
+  // schedules), the 30s cadence while visible is unchanged, the ~90s log cadence is unchanged, and
+  // Refresh stays instant. Presence semantics, security checks and recovery budgets are untouched.
   useEffect(() => {
     let alive = true;
+    // ONE group: the promise resolves only once every request it issued has settled, which is what
+    // lets the helper guarantee no overlap.
     const tick = async () => {
       if (!alive) return;
-      await loadState();
-      if (logTick.current % 3 === 0) await loadLogs();   // ~90s
+      const jobs = [loadState()];
+      if (logTick.current % 3 === 0) jobs.push(loadLogs());   // ~90s
       logTick.current += 1;
+      await Promise.all(jobs);
     };
-    tick();
-    timer.current = setInterval(tick, 30000);
-    return () => { alive = false; if (timer.current) clearInterval(timer.current); };
+    tick();                                   // initial load, unchanged
+    const stop = startVisiblePolling(tick, 30000, { maxBackoffSteps: 3 });
+    return () => { alive = false; stop(); };
   }, [loadState, loadLogs]);
 
   // While an activation is IN FLIGHT, poll it every 3 seconds. The 30-second dashboard cadence is
@@ -172,7 +193,14 @@ const AdminWriteHuman = () => {
   useEffect(() => {
     if (!activationInFlight) { if (actTimer.current) { clearInterval(actTimer.current); actTimer.current = null; } return undefined; }
     let alive = true;
+    // NOT visibility-gated, on purpose: an operator who glances at another tab mid-handover must
+    // come back to current progress, and this is one small request that stops at a terminal stage.
+    // It IS guarded against overlap — at a 3s cadence a slow response otherwise stacks requests
+    // faster than anywhere else on the page.
+    let busy = false;
     const poll = async () => {
+      if (busy || !alive) return;
+      busy = true;
       try {
         const r = await writeHumanV2Admin.getActivation();
         if (!alive) return;
@@ -180,8 +208,9 @@ const AdminWriteHuman = () => {
         setActivation(a);
         // A finished transaction changes the device table (new active source, previous demoted),
         // so pull the full state once at the end rather than on every fast tick.
-        if (a && !a.inFlight) loadState();
+        if (a && !a.inFlight) await loadState();
       } catch (_) { /* transient: the next tick retries */ }
+      finally { busy = false; }
     };
     actTimer.current = setInterval(poll, 3000);
     return () => { alive = false; if (actTimer.current) { clearInterval(actTimer.current); actTimer.current = null; } };

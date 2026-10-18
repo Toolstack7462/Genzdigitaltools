@@ -44,6 +44,43 @@ fi
 
 # ── 0) known_hosts: libssh2 (curl) can only use an RSA host key — purge any
 #       ed25519/ecdsa entry for this host and pin ONLY the RSA key. ───────────
+# ── AGENT RELEASE PRE-FLIGHT: TWO SEPARATE QUESTIONS ────────────────────────────────────────────
+# This script ships routes/admin/proxyTools.js, which carries EXPECTED_AGENT_VERSION: the version
+# the dashboard advertises and tells field agents to update to. It does NOT publish the installer —
+# the server serves that from WH_AGENT_DIST_DIR (default ~/writehuman-agent), populated separately.
+#
+#   1. LOCAL INTEGRITY      does the candidate in writehuman-v2/agent/dist/ carry this tree's
+#                           source? Only asked when a candidate is present.
+#   2. DISTRIBUTION READINESS  is the version this deploy would advertise actually DOWNLOADABLE,
+#                           with the served bytes matching the published sha256? Asked ALWAYS.
+#
+# An earlier version of this pre-flight asked (2) only when (1) had nothing to check, so holding a
+# perfectly verified local candidate SKIPPED the download check entirely — and a verified candidate
+# on a laptop is not a published release.
+AGENT_API_BASE="${DEPLOY_API_BASE:-https://api.genzdigitalstore.com}"
+AGENT_SRC_VERSION="$(sed -n "s/^const AGENT_VERSION = '\([^']*\)'.*/\1/p" writehuman-v2/agent/cookie-sync-agent.js | head -1)"
+echo "==> Agent pre-flight (this deploy would advertise ${AGENT_SRC_VERSION})"
+
+LOCAL_SHA=""
+if [[ -f writehuman-v2/agent/dist/latest.json ]]; then
+  echo "    [1/2] local candidate present - verifying integrity"
+  ( cd backend && npm run --silent test:release-gate )   # set -e aborts the deploy on failure
+  LOCAL_SHA="$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' writehuman-v2/agent/dist/latest.json | head -1)"
+  echo "    [1/2] local integrity PASSED"
+else
+  echo "    [1/2] no local candidate - nothing to verify for integrity (this deploy publishes no installer)"
+fi
+
+echo "    [2/2] distribution readiness - what can actually be downloaded"
+if [[ -n "${LOCAL_SHA}" ]]; then
+  node backend/scripts/verify-agent-distribution.cjs --base "${AGENT_API_BASE}" \
+    --version "${AGENT_SRC_VERSION}" --sha256 "${LOCAL_SHA}"
+else
+  node backend/scripts/verify-agent-distribution.cjs --base "${AGENT_API_BASE}" \
+    --version "${AGENT_SRC_VERSION}"
+fi
+echo "    [2/2] distribution readiness PASSED"
+
 echo "==> Refreshing known_hosts (RSA only) for [${HOST}]:${PORT}"
 ssh-keygen -R "[${HOST}]:${PORT}" >/dev/null 2>&1 || true
 ssh-keyscan -t rsa -p "${PORT}" "${HOST}" >> ~/.ssh/known_hosts 2>/dev/null
@@ -99,6 +136,7 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/ExtensionScan.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/ExtensionScan.js" \
   -T backend/models/DeviceProfile.js          "sftp://${HOST}:${PORT}${API_ROOT}/models/DeviceProfile.js" \
   -T backend/db/mysqlAdapter.js               "sftp://${HOST}:${PORT}${API_ROOT}/db/mysqlAdapter.js" \
+  -T backend/db/poolLimits.js                 "sftp://${HOST}:${PORT}${API_ROOT}/db/poolLimits.js" \
   -T backend/utils/email.js                   "sftp://${HOST}:${PORT}${API_ROOT}/utils/email.js" \
   -T backend/utils/supportContact.js         "sftp://${HOST}:${PORT}${API_ROOT}/utils/supportContact.js" \
   -T backend/models/SupportSettings.js       "sftp://${HOST}:${PORT}${API_ROOT}/models/SupportSettings.js" \

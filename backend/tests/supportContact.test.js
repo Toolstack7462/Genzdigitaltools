@@ -198,3 +198,81 @@ test('website/dashboard consumers read the live hook, not a static constant', ()
   }
   assert.doesNotMatch(read('frontend/src/components/public/PublicNavbar.js'), /export \{[^}]*WHATSAPP_URL/);
 });
+
+/**
+ * ACCIDENTAL-RESET PROTECTION — the failure that silently wipes the live support contact.
+ *
+ * getAdminView() seeds `stored` with empty strings and swallows a failed/timed-out row read, so a
+ * transient DB problem returns exactly what "nothing has ever been saved" returns. The admin form
+ * fills itself from `stored`, so it renders BLANK but editable, and `''` on PUT means "clear to the
+ * fallback". One Save on that screen therefore destroys the real stored values, with no error shown
+ * anywhere — the request succeeded.
+ *
+ * These tests fail against the old behaviour. The fix is to report the read as unavailable instead
+ * of reporting it as empty; the public fallback path is untouched, because `contact` and `fallback`
+ * already come from the env/built-in chain and must keep working during a DB outage.
+ */
+const { describe } = require('node:test');
+
+describe('getAdminView: a failed read must not look like an empty record', () => {
+  test('a stored row is reported with storedAvailable true', async () => {
+    reset();
+    store.row = makeRow({ whatsappNumber: '923001234567', supportEmail: 'help@example.com' });
+    const view = await sc.getAdminView();
+    assert.strictEqual(view.storedAvailable, true,
+      'a successful read must say so explicitly, not leave the caller to guess');
+    assert.strictEqual(view.stored.whatsappNumber, '923001234567');
+    assert.strictEqual(view.stored.supportEmail, 'help@example.com');
+  });
+
+  test('NO row at all is reported as available-and-empty', async () => {
+    reset();
+    store.row = null;
+    const view = await sc.getAdminView();
+    assert.strictEqual(view.storedAvailable, true,
+      'a genuinely empty record IS a successful read — the admin may legitimately see blanks');
+    assert.strictEqual(view.stored.whatsappNumber, '');
+    assert.strictEqual(view.stored.supportEmail, '');
+  });
+
+  test('a FAILED read is reported as unavailable, not as blank values', async () => {
+    reset();
+    store.fail = true;
+    const view = await sc.getAdminView();
+    assert.strictEqual(view.storedAvailable, false,
+      'a DB failure must be distinguishable from an empty record, or the admin form cannot tell '
+      + 'the difference and one Save clears the live contact');
+    assert.ok(view.stored.whatsappNumber === '' || view.stored.whatsappNumber === null,
+      'no value may be invented for a read that did not happen');
+  });
+
+  test('a TIMED-OUT read is reported as unavailable too', async () => {
+    reset();
+    store.hang = true;
+    const view = await sc.getAdminView();
+    assert.strictEqual(view.storedAvailable, false,
+      'the 1.5s timeout path is the likely one under the load that caused this incident');
+  });
+
+  test('the public contact and fallback still resolve during a read failure', async () => {
+    // The whole point of the fallback chain: visitors must never see a broken wa.me link because
+    // the database is briefly unavailable. The fix must not change this.
+    reset();
+    store.fail = true;
+    const view = await sc.getAdminView();
+    assert.ok(view.contact && view.contact.whatsappNumber,
+      'the effective contact must still be served from env/built-in during an outage');
+    assert.ok(view.contact.whatsappUrl.startsWith('https://wa.me/'));
+    assert.ok(view.fallback && view.fallback.whatsappNumber,
+      'the fallback must still be reported so the admin UI can show what visitors see');
+  });
+
+  test('a read failure never throws out of getAdminView', async () => {
+    reset();
+    store.fail = true;
+    await sc.getAdminView(); // must not reject
+    reset();
+    store.hang = true;
+    await sc.getAdminView();
+  });
+});

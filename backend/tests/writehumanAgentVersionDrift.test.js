@@ -28,8 +28,12 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
 const AGENT_SRC = path.join(ROOT, 'writehuman-v2', 'agent', 'cookie-sync-agent.js');
-const DIST_META = path.join(ROOT, 'writehuman-v2', 'agent', 'dist', 'latest.json');
-const DIST_EXE = path.join(ROOT, 'writehuman-v2', 'agent', 'dist', 'WriteHuman-Agent-Setup-x64.exe');
+// One candidate location, honoured by BOTH artifact suites. WH_GATE_DIST_DIR lets the release
+// gate's own exit-code regressions point every suite at a fixture dist; without it this file
+// read the real dist while the companion read the fixture, so a valid fixture still failed.
+const DIST_DIR = process.env.WH_GATE_DIST_DIR || path.join(ROOT, 'writehuman-v2', 'agent', 'dist');
+const DIST_META = path.join(DIST_DIR, 'latest.json');
+const DIST_EXE = path.join(DIST_DIR, 'WriteHuman-Agent-Setup-x64.exe');
 const PROXY_TOOLS = path.join(ROOT, 'backend', 'routes', 'admin', 'proxyTools.js');
 
 function sourceVersion() {
@@ -102,8 +106,31 @@ test('the version the DASHBOARD advertises matches the agent source', () => {
  * not belong in git), so this is a LOCAL pre-deploy gate: deploys are cut from a working copy, and
  * that is exactly where the stale artifact sits. If you have not built, you have not shipped.
  */
-test('the PUBLISHED installer is built from the current agent source', () => {
+test('the PUBLISHED installer is built from the current agent source', (t) => {
   const v = sourceVersion();
+  // ARTIFACT PREREQUISITE, not a weakened assertion. dist/ is gitignored, so on a fresh clone (and
+  // therefore in PR CI) there is no installer to compare against and this can only report that it
+  // could not run. Every assertion below is unchanged and still runs in full wherever the artifact
+  // exists — which is a working copy, exactly where a deploy is cut from.
+  //
+  // The binary side is enforced as a MANDATORY RELEASE GATE by
+  // writehumanInstallerEmbeddedSource.test.js (npm run test:release-gate), which goes further than
+  // this test ever did: it opens the PE and compares the EMBEDDED source byte for byte, rather than
+  // trusting the version and size recorded in latest.json. The other four assertions in this file
+  // are source-only and run on every pull request.
+  if (!fs.existsSync(DIST_META)) {
+    const detail = `No built installer at ${DIST_META}. Backend demands agent ${v}.`;
+    // Under the release gate a missing artifact is the failure this test exists to catch: it is
+    // exactly the 2026-08-26 state (version bumped, installer never rebuilt). In ordinary PR CI
+    // there is nothing to compare against, so it is reported as a skip instead.
+    if (process.env.WH_RELEASE_GATE === '1') {
+      assert.fail(detail + '\nRun `node writehuman-v2/agent/build-installer.mjs`, or do not publish: '
+        + 'the dashboard would advertise a download that does not exist.');
+    }
+    t.diagnostic(detail);
+    t.diagnostic('Run `npm run test:release-gate` before publishing; there this is a FAILURE.');
+    return t.skip('no built installer present — enforced by the release gate');
+  }
   assert.ok(fs.existsSync(DIST_META),
     `No built installer at ${DIST_META}.\n`
     + `Run:  node writehuman-v2/agent/build-installer.mjs\n`
