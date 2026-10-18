@@ -48,6 +48,33 @@ function describeError(error, ctx = {}) {
 // State
 let orchestrator = null;
 let isInitialized = false; // FIX7: prevent duplicate initialization
+
+/**
+ * The login orchestrator, guaranteed present on EVERY service-worker wake.
+ *
+ * THE CRASH THIS FIXES. `orchestrator` was assigned only inside initialize(), and initialize() is
+ * wired to chrome.runtime.onInstalled and chrome.runtime.onStartup and to nothing else (see the
+ * note at the bottom of this file). Chrome terminates an idle MV3 worker and wakes it to deliver a
+ * MESSAGE — a wake that fires NEITHER lifecycle event. So a client clicking Access after an idle
+ * period reached the orchestrator's executeLogin with orchestrator still null, and saw:
+ *
+ *     Could not open tool: Cannot read properties of null (reading 'executeLogin')
+ *
+ * WHY THIS IS THE WHOLE FIX. getOrchestrator() (core/LoginOrchestrator.js) is a synchronous,
+ * side-effect-free singleton factory: the constructor builds a Logger, a SuccessDetector and three
+ * Maps. No storage, no network, no alarms. So making the dependency available on a wake costs
+ * nothing, and it must NOT drag the rest of initialize() along with it — re-running the cleanup
+ * sync, re-arming alarms, re-injecting the bridge or re-pairing the user on every Access click
+ * would be a worse bug than the one being fixed.
+ *
+ * It also deliberately does not HIDE the crash: no optional chaining, no fabricated success, and no
+ * keep-alive timer or offscreen document to stop the worker sleeping. The worker may sleep; the
+ * dependency is simply rebuilt when it wakes.
+ */
+function requireOrchestrator() {
+  if (!orchestrator) orchestrator = getOrchestrator();
+  return orchestrator;
+}
 let activeLogins = new Map();
 let toolCredentialsCache = new Map();
 let domainToolMap = new Map();
@@ -292,8 +319,9 @@ async function initialize() {
   isInitialized = true;
   logger.info('Initializing Gen Z Digital Store Extension v3.7');
   
-  // Initialize orchestrator
-  orchestrator = getOrchestrator();
+  // Initialize orchestrator. The same accessor the wake path uses, so there is exactly one place
+  // that ever builds it and the two paths cannot drift.
+  requireOrchestrator();
   
   // Keep session-risk scanner active by default
   await setStorage({ scannerEnabled: true });
@@ -638,7 +666,7 @@ async function handleLoginRequired(data, sender) {
     }
 
     // ── Interactive credentials (form/sso/token) → orchestrator, with bundle. ──
-    const result = await orchestrator.executeLogin(tool, creds, {
+    const result = await requireOrchestrator().executeLogin(tool, creds, {
       tabId,
       currentUrl: url,
       sessionBundle: bundle,
@@ -779,7 +807,7 @@ async function executeOneClickLogin(toolId, tool) {
     }
     
     // Execute login via orchestrator with session bundle
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+    const result = await requireOrchestrator().executeLogin(tool, credentialData.credentials, {
       sessionBundle: credentialData.sessionBundle,
       toolInfo: credentialData.tool
     });
@@ -1739,7 +1767,7 @@ async function _handleOpenToolInner(payload) {
     if (forceFreshSession && hasBundleStorage) {
       await clearPageStorageForTab(targetTabId);
     }
-    const result = await orchestrator.executeLogin(tool, creds, {
+    const result = await requireOrchestrator().executeLogin(tool, creds, {
       tabId: targetTabId,
       sessionBundle: bundle,
       toolInfo: credentialData?.tool,
@@ -3471,7 +3499,7 @@ async function executeOneClickLoginWithOptions(toolId, tool, options = {}) {
     }
     
     // FIX8: Use credentials then immediately clear from memory
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+    const result = await requireOrchestrator().executeLogin(tool, credentialData.credentials, {
       sessionBundle: credentialData.sessionBundle,
       toolInfo: credentialData.tool,
       auto: options.auto || false,
@@ -3748,8 +3776,13 @@ async function checkIdleSessions() {
   if (!anyActive) { try { await chrome.alarms.clear(IDLE_ALARM_NAME); } catch (e) {} }
 }
 
-// FIX7: Initialization handled by onInstalled and onStartup listeners only
-// Do NOT call initialize() here — it causes triple initialization on fresh install.
+// FIX7: the one-time setup in initialize() — alarms, cleanup sync, bridge injection, cached data —
+// is still handled by onInstalled and onStartup only, and is still NOT called here, because calling
+// it at module scope triple-initialises a fresh install.
+//
+// What no longer depends on those two events is the RUNTIME DEPENDENCY itself: a worker woken by a
+// message receives neither event, so the orchestrator is obtained through requireOrchestrator() at
+// the point of use instead. See its comment near the top of this file.
 logger.info('Gen Z Digital Store Extension v2.1 background worker loaded');
 
 // ============================================================================

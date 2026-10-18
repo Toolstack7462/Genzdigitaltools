@@ -40,7 +40,7 @@ on:
         required: false
         default: ''
       confirm:
-        description: 'PUBLISH to promote the installer, GATEWAY to deploy the WriteHuman gateway fix. Anything else is a dry run.'
+        description: 'PUBLISH = installer, GATEWAY = gateway fix, EXTENSION = extension package. Anything else is a dry run.'
         required: true
         default: ''
 
@@ -59,6 +59,224 @@ env:
   ARTIFACT: 'writehuman-v2/agent/dist/WriteHuman-Agent-Setup-x64.exe'
 
 jobs:
+  # ── The Chrome extension package ─────────────────────────────────────────────────────────────
+  # A frontend upload does not update an already-installed extension, and the extension is not
+  # part of the API's deployment either. What a client receives is the ZIP sitting in the two web
+  # docroots' downloads/ directories — the same two paths the backend reads to answer "latest
+  # version" (backend/utils/extensionDownloads.js DEFAULT_DIRS). So this job ships exactly those
+  # two files and nothing else: no frontend bundle, no backend, no restart.
+  #
+  # resolveServedRelease() takes the OLDEST version when the two directories disagree, so both are
+  # written or the release does not advance.
+  #
+  # The admin panel can also publish a ZIP straight to these docroots. A live version NEWER than
+  # the one in this branch is therefore someone else's release and is never overwritten — the same
+  # rule scripts/extension-live-guard.mjs applies during a frontend deploy.
+  extension:
+    name: Release the extension package (v in chrome-extension/manifest.json)
+    if: ${{ inputs.confirm == 'EXTENSION' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # GATE 1 — the committed ZIP is built from the committed source, and the code inside it is
+      # the fixed code. "Correctly identified matching artifact": the version is new AND the bytes
+      # carry the change.
+      - name: Verify the package against its source
+        run: |
+          set -euo pipefail
+          node scripts/build-extension.mjs --check
+          cd chrome-extension && npm test && cd ..
+          node -e '
+            const fs = require("fs"), crypto = require("crypto");
+            const zip = "frontend/public/downloads/genz-digital-store-extension.zip";
+            const buf = fs.readFileSync(zip);
+            const sha = crypto.createHash("sha256").update(buf).digest("hex");
+            const man = JSON.parse(fs.readFileSync("chrome-extension/manifest.json", "utf8"));
+            const bg = fs.readFileSync("chrome-extension/js/background.js", "utf8");
+            const code = bg.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
+            if (/(?<!require)[Oo]rchestrator\.executeLogin\(/.test(code)) { console.error("::error::a bare orchestrator.executeLogin call site is still in the packaged source"); process.exit(1); }
+            if (!/requireOrchestrator\(\)\.executeLogin\(/.test(code)) { console.error("::error::the packaged source does not use the accessor"); process.exit(1); }
+            const other = crypto.createHash("sha256").update(fs.readFileSync("frontend/build/downloads/genz-digital-store-extension.zip")).digest("hex");
+            if (other !== sha) { console.error("::error::the two committed ZIPs differ"); process.exit(1); }
+            fs.appendFileSync(process.env.GITHUB_ENV, `EXT_VERSION=${man.version}\nEXT_SHA=${sha}\nEXT_SIZE=${buf.length}\n`);
+            console.log(`::notice title=package::v${man.version}  ${buf.length} bytes  sha256 ${sha}  (both copies identical, source verified)`);
+          '
+
+      - name: Install deploy key and PINNED host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "::error::HOSTINGER_SSH_PRIVATE_KEY and HOSTINGER_SSH_KNOWN_HOSTS must both be set in the 'production' environment."; exit 1
+          fi
+          D="$RUNNER_TEMP/ext-ssh"; mkdir -p "$D" && chmod 700 "$D"; umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$D/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$D/known_hosts"
+          chmod 600 "$D/id_deploy" "$D/known_hosts"
+          grep -q 'PRIVATE KEY' "$D/id_deploy" || { echo "::error::the stored key has no PRIVATE KEY header"; exit 1; }
+          ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null 2>&1 \
+            || { echo "::error::known_hosts has no entry for [${SFTP_HOST}]:${SFTP_PORT}"; exit 1; }
+          echo "SSH_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Unlock the key if encrypted
+        env:
+          SSH_PASSPHRASE: ${{ secrets.HOSTINGER_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PASSPHRASE:-}" ]; then echo "key treated as unencrypted"; exit 0; fi
+          eval "$(ssh-agent -s)" >/dev/null
+          ASK="$SSH_DIR/askpass.sh"; umask 077
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$SSH_PASSPHRASE"\n' > "$ASK"; chmod 700 "$ASK"
+          SSH_ASKPASS="$ASK" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 ssh-add "$SSH_DIR/id_deploy" >/dev/null 2>&1 \
+            || { echo "::error::ssh-add rejected the key"; exit 1; }
+          rm -f "$ASK"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+      - name: Install lftp
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
+      # GATE 2 — what each docroot serves now, a hash-verified backup, and the newer-live refusal.
+      - name: Read the live packages and back them up
+        id: extbackup
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"; echo "STAMP=$STAMP" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' NEWV='$EXT_VERSION' bash -s" > extpre.txt 2>extpre.err <<'REMOTE'
+          set -u
+          Z=genz-digital-store-extension.zip
+          newer=0
+          for d in "$HOME/domains/genzdigitalstore.com/public_html/downloads" "$HOME/domains/app.genzdigitalstore.com/public_html/downloads"; do
+            p="$d/$Z"
+            if [ ! -f "$p" ]; then echo "live $d: ABSENT"; continue; fi
+            # The manifest version, read straight out of the live ZIP.
+            v="$(unzip -p "$p" manifest.json 2>/dev/null | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
+            echo "live $d: v${v:-?} $(stat -c %s "$p") bytes sha256 $(sha256sum "$p" | cut -d' ' -f1)"
+            b="$d/.backup-$Z.$STAMP"
+            cp -p "$p" "$b"
+            a="$(sha256sum "$p" | cut -d' ' -f1)"; c="$(sha256sum "$b" | cut -d' ' -f1)"
+            if [ "$a" = "$c" ]; then echo "backup VERIFIED $b"; else echo "BACKUP_FAILED $b"; fi
+            # Numeric comparison, never string: 3.9.9 must not look newer than 3.9.32.
+            if [ -n "${v:-}" ] && [ "$(printf '%s\n%s\n' "$v" "$NEWV" | sort -V | tail -1)" = "$v" ] && [ "$v" != "$NEWV" ]; then
+              echo "LIVE_IS_NEWER $d ($v > $NEWV)"; newer=1
+            fi
+          done
+          [ "$newer" = "0" ] && echo "SAFE_TO_PUBLISH" || echo "REFUSE_NEWER_LIVE"
+          REMOTE
+          cat extpre.txt
+          grep -q BACKUP_FAILED extpre.txt && { echo "::error::a rollback copy could not be verified; nothing was changed"; exit 1; }
+          grep -q REFUSE_NEWER_LIVE extpre.txt && { echo "::error::a docroot already serves a NEWER package than this branch — refusing to overwrite someone else's release"; exit 1; }
+          grep -q SAFE_TO_PUBLISH extpre.txt || { echo "::error::could not establish the live state"; head -5 extpre.err || true; exit 1; }
+          { echo "## Extension before"; echo ''; echo '```'; cat extpre.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=ext-before::$(grep -m2 '^live ' extpre.txt | tr '\n' '|' | cut -c1-400)"
+
+      - name: Upload to both docroots, verify on the host, then promote
+        run: |
+          set -euo pipefail
+          LFTP_COMMON="set sftp:auto-confirm no; set sftp:connect-program \"ssh -a -x -i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes\"; set net:max-retries 5; set net:timeout 60;"
+          UP="$RUNNER_TEMP/extup"; rm -rf "$UP"; mkdir -p "$UP"
+          cp frontend/public/downloads/genz-digital-store-extension.zip "$UP/.staging-ext-$STAMP.zip"
+          for target in domains/genzdigitalstore.com/public_html/downloads domains/app.genzdigitalstore.com/public_html/downloads; do
+            attempt=1
+            while :; do
+              echo "==> uploading to $target (attempt $attempt/3)"
+              if (cd "$UP" && lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+                   "$LFTP_COMMON cd $target; put -c .staging-ext-$STAMP.zip; bye"); then break; fi
+              if [ "$attempt" -ge 3 ]; then echo "::error::upload to $target failed; nothing was promoted"; exit 1; fi
+              attempt=$((attempt + 1)); sleep $((attempt * 10))
+            done
+          done
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' EXT_SHA='$EXT_SHA' EXT_SIZE='$EXT_SIZE' bash -s" > extput.txt 2>extput.err <<'REMOTE'
+          set -u
+          Z=genz-digital-store-extension.zip
+          ok=1
+          for d in "$HOME/domains/genzdigitalstore.com/public_html/downloads" "$HOME/domains/app.genzdigitalstore.com/public_html/downloads"; do
+            s="$d/.staging-ext-$STAMP.zip"
+            if [ ! -f "$s" ]; then echo "STAGING_MISSING $d"; ok=0; continue; fi
+            sz="$(stat -c %s "$s")"; sh="$(sha256sum "$s" | cut -d' ' -f1)"
+            echo "staged $d: $sz bytes sha256 $sh"
+            if [ "$sz" != "$EXT_SIZE" ] || [ "$sh" != "$EXT_SHA" ]; then echo "STAGING_MISMATCH $d"; rm -f "$s"; ok=0; fi
+          done
+          if [ "$ok" != "1" ]; then echo "NOT_PROMOTED"; exit 0; fi
+          # Both verified: promote both, back to back.
+          for d in "$HOME/domains/genzdigitalstore.com/public_html/downloads" "$HOME/domains/app.genzdigitalstore.com/public_html/downloads"; do
+            mv -f "$d/.staging-ext-$STAMP.zip" "$d/$Z"
+            echo "promoted $d: $(stat -c %s "$d/$Z") bytes sha256 $(sha256sum "$d/$Z" | cut -d' ' -f1)"
+          done
+          echo "EXT_PROMOTED_OK"
+          REMOTE
+          cat extput.txt
+          grep -qE 'STAGING_MISMATCH|STAGING_MISSING' extput.txt && { echo "::error::a staged package did not match; nothing was promoted"; exit 1; }
+          grep -q EXT_PROMOTED_OK extput.txt || { echo "::error::promotion did not complete"; head -5 extput.err || true; exit 1; }
+          { echo "## Extension promotion"; echo ''; echo '```'; cat extput.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # GATE 3 — what a client actually downloads, and what the admin view now reports.
+      - name: Verify both origins and the published version
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "EXT_SHA='$EXT_SHA' EXT_SIZE='$EXT_SIZE' EXT_VERSION='$EXT_VERSION' bash -s" > extver.txt 2>extver.err <<'REMOTE'
+          set -u
+          cd "$(mktemp -d)"
+          allok=1
+          for o in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            u="$o/downloads/genz-digital-store-extension.zip"
+            code="$(curl -s -o z.zip -w '%{http_code}' --max-time 120 "$u?cb=$RANDOM")"
+            sz="$(stat -c %s z.zip 2>/dev/null || echo 0)"; sh="$(sha256sum z.zip 2>/dev/null | cut -d' ' -f1)"
+            v="$(unzip -p z.zip manifest.json 2>/dev/null | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')"
+            echo "$o -> HTTP $code  $sz bytes  v${v:-?}  sha256 ${sh:-none}"
+            if [ "$code" != "200" ] || [ "$sz" != "$EXT_SIZE" ] || [ "$sh" != "$EXT_SHA" ] || [ "$v" != "$EXT_VERSION" ]; then allok=0; fi
+          done
+          [ "$allok" = "1" ] && echo "ORIGINS_MATCH" || echo "ORIGINS_MISMATCH"
+          # The admin "latest version" reads the same two files from disk, so report what the API
+          # now says. Unauthenticated: the STATUS is the fact, the body may be a refusal.
+          printf 'api version-info -> '
+          curl -s -o vi.json -w 'HTTP %{http_code} ' --max-time 25 "https://api.genzdigitalstore.com/api/crm/extension/version-info"
+          head -c 240 vi.json; echo
+          REMOTE
+          cat extver.txt
+          { echo "## Extension verification"; echo ''; echo '```'; cat extver.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "ext-origins" "$(grep -E '\-> HTTP' extver.txt | tr '\n' '|' | cut -c1-420)"
+          emit "ext-api"     "$(grep -m1 'api version-info' extver.txt | cut -c1-400)"
+          grep -q ORIGINS_MATCH extver.txt || { echo "::error::a member origin does not serve the new package"; exit 1; }
+
+      - name: Roll the packages back
+        if: ${{ failure() && steps.extbackup.outcome == 'success' }}
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' bash -s" > extrb.txt 2>&1 <<'REMOTE'
+          set -u
+          Z=genz-digital-store-extension.zip
+          for d in "$HOME/domains/genzdigitalstore.com/public_html/downloads" "$HOME/domains/app.genzdigitalstore.com/public_html/downloads"; do
+            b="$d/.backup-$Z.$STAMP"
+            if [ -f "$b" ]; then cp -p "$b" "$d/$Z"; echo "restored $d $(sha256sum "$d/$Z" | cut -d' ' -f1)"; fi
+            rm -f "$d/.staging-ext-$STAMP.zip"
+          done
+          echo "EXT_ROLLED_BACK"
+          REMOTE
+          cat extrb.txt
+          { echo "## Extension rollback"; echo ''; echo '```'; cat extrb.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::the extension packages were rolled back"
+
   # ── The WriteHuman client gateway, deployed on its own ────────────────────────────────────────
   # The gateway is a SEPARATE Passenger application from the API: it is not touched by the main
   # branch's auto-deploy, so this fix cannot ride along with a backend release. One file changes
