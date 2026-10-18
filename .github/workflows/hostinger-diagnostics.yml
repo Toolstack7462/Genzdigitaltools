@@ -79,6 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p live && cd live
+          exec > >(tee report.txt) 2>&1
           for o in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
             n="$(echo "$o" | sed 's#https://##; s#\.#_#g')"
             code="$(curl -sL -o "$n.zip" -w '%{http_code}' --max-time 120 "$o/downloads/genz-digital-store-extension.zip?cb=$RANDOM")"
@@ -121,7 +122,17 @@ jobs:
           done) | head -40
       - name: Emit the findings
         if: always()
-        run: echo "::notice title=note::read-only inspection of the live extension package; nothing was written"
+        run: |
+          set -uo pipefail
+          f=live/report.txt
+          [ -f "$f" ] || { echo "::error::no report produced"; exit 1; }
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "origins"  "$(grep '^ORIGIN ' "$f" | tr '\n' '|' | cut -c1-420)"
+          emit "manifest" "$(grep -m1 '^MANIFEST ' "$f" | cut -c1-420)  $(grep -m1 '^ENTRIES ' "$f")"
+          emit "live-bg"  "$(grep -m1 '^LIVEBG ' "$f" | cut -c1-420)"
+          emit "verdict"  "$(grep -m1 '^VERDICT ' "$f")  $(grep -m1 '^BGHASH ' "$f" | cut -c1-300)"
+          emit "drift"    "$(grep -E '^(DIFF|LIVEONLY) ' "$f" | head -12 | tr '\n' '|' | cut -c1-420)"
+          emit "drift2"   "$(grep -cE '^DIFF ' "$f") files differ, $(grep -cE '^LIVEONLY ' "$f") live-only files"
 
   # ── The Chrome extension package ─────────────────────────────────────────────────────────────
   # A frontend upload does not update an already-installed extension, and the extension is not
