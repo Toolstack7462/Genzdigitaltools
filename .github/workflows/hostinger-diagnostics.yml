@@ -100,7 +100,20 @@ jobs:
           run 'echo "is WH_AGENT_DIST_DIR overridden? (presence only, no value):"; for f in "$API/.env" "$HOME/.env"; do [ -f "$f" ] && echo "  $f -> $(grep -c "^WH_AGENT_DIST_DIR=" "$f" 2>/dev/null) matching key(s)"; done'
           run 'find "$HOME" -maxdepth 2 -name "WriteHuman-Agent-Setup*.exe" -printf "%p\t%s bytes\n" 2>/dev/null | head -10 || true'
 
+          say "2a. WHERE IS THE NODE APP, ACTUALLY?"
+          # The first run probed ~/domains/api.genzdigitalstore.com/nodejs and every file read
+          # MISSING while the live API answered HTTP 200 — so that assumed path is wrong. Find it.
+          run 'ls -1 "$HOME/domains" 2>/dev/null | head -20'
+          run 'find "$HOME" -maxdepth 4 -name "server-crm.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
+          run 'find "$HOME" -maxdepth 5 -path "*/routes/admin/proxyTools.js" -printf "%p\t%s bytes\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
+          run 'find "$HOME" -maxdepth 5 -name "agentDownload.js" -printf "%p\t%TY-%Tm-%Td\n" 2>/dev/null | head -5'
+          run 'find "$HOME" -maxdepth 3 -name ".htaccess" -path "*api*" -printf "%p\n" 2>/dev/null | head -5'
+
           say "2. DEPLOYED BACKEND REVISION — does the running code decorate devices[].state?"
+          # Resolve API from the real location rather than the assumption.
+          APIR="$(find "$HOME" -maxdepth 5 -path "*/routes/admin/proxyTools.js" 2>/dev/null | head -1)"
+          if [ -n "$APIR" ]; then API="$(dirname "$(dirname "$(dirname "$APIR")")")"; fi
+          run 'echo "resolved API root: ${API:-<unresolved>}"'
           run 'test -f "$API/routes/admin/proxyTools.js" && echo "proxyTools.js present, $(stat -c %s "$API/routes/admin/proxyTools.js") bytes, mtime $(stat -c %y "$API/routes/admin/proxyTools.js")" || echo "proxyTools.js MISSING"'
           run 'F="$API/routes/admin/proxyTools.js"; for pat in "dv.state = st.state" "dv.stateReason = st.reason" "dv.canActivate" "deviceViewsAll.forEach" "respondIfDbBusy" "EXPECTED_AGENT_VERSION"; do printf "  %-34s %s\n" "$pat" "$(grep -c -F "$pat" "$F" 2>/dev/null || echo 0)"; done'
           run 'test -f "$API/routes/proxy/agentDownload.js" && echo "agentDownload.js present, $(stat -c %s "$API/routes/proxy/agentDownload.js") bytes" || echo "agentDownload.js MISSING"'
@@ -134,6 +147,8 @@ jobs:
           emit "exe"           "$(val 'exe bytes|NO EXE AT THE DEFAULT PATH')  $(val 'exe sha256')"
           emit "dist-override" "$(val 'matching key')"
           emit "found-exes"    "$(grep -m3 'WriteHuman-Agent-Setup.*exe' wh.txt | tr '\n' ' ' | cut -c1-300)"
+          emit "api-root"      "$(val 'resolved API root')"
+          emit "app-locations" "$(grep -m4 -E 'server-crm.js|proxyTools.js\t|agentDownload.js\t' wh.txt | tr '\n' '|' | cut -c1-400)"
           emit "proxyTools"    "$(val 'proxyTools.js present|proxyTools.js MISSING')"
           emit "state-markers" "$(grep -E '^\s+(dv\.state|dv\.stateReason|dv\.canActivate|deviceViewsAll|respondIfDbBusy|EXPECTED_AGENT)' wh.txt | tr -s ' ' | tr '\n' '|' | cut -c1-400)"
           emit "poolLimits"    "$(val 'poolLimits.js (present|ABSENT)')"
