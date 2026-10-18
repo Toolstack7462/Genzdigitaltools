@@ -1,7 +1,25 @@
 # Deployment path and rollback — candidate 3.5.15
 
-**Nothing in this branch has been deployed or published.** This records what the existing authorized
-process does, what it would change, and how to undo it.
+**Deployment ATTEMPTED and stopped before any write.** Controlled `workflow_dispatch` run
+[39121274719](https://github.com/Toolstack7462/Genzdigitaltools/actions/runs/39121274719) at
+`982b696`:
+
+| job / step | result |
+|---|---|
+| Gate — backend syntax, `test:ci`, frontend tests, baseline resolved | **success** |
+| extension-ZIP check, build, sanity, never-overwrite-newer-extension | **success** |
+| **Install deploy key and PINNED host key** | **failure** — `Secret HOSTINGER_SSH_PRIVATE_KEY is not set in the 'production' environment` |
+| record rollback point, backup, SFTP upload, live verification | **skipped** |
+
+Nothing was uploaded; no backup was needed because nothing was replaced. The fail-closed design
+worked: the credential step is the first thing that touches production and it refused to continue.
+
+Note the extension guard step **succeeded**, which required outbound HTTPS to both live domains — so
+**runner connectivity to the web roots is confirmed**, independently of this container's own network
+policy.
+
+**Remaining input: two repository/environment secrets** (see §6). Nothing else is outstanding for
+the frontend component.
 
 ## 1. What a merge actually does
 
@@ -294,3 +312,43 @@ asset-fetchability steps are the first part of this, not the whole of it.
 
 **Deployed components: none. Version deployed: none. Smoke tests: not run.** The candidate stays
 `3.5.15`; PR #14 stays Draft.
+
+## 6. Deployment access — exactly what is still needed
+
+Add these to **Settings → Environments → `production`** (the job declares
+`environment: production`, so GitHub creates it on first reference if it did not already exist).
+Do not paste either value into chat.
+
+| secret | required | what it is |
+|---|---|---|
+| `HOSTINGER_SSH_PRIVATE_KEY` | **yes** | the dedicated deploy private key, stored whole including its `-----BEGIN/END ... PRIVATE KEY-----` lines |
+| `HOSTINGER_SSH_KNOWN_HOSTS` | **yes** | the server's host key as a `known_hosts` line for `[147.79.103.253]:65002`, taken from **Hostinger hPanel → SSH access** (a trusted channel) |
+| `HOSTINGER_SSH_PASSPHRASE` | only if the key is encrypted | leave unset for an unencrypted key; the workflow then skips the unlock step |
+
+**Why the third one is not optional.** `ssh-keyscan` against the host you are about to trust
+authenticates nothing — a man in the middle answers the scan too — so the pin has to come from
+somewhere other than the connection being secured. The workflow therefore refuses to run without
+it rather than falling back to `StrictHostKeyChecking=no` or lftp's `auto-confirm`. It also checks
+with `ssh-keygen -F` that the supplied line actually covers `[host]:port` before connecting. The
+`known_hosts` line format is `[147.79.103.253]:65002 ssh-ed25519 AAAA…`.
+
+**One more thing worth setting.** Run 39121274719 reached the credential step without pausing, so
+the `production` environment currently has **no required reviewers**. For a protected production
+environment, add at least one reviewer (and optionally restrict it to the deploying branch) —
+otherwise "protected" only scopes the secrets, it does not gate the run.
+
+**To deploy once the secrets are in place:** re-dispatch the same workflow at the reviewed ref —
+one controlled run, `main` untouched, so there is no risk of a manual upload racing a
+merge-triggered deploy.
+
+```
+gh workflow run deploy-frontend.yml --ref candidate/writehuman-3.5.15-integration
+```
+
+## 7. Component status
+
+| component | status |
+|---|---|
+| **Frontend** (both roots, incl. Zee) | **READY, not deployed** — gate and build passed on the runner at `982b696`; blocked only on the two secrets. Verified to add **no new API endpoints** vs `main`, so it is compatible with the API now running. |
+| **Backend** | **BLOCKED**, two independent reasons. (a) There is no key-authenticated backend deploy path in CI — every `deploy-*.sh` is a manual password SFTP, and this session has no credentials and no route to the host. (b) `deploy-hostinger.sh` runs `verify-agent-distribution.cjs` unconditionally before its first network command, and that check is **UNVERIFIED/NOT READY** for 3.5.15. No gate was weakened and no installer was published to clear it. |
+| **Windows Agent** | **NOT TOUCHED and not authorized.** No reinstall, no publication, no live source switch. `AGENT_VERSION` stays `3.5.15`, unaccepted. |
