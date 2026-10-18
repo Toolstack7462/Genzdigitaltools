@@ -172,12 +172,24 @@ jobs:
         run: |
           echo "::warning::confirm was not PUBLISH — the artifact and the rollback copy are verified and NOTHING was promoted."
 
+      - name: Install lftp
+        if: ${{ inputs.confirm == 'PUBLISH' }}
+        run: sudo apt-get update && sudo apt-get install -y lftp
+
       # STAGE → VERIFY ON THE HOST → PROMOTE BYTES → PROMOTE METADATA LAST.
+      #
+      # The transfer uses lftp over the SAME pinned ssh, which is what deploy-frontend.yml already
+      # uses successfully against this host. The first attempt here used scp and died with exit 255
+      # while `ssh … bash -s` in the step above worked on the same credentials, so the SFTP path
+      # this host actually accepts is the one to use. `sftp:auto-confirm no` keeps host-key checking
+      # strict inside lftp too, and net:max-retries covers the entry-process refusals this shared
+      # host is known to produce.
       - name: Stage, verify on the host, then promote
         if: ${{ inputs.confirm == 'PUBLISH' }}
         run: |
           set -euo pipefail
           O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          LFTP_COMMON="set sftp:auto-confirm no; set sftp:connect-program \"ssh -a -x -i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes\"; set net:max-retries 5; set net:timeout 60; set net:persist-retries 5; set net:reconnect-interval-base 5;"
           # The metadata the public route will serve. Shape matches what is published today; builtAt
           # stays null because no build time was ever established for these bytes, and an archive
           # timestamp presented as a build time would be a fabrication.
@@ -191,10 +203,24 @@ jobs:
             require("fs").writeFileSync("latest.new.json", JSON.stringify(out, null, 2) + "\n");
           '
           cat latest.new.json
-          # shellcheck disable=SC2086
-          scp $O "$ARTIFACT" "$SFTP_USER@$SFTP_HOST:writehuman-agent/.staging-$STAMP.exe"
-          # shellcheck disable=SC2086
-          scp $O latest.new.json "$SFTP_USER@$SFTP_HOST:writehuman-agent/.staging-$STAMP.json"
+          put_one() {
+            src="$1"; dst="$2"; attempt=1
+            while :; do
+              echo "==> uploading $(basename "$dst") (attempt $attempt/3)"
+              if lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+                   "$LFTP_COMMON put -c -O writehuman-agent -o $dst \"$src\"; bye"; then
+                echo "==> $(basename "$dst"): uploaded"
+                return 0
+              fi
+              if [ "$attempt" -ge 3 ]; then
+                echo "::error::upload of $(basename "$dst") failed after 3 attempts; nothing was promoted"
+                return 1
+              fi
+              attempt=$((attempt + 1)); sleep $((attempt * 10))
+            done
+          }
+          put_one "$ARTIFACT" ".staging-$STAMP.exe"
+          put_one latest.new.json ".staging-$STAMP.json"
           # shellcheck disable=SC2086
           ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' WH_SIZE='$WH_SIZE' WH_SHA='$WH_SHA' bash -s" > promote.txt 2>promote.err <<'REMOTE'
           set -u
