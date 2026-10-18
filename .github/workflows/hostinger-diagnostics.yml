@@ -235,24 +235,29 @@ jobs:
             require("fs").writeFileSync("latest.new.json", JSON.stringify(out, null, 2) + "\n");
           '
           cat latest.new.json
-          put_one() {
-            src="$1"; dst="$2"; attempt=1
-            while :; do
-              echo "==> uploading $(basename "$dst") (attempt $attempt/3)"
-              if lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-                   "$LFTP_COMMON put -c -O writehuman-agent -o $dst \"$src\"; bye"; then
-                echo "==> $(basename "$dst"): uploaded"
-                return 0
-              fi
-              if [ "$attempt" -ge 3 ]; then
-                echo "::error::upload of $(basename "$dst") failed after 3 attempts; nothing was promoted"
-                return 1
-              fi
-              attempt=$((attempt + 1)); sleep $((attempt * 10))
-            done
-          }
-          put_one "$ARTIFACT" ".staging-$STAMP.exe"
-          put_one latest.new.json ".staging-$STAMP.json"
+          # The upload directory holds exactly the two staging files and nothing else, so the local
+          # name IS the remote name and `put` needs no path juggling. The previous attempt combined
+          # lftp's -O and -o, which it rejected outright: three attempts and all the backoff sleeps
+          # finished in 50 seconds, so nothing was ever transferred.
+          UP="$RUNNER_TEMP/upload"
+          rm -rf "$UP"; mkdir -p "$UP"
+          cp "$ARTIFACT" "$UP/.staging-$STAMP.exe"
+          cp latest.new.json "$UP/.staging-$STAMP.json"
+          ls -la "$UP"
+          attempt=1
+          while :; do
+            echo "==> uploading the staging pair (attempt $attempt/3)"
+            if (cd "$UP" && lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
+                 "$LFTP_COMMON cd writehuman-agent; put -c .staging-$STAMP.exe; put -c .staging-$STAMP.json; bye"); then
+              echo "==> staging pair uploaded"
+              break
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::upload failed after 3 attempts; nothing was promoted"
+              exit 1
+            fi
+            attempt=$((attempt + 1)); sleep $((attempt * 10))
+          done
           # shellcheck disable=SC2086
           ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' WH_SIZE='$WH_SIZE' WH_SHA='$WH_SHA' bash -s" > promote.txt 2>promote.err <<'REMOTE'
           set -u
