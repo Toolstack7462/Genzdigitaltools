@@ -157,6 +157,56 @@ jobs:
           emit "total"    "$(sed -n '/--- total of those ---/,/--- staging/p' space.txt | grep -E '^[0-9]+' | tr '\n' '|' | cut -c1-200)  staging: $(grep -c 'staging-' space.txt)"
           emit "biggest"  "$(sed -n '/largest dirs/,$p' space.txt | grep -E '^[0-9]+' | head -8 | tr '\n' '|' | cut -c1-420)"
 
+      # WHICH DIRECTORY DOES THE ROUTE ACTUALLY READ?
+      #
+      # Attempt 4 settled that the promotion works and that the route does not read the result:
+      # ~/writehuman-agent held 91,807,232 bytes hashing to 14015d57… and latest.json said 3.5.15,
+      # while the public route answered x-agent-version 3.5.3, content-length 91,700,224 and the
+      # 08d3cf7c digest, with `cache-control: no-cache` — so nothing in front of it is caching. The
+      # route is reading a DIFFERENT file. agentDownload.js resolves
+      # `process.env.WH_AGENT_DIST_DIR || path.join(os.homedir(), 'writehuman-agent')`, so either
+      # that variable is set in the hPanel app config, or the app's os.homedir() is not this home.
+      # Read it from the live processes and find every copy of the installer on the account.
+      - name: Resolve the directory the download route actually serves from (read-only)
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > dist.txt 2>dist.err <<'REMOTE'
+          set -u
+          echo "--- app processes: HOME, PWD and the dist override ---"
+          for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do
+            c="$(readlink -f /proc/$p/cwd 2>/dev/null || echo '?')"
+            case "$c" in
+              *api.genzdigitalstore.com*)
+                E="/proc/$p/environ"
+                printf 'pid %s cwd=%s\n' "$p" "$c"
+                if [ -r "$E" ]; then
+                  for k in HOME PWD WH_AGENT_DIST_DIR USER; do
+                    printf '   %-20s %s\n' "$k" "$(tr '\0' '\n' < "$E" | grep -m1 "^$k=" | cut -d= -f2- || echo '<unset>')"
+                  done
+                else
+                  echo "   (environ not readable)"
+                fi
+                ;;
+            esac
+          done
+          echo "--- every installer copy on the account, with identity ---"
+          find "$HOME" -maxdepth 4 -name 'WriteHuman-Agent-Setup*.exe' -printf '%s %p\n' 2>/dev/null | sort -rn | while read -r sz pth; do
+            printf '%s %s %s\n' "$sz" "$(sha256sum "$pth" | cut -c1-16)" "$pth"
+          done | head -20
+          echo "--- every latest.json on the account ---"
+          find "$HOME" -maxdepth 4 -name 'latest.json' -printf '%p\n' 2>/dev/null | head -10 | while read -r f; do
+            printf '%s -> %s\n' "$f" "$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$f" | head -1)"
+          done
+          REMOTE
+          cat dist.txt
+          { echo "## Which directory the route serves"; echo ''; echo '```'; cat dist.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "app-env"   "$(sed -n '/app processes/,/every installer copy/p' dist.txt | grep -E '^pid |^   [A-Z]' | tr -s ' ' | tr '\n' '|' | cut -c1-420)"
+          emit "installers" "$(sed -n '/every installer copy/,/every latest.json/p' dist.txt | grep -E '^[0-9]+ ' | head -8 | tr '\n' '|' | cut -c1-420)"
+          emit "metafiles"  "$(sed -n '/every latest.json/,$p' dist.txt | grep -E '^/' | head -8 | tr '\n' '|' | cut -c1-420)"
+
       # GATE 2 — what is published right now, and a VERIFIED rollback copy of it.
       - name: Record the current publication and take a verified backup
         id: backup
