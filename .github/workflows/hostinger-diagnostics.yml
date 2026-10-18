@@ -141,9 +141,9 @@ jobs:
           quota -s 2>/dev/null | head -5 || echo "(quota not available)"
           df -h "$HOME" 2>/dev/null | tail -2
           echo "--- installer copies under \$HOME ---"
-          du -sm "$HOME"/writehuman-agent* 2>/dev/null | sort -rn | head -12
+          du -sm "$HOME"/domains/api.genzdigitalstore.com/writehuman-agent* 2>/dev/null | sort -rn | head -12
           echo "--- total of those ---"
-          du -scm "$HOME"/writehuman-agent* 2>/dev/null | tail -1
+          du -scm "$HOME"/domains/api.genzdigitalstore.com/writehuman-agent* 2>/dev/null | tail -1
           echo "--- staging leftovers ---"
           ls -la "$HOME/writehuman-agent"/.staging-* 2>/dev/null | head -8 || echo "(none)"
           echo "--- largest dirs in \$HOME ---"
@@ -219,8 +219,8 @@ jobs:
           # shellcheck disable=SC2086
           ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' bash -s" > pre.txt 2>pre.err <<'REMOTE'
           set -u
-          D="$HOME/writehuman-agent"
-          B="$HOME/writehuman-agent-backup-$STAMP"
+          D="$HOME/domains/api.genzdigitalstore.com/writehuman-agent"
+          B="$HOME/domains/api.genzdigitalstore.com/writehuman-agent-backup-$STAMP"
           echo "dist-dir: $D"
           if [ -f "$D/latest.json" ]; then printf 'current latest.json: '; tr -d '\n' < "$D/latest.json"; echo; else echo "current latest.json: ABSENT"; fi
           E="$D/WriteHuman-Agent-Setup-x64.exe"
@@ -298,7 +298,7 @@ jobs:
           while :; do
             echo "==> uploading the staging pair (attempt $attempt/3)"
             if (cd "$UP" && lftp -u "$SFTP_USER," "sftp://$SFTP_HOST:$SFTP_PORT" -e \
-                 "$LFTP_COMMON cd writehuman-agent; put -c .staging-$STAMP.exe; put -c .staging-$STAMP.json; bye"); then
+                 "$LFTP_COMMON cd domains/api.genzdigitalstore.com/writehuman-agent; put -c .staging-$STAMP.exe; put -c .staging-$STAMP.json; bye"); then
               echo "==> staging pair uploaded"
               break
             fi
@@ -311,7 +311,7 @@ jobs:
           # shellcheck disable=SC2086
           ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' WH_SIZE='$WH_SIZE' WH_SHA='$WH_SHA' bash -s" > promote.txt 2>promote.err <<'REMOTE'
           set -u
-          D="$HOME/writehuman-agent"
+          D="$HOME/domains/api.genzdigitalstore.com/writehuman-agent"
           S="$D/.staging-$STAMP.exe"
           J="$D/.staging-$STAMP.json"
           sz="$(stat -c %s "$S")"; sh="$(sha256sum "$S" | cut -d' ' -f1)"
@@ -342,7 +342,7 @@ jobs:
           ssh $O "$SFTP_USER@$SFTP_HOST" "WH_SIZE='$WH_SIZE' WH_SHA='$WH_SHA' WH_VERSION='$WH_VERSION' bash -s" > verify.txt 2>verify.err <<'REMOTE'
           set -u
           B="https://api.genzdigitalstore.com/api/crm/downloads/writehuman-agent/windows"
-          D="$HOME/writehuman-agent"
+          D="$HOME/domains/api.genzdigitalstore.com/writehuman-agent"
           # WHAT IS ON DISK, RIGHT HERE, FIRST. The previous attempt promoted successfully and the
           # public route still answered 3.5.3, and with only the HTTP answer in hand there was no way
           # to tell "the files were not replaced" from "something in front of the route is serving a
@@ -409,7 +409,7 @@ jobs:
           # shellcheck disable=SC2086
           ssh $O "$SFTP_USER@$SFTP_HOST" "STAMP='$STAMP' bash -s" > rb.txt 2>&1 <<'REMOTE'
           set -u
-          D="$HOME/writehuman-agent"; B="$HOME/writehuman-agent-backup-$STAMP"
+          D="$HOME/domains/api.genzdigitalstore.com/writehuman-agent"; B="$HOME/domains/api.genzdigitalstore.com/writehuman-agent-backup-$STAMP"
           if [ ! -d "$B" ]; then echo "NO_BACKUP_DIR"; exit 0; fi
           for f in WriteHuman-Agent-Setup-x64.exe latest.json; do
             if [ -f "$B/$f" ]; then cp -p "$B/$f" "$D/$f"; echo "restored $f $(sha256sum "$D/$f" | cut -d' ' -f1)"; fi
