@@ -161,6 +161,58 @@ jobs:
           emit "public-dl"     "$(val 'latest.json -> HTTP')  $(grep -m1 -oE '"version":"[^"]+","size":[0-9]+' wh.txt)  $(grep -m1 -oiE 'x-agent-version:.*|x-agent-sha256:.*' wh.txt | cut -c1-90)"
           emit "served-build"  "$(grep -m2 -E 'genzdigitalstore.com -> ' wh.txt | tr '\n' '|' | cut -c1-420)"
 
+      - name: INCIDENT-3 last working release vs first affected release
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > inc3.txt 2>inc3.err <<'REMOTE'
+          set -u
+          say() { printf '\n===== %s =====\n' "$1"; }
+          run() { timeout 150 bash -c "$1" 2>&1 | head -60 || echo "(unavailable)"; }
+          export DOM="$HOME/domains/api.genzdigitalstore.com"
+
+          say "1. DEPLOYMENT HISTORY (hbuilds/last-source snapshots)"
+          run 'ls -la --time-style=long-iso "$DOM/hbuilds/last-source" 2>&1 | head -20'
+          run 'ls -la --time-style=long-iso "$DOM/hbuilds/logs" 2>&1 | head -20'
+          run 'for f in "$DOM/hbuilds/logs"/*; do [ -f "$f" ] && { echo "--- $f ($(stat -c %y "$f" | cut -c1-19)) ---"; tail -25 "$f" | cut -c1-150; }; done 2>/dev/null | head -60'
+
+          say "2. FILE IDENTITY PER SNAPSHOT — pin each deployed revision"
+          # The same file set in every snapshot, newest first. Matched to repo blobs offline.
+          run 'cd "$DOM/hbuilds/last-source" && for d in $(ls -t); do [ -d "$d" ] || continue; echo "### $d  ($(stat -c %y "$d" | cut -c1-19))"; for f in middleware/authEnhanced.js routes/authEnhanced.js routes/client/proxyTools.js utils/proxy/lease.js utils/proxy/accountSelect.js utils/proxy/cookies.js utils/proxy/verify.js utils/proxy/candidateSync.js utils/proxy/applySession.js server-crm.js; do p="$d/$f"; [ -f "$p" ] && printf "  %s %8s %s\n" "$(sha256sum "$p" | cut -c1-16)" "$(stat -c %s "$p")" "$f" || printf "  ABSENT            %s\n" "$f"; done; done | head -90'
+
+          say "3. WHICH APP SERVES writehuman1, AND IS THE HOST-GUARD FIX DEPLOYED?"
+          run 'cat "$HOME/domains/writehuman1.genzdigitalstore.com/public_html/.htaccess" 2>&1 | head -30'
+          run 'ls -la --time-style=long-iso "$HOME/domains/writehuman1.genzdigitalstore.com" 2>&1 | head -12'
+          run 'for g in writehuman-gateway ryne-gateway stealth-gateway; do d="$HOME/$g"; [ -f "$d/server.js" ] && printf "%s/server.js %s %sB %s  TOOL_KEY_lines=%s HOST_GUARD_INDIRECT=%s routeCheck=%s\n" "$g" "$(sha256sum "$d/server.js" | cut -c1-16)" "$(stat -c %s "$d/server.js")" "$(stat -c %y "$d/server.js" | cut -c1-19)" "$(grep -c "TOOL_KEY" "$d/server.js")" "$(grep -c "HOST_GUARD_INDIRECT_RE" "$d/server.js")" "$(grep -c "routeCheck" "$d/server.js")"; done'
+          run 'for g in writehuman-gateway ryne-gateway stealth-gateway; do d="$HOME/$g"; [ -f "$d/.env" ] && printf "%s/.env keys: %s\n" "$g" "$(grep -oE "^[A-Z_]+" "$d/.env" | tr "\n" " ")"; done'
+          run 'for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do printf "pid %s cwd=%s\n" "$p" "$(readlink -f /proc/$p/cwd 2>/dev/null)"; done'
+
+          say "4. THE GATEWAY'S OWN ROUTE SELF-CHECK"
+          run 'for u in https://writehuman1.genzdigitalstore.com/__genz/health https://writehuman1.genzdigitalstore.com/__genz/healthz; do printf "%s -> " "$u"; curl -s -o /tmp/h.json -w "HTTP %{http_code} %{size_download}B " --max-time 25 "$u"; head -c 400 /tmp/h.json; echo; done'
+
+          say "5. GATEWAY RUNTIME CONFIG — named non-secret keys only"
+          run 'GW="$(for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do c="$(readlink -f /proc/$p/cwd 2>/dev/null)"; case "$c" in *gateway*) echo "$p $c";; esac; done)"; echo "gateway pids: ${GW:-<none running>}"'
+          run 'for p in $(pgrep -u "$(whoami)" node 2>/dev/null); do c="$(readlink -f /proc/$p/cwd 2>/dev/null)"; case "$c" in *writehuman*|*ryne*) P="/proc/$p/environ"; echo "== $c (pid $p)"; [ -r "$P" ] && for k in TOOL_KEY TARGET_ORIGIN DEFAULT_PATH DETECT_LOGGED_OUT LEASE_TTL_MINUTES GATEWAY_PUBLIC_URL NODE_ENV; do v="$(tr "\0" "\n" < "$P" | grep -m1 "^$k=" | cut -d= -f2-)"; printf "   %-22s %s\n" "$k" "${v:-<unset>}"; done;; esac; done'
+          REMOTE
+          RC=$?; echo "ssh exit=$RC"
+          if [ ! -s inc3.txt ]; then echo "::error::no output"; head -5 inc3.err || true; exit 1; fi
+          if grep -qiE 'BEGIN [A-Z ]*PRIVATE KEY|mysql://|DATABASE_URL=|JWT_SECRET=|eyJ[A-Za-z0-9_-]{20,}|sb-[a-z0-9]{10,}-auth-token=' inc3.txt; then
+            echo "::error::captured output matched a secret-shaped pattern; not publishing it"; exit 1; fi
+          { echo "## INCIDENT-3: release comparison and gateway identity"; echo ''; echo '```'; cat inc3.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          cat inc3.txt
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "snapshots"   "$(sed -n '/1. DEPLOYMENT HISTORY/,/2. FILE IDENTITY/p' inc3.txt | grep -E '^d' | tr -s ' ' | cut -d' ' -f6-8 | tr '\n' '|' | cut -c1-420)"
+          emit "deploy-logs" "$(sed -n '/1. DEPLOYMENT HISTORY/,/2. FILE IDENTITY/p' inc3.txt | grep -E '^--- |^total|[0-9]{2}:[0-9]{2}' | head -8 | tr '\n' '|' | cut -c1-420)"
+          emit "snap-A"      "$(sed -n '/2. FILE IDENTITY/,/3. WHICH APP/p' inc3.txt | sed -n '2,13p' | tr -s ' ' | tr '\n' '|' | cut -c1-420)"
+          emit "snap-B"      "$(sed -n '/2. FILE IDENTITY/,/3. WHICH APP/p' inc3.txt | sed -n '13,24p' | tr -s ' ' | tr '\n' '|' | cut -c1-420)"
+          emit "snap-C"      "$(sed -n '/2. FILE IDENTITY/,/3. WHICH APP/p' inc3.txt | sed -n '24,35p' | tr -s ' ' | tr '\n' '|' | cut -c1-420)"
+          emit "wh1-root"    "$(sed -n '/3. WHICH APP/,/4. THE GATEWAY/p' inc3.txt | grep -iE 'passenger|lsapi|approot|startup|RewriteRule|^total|^[dl-]' | head -8 | tr '\n' '|' | cut -c1-420)"
+          emit "gw-identity" "$(grep -E 'server\.js [0-9a-f]{16}' inc3.txt | tr '\n' '|' | cut -c1-420)"
+          emit "gw-procs"    "$(grep -E '^gateway pids:|^pid [0-9]+ cwd=' inc3.txt | tr '\n' '|' | cut -c1-420)"
+          emit "route-check" "$(sed -n '/4. THE GATEWAY/,/5. GATEWAY RUNTIME/p' inc3.txt | grep -E '\-> HTTP' | tr '\n' '|' | cut -c1-420)"
+          emit "gw-cfg"      "$(sed -n '/5. GATEWAY RUNTIME/,$p' inc3.txt | grep -E '^== |^   [A-Z]' | tr -s ' ' | tr '\n' '|' | cut -c1-420)"
+
       - name: INCIDENT-2 what deployed at 14:34, and which gateway serves clients
         run: |
           set -uo pipefail
