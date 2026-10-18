@@ -45,7 +45,56 @@ env:
   APP_WEB: '/home/u171982351/domains/app.genzdigitalstore.com/public_html'
 
 jobs:
+  # GATE. This deploy is merge-triggered: a push to main that touches frontend/** publishes to both
+  # live web roots. Until now it ran no test suite at all — ci-tests.yml covers pull requests and
+  # non-main branches, so a merge went straight to production ungated. That includes
+  # frontendBuildFreshness (is the committed bundle actually the one this source builds?) and
+  # deployCleanRoom (would a deploy resolve every module?), both of which exist precisely to stop a
+  # bad publish. They run here before anything is uploaded.
+  gate:
+    name: Gate (tests must pass before publishing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Full history for the same reason as ci-tests.yml: deployCleanRoom builds the pre-deploy
+      # tree from the commit being deployed onto, and fails rather than skips under CI.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # On a push to main the baseline is main's PREVIOUS commit: that is what the server holds
+      # before this deploy lands.
+      - name: Resolve deploy baseline
+        run: echo "DEPLOY_BASELINE_REF=HEAD~1" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend
+        working-directory: backend
+        run: npm install --legacy-peer-deps
+      - name: Backend syntax check
+        working-directory: backend
+        run: npm run check
+      - name: Backend tests
+        working-directory: backend
+        run: npm run test:ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend
+        working-directory: frontend
+        run: npm install --legacy-peer-deps
+      - name: Frontend tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: npx craco test --watchAll=false
+
   build-and-deploy:
+    needs: gate
     runs-on: ubuntu-latest
     # Bounds the worst case now that the SFTP step retries (3 attempts + backoff).
     timeout-minutes: 30
