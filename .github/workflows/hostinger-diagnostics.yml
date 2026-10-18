@@ -126,9 +126,41 @@ jobs:
           echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
           echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
 
+      # Two uploads of this file have now failed — scp with 255, lftp after three attempts — while
+      # `ssh … bash -s` on the same key works. On shared hosting the next suspect is writable space,
+      # and this job is itself a consumer of it: every run copies the live 87MB exe into a new
+      # backup directory. So measure before writing anything, and report what is already there.
+      - name: Measure writable space and existing installer copies (read-only)
+        run: |
+          set -euo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" 'bash -s' > space.txt 2>space.err <<'REMOTE'
+          set -u
+          echo "--- quota ---"
+          quota -s 2>/dev/null | head -5 || echo "(quota not available)"
+          df -h "$HOME" 2>/dev/null | tail -2
+          echo "--- installer copies under \$HOME ---"
+          du -sm "$HOME"/writehuman-agent* 2>/dev/null | sort -rn | head -12
+          echo "--- total of those ---"
+          du -scm "$HOME"/writehuman-agent* 2>/dev/null | tail -1
+          echo "--- staging leftovers ---"
+          ls -la "$HOME/writehuman-agent"/.staging-* 2>/dev/null | head -8 || echo "(none)"
+          echo "--- largest dirs in \$HOME ---"
+          du -sm "$HOME"/* 2>/dev/null | sort -rn | head -10
+          REMOTE
+          cat space.txt
+          { echo "## Writable space"; echo ''; echo '```'; cat space.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          emit "quota"    "$(sed -n '/--- quota ---/,/--- installer/p' space.txt | grep -vE '^---' | tr '\n' '|' | cut -c1-420)"
+          emit "copies"   "$(sed -n '/installer copies/,/--- total/p' space.txt | grep -E '^[0-9]+' | tr '\n' '|' | cut -c1-420)"
+          emit "total"    "$(sed -n '/--- total of those ---/,/--- staging/p' space.txt | grep -E '^[0-9]+' | tr '\n' '|' | cut -c1-200)  staging: $(grep -c 'staging-' space.txt)"
+          emit "biggest"  "$(sed -n '/largest dirs/,$p' space.txt | grep -E '^[0-9]+' | head -8 | tr '\n' '|' | cut -c1-420)"
+
       # GATE 2 — what is published right now, and a VERIFIED rollback copy of it.
       - name: Record the current publication and take a verified backup
         id: backup
+        if: ${{ inputs.confirm == 'PUBLISH' }}
         run: |
           set -euo pipefail
           O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
