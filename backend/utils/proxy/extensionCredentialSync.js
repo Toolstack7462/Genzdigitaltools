@@ -54,6 +54,25 @@ const keyedLock = require('../keyedLock');
 // A failed commit or a drift is retried no more often than this on the heartbeat reconcile path, so
 // a persistently failing session can never turn into aggressive re-verification.
 const RECONCILE_MIN_INTERVAL_MS = 60 * 1000;
+// An INCONCLUSIVE verification has two very different causes, and conflating them is what let a
+// temporary outage latch this engine permanently:
+//   DETERMINISTIC - the stored bundle itself cannot be proven: an 'unknown' aged/expired token, no
+//     bundle, or a provider user object carrying no authoritative id. Re-asking changes nothing;
+//     only a genuine browser refresh (new hash) or a Tool change can. These keep the no-respin
+//     short-circuit, which is what stops a per-cycle verification spin.
+//   TRANSIENT - the failure was OURS or the provider's: network, 429, 5xx, a 403 apikey answer or a
+//     malformed/HTML body (all of which surface as canary 'inconclusive'), or a thrown verifier
+//     error. These MUST be retried, or the sync never resumes after the provider recovers even
+//     though nothing is wrong with the credential.
+const TRANSIENT_INCONCLUSIVE = new Set(['canary_inconclusive', 'canary_absent', 'verify_error', 'no_verification']);
+// BOUNDED retry: at most this many attempts against the SAME unchanged bundle, each one still
+// spaced by RECONCILE_MIN_INTERVAL_MS and still driven only by the existing agent heartbeat /
+// cookie-push events - no new polling worker, no refresh-token exchange, no extra provider traffic
+// per cycle.
+const TRANSIENT_MAX_TRIES = Math.max(1, Number(process.env.EXT_CRED_SYNC_TRANSIENT_TRIES || 5));
+// ...and the budget refreshes once the last inconclusive is this old, so an outage longer than the
+// budget still self-heals on a later heartbeat instead of waiting for a manual cookie update.
+const TRANSIENT_RETRY_RESET_MS = Math.max(60 * 1000, Number(process.env.EXT_CRED_SYNC_TRANSIENT_RESET_MS || 30 * 60 * 1000));
 
 const RESULT = { SYNCED: 'synced', OBSERVE: 'observe', UNCHANGED: 'unchanged', REJECTED: 'rejected', FAILED: 'failed', SKIPPED: 'skipped', INCONCLUSIVE: 'verification_inconclusive', AWAITING_APPROVAL: 'awaiting_approval' };
 // Verification verdict buckets — an aged/unknown result is NEVER a failure AND NEVER success.
@@ -241,12 +260,25 @@ async function runEngine(account, toolKey, deps, source) {
       // or when a prior commit is pending. An unchanged, already-checked (aged) bundle is a cheap
       // no-op until it refreshes — so we never spin inconclusive verifications.
       if (!force && !st.pending && candHash && st.lastCheckedHash === candHash && st.lastCheckedToolId === toolIdStr && st.lastResult === RESULT.INCONCLUSIVE) {
-        // Same stored bundle + same eligible tool + already inconclusive → re-verifying won't help;
-        // wait for a genuine refresh (new bundle) or a tool change (recreation). No per-cycle respin.
-        return persistPolicy({ lastResult: RESULT.INCONCLUSIVE, lastCheckedAt: now, eligibleToolId: toolIdStr });
+        // Same stored bundle + same eligible tool + already inconclusive. Whether re-verifying can
+        // possibly help depends on WHY it was inconclusive, so the reason decides:
+        const transient = TRANSIENT_INCONCLUSIVE.has(String(st.inconclusiveReason || ''));
+        const budgetStale = !st.lastInconclusiveAt || (now - new Date(st.lastInconclusiveAt).getTime()) >= TRANSIENT_RETRY_RESET_MS;
+        const spent = !budgetStale && Number(st.transientTries || 0) >= TRANSIENT_MAX_TRIES;
+        if (!transient || spent) {
+          // Deterministic (aged/invalid data), or the bounded budget is spent for now → wait for a
+          // genuine refresh (new bundle) or a tool change. No per-cycle respin.
+          return persistPolicy({ lastResult: RESULT.INCONCLUSIVE, lastCheckedAt: now, eligibleToolId: toolIdStr });
+        }
+        // Transient with budget remaining → fall through to the throttle and re-verify, so the
+        // commit happens by itself once the provider answers again. No manual cookie update and no
+        // second source login are needed.
       }
       if (!force && !st.pending && st.lastReconcileAt && (now - new Date(st.lastReconcileAt).getTime()) < RECONCILE_MIN_INTERVAL_MS) {
-        return persistPolicy({ lastResult: RESULT.UNCHANGED, lastCheckedAt: now, eligibleToolId: toolIdStr });
+        // Preserve a prior INCONCLUSIVE instead of reporting UNCHANGED: the state really is still
+        // unproven, and calling it "unchanged" would hide a transient retry that is still pending.
+        const keep = st.lastResult === RESULT.INCONCLUSIVE ? RESULT.INCONCLUSIVE : RESULT.UNCHANGED;
+        return persistPolicy({ lastResult: keep, lastCheckedAt: now, eligibleToolId: toolIdStr });
       }
       v = await (deps.reVerify ? deps.reVerify(account, toolKey) : reVerifyNow(account, toolKey));
     }
@@ -273,7 +305,12 @@ async function runEngine(account, toolKey, deps, source) {
     // wouldSync, and we NEVER fall back to the masked/cookie-supplied email as the security boundary.
     if (!(vr === 'working' && canaryOk && accountKey)) {
       const why = vr === 'working' ? (canaryOk ? 'no_authoritative_account_id' : 'canary_' + ((v && v.canary) || 'absent')) : vr;
-      return persistPolicy(Object.assign({ stage: 'verification_inconclusive', lastResult: RESULT.INCONCLUSIVE, wouldSync: false, lastError: null, lastInconclusiveAt: now, inconclusiveReason: why }, detectBase));
+      // Count CONSECUTIVE transient attempts against the SAME stored bundle, so the retry stays
+      // bounded. A changed bundle, a different eligible Tool, or a deterministic reason resets it.
+      const sameBundle = !!(candHash && st.lastCheckedHash === candHash && st.lastCheckedToolId === toolIdStr);
+      const transientWhy = TRANSIENT_INCONCLUSIVE.has(why);
+      const transientTries = transientWhy ? ((sameBundle ? Number(st.transientTries || 0) : 0) + 1) : 0;
+      return persistPolicy(Object.assign({ stage: 'verification_inconclusive', lastResult: RESULT.INCONCLUSIVE, wouldSync: false, lastError: null, lastInconclusiveAt: now, inconclusiveReason: why, transientTries }, detectBase));
     }
 
     // VERIFIED (server canary). Identity is the AUTHORITATIVE, stable account id (NEVER maskedId).
@@ -395,5 +432,5 @@ module.exports = {
   RESULT,
   resolveBindAccount,
   normDomain,
-  _internals: { boundToAccount, tokenIatOf, committedBundle, reVerifyNow, normDomain, toolDomain, RECONCILE_MIN_INTERVAL_MS },
+  _internals: { boundToAccount, tokenIatOf, committedBundle, reVerifyNow, normDomain, toolDomain, RECONCILE_MIN_INTERVAL_MS, TRANSIENT_INCONCLUSIVE, TRANSIENT_MAX_TRIES, TRANSIENT_RETRY_RESET_MS },
 };
