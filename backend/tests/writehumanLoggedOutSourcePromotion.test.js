@@ -235,32 +235,56 @@ describe('B. promotion requires positive proof', () => {
     assert.ok(a.bundleVersion > version, 'the version must move so downstream caches refresh');
   });
 
-  test('INCIDENT FIX: canary inconclusive -> NOT promoted, and nothing is expired', async () => {
+  test('CORRECTION: an inconclusive canary promotes, and is RECORDED as unproven', async () => {
+    // This test asserted the opposite until 2026-10-19, and that assertion was the outage.
+    //
+    // `canary: 'inconclusive'` does not mean the candidate is bad. It means OUR request to the
+    // provider did not complete — network, 403, 429, 5xx. Refusing on it rejected every agent
+    // cookie sync for WriteHuman, the only tool with a canary at all, so sync stopped advancing and
+    // "Could not open tool" appeared on WriteHuman and nowhere else.
+    //
+    // A provably logged-out candidate is still refused: verify.js pairs `canary: 'failed'` with
+    // `result: 'session_expired'`, which the test below pins.
     reset();
-    const { a, d, good, version, hash } = await withActiveSource();
+    const { a, d, version, good } = await withActiveSource();
     nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'inconclusive' };
     const r = await ingestCandidate(a, TOOL, d.row, bundle(9000, null, 'sess-RDP').cookies, {});
 
-    assert.strictEqual(r.promoted, false);
-    assert.strictEqual(r.code, CODES.VERIFICATION_INCONCLUSIVE);
-    // Last-known-good is preserved EXACTLY — this is the half that must not become "force expired".
-    assert.deepStrictEqual(activeOf(a), good, 'the working bundle must survive an unproven push');
-    assert.strictEqual(a.bundleVersion, version);
-    assert.strictEqual(a.cookieHash, hash);
-    assert.strictEqual(a.session_status, 'working', 'an unproven push must not log the account out');
+    assert.strictEqual(r.promoted, true, 'our own connectivity must not block the agent');
+    assert.strictEqual(r.code, CODES.PROMOTED);
+    assert.notDeepStrictEqual(activeOf(a), good, 'the fresh bundle replaced the old one');
+    assert.ok(a.bundleVersion > version, 'the version moves so downstream caches refresh');
+    assert.strictEqual(a.session_status, 'working');
     assert.strictEqual(a.status, 'active');
-    assert.strictEqual(a.activeSource.deviceId, d.deviceId, 'and must not change the source');
+
+    // Promoted, but nothing may call it verified.
+    assert.strictEqual(r.canaryProven, false, 'the result says the proof was not obtained');
+    assert.strictEqual(r.canaryState, 'inconclusive');
+    assert.strictEqual(a.sessionMeta.canaryProven, false, 'and the stored bundle carries that too');
+    assert.strictEqual(a.sessionMeta.canaryState, 'inconclusive');
   });
 
-  test('a verdict with NO canary field is not proof either (the pre-fix answer)', async () => {
+  test('a canary that PASSES is recorded as proven', async () => {
+    reset();
+    const { a, d } = await withActiveSource();
+    nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
+    const r = await ingestCandidate(a, TOOL, d.row, bundle(9050, null, 'sess-RDP').cookies, {});
+    assert.strictEqual(r.promoted, true);
+    assert.strictEqual(r.canaryProven, true);
+    assert.strictEqual(r.canaryState, 'passed');
+    assert.strictEqual(a.sessionMeta.canaryProven, true);
+  });
+
+  test('a verdict with NO canary field promotes, recorded as unproven', async () => {
     reset();
     const { a, d, good, version } = await withActiveSource();
     nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };  // decode only
     const r = await ingestCandidate(a, TOOL, d.row, bundle(9100, null, 'sess-RDP').cookies, {});
-    assert.strictEqual(r.promoted, false);
-    assert.strictEqual(r.code, CODES.VERIFICATION_INCONCLUSIVE);
-    assert.deepStrictEqual(activeOf(a), good);
-    assert.strictEqual(a.bundleVersion, version);
+    assert.strictEqual(r.promoted, true);
+    assert.strictEqual(r.canaryProven, false, 'absent is not proof, but it is not grounds to refuse');
+    assert.strictEqual(r.canaryState, 'absent');
+    assert.notDeepStrictEqual(activeOf(a), good);
+    assert.ok(a.bundleVersion > version);
   });
 
   test('a CONFIRMED rejection is reported as expiry, and still keeps the stored bundle', async () => {
@@ -275,20 +299,29 @@ describe('B. promotion requires positive proof', () => {
     // logout on the source. A refused candidate does not invent that transition.
   });
 
-  test('THE REPORTED SYMPTOM: a manual save is no longer overwritten by an unverifiable push', async () => {
+  test('a manual save is protected from an OLDER push by trusted ordering, not by the canary', async () => {
+    // Honest statement of what protects an operator's hand-pasted bundle now.
+    //
+    // The canary refusal used to protect it from any unprovable push. That refusal is gone because
+    // it also blocked every legitimate agent sync. What remains is trusted ordering: a candidate
+    // whose access token is OLDER than the bundle in place is refused. So a stale source cannot
+    // walk backwards over a manual save.
+    //
+    // The gap this leaves, stated rather than hidden: a source pushing a NEWER token still
+    // replaces a manual save even when our canary could not reach the provider. Closing that needs
+    // a deliberate "operator-pinned bundle" concept, which is a product decision, not something to
+    // improvise inside a hotfix.
     reset();
     const { a, d } = await withActiveSource();
-    // The operator pastes a fresh, working bundle by hand.
-    const manual = bundle(5000, null, 'sess-MANUAL');
+    const manual = bundle(6000, null, 'sess-MANUAL');
     a.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(manual));
     a.cookieHash = authCookieHash(manual, REF);
     a.bundleVersion = (a.bundleVersion || 0) + 1;
     const manualVersion = a.bundleVersion;
 
-    // Minutes later the signed-out source pushes again. Its token still decodes as unexpired, so
-    // before this fix it was promoted straight over the operator's work.
     nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'inconclusive' };
-    await ingestCandidate(a, TOOL, d.row, bundle(6000, null, 'sess-RDP').cookies, {});
+    const r = await ingestCandidate(a, TOOL, d.row, bundle(5000, null, 'sess-RDP').cookies, {});
+    assert.strictEqual(r.promoted, false, 'an older token cannot replace a newer bundle');
     assert.deepStrictEqual(activeOf(a), manual, "the operator's bundle must still be the one served");
     assert.strictEqual(a.bundleVersion, manualVersion);
   });
