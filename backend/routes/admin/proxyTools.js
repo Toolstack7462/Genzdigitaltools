@@ -1062,6 +1062,15 @@ const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
 const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.2';
+// Exactly MAJOR.MINOR.PATCH, and nothing else — not '3.5', not 'v3.5.15', not 'nonsense', not ''
+// or null, and deliberately NOT a pre-release suffix either.
+//
+// The suffix exclusion is the point: agentCommands.atLeast() compares three parseInt'd segments, so
+// it cannot ORDER a pre-release. '3.5.2-rc.1' would compare EQUAL to the '3.5.2' floor and badge as
+// satisfied, when a release candidate is precisely the thing that may be older than the release.
+// This route only compares versions its comparator can actually order; everything else is unknown.
+const VERSION_RE = /^\d+\.\d+\.\d+$/;
+const isVersionString = (v) => typeof v === 'string' && VERSION_RE.test(v);
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;
 }
@@ -1263,7 +1272,34 @@ router.get('/:tool/agent-state', async (req, res) => {
     const workingUnverified = working && hs.verification.state === 'failed';
 
     const reportedVersion = (activeDeviceView && activeDeviceView.agentVersion) || (legacyRep && legacyRep.version) || null;
-    const agentOutdated = reportedVersion ? (reportedVersion !== EXPECTED_AGENT_VERSION) : null;
+    // "update available" must mean OLDER, not merely DIFFERENT. A raw string inequality told an
+    // operator running agent 3.5.15 that an update to 3.5.2 was available — i.e. to DOWNGRADE —
+    // which is exactly the screenshot ("Installed Agent 3.5.15, update available → 3.5.2"). It is
+    // also a lexicographic trap: '3.5.13' vs '3.5.2' compares BACKWARDS as strings because
+    // '1' < '2'. agentCommands.atLeast() is the numeric comparator this repo already carries.
+    //
+    // EXPECTED_AGENT_VERSION is a COMPATIBILITY FLOOR, not the downloadable build: equal or newer
+    // than the floor is up to date, and what the public installer actually serves is a separate
+    // fact the dashboard reads from the download route's own metadata.
+    // VALIDATE BEFORE COMPARING. atLeast() parses with parseInt and treats anything unparseable as
+    // 0, so an unvalidated comparison answers confidently about garbage:
+    //   'nonsense' vs '3.5.15'  ->  0.0.0 < 3.5.15  ->  outdated TRUE   (a bogus update prompt)
+    //   '3.5.15'  vs 'nonsense' ->  3.5.15 > 0.0.0  ->  outdated FALSE  (a bogus all-clear)
+    // Both are claims about a version nobody could read. A version this route cannot parse is
+    // UNKNOWN — null — and the dashboard renders null as neither "update available" nor "latest".
+    //
+    // AND A SATISFIED FLOOR IS NOT "LATEST". The dashboard renders this field as
+    //     agentOutdated ? "update available → {floor}" : agentOutdated === false ? "latest" : nothing
+    // so returning `false` for "meets the minimum" makes the page claim the newest build is
+    // installed — which this route cannot know, because it never reads the published installer's
+    // metadata. An agent on 3.5.2 with 3.5.15 published would read "latest". So the floor answers
+    // only its own question: TRUE means below the minimum, and anything else is null, which the
+    // page renders as no badge at all. Whether something newer exists is answered where it is
+    // known — GET /downloads/writehuman-agent/windows/latest.json.
+    const belowFloor = (isVersionString(reportedVersion) && isVersionString(EXPECTED_AGENT_VERSION))
+      ? !agentCommands.atLeast(reportedVersion, EXPECTED_AGENT_VERSION)
+      : null;
+    const agentOutdated = belowFloor === true ? true : null;
     const cand = account.candidate || null;
     return res.json({
       ...base,
