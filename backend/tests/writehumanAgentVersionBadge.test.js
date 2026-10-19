@@ -77,8 +77,12 @@ test('the route computes agentOutdated with a semver comparison, never string in
   // The whole STATEMENT, not one line: the validated form spans three lines, and a single-line
   // read made this assertion fail on a correct fix — which would have pushed someone to cram it
   // back onto one line to satisfy the test.
-  const at = src.indexOf('const agentOutdated');
-  assert.ok(at > -1, 'agentOutdated is no longer computed in proxyTools.js — update this test');
+  // The STATEMENT that compares, not one line: the validated form spans three lines, and a
+  // single-line read failed on a correct fix — which would push someone to cram it back onto one
+  // line to satisfy the test. The comparison now lives in `belowFloor`; `agentOutdated` is derived
+  // from it, and both are asserted.
+  const at = src.indexOf('const belowFloor');
+  assert.ok(at > -1, 'belowFloor is no longer computed in proxyTools.js — update this test');
   const line = src.slice(at, src.indexOf(';', src.indexOf('atLeast(', at)) + 1).replace(/\s+/g, ' ');
   assert.ok(
     !/reportedVersion\s*!==\s*EXPECTED_AGENT_VERSION/.test(line),
@@ -145,14 +149,27 @@ test('INCIDENT CASE: a missing or malformed version on EITHER side is unknown', 
     assert.strictEqual(outdated(v, '3.5.15'), null, `installed ${JSON.stringify(v)} must be unknown`);
     assert.strictEqual(outdated('3.5.15', v), null, `floor ${JSON.stringify(v)} must be unknown`);
   }
-  // A legitimate pre-release suffix is still a version.
-  assert.strictEqual(outdated('3.5.15-retry-rc1', '3.5.2'), false);
-  assert.strictEqual(outdated('3.5.2', '3.5.15-retry-rc1'), true);
+  // A PRE-RELEASE IS ALSO UNKNOWN, on purpose. atLeast() compares three parseInt'd segments, so it
+  // cannot order '3.5.2-rc.1' against '3.5.2' — they come out EQUAL, and a release candidate would
+  // badge as meeting the floor when it may well be older than the release. This route compares only
+  // what its comparator can order.
+  for (const v of ['3.5.15-retry-rc1', '3.5.2-rc.1', '3.5.2+build.7']) {
+    assert.strictEqual(outdated(v, '3.5.2'), null, `${v} is not orderable and must be unknown`);
+    assert.strictEqual(outdated('3.5.2', v), null);
+  }
+  // And the trap itself, so this stays honest about WHY the suffix is excluded.
+  assert.strictEqual(atLeast('3.5.2-rc.1', '3.5.2'), true, 'the comparator cannot see the suffix');
 });
 
 test('the route itself validates before comparing — not just this test file', () => {
-  assert.match(ROUTE_SRC, /const agentOutdated = \(isVersionString\(reportedVersion\) && isVersionString\(EXPECTED_AGENT_VERSION\)\)/,
-    'agentOutdated must be guarded by isVersionString on BOTH sides');
+  assert.match(ROUTE_SRC, /const belowFloor = \(isVersionString\(reportedVersion\) && isVersionString\(EXPECTED_AGENT_VERSION\)\)/,
+    'the comparison must be guarded by isVersionString on BOTH sides');
+  // A SATISFIED FLOOR MUST NOT BE `false`. AdminWriteHuman renders
+  //   agentOutdated ? "update available → {floor}" : agentOutdated === false ? "latest" : nothing
+  // so `false` makes the page claim the newest build is installed — which this route cannot know,
+  // because it never reads the published installer's metadata.
+  assert.match(ROUTE_SRC, /const agentOutdated = belowFloor === true \? true : null;/,
+    'only "below the floor" may be reported; anything else is null, which renders as no badge');
   assert.doesNotMatch(ROUTE_SRC, /const agentOutdated = reportedVersion \? !agentCommands\.atLeast/,
     'the unvalidated form must not come back');
 });
