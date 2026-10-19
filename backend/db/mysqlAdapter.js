@@ -774,10 +774,25 @@ function createModel(name, options = {}) {
       if (!data._id) data._id = newId();
       if (!data.createdAt) data.createdAt = now;
       data.updatedAt = data.updatedAt || now;
+      // A model WITH a preSave hook receives its data through `_preSave`, which clones with
+      // deepClone() - a JSON round-trip - so Date objects arrive here as ISO-8601 STRINGS ending in
+      // `Z`. Bound straight to a DATETIME(3) column, a server in strict mode rejects them outright:
+      //   Incorrect datetime value: '2026-10-19T17:49:05.416Z' for column 'createdAt'
+      // That is the DEFAULT sql_mode on MySQL 8 and current MariaDB, so this only ever worked
+      // because the server in front of it happened to be lenient. 17 models have a preSave hook
+      // (Tool, User, ProxyAccount, ExtAutoSyncPolicy among them), and this is the single place those
+      // two columns are bound - so coercing here fixes every model and every caller at once, without
+      // touching hook semantics or the JSON actually stored in `data`.
+      const asDate = (v) => {
+        if (v instanceof Date) return v;
+        if (v == null) return now;
+        const d = new Date(v);
+        return Number.isNaN(d.getTime()) ? now : d;
+      };
       await runQuery(
         `INSERT INTO \`${table}\` (id, data, createdAt, updatedAt) VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE data = VALUES(data), updatedAt = VALUES(updatedAt)`,
-        [String(data._id), serializeData(data), data.createdAt, data.updatedAt]
+        [String(data._id), serializeData(data), asDate(data.createdAt), asDate(data.updatedAt)]
       );
       return data;
     }

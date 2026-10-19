@@ -157,3 +157,52 @@ describe('the new table is provisioned like every other', () => {
       'the auto-sync policy table is created at connect time');
   });
 });
+
+describe('datetime binding — the defect a real engine found and a fake driver had missed', () => {
+  // THE FAILURE: `_preSave` clones with deepClone(), a JSON round-trip, so a model WITH a preSave
+  // hook turned its `createdAt`/`updatedAt` Dates into ISO-8601 strings ending in `Z`. Bound to a
+  // DATETIME(3) column, a strict-mode server refuses them:
+  //   Incorrect datetime value: '2026-10-19T17:49:05.416Z' for column 'createdAt'
+  // That is the default sql_mode on MySQL 8 and current MariaDB. It only worked in production
+  // because that server is lenient. Caught by scripts/extcredsync-db-selftest.js on a real engine
+  // (mysql:8.0 and mariadb:10.11, identically) — these SQL-shape tests passed throughout, which is
+  // exactly why the real-engine run exists. This pins the write path so it cannot regress.
+  const WithHook = adapter.createModel('ExtAutoSyncPolicy', {
+    // the same shape the real policy model uses
+    preSave: async (data) => { if (!data.mode) data.mode = 'observe'; return data; },
+  });
+  const NoHook = adapter.createModel('Tool', {});
+
+  for (const [label, Model] of [['a model WITH a preSave hook', WithHook], ['a model without one', NoHook]]) {
+    test(`${label} binds real Date objects, never ISO strings`, async () => {
+      const { pool, queries } = fakePool(1);
+      adapter.__test.setPool(pool);
+      await Model.create({ _id: 'dt-1', name: 'x' });
+      const insert = queries.find(q => /INSERT INTO/.test(q.sql));
+      assert.ok(insert, 'an INSERT was issued');
+      const [, , createdAt, updatedAt] = insert.params;
+      assert.ok(createdAt instanceof Date, `${label}: createdAt must bind as a Date, got ${typeof createdAt} ${String(createdAt)}`);
+      assert.ok(updatedAt instanceof Date, `${label}: updatedAt must bind as a Date, got ${typeof updatedAt} ${String(updatedAt)}`);
+      assert.doesNotMatch(String(createdAt), /\dZ$/, 'and never the ISO form a strict server rejects');
+    });
+  }
+
+  test('an ISO string arriving from anywhere else is still coerced, not passed through', async () => {
+    const { pool, queries } = fakePool(1);
+    adapter.__test.setPool(pool);
+    await NoHook._upsertRaw({ _id: 'dt-2', createdAt: '2026-10-19T17:49:05.416Z', updatedAt: '2026-10-19T17:49:05.416Z' });
+    const insert = queries.find(q => /INSERT INTO/.test(q.sql));
+    const [, , createdAt, updatedAt] = insert.params;
+    assert.ok(createdAt instanceof Date && updatedAt instanceof Date, 'coerced at the binding boundary');
+    assert.strictEqual(createdAt.toISOString(), '2026-10-19T17:49:05.416Z', 'and the instant is preserved exactly');
+  });
+
+  test('an unparseable value falls back to now rather than binding garbage', async () => {
+    const { pool, queries } = fakePool(1);
+    adapter.__test.setPool(pool);
+    await NoHook._upsertRaw({ _id: 'dt-3', createdAt: 'not-a-date', updatedAt: 'not-a-date' });
+    const insert = queries.find(q => /INSERT INTO/.test(q.sql));
+    const [, , createdAt] = insert.params;
+    assert.ok(createdAt instanceof Date && !Number.isNaN(createdAt.getTime()), 'a valid Date is bound');
+  });
+});
