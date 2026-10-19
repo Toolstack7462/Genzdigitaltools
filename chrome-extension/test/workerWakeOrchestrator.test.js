@@ -33,8 +33,20 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
-const EXT = path.join(__dirname, '..');
+// WHICH EXTENSION TREE IS UNDER TEST.
+//
+// By default, this repository's chrome-extension/. Set EXT_DIR to point the SAME handler
+// regressions at a different tree — specifically at the EXACT released package, extracted from the
+// ZIP a client downloads. That matters here: the shipped v3.9.36 was patched from a v3.9.35 tree
+// that is not in this repository (29 files differ, 10 are live-only), so a pass against the repo
+// source says nothing about the artifact clients run.
+//
+// Running against an extracted package exercises its real background.js and its real imports.
+// It is still a MOCKED-handler test: it does not open Chrome, does not terminate a real worker and
+// does not log in to a provider. Real-browser acceptance is a separate, manual step.
+const EXT = process.env.EXT_DIR ? path.resolve(process.env.EXT_DIR) : path.join(__dirname, '..');
 const BG_URL = pathToFileURL(path.join(EXT, 'js', 'background.js')).href;
+const RAW_BG = path.join(EXT, 'js', 'background.js');
 const ORCH_URL = pathToFileURL(path.join(EXT, 'js', 'core', 'LoginOrchestrator.js')).href;
 
 const TOOL_ID = '501';
@@ -313,7 +325,7 @@ describe('a worker woken by a message has its runtime dependencies', () => {
 });
 
 describe('the fix does not buy readiness with side effects', () => {
-  const RAW = require('node:fs').readFileSync(path.join(EXT, 'js', 'background.js'), 'utf8');
+  const RAW = require('node:fs').readFileSync(RAW_BG, 'utf8');
   // Comment lines are stripped: the accessor's own doc comment legitimately names the expression it
   // replaced, and a source contract that cannot tell code from prose is a source contract that
   // fails on documentation.

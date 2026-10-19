@@ -40,7 +40,7 @@ on:
         required: false
         default: ''
       confirm:
-        description: 'PUBLISH = installer, GATEWAY = gateway, EXTENSION = extension package, EXTCHECK = read the live package. Anything else is a dry run.'
+        description: 'PUBLISH = installer, GATEWAY = gateway, EXTENSION = extension package, EXTCHECK = read the live package, RECONCILE = test+inventory the released package. Anything else is a dry run.'
         required: true
         default: ''
 
@@ -59,6 +59,116 @@ env:
   ARTIFACT: 'writehuman-v2/agent/dist/WriteHuman-Agent-Setup-x64.exe'
 
 jobs:
+  # ── EXACT-ARTIFACT TEST + RECONCILIATION INVENTORY (read-only) ───────────────────────────────
+  # Two things the source-tree suite cannot establish:
+  #
+  #   1. The shipped v3.9.36 was patched from a v3.9.35 tree that is NOT in this repository, so a
+  #      pass against chrome-extension/ says nothing about the artifact clients actually run. The
+  #      handler regressions are therefore pointed at the DOWNLOADED, hash-verified package with
+  #      EXT_DIR. Still a mocked-handler test: no Chrome, no real worker termination, no provider
+  #      login. Real-browser acceptance stays a separate manual step.
+  #
+  #   2. Reconciliation needs an inventory before a single file is committed: which of the 48
+  #      entries match git, which differ, which exist only live, and whether any of them carries a
+  #      secret. A blind ZIP dump into git is exactly what must not happen.
+  #
+  # Nothing is written anywhere. The runner fetches the public package; the host is not touched.
+  reconcile:
+    name: Test the exact released package and inventory it (read-only)
+    if: ${{ inputs.confirm == 'RECONCILE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download the released package and verify its identity
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y unzip
+          mkdir -p art && cd art
+          for o in https://genzdigitalstore.com https://app.genzdigitalstore.com; do
+            n="$(echo "$o" | sed 's#https://##; s#\.#_#g')"
+            curl -sL --fail -o "$n.zip" --max-time 180 "$o/downloads/genz-digital-store-extension.zip?cb=$RANDOM"
+            echo "ORIGIN $o $(stat -c %s "$n.zip") bytes sha256 $(sha256sum "$n.zip" | cut -d' ' -f1)"
+          done | tee identity.txt
+          a="$(sha256sum genzdigitalstore_com.zip | cut -d' ' -f1)"
+          b="$(sha256sum app_genzdigitalstore_com.zip | cut -d' ' -f1)"
+          [ "$a" = "$b" ] || { echo "::error::the two origins serve different packages"; exit 1; }
+          # The digest published by the release run. A different one means this is not that artifact.
+          EXPECT=157901ed551b3085bfb2f504d8a0aad2c55bc60d8221ab29ebb0456b8b9e20c1
+          if [ "$a" = "$EXPECT" ]; then echo "IDENTITY MATCHES the published 3.9.36 digest" | tee -a identity.txt
+          else echo "IDENTITY DIFFERS from the published 3.9.36 digest (live=$a)" | tee -a identity.txt; fi
+          mkdir -p live && (cd live && unzip -q -o ../genzdigitalstore_com.zip)
+          node -e 'const m=require("./live/manifest.json");console.log("VERSION "+m.version+" entries "+require("fs").readdirSync("live").length)' | tee -a identity.txt
+          echo "ART_DIR=$PWD/live" >> "$GITHUB_ENV"
+          echo "ART_SHA=$a" >> "$GITHUB_ENV"
+
+      # The POINT of this job: the real handler regressions, against the real released bytes.
+      - name: Run the handler regressions against the released package
+        run: |
+          set -euo pipefail
+          cp -r chrome-extension/test "$ART_DIR/test"
+          cd chrome-extension
+          EXT_DIR="$ART_DIR" node --test test/workerWakeOrchestrator.test.js 2>&1 | tee "$RUNNER_TEMP/exact.txt" | tail -40
+          grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/exact.txt"
+          fails="$(grep -cE '^not ok' "$RUNNER_TEMP/exact.txt" || true)"
+          echo "EXACT_FAILS=$fails" >> "$GITHUB_ENV"
+
+      - name: Inventory the package against git, and scan it for secrets
+        run: |
+          set -euo pipefail
+          cd art/live
+          : > ../inv.txt
+          find . -type f | sed 's#^\./##' | sort | while read -r f; do
+            if [ "$f" = "test" ] || [ "${f#test/}" != "$f" ]; then continue; fi
+            if [ -f "../../chrome-extension/$f" ]; then
+              a="$(sha256sum "$f" | cut -c1-12)"; b="$(sha256sum "../../chrome-extension/$f" | cut -c1-12)"
+              if [ "$a" = "$b" ]; then echo "SAME $f" >> ../inv.txt; else
+                la=$(wc -l < "$f"); lb=$(wc -l < "../../chrome-extension/$f")
+                echo "DIFF $f live=${la}L repo=${lb}L delta=$((la-lb))" >> ../inv.txt
+              fi
+            else
+              echo "LIVEONLY $f $(wc -l < "$f")L" >> ../inv.txt
+            fi
+          done
+          (cd ../../chrome-extension && find . -type f -not -path "./test/*" | sed 's#^\./##' | sort | while read -r f; do
+            [ -f "../art/live/$f" ] || echo "REPOONLY $f"; done) >> ../inv.txt
+          echo "COUNTS same=$(grep -c '^SAME ' ../inv.txt) diff=$(grep -c '^DIFF ' ../inv.txt) liveonly=$(grep -c '^LIVEONLY ' ../inv.txt) repoonly=$(grep -c '^REPOONLY ' ../inv.txt)" >> ../inv.txt
+          # SECRET SCAN over the whole package. Shapes only — never a matched value.
+          : > ../sec.txt
+          scan() { c="$(grep -rIlE "$2" . 2>/dev/null | head -5 | tr '\n' ' ')"; n="$(grep -rIlE "$2" . 2>/dev/null | wc -l)"; echo "SCAN $1 files=$n ${c:-none}" >> ../sec.txt; }
+          scan private-key         'BEGIN [A-Z ]*PRIVATE KEY'
+          scan jwt                 'eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]{20,}'
+          scan aws-key             'AKIA[0-9A-Z]{16}'
+          scan google-api-key      'AIza[0-9A-Za-z_-]{30,}'
+          scan slack-token         'xox[abprs]-[0-9A-Za-z-]{10,}'
+          scan generic-secret-assign '(secret|password|passwd|api[_-]?key|token)\s*[:=]\s*["'"'"'][^"'"'"']{12,}["'"'"']'
+          scan bearer              'Bearer [A-Za-z0-9._-]{20,}'
+          scan db-url              '(mysql|postgres|mongodb)(\+srv)?://'
+          scan nonstore-host       'https?://(?!([a-z0-9-]+\.)*genzdigitalstore\.com|([a-z0-9-]+\.)*writehuman\.ai|([a-z0-9-]+\.)*supabase\.co|localhost)[a-z0-9.-]+' 
+          cat ../inv.txt ../sec.txt
+          cp ../inv.txt ../sec.txt "$RUNNER_TEMP/" || true
+
+      - name: Emit the findings
+        if: always()
+        run: |
+          set -uo pipefail
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          I=art/inv.txt; S=art/sec.txt; D=art/identity.txt
+          emit "artifact"  "$(grep -E 'ORIGIN|IDENTITY|VERSION' "$D" 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "exact-run" "$(grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/exact.txt" 2>/dev/null | tr '\n' ' ')  not-ok=${EXACT_FAILS:-?}"
+          emit "exact-fails" "$(grep -E '^ *not ok' "$RUNNER_TEMP/exact.txt" 2>/dev/null | head -6 | tr '\n' '|' | cut -c1-420)"
+          emit "counts"    "$(grep -m1 '^COUNTS ' "$I" 2>/dev/null)"
+          emit "diffs"     "$(grep -E '^DIFF ' "$I" 2>/dev/null | head -10 | tr '\n' '|' | cut -c1-420)"
+          emit "liveonly"  "$(grep -E '^LIVEONLY ' "$I" 2>/dev/null | head -12 | tr '\n' '|' | cut -c1-420)"
+          emit "repoonly"  "$(grep -E '^REPOONLY ' "$I" 2>/dev/null | head -10 | tr '\n' '|' | cut -c1-420)"
+          emit "secrets-1" "$(grep -E '^SCAN ' "$S" 2>/dev/null | head -5 | tr '\n' '|' | cut -c1-420)"
+          emit "secrets-2" "$(grep -E '^SCAN ' "$S" 2>/dev/null | tail -4 | tr '\n' '|' | cut -c1-420)"
+
   # ── READ-ONLY: what is the LIVE extension, and does it still carry the defect? ───────────────
   # The newer-live guard refused a release and reported why: both docroots serve v3.9.35, while
   # this repository's chrome-extension/ source is 3.9.31. Versions 3.9.32-3.9.35 were therefore
