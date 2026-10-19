@@ -73,8 +73,24 @@ function sendToBridge(type, payload = {}, timeoutMs = BRIDGE_TIMEOUT_MS) {
       if (data.type !== expectedType || data.requestId !== requestId) return;
       clearTimeout(timer);
       window.removeEventListener('message', handler);
-      if (data.success === false) reject(new Error(data.error || 'Extension error'));
-      else resolve(data);
+      if (data.success === false) {
+        // Keep everything the extension worked out, instead of only `error`.
+        //
+        // background.js's login catch returns `error: error.message`, and `new Error(undefined)`
+        // has the EMPTY STRING as its message — so a message-less throw anywhere in the login path
+        // arrived here with `error` falsy and became the literal text "Extension error". The
+        // extension's own `stage`, `code`, `message` and `actionableError` were thrown away at the
+        // same time, which is why that failure could not be diagnosed from what the client saw.
+        const code = data.error || data.stage || data.code || null;
+        const err = new Error(code || data.message || data.actionableError || 'Extension error');
+        err.stage = data.stage || data.error || data.code || null;
+        err.code = data.code || null;
+        err.extensionMessage = data.message || data.actionableError || null;
+        if (data.needsReauth) err.needsReauth = true;
+        reject(err);
+        return;
+      }
+      resolve(data);
     };
 
     window.addEventListener('message', handler);
@@ -645,14 +661,18 @@ async function openTool(rawToolId, meta = {}) {
     return result;
   } catch (err) {
     const msg = err.message || 'Unknown error';
-    logStage('open_tool:throw', { toolId, error: msg, stage: err.stage || null });
+    const extStage = err.stage || null;
+    logStage('open_tool:throw', { toolId, error: msg, stage: extStage, code: err.code || null, extMessage: err.extensionMessage || null });
     // Known background business stages arrive as Error(code) via the bridge.
     // Map them FIRST and NEVER retry — e.g. 'tool_access_expired' contains
     // "expired" and 'tool_domain_invalid' contains "invalid", which must not be
     // mistaken for a retryable auth error.
     const BUSINESS_STAGES = ['tool_access_expired', 'assignment_expired', 'assignment_not_found', 'device_blocked', 'tool_domain_invalid', 'session_bundle_missing', 'no_active_session'];
-    if (BUSINESS_STAGES.includes(msg)) {
-      return { success: false, error: msg, message: stageMessage(msg, err) };
+    // A business stage is final whether the extension put it in `stage` or in `error`.
+    const business = BUSINESS_STAGES.includes(extStage) ? extStage
+      : (BUSINESS_STAGES.includes(msg) ? msg : null);
+    if (business) {
+      return { success: false, error: business, message: err.extensionMessage || stageMessage(business, err) };
     }
     if (/Tool access expired|not assigned|revoked/i.test(msg)) {
       return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
@@ -673,7 +693,12 @@ async function openTool(rawToolId, meta = {}) {
         return { success: false, error: stage, message: stageMessage(stage, retryErr) };
       }
     }
-    return { success: false, error: 'open_failed', message: msg && !/network error|request failed/i.test(msg) ? `Could not open tool: ${msg}` : 'Could not open tool. Please refresh the dashboard and try again.' };
+    // Surface the extension's own wording when it gave one; "Could not open tool: Extension error"
+    // told the operator nothing and hid a stage the extension already knew.
+    if (err.extensionMessage) {
+      return { success: false, error: extStage || 'open_failed', message: err.extensionMessage };
+    }
+    return { success: false, error: extStage || 'open_failed', message: msg && !/network error|request failed|^Extension error$/i.test(msg) ? `Could not open tool: ${msg}` : 'Could not open tool. Please refresh the dashboard and try again.' };
   } finally {
     owner.opening.delete(toolId);
   }

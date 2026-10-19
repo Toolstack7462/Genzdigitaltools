@@ -478,3 +478,53 @@ test('a genuinely absent extension still reports not detected, and re-arms the p
   });
   expect(mod.__extensionOwnerForTest().hasPoll).toBe(true);   // looking again from now on
 });
+
+// ── H. the real reason must reach the operator ────────────────────────────────────────────────
+// "Could not open tool: Extension error" is a fallback, not a diagnosis. background.js's login
+// catch returns `error: error.message`, and `new Error(undefined).message` is the empty string, so
+// a message-less throw arrived with `error` falsy. sendToBridge then kept only `error` and threw
+// away the stage, code and human message the extension had already worked out.
+const openWith = async (reply) => {
+  bridge.status = { connected: true, version: '3.9.37' };
+  bridge.open = reply;
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(0);
+  return openViaHook('42');
+};
+
+test('a reply with no error code but a stage and message reports THOSE, not "Extension error"', async () => {
+  const r = await openWith({
+    success: false,
+    stage: 'no_active_session',
+    message: 'No active session assigned for this tool. Please refresh or assign account from admin.',
+  });
+  expect(r.error).toBe('no_active_session');
+  expect(r.message).toBe('No active session assigned for this tool. Please refresh or assign account from admin.');
+  expect(r.message).not.toMatch(/Extension error/);
+});
+
+test('a reply carrying only actionableError uses that wording', async () => {
+  const r = await openWith({ success: false, actionableError: 'Login failed unexpectedly. Please try again or contact support.' });
+  expect(r.message).toBe('Login failed unexpectedly. Please try again or contact support.');
+  expect(r.message).not.toMatch(/Extension error/);
+});
+
+test('a business stage arriving in `stage` is final — it is not retried as an auth error', async () => {
+  const r = await openWith({ success: false, stage: 'tool_access_expired' });
+  expect(r.error).toBe('tool_access_expired');
+  // One open attempt only: a business stage must not trigger the reconnect-and-retry path.
+  expect(bridge.countOf('GENZ_OPEN_TOOL')).toBe(1);
+  expect(bridge.countOf('GENZ_CONNECT_EXTENSION')).toBe(0);
+});
+
+test('an explicit error code still behaves exactly as before', async () => {
+  const r = await openWith({ success: false, error: 'session_bundle_missing' });
+  expect(r.error).toBe('session_bundle_missing');
+  expect(r.message).toMatch(/not available yet|contact admin/i);
+});
+
+test('a truly empty failure still says something, and never the bare fallback as the whole message', async () => {
+  const r = await openWith({ success: false });
+  expect(r.success).toBe(false);
+  expect(r.message).not.toBe('Could not open tool: Extension error');
+});
