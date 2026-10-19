@@ -162,7 +162,29 @@ jobs:
           scan generic-secret-assign '(secret|password|passwd|api[_-]?key|token)\s*[:=]\s*["'"'"'][^"'"'"']{12,}["'"'"']'
           scan bearer              'Bearer [A-Za-z0-9._-]{20,}'
           scan db-url              '(mysql|postgres|mongodb)(\+srv)?://'
-          scan nonstore-host       'https?://(?!([a-z0-9-]+\.)*genzdigitalstore\.com|([a-z0-9-]+\.)*writehuman\.ai|([a-z0-9-]+\.)*supabase\.co|localhost)[a-z0-9.-]+' 
+          # Unexpected-host enumeration. `grep -E` has no lookahead, so the allow-list is applied in
+          # node instead: collect every absolute URL host in the package, subtract the expected ones,
+          # and report only the LEFTOVER host names (a host name is not a secret; a matched value is).
+          node -e '
+            const fs=require("fs"), path=require("path");
+            const ok=[/(^|\.)genzdigitalstore\.com$/,/(^|\.)writehuman\.ai$/,/(^|\.)supabase\.co$/,/^localhost$/,/^127\.0\.0\.1$/,
+                      /(^|\.)google\.com$/,/(^|\.)gstatic\.com$/,/(^|\.)googleapis\.com$/,/(^|\.)w3\.org$/,/(^|\.)chrome\.com$/];
+            const walk=d=>fs.readdirSync(d,{withFileTypes:true}).flatMap(e=>{const f=path.join(d,e.name);return e.isDirectory()?walk(f):[f];});
+            const hosts=new Map();
+            for(const f of walk(".")){
+              let t; try{ t=fs.readFileSync(f,"utf8"); }catch{ continue; }
+              if(t.includes("\u0000")) continue;
+              for(const m of t.matchAll(/https?:\/\/([A-Za-z0-9._-]+)/g)){
+                const h=m[1].toLowerCase();
+                if(ok.some(r=>r.test(h))) continue;
+                if(!hosts.has(h)) hosts.set(h,new Set());
+                hosts.get(h).add(path.relative(".",f));
+              }
+            }
+            const rows=[...hosts.entries()].sort((a,b)=>b[1].size-a[1].size);
+            console.log("SCAN unexpected-host distinct="+rows.length);
+            for(const [h,fl] of rows.slice(0,12)) console.log("  HOST "+h+" files="+fl.size+" "+[...fl].slice(0,3).join(" "));
+          ' >> ../sec.txt 2>&1 || echo "SCAN unexpected-host ERROR" >> ../sec.txt
           cat ../inv.txt ../sec.txt
           cp ../inv.txt ../sec.txt "$RUNNER_TEMP/" || true
 
@@ -192,6 +214,32 @@ jobs:
   #
   # Before deciding anything, read the live package. The runner has open internet, so it fetches
   # the served ZIP itself — nothing is written and the host is not touched.
+  # ── LIVE FRONTEND FORENSICS (read-only, public HTTP only) ────────────────────────────────────
+  # The operator sees an admin section "Extension Credential Auto-Sync" reporting "Could not reach
+  # the auto-sync API." That text is in no branch, no remote ref, no committed build chunk and
+  # neither extension ZIP of this repository — so it is served by code git does not have. This job
+  # finds out which docroot carries it, what request URL it asks for, and how the running API
+  # answers that URL. It sends no credentials and touches nothing on the host.
+  frontend:
+    name: Locate the live-only Auto-Sync panel (read-only)
+    if: ${{ inputs.confirm == 'FRONTEND' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Search both served frontends and probe the API
+        run: node .github/scripts/fe-forensics.mjs
+      - name: Keep the full transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-forensics
+          path: ${{ runner.temp }}/fe.txt
+          if-no-files-found: warn
+
   extcheck:
     name: Inspect the live extension package (read-only)
     if: ${{ inputs.confirm == 'EXTCHECK' }}
