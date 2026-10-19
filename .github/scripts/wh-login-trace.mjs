@@ -84,8 +84,35 @@ for (const f of FILES) {
   }
 }
 
+// 4. How does the LIVE api.js turn a non-2xx into an error? A 426 from the forced-update gate,
+//    or any other non-OK, becomes "Extension error" at the dashboard if the thrown value has no
+//    .message — which is exactly the symptom being chased.
+{
+  const p = `${dir}/js/api.js`;
+  if (fs.existsSync(p)) {
+    const lines = fs.readFileSync(p, 'utf8').split('\n');
+    say('--- api.js non-OK handling ---');
+    lines.forEach((ln, i) => {
+      if (/!res\.ok|res\.status|throw |\.message|catch \(/.test(ln)) {
+        const t = ln.trim();
+        if (t && !t.startsWith('*') && !t.startsWith('//')) say(`  A${i + 1}: ${t.slice(0, 130)}`);
+      }
+    });
+  } else { say('api.js MISSING from the package'); }
+}
+
+// 5. Does the package handle the 426 code at all?
+for (const f of ['js/background.js', 'js/api.js']) {
+  const p = `${dir}/${f}`;
+  if (!fs.existsSync(p)) continue;
+  const t = fs.readFileSync(p, 'utf8');
+  say(`CODE426 ${f} extension_update_required=${(t.match(/extension_update_required/g) || []).length} status426=${(t.match(/426/g) || []).length}`);
+}
+
 fs.writeFileSync(process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/whlogin.txt` : 'whlogin.txt', out.join('\n') + '\n');
 const notice = (t, m) => console.log(`::notice title=${t}::${String(m).slice(0, 420)}`);
 notice('throws', out.filter((l) => /THROW_NONLITERAL|THROW_NON_ERROR/.test(l)).slice(0, 10).join(' | ') || 'none');
 notice('masks', out.filter((l) => /MASKS_STAGE/.test(l)).join(' | ') || 'none');
+notice('api-errors', out.filter((l) => /^  A\d+:/.test(l)).slice(0, 14).join(' | ') || 'api.js not read');
+notice('code426', out.filter((l) => /^CODE426 /.test(l)).join(' | '));
 notice('version', out.filter((l) => /^LIVE /.test(l)).join(' '));
