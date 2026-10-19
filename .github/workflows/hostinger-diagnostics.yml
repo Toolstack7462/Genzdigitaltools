@@ -89,22 +89,21 @@ jobs:
           mkdir -p x && (cd x && unzip -q -o "../$Z")
           echo "ENTRIES $(unzip -Z1 "$Z" | wc -l)"
           node -e 'const m=require("./x/manifest.json");console.log("MANIFEST version="+m.version+" mv="+m.manifest_version+" perms="+(m.permissions||[]).slice().sort().join(",")+" hostperms="+((m.host_permissions||[]).length))'
-          node -e '
-            const fs = require("fs");
-            const src = fs.readFileSync("x/js/background.js", "utf8");
-            const code = src.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
-            const bare = (code.match(/(?<!require)[Oo]rchestrator\.executeLogin\(/g) || []).length;
-            const viaAccessor = (code.match(/requireOrchestrator\(\)\.executeLogin\(/g) || []).length;
-            const out = {
-              liveBytes: src.length,
-              bareCallSites: bare,
-              viaAccessor,
-              declaresNull: /let orchestrator = null/.test(code),
-              assignsInInitialize: /orchestrator = getOrchestrator\(\)/.test(code),
-              hasAccessor: /function requireOrchestrator\(/.test(code),
-            };
-            console.log("LIVEBG " + JSON.stringify(out));
-            console.log("VERDICT " + (out.hasAccessor ? "ALREADY_FIXED" : (bare > 0 ? "DEFECT_PRESENT" : "SHAPE_CHANGED")));
+          # Classify BOTH served packages through the shared transformation module. The previous
+          # verdict here was `hasAccessor ? "ALREADY_FIXED"`, which is the very check that let the
+          # self-recursive v3.9.36 pass: that package HAS an accessor and the accessor is the bug.
+          mkdir -p x2 && (cd x2 && unzip -q -o "../app_genzdigitalstore_com.zip")
+          node --input-type=module -e '
+            import fs from "fs";
+            import { classify, countAccessorCalls, codeOf } from "../scripts/lib/orchestratorAccessor.mjs";
+            for (const [tag, dir] of [["genzdigitalstore.com", "x"], ["app.genzdigitalstore.com", "x2"]]) {
+              const src = fs.readFileSync(`${dir}/js/background.js`, "utf8");
+              const code = codeOf(src);
+              const state = classify(src).state;
+              const bare = (code.match(/(?<!require)[Oo]rchestrator\.executeLogin\(/g) || []).length;
+              console.log(`LIVEBG ${tag} v${JSON.parse(fs.readFileSync(dir + "/manifest.json","utf8")).version} state=${state} bare=${bare} viaAccessor=${countAccessorCalls(src)} bytes=${src.length}`);
+              console.log(`VERDICT ${tag} ${state === "correct" ? "RUNNABLE_ACCESSOR" : state === "recursive" ? "SELF_RECURSIVE_DEFECT" : state === "absent" ? "NULL_CRASH_DEFECT" : "SHAPE_UNRECOGNISED"}`);
+            }
           '
           node -e '
             const fs = require("fs"), crypto = require("crypto");
@@ -120,6 +119,18 @@ jobs:
               echo "LIVEONLY $f"
             fi
           done) | head -40
+
+      # EXECUTE the served bytes. Classification is a text property; this drives the real
+      # registered message handler out of the package clients actually download.
+      - name: Run the message-handler suite against the SERVED package
+        run: |
+          set -euo pipefail
+          A="$(sha256sum live/genzdigitalstore_com.zip | cut -d' ' -f1)"
+          B="$(sha256sum live/app_genzdigitalstore_com.zip | cut -d' ' -f1)"
+          echo "ORIGINS_IDENTICAL=$([ "$A" = "$B" ] && echo yes || echo NO)"
+          [ "$A" = "$B" ] || echo "::warning::the two origins serve different bytes"
+          EXT_DIR="$PWD/live/x" node --test chrome-extension/test/workerWakeOrchestrator.test.js
+          echo "::notice title=served-bytes-tested::the handler suite passed against the package served from genzdigitalstore.com"
       - name: Emit the findings
         if: always()
         run: |
