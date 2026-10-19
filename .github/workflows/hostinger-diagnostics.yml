@@ -294,6 +294,35 @@ jobs:
             n=$(grep -rl "v2/cookies/ingest\|cookies/ingest" "$API" 2>/dev/null | head -5 | wc -l); echo "   matches=$n"
           fi
 
+          # 5c. THE CLIENT'S OWN Access REQUEST, as the API saw it.
+          #     The credentials route logs '[extension/open] update gate' on entry and accessDebug
+          #     lines as it proceeds, so an Access click that ends in the extension aborting its
+          #     fetch shows up here as an entry with no matching completion — or as nothing at all,
+          #     which would mean the request never reached the API.
+          echo "== EXTENSION CREDENTIALS REQUESTS (last 40) =="
+          LOGDIRS="$HOME/logs $HOME/domains/api.genzdigitalstore.com/logs $HOME/domains/api.genzdigitalstore.com $HOME"
+          FOUND=0
+          for d in $LOGDIRS; do
+            [ -d "$d" ] || continue
+            for L in $(find "$d" -maxdepth 2 -type f \( -name '*.log' -o -name '*error*' -o -name '*stderr*' \) -newermt '-2 days' 2>/dev/null | head -25); do
+              n=$(grep -c "extension/open\|accessDebug\|credentials" "$L" 2>/dev/null); n=${n:-0}
+              [ "$n" = "0" ] && continue
+              FOUND=1
+              echo "-- $L ($n matching lines, mtime $(date -u -r "$L" +%Y-%m-%dT%H:%M:%SZ))"
+              grep -E "extension/open|accessDebug" "$L" 2>/dev/null | tail -20
+            done
+          done
+          [ "$FOUND" = "0" ] && echo "NO_APP_LOG_FILE_FOUND (Passenger may route stdout/stderr elsewhere)"
+
+          # 5d. Is the update gate doing disk work on EVERY credentials request?
+          echo "== SERVED-RELEASE RESOLUTION COST =="
+          if [ -n "${API:-}" ] && [ -f "$API/utils/extensionDownloads.js" ]; then
+            f="$API/utils/extensionDownloads.js"
+            echo "cached=$(grep -c 'cache\|memo' "$f" 2>/dev/null)"
+            echo "reads_zip=$(grep -cE 'readFileSync|createReadStream|unzip|yauzl|AdmZip' "$f" 2>/dev/null)"
+            echo "hashes=$(grep -c 'createHash' "$f" 2>/dev/null)"
+          fi
+
           # 6. When was the API last deployed?
           echo "== LAST DEPLOY =="
           ls -1t "$HOME/hbuilds/logs" 2>/dev/null | head -3 | while read -r d; do
@@ -322,6 +351,8 @@ jobs:
           emit "vault-meta"   "$(sed -n '/== VAULT SESSION METADATA/,/== ALIGNMENT LOG/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "align-log"    "$(sed -n '/== ALIGNMENT LOG/,/== PROMOTION + VERIFY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
           emit "promo-events" "$(sed -n '/== PROMOTION + VERIFY/,/== LAST DEPLOY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
+          emit "cred-reqs"    "$(sed -n '/== EXTENSION CREDENTIALS REQUESTS/,/== SERVED-RELEASE/p' $S 2>/dev/null | tail -14 | tr '\n' '|' | cut -c1-420)"
+          emit "gate-cost"    "$(sed -n '/== SERVED-RELEASE RESOLUTION COST/,/== LAST DEPLOY/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "ext-sync"     "$(sed -n '/== EXTENSION-TOOL COOKIE SYNC/,/== LAST DEPLOY/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "last-deploy"  "$(sed -n '/== LAST DEPLOY/,/== END/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
 
