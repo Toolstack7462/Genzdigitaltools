@@ -531,3 +531,164 @@ describe('5. verification honesty: four separate facts stay separate (review lea
     assert.ok(!S(pol).lastSyncAt, 'observe never claims a sync');
   });
 });
+
+describe('6. the provider-request budget applies on EVERY path, pending included', () => {
+  const minutesLater = (n) => new Date(Date.now() + n * 60 * 1000);
+  const MAX = extSync._internals.TRANSIENT_MAX_TRIES;
+
+  // A pending DB write and a failing provider are two different recoveries with two different
+  // controls. `pending` must keep retrying the WRITE; it must not become an unthrottled provider
+  // poll while the provider itself is down.
+  async function run(a, pol, Tool, impl, atMinutes) {
+    let calls = 0;
+    const counting = async (...args) => { calls += 1; return impl(...args); };
+    await withProvider(counting, async () => {
+      for (const m of atMinutes) {
+        await extSync.reconcileExtensionTool(a, TOOL, { Tool, Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(m) });
+      }
+    });
+    return calls;
+  }
+
+  test('REGRESSION: a pending write + a provider outage must not poll the provider every event', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool();
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+
+    // 1. a good provider check, then the guarded write loses the race -> pending
+    const first = await run(a, pol, conflicting, answer(200, userJson()), [0]);
+    assert.strictEqual(first, 1);
+    assert.strictEqual(S(pol).pending, true, 'the write is pending');
+
+    // 2. the provider then goes down, and the ordinary heartbeat/cookie events keep arriving
+    const EVENTS = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20];
+    const during = await run(a, pol, conflicting, answer(500, 'boom'), EVENTS);
+    assert.ok(during <= MAX,
+      `a pending write must not bypass the provider budget: ${during} provider calls across ${EVENTS.length} events (cap ${MAX})`);
+    assert.strictEqual(S(pol).pending, true, 'and it is still honestly pending');
+  });
+
+  test('pending still heals promptly once the provider answers again', async () => {
+    // Bounding the provider calls must NOT stop legitimate database-write recovery.
+    const a = account(); const pol = policyRec(); const t = extTool();
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+    await run(a, pol, conflicting, answer(200, userJson()), [0]);
+    assert.strictEqual(S(pol).pending, true);
+    await run(a, pol, conflicting, answer(500, 'boom'), [2, 4]);
+    // the DB write starts succeeding again
+    const healthy = { find: async () => [t], patchGuarded: toolModel([t]).patchGuarded };
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, { Tool: healthy, Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(40) });
+      assert.strictEqual(out.result, RESULT.SYNCED, 'the pending write heals without a new rotation');
+    });
+    assert.strictEqual(S(pol).pending, false);
+  });
+
+  test('an authorized force/recheck is still allowed to ask immediately', async () => {
+    // The admin action must not be throttled into uselessness, but it IS a deliberate, bounded,
+    // operator-initiated request rather than an automatic loop.
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    await run(a, pol, toolModel(list), answer(500, 'boom'), [0]);
+    let calls = 0;
+    await withProvider(async (...args) => { calls += 1; return answer(200, userJson())(...args); }, async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, { Tool: toolModel(list), Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(0.1), force: true });
+      assert.strictEqual(out.result, RESULT.SYNCED);
+    });
+    assert.strictEqual(calls, 1, 'force asks once, immediately');
+  });
+
+  test('the HOOK path (a real promote) is bounded by the promote itself, not by this budget', async () => {
+    // A hook only fires when candidateSync actually promoted a NEW bundle, so it is rate-limited by
+    // real browser rotations. It deliberately bypasses the unchanged-bundle guard — but each hook is
+    // one provider call, not a loop.
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    let calls = 0;
+    await withProvider(async (...args) => { calls += 1; return answer(200, userJson())(...args); }, async () => {
+      await extSync.syncRotationToExtensionTool(a, TOOL, { result: 'working', maskedId: 'op****@example.com' },
+        { Tool: toolModel(list), Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(0) });
+    });
+    assert.strictEqual(calls, 1, 'one hook = one authoritative verify');
+  });
+});
+
+describe('7. steady-state database cost is bounded, not just provider calls', () => {
+  const minutesLater = (n) => new Date(Date.now() + n * 60 * 1000);
+
+  // Counting models: the engine's DB cost per event is what this measures. Provider calls are
+  // already covered above; this is the part that shows up as database load on shared hosting.
+  function counting(pol, list) {
+    const c = { toolFind: 0, policyRead: 0, statusWrite: 0, toolWrite: 0 };
+    return {
+      c,
+      Tool: {
+        find: async (q) => { c.toolFind++; return list.filter(t => !q || !q.status || t.status === q.status); },
+        patchGuarded: async (id, setMap, guardMap) => { c.toolWrite++; return toolModel(list).patchGuarded(id, setMap, guardMap); },
+      },
+      Policy: {
+        findOne: async () => { c.policyRead++; return pol; },
+        findById: async () => { c.policyRead++; return pol; },
+        updateJsonPath: async (id, p, v) => { c.statusWrite++; return policyModel(pol).updateJsonPath(id, p, v); },
+      },
+    };
+  }
+
+  test('a settled account costs NO tool read and NO status write between throttle intervals', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    const m = counting(pol, list);
+    // establish the synced state
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, { Tool: m.Tool, Policy: m.Policy, deviceId: 'd1', now: minutesLater(0), force: true });
+      assert.strictEqual(out.result, RESULT.SYNCED);
+    });
+    const base = { ...m.c };
+    // four more heartbeats inside the throttle interval (15s apart)
+    await withProvider(answer(200, userJson()), async () => {
+      for (const sec of [15, 30, 45]) {
+        const out = await extSync.reconcileExtensionTool(a, TOOL, { Tool: m.Tool, Policy: m.Policy, deviceId: 'd1', now: new Date(Date.now() + sec * 1000) });
+        // It reports the LAST KNOWN result rather than inventing a fresh verdict, which is the
+        // truthful answer for a cycle that deliberately did not look.
+        assert.ok(out.result === RESULT.UNCHANGED || out.result === RESULT.SYNCED, 'reports the last known state: ' + out.result);
+        assert.ok(out.code === 'throttled' || out.code === 'settled', 'and says why it did not look: ' + out.code);
+      }
+    });
+    assert.strictEqual(m.c.toolFind - base.toolFind, 0, 'no eligible-Tool read for a settled account');
+    assert.strictEqual(m.c.statusWrite - base.statusWrite, 0, 'no status write that says nothing new');
+    assert.strictEqual(m.c.toolWrite - base.toolWrite, 0, 'and certainly no credential write');
+  });
+
+  test('a genuine rotation still breaks the fast path immediately', async () => {
+    // The fast path keys on the stored bundle hash, so a real refresh cannot be skipped.
+    const a = account('A'); const pol = policyRec(); const t = extTool(); const list = [t];
+    const m = counting(pol, list);
+    await withProvider(answer(200, userJson()), async () => {
+      await extSync.reconcileExtensionTool(a, TOOL, { Tool: m.Tool, Policy: m.Policy, deviceId: 'd1', now: minutesLater(0), force: true });
+    });
+    const before = m.c.toolWrite;
+    const b = liveBundle('B');
+    a.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(b));
+    a.cookieHash = authCookieHash(b, REF);
+    // A real rotation arrives as a HOOK from candidateSync's promote, which bypasses the reconcile
+    // rate controls by design — so a genuine refresh is never delayed by the throttle or the
+    // settled fast path. (An ordinary reconcile within the throttle interval IS deferred to the
+    // next event; that was true before this optimization too.)
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.syncRotationToExtensionTool(a, TOOL, { result: 'working', maskedId: 'op****@example.com' },
+        { Tool: m.Tool, Policy: m.Policy, deviceId: 'd1', now: new Date(Date.now() + 10000) });
+      assert.strictEqual(out.result, RESULT.SYNCED, 'a rotation is never skipped as "settled"');
+    });
+    assert.strictEqual(m.c.toolWrite - before, 1, 'and it commits exactly once');
+  });
+
+  test('a pending write is never skipped as settled', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool();
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+    await withProvider(answer(200, userJson()), async () => {
+      await extSync.reconcileExtensionTool(a, TOOL, { Tool: conflicting, Policy: policyModel(pol), deviceId: 'd1', now: minutesLater(0) });
+    });
+    assert.strictEqual(S(pol).pending, true);
+    // a healthy write arrives shortly after; it must NOT be short-circuited as settled
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t], { now: minutesLater(2) }));
+      assert.strictEqual(out.result, RESULT.SYNCED, 'pending still heals');
+    });
+  });
+});

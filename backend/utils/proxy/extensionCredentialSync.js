@@ -216,6 +216,36 @@ async function runEngine(account, toolKey, deps, source) {
   const officialDomain = normDomain(policy.officialDomain || toolsReg.targetHost(toolKey));
   const policyId = String(policy._id);
 
+  // EARLY RATE GATE (ordinary reconcile only; a hook is a real promote and always proceeds).
+  // If the last reconcile was inside the throttle interval there is nothing this cycle can usefully
+  // do, so stop BEFORE the eligible-Tool lookup and before any status write. MEASURED: in steady
+  // state the engine was doing one Tool.find({status:'active'}) full read AND one status write per
+  // agent heartbeat per account, for a cycle whose only change was a timestamp. This removes both
+  // for every event arriving more often than the interval, and it changes no decision — the next
+  // event past the interval does exactly what this one would have. Not writing `lastCheckedAt` here
+  // is also the more truthful record: we did not look.
+  // The equivalent check INSIDE the lock is kept deliberately: this gate reads `policy.sync` before
+  // the lock, so only the in-lock check can see state a concurrent worker committed meanwhile.
+  if (source !== 'hook' && !force) {
+    const st0 = policy.sync || {};
+    if (st0.lastReconcileAt && (now - new Date(st0.lastReconcileAt).getTime()) < RECONCILE_MIN_INTERVAL_MS) {
+      return { result: st0.lastResult || RESULT.UNCHANGED, code: 'throttled', toolId: st0.eligibleToolId || null, bundleVersion: null };
+    }
+    // SETTLED FAST PATH. This exact stored bundle is already committed to the same Tool, nothing is
+    // pending, and we looked within the throttle interval. `account.cookieHash` is an in-memory
+    // field, so this costs no query at all — whereas the full cycle below spends one
+    // Tool.find({status:'active'}) read plus one status write to conclude "nothing changed", on
+    // EVERY agent heartbeat. Measured before/after below. Correctness is preserved by two things:
+    // a Tool create/update/delete calls the engine with force (see routes/admin/toolsEnhanced.js),
+    // so a recreated Tool is re-resolved deliberately rather than being noticed by polling; and any
+    // genuine rotation changes `cookieHash`, which fails this test immediately.
+    const settled = (st0.lastResult === RESULT.UNCHANGED || st0.lastResult === RESULT.SYNCED);
+    if (settled && !st0.pending && account.cookieHash && st0.syncedHash === account.cookieHash
+        && st0.lastCheckedAt && (now - new Date(st0.lastCheckedAt).getTime()) < RECONCILE_MIN_INTERVAL_MS) {
+      return { result: RESULT.UNCHANGED, code: 'settled', toolId: st0.syncedToolId || null, bundleVersion: null };
+    }
+  }
+
   return keyedLock.withLock('extAutoSync:acct:' + String(account._id), async () => {
     const persistPolicy = async (patch) => {
       const nextSync = Object.assign({}, policy.sync || {}, patch);
@@ -259,7 +289,12 @@ async function runEngine(account, toolKey, deps, source) {
       // stored bundle actually CHANGED (a genuine browser refresh → candidateSync promote → new hash)
       // or when a prior commit is pending. An unchanged, already-checked (aged) bundle is a cheap
       // no-op until it refreshes — so we never spin inconclusive verifications.
-      if (!force && !st.pending && candHash && st.lastCheckedHash === candHash && st.lastCheckedToolId === toolIdStr && st.lastResult === RESULT.INCONCLUSIVE) {
+      // NOTE: deliberately NOT gated on `!st.pending`. A pending DB write and a failing provider
+      // are two different recoveries with two different controls: `pending` must keep retrying the
+      // WRITE, but it must not turn into an unthrottled provider poll while the provider itself is
+      // down. Pending can only heal after a CONCLUSIVE verify anyway, so stopping here costs it
+      // nothing — it resumes the moment the provider answers again (see the throttle below).
+      if (!force && candHash && st.lastCheckedHash === candHash && st.lastCheckedToolId === toolIdStr && st.lastResult === RESULT.INCONCLUSIVE) {
         // Same stored bundle + same eligible tool + already inconclusive. Whether re-verifying can
         // possibly help depends on WHY it was inconclusive, so the reason decides:
         const transient = TRANSIENT_INCONCLUSIVE.has(String(st.inconclusiveReason || ''));
@@ -281,7 +316,10 @@ async function runEngine(account, toolKey, deps, source) {
         // commit happens by itself once the provider answers again. No manual cookie update and no
         // second source login are needed.
       }
-      if (!force && !st.pending && st.lastReconcileAt && (now - new Date(st.lastReconcileAt).getTime()) < RECONCILE_MIN_INTERVAL_MS) {
+      // Also NOT gated on `!st.pending`: previously a pending write let EVERY heartbeat/cookie
+      // event reach the provider, so a write conflict during an outage became one provider request
+      // per event. The write still heals within one throttle interval of the provider recovering.
+      if (!force && st.lastReconcileAt && (now - new Date(st.lastReconcileAt).getTime()) < RECONCILE_MIN_INTERVAL_MS) {
         // Preserve a prior INCONCLUSIVE instead of reporting UNCHANGED: the state really is still
         // unproven, and calling it "unchanged" would hide a transient retry that is still pending.
         const keep = st.lastResult === RESULT.INCONCLUSIVE ? RESULT.INCONCLUSIVE : RESULT.UNCHANGED;

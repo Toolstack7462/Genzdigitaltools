@@ -148,7 +148,10 @@ async function reconcilePolicyForDomain(domainOrUrl) {
     for (const pol of policies) {
       if (extensionCredentialSync.normDomain(pol.officialDomain || proxyTools.targetHost(pol.tool) || '') !== dom) continue;
       const acct = await ProxyAccount.findById(pol.accountId);
-      if (acct) await extensionCredentialSync.reconcileExtensionTool(acct, pol.tool, { Tool, Policy: ExtAutoSyncPolicy });
+      // force: a Tool create/update/delete is a deliberate admin event, so the eligible-Tool
+      // resolution must re-run now rather than waiting for a cycle that the engine's settled
+      // fast path would otherwise skip.
+      if (acct) await extensionCredentialSync.reconcileExtensionTool(acct, pol.tool, { Tool, Policy: ExtAutoSyncPolicy, force: true });
     }
   } catch (e) { console.error('[tools] policy reconcile (non-fatal):', e && e.message); }
 }
