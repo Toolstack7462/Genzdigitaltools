@@ -159,8 +159,12 @@ jobs:
       - name: Surface the failure lines as annotations
         if: always()
         run: |
-          grep -aE "EXCEPTION|fatal|REFUSING TO RUN|passed=|connected db=" "$RUNNER_TEMP/selftest.log" > "$RUNNER_TEMP/fail.txt" || true
-          head -20 "$RUNNER_TEMP/fail.txt" | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error title=extsync-selftest::$line"; done
+          # Emit the WHOLE captured log (it is ~20 lines). Pattern-matching the failure lines missed
+          # the per-check marker, and annotations are the only channel readable without admin rights,
+          # so completeness beats cleverness here.
+          sed -n '1,40p' "$RUNNER_TEMP/selftest.log" | sed 's/%/%25/g' | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error title=extsync-selftest::$line"
+          done
           true
 
       - name: 'DIAG A: refused to run (environment/isolation guard)'
