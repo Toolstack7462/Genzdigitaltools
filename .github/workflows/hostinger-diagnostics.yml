@@ -110,13 +110,26 @@ jobs:
       # The POINT of this job: the real handler regressions, against the real released bytes.
       - name: Run the handler regressions against the released package
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          # FIRST: is the accessor actually in the bytes clients downloaded? If it is, a failing
+          # assertion below is about this HARNESS meeting a different codebase, not about the crash
+          # being back — and those two must never be confused.
+          node -e '
+            const fs = require("fs");
+            const src = fs.readFileSync(process.env.ART_DIR + "/js/background.js", "utf8");
+            const code = src.split("\n").filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join("\n");
+            const bare = (code.match(/(?<!require)[Oo]rchestrator\.executeLogin\(/g) || []).length;
+            const via = (code.match(/requireOrchestrator\(\)\.executeLogin\(/g) || []).length;
+            console.log("SHIPPED accessor=" + /function requireOrchestrator\(/.test(code) + " bare=" + bare + " viaAccessor=" + via + " bytes=" + src.length);
+          ' | tee "$RUNNER_TEMP/shipped.txt"
           cp -r chrome-extension/test "$ART_DIR/test"
           cd chrome-extension
-          EXT_DIR="$ART_DIR" node --test test/workerWakeOrchestrator.test.js 2>&1 | tee "$RUNNER_TEMP/exact.txt" | tail -40
-          grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/exact.txt"
-          fails="$(grep -cE '^not ok' "$RUNNER_TEMP/exact.txt" || true)"
-          echo "EXACT_FAILS=$fails" >> "$GITHUB_ENV"
+          EXT_DIR="$ART_DIR" node --test test/workerWakeOrchestrator.test.js > "$RUNNER_TEMP/exact.txt" 2>&1 || true
+          grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/exact.txt" || true
+          # The ASSERTION TEXT is the evidence. A null-orchestrator message means the crash; anything
+          # else means the mocked flow did not reach the orchestrator in this different tree.
+          grep -E "error: |Cannot read properties of null" "$RUNNER_TEMP/exact.txt" | head -14 || true
+          if grep -q "reading 'executeLogin'" "$RUNNER_TEMP/exact.txt"; then echo "CRASH_STILL_PRESENT"; else echo "NO_NULL_CRASH_IN_OUTPUT"; fi | tee -a "$RUNNER_TEMP/shipped.txt"
 
       - name: Inventory the package against git, and scan it for secrets
         run: |
@@ -162,6 +175,8 @@ jobs:
           emit "artifact"  "$(grep -E 'ORIGIN|IDENTITY|VERSION' "$D" 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "exact-run" "$(grep -E '^# (tests|pass|fail)' "$RUNNER_TEMP/exact.txt" 2>/dev/null | tr '\n' ' ')  not-ok=${EXACT_FAILS:-?}"
           emit "exact-fails" "$(grep -E '^ *not ok' "$RUNNER_TEMP/exact.txt" 2>/dev/null | head -6 | tr '\n' '|' | cut -c1-420)"
+          emit "shipped"     "$(cat "$RUNNER_TEMP/shipped.txt" 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "why-failed"  "$(grep -E "error: " "$RUNNER_TEMP/exact.txt" 2>/dev/null | head -5 | sed 's/^ *//' | tr '\n' '|' | cut -c1-420)"
           emit "counts"    "$(grep -m1 '^COUNTS ' "$I" 2>/dev/null)"
           emit "diffs"     "$(grep -E '^DIFF ' "$I" 2>/dev/null | head -10 | tr '\n' '|' | cut -c1-420)"
           emit "liveonly"  "$(grep -E '^LIVEONLY ' "$I" 2>/dev/null | head -12 | tr '\n' '|' | cut -c1-420)"
