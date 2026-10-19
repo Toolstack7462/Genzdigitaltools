@@ -33,7 +33,7 @@ require.cache[modelPath] = {
 };
 require('../utils/proxy/healthAlerts').onVerifyApplied = async () => {};
 // No network: a candidate that reaches verification would otherwise call Supabase.
-require('../utils/proxy/verify').verifyAccountCookies = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com' });
+require('../utils/proxy/verify').verifyAccountCookies = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' });
 
 const express = require('express');
 const deviceSync = require('../utils/proxy/deviceSync');

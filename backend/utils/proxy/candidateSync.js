@@ -309,7 +309,26 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     try {
       const header = buildCookieHeader(candidate, host);
       if (act) activation.advance(account, { activationId: act.activationId, stage: 'TESTING_WRITEHUMAN', now });
-      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, act ? { readOnly: true, canary: true } : { readOnly: true });
+      // ROUTINE PUSHES GET THE CANARY TOO — 2026-10-18.
+      //
+      // The comment above used to say a local decode was "all a routine push needs". It is not.
+      // A Supabase access token is a stateless JWT that stays exp-valid for about an hour after the
+      // session behind it is gone, so the cheap answer is wrong in precisely the one case that
+      // matters: a source browser that has been signed out. The bundle captured from that browser
+      // then passes verification, is promoted over a working one, and every client is served a
+      // logged-out session while the dashboard reports the account as verified. An operator's
+      // manual cookie save is overwritten by the next push minutes later, which is exactly what
+      // was reported.
+      //
+      // The incident log shows the shape of it: the agent reported `visible_login_form` at
+      // 15:19:28Z and the server recorded BACKEND_VERIFIED / SYNC_RESUMED at 15:19:46Z — eighteen
+      // seconds later, from a decode.
+      //
+      // The canary is a single non-rotating GET of the provider's own /auth/v1/user. It does NOT
+      // exchange the refresh token, so it cannot disturb the browser that owns it, and it is the
+      // same call the scheduler already makes every seven minutes. Cost: one request per accepted
+      // push.
+      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, { readOnly: true, canary: true });
     } catch (err) {
       return fail(CODES.VERIFICATION_INCONCLUSIVE, err && err.message);
     }
@@ -329,6 +348,26 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     // The verifier's own reason (e.g. readonly_no_exchange = the candidate's token is expired or
     // about to be) is the evidence; the bare result 'unknown' says nothing.
     if (v.result !== 'working') return fail(CODES.VERIFICATION_INCONCLUSIVE, v.reason || v.result);
+
+    // PROMOTION REQUIRES POSITIVE PROOF, NOT THE ABSENCE OF A REFUSAL.
+    //
+    // `working` with `canary: 'inconclusive'` means OUR request to the provider failed — network,
+    // 429, 5xx — and the only thing behind the verdict is the local decode. verify.js returns
+    // 'working' there on purpose, because for KEEPING a session alive our own connectivity must
+    // never downgrade it. For REPLACING the bundle that every client is served, the same answer is
+    // not good enough: nothing was proven, and the bundle we already have is known to have worked.
+    //
+    // So an inconclusive canary leaves the active bundle, its version, the active source and the
+    // session status exactly as they are (fail() does not expire anything) and records the real
+    // reason. The agent pushes again within minutes. This deliberately does NOT force sessions
+    // expired to make a badge honest — it declines to claim a promotion nobody verified.
+    //
+    // Scoped to tools that can actually produce the proof: a canary exists only for the Supabase
+    // verify mode. Everywhere else `working` already came from a real authenticated request.
+    const canaryExpected = typeof tools.verifyMode === 'function' && tools.verifyMode(tool) === 'supabase_refresh';
+    if (canaryExpected && v.canary !== 'passed') {
+      return fail(CODES.VERIFICATION_INCONCLUSIVE, 'canary_' + (v.canary || 'absent'));
+    }
 
     // -- 7. ATOMIC PROMOTION. Keep the outgoing bundle as rollback FIRST.
     const prevSs = account.session_status;

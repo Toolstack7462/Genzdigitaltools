@@ -26,7 +26,7 @@ const modelPath = require.resolve('../models/proxy/ProxyAccount');
 let ACCOUNTS = [];
 require.cache[modelPath] = { id: modelPath, filename: modelPath, loaded: true, exports: { find: async () => ACCOUNTS } };
 require('../utils/proxy/healthAlerts').onVerifyApplied = async () => {};
-let VERIFY = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };
+let VERIFY = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
 require('../utils/proxy/verify').verifyAccountCookies = async () => VERIFY;
 
 const express = require('express');
@@ -156,7 +156,7 @@ test('a wrong-account candidate is rejected and the working bundle survives', as
     assert.strictEqual(acct.sessionEncrypted, before, 'a self-registered agent cannot hijack the account');
     assert.strictEqual(acct.session_status, 'working');
   } finally {
-    VERIFY = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };
+    VERIFY = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
     server.close();
   }
 });

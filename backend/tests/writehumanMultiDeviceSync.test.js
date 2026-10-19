@@ -15,7 +15,7 @@ process.env.PROXY_VAULT_KEY = process.env.PROXY_VAULT_KEY || crypto.randomBytes(
 
 // --- stub the single network dependency BEFORE the units under test capture it ---------------
 const verifyMod = require('../utils/proxy/verify');
-let nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };
+let nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
 let verifyCalls = 0;
 verifyMod.verifyAccountCookies = async () => { verifyCalls += 1; return nextVerify; };
 
@@ -76,7 +76,7 @@ function pair(acct, name) {
 function activeBundleOf(acct) {
   return JSON.parse(vaultCrypto.decrypt(acct.sessionEncrypted));
 }
-function reset() { nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' }; verifyCalls = 0; }
+function reset() { nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' }; verifyCalls = 0; }
 
 // --- pairing ----------------------------------------------------------------
 test('pairing code is single-use, and a wrong code never pairs', () => {

@@ -34,7 +34,7 @@ process.env.PROXY_VAULT_KEY = process.env.PROXY_VAULT_KEY || crypto.randomBytes(
 
 // --- stub the single network dependency BEFORE the units under test capture it ---------------
 const verifyMod = require('../utils/proxy/verify');
-let nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' };
+let nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' };
 let verifyCalls = [];
 verifyMod.verifyAccountCookies = async (tool, header, expected, opts) => { verifyCalls.push(opts || {}); return nextVerify; };
 
@@ -133,7 +133,7 @@ async function push(acct, dev, b, cap) {
   }
   return ingestCandidate(acct, TOOL, dev.row, b.cookies, { activation: act });
 }
-function reset() { nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com' }; verifyCalls = []; }
+function reset() { nextVerify = { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', canary: 'passed' }; verifyCalls = []; }
 
 // ── 1. NEW RDP ────────────────────────────────────────────────────────────────
 test('a brand-new RDP is READY, and Mark Active captures, verifies and promotes it', async () => {
