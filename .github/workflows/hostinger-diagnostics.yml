@@ -67,6 +67,170 @@ jobs:
   #
   # Before deciding anything, read the live package. The runner has open internet, so it fetches
   # the served ZIP itself — nothing is written and the host is not touched.
+  # ── WHY IS THE CLIENT STILL SEEING WRITEHUMAN'S LOGIN PAGE (read-only) ───────────────────────
+  # The extension crash is fixed and served (v3.9.37 executes on a cold wake), and the gateway
+  # alignment fix is live, but the client still lands on WriteHuman's logged-out page. The two are
+  # different failures: one stops the tool OPENING, this one is about which SESSION is delivered.
+  #
+  # So this reads the RUNNING code and the existing logs rather than re-deriving from the repo:
+  # whether the promotion-proof gate is actually in the running API, what the gateway's own
+  # alignment log says, and when the API was last deployed. It changes nothing, creates no refresh
+  # exchange, touches no account, and prints identifiers, counts and timestamps only.
+  whdiag:
+    name: Why the client still gets the login page (read-only)
+    if: ${{ inputs.confirm == 'WHDIAG' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install deploy key and PINNED host key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.HOSTINGER_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "::error::HOSTINGER_SSH_PRIVATE_KEY and HOSTINGER_SSH_KNOWN_HOSTS must both be set."; exit 1
+          fi
+          D="$RUNNER_TEMP/dg-ssh"; mkdir -p "$D" && chmod 700 "$D"; umask 077
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$D/id_deploy"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$D/known_hosts"
+          chmod 600 "$D/id_deploy" "$D/known_hosts"
+          grep -q 'PRIVATE KEY' "$D/id_deploy" || { echo "::error::the stored key has no PRIVATE KEY header"; exit 1; }
+          ssh-keygen -F "[${SFTP_HOST}]:${SFTP_PORT}" -f "$D/known_hosts" >/dev/null 2>&1 \
+            || { echo "::error::known_hosts has no entry for [${SFTP_HOST}]:${SFTP_PORT}"; exit 1; }
+          echo "SSH_DIR=$D" >> "$GITHUB_ENV"
+
+      - name: Unlock the key if encrypted
+        env:
+          SSH_PASSPHRASE: ${{ secrets.HOSTINGER_SSH_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PASSPHRASE:-}" ]; then echo "key treated as unencrypted"; exit 0; fi
+          eval "$(ssh-agent -s)" >/dev/null
+          ASK="$SSH_DIR/askpass.sh"; umask 077
+          printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$SSH_PASSPHRASE"\n' > "$ASK"; chmod 700 "$ASK"
+          SSH_ASKPASS="$ASK" SSH_ASKPASS_REQUIRE=force DISPLAY=:0 ssh-add "$SSH_DIR/id_deploy" >/dev/null 2>&1 \
+            || { echo "::error::ssh-add rejected the key"; exit 1; }
+          rm -f "$ASK"
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> "$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> "$GITHUB_ENV"
+
+      - name: Read the running code and the existing logs
+        run: |
+          set -uo pipefail
+          O="-i $SSH_DIR/id_deploy -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$SSH_DIR/known_hosts -o BatchMode=yes -o ConnectTimeout=20 -p $SFTP_PORT"
+          # shellcheck disable=SC2086
+          ssh $O "$SFTP_USER@$SFTP_HOST" "bash -s" > diag.txt 2>diag.err <<'REMOTE'
+          set -u
+          echo "== HOST =="; date -u +%Y-%m-%dT%H:%M:%SZ
+
+          # 1. The RUNNING API, resolved from the process, never from a guessed directory —
+          #    `find | head -1` once resolved to a rollback snapshot and made everything look right.
+          echo "== RUNNING API =="
+          API=""
+          for p in $(pgrep -f 'node' 2>/dev/null); do
+            cwd=$(readlink -f "/proc/$p/cwd" 2>/dev/null) || continue
+            [ -n "$cwd" ] || continue
+            if [ -f "$cwd/server-crm.js" ] || [ -f "$cwd/backend/server-crm.js" ]; then
+              [ -f "$cwd/server-crm.js" ] && API="$cwd" || API="$cwd/backend"
+              echo "pid=$p cwd=$cwd"
+              break
+            fi
+          done
+          if [ -z "$API" ]; then
+            echo "NO_RUNNING_NODE_API_FOUND (Passenger may spawn per-request)"
+            C="$HOME/hbuilds/current"
+            [ -L "$C" ] && echo "hbuilds/current -> $(readlink -f "$C")"
+            for cand in "$(readlink -f "$C" 2>/dev/null)/nodejs/backend" "$(readlink -f "$C" 2>/dev/null)/nodejs"; do
+              [ -f "$cand/utils/proxy/candidateSync.js" ] && { API="$cand"; echo "falling back to deployed tree: $cand"; break; }
+            done
+          fi
+          echo "API_ROOT=${API:-none}"
+
+          # 2. Is the promotion-proof gate actually in the running code?
+          echo "== PROMOTION GATE IN RUNNING CODE =="
+          if [ -n "${API:-}" ] && [ -f "$API/utils/proxy/candidateSync.js" ]; then
+            f="$API/utils/proxy/candidateSync.js"
+            echo "candidateSync.js bytes=$(stat -c %s "$f") mtime=$(date -u -r "$f" +%Y-%m-%dT%H:%M:%SZ)"
+            echo "canary_mentions=$(grep -c 'canary' "$f" 2>/dev/null || echo 0)"
+            echo "VERIFICATION_INCONCLUSIVE=$(grep -c 'VERIFICATION_INCONCLUSIVE' "$f" 2>/dev/null || echo 0)"
+            echo "readOnly_verify=$(grep -c 'readOnly: true' "$f" 2>/dev/null || echo 0)"
+            if grep -q 'canaryExpected' "$f" 2>/dev/null; then echo "GATE=PRESENT"; else echo "GATE=ABSENT"; fi
+          else
+            echo "candidateSync.js NOT FOUND under ${API:-none}"
+          fi
+
+          # 3. The running gateway and whether the alignment fix is in it.
+          echo "== RUNNING GATEWAY =="
+          for p in $(pgrep -f 'node' 2>/dev/null); do
+            cwd=$(readlink -f "/proc/$p/cwd" 2>/dev/null) || continue
+            if [ -f "$cwd/server.js" ] && grep -q 'proxy-gateway\|genz-proxy-gateway' "$cwd/package.json" 2>/dev/null; then
+              echo "pid=$p cwd=$cwd sha256=$(sha256sum "$cwd/server.js" | cut -c1-16)"
+              echo "align_fn=$(grep -c 'shouldAlignBrowserSession' "$cwd/server.js" 2>/dev/null || echo 0)"
+              echo "align_log=$(grep -c 'supabase_session_align' "$cwd/server.js" 2>/dev/null || echo 0)"
+              break
+            fi
+          done
+
+          # 4. The gateway's OWN alignment log — safeLog already emits identifiers only.
+          echo "== ALIGNMENT LOG (last 25) =="
+          find "$HOME" -maxdepth 4 -name '*.log' -newermt '-7 days' 2>/dev/null | head -20 | while read -r L; do
+            n=$(grep -c 'supabase_session_align' "$L" 2>/dev/null || echo 0)
+            [ "$n" = "0" ] && continue
+            echo "-- $L ($n lines)"
+            grep 'supabase_session_align' "$L" 2>/dev/null | tail -25
+          done
+
+          # 5. Promotion / verification events in whatever logs exist.
+          echo "== PROMOTION + VERIFY EVENTS (last 25) =="
+          find "$HOME" -maxdepth 4 -name '*.log' -newermt '-7 days' 2>/dev/null | head -20 | while read -r L; do
+            n=$(grep -cE 'promot|candidate_sync|verification|canary|executeLogin' "$L" 2>/dev/null || echo 0)
+            [ "$n" = "0" ] && continue
+            echo "-- $L ($n lines)"
+            grep -E 'promot|candidate_sync|verification|canary' "$L" 2>/dev/null | tail -25
+          done
+
+          # 6. When was the API last deployed?
+          echo "== LAST DEPLOY =="
+          ls -1t "$HOME/hbuilds/logs" 2>/dev/null | head -3 | while read -r d; do
+            f=$(ls -1t "$HOME/hbuilds/logs/$d"/*deploy.log 2>/dev/null | head -1)
+            [ -n "$f" ] && echo "$d $(date -u -r "$f" +%Y-%m-%dT%H:%M:%SZ) $(basename "$f")"
+          done
+          echo "== END =="
+          REMOTE
+          rc=$?
+          echo "ssh rc=$rc"
+          # Redaction belt-and-braces: never let a long opaque token-shaped string through.
+          sed -E 's/(eyJ[A-Za-z0-9_-]{6})[A-Za-z0-9_.-]+/\1<redacted-jwt>/g; s/([A-Za-z0-9_-]{40})[A-Za-z0-9_-]{20,}/\1<redacted>/g' diag.txt > diag.safe.txt || cp diag.txt diag.safe.txt
+          cat diag.safe.txt
+          head -20 diag.err || true
+          cp diag.safe.txt "$RUNNER_TEMP/" 2>/dev/null || true
+
+      - name: Emit the findings
+        if: always()
+        run: |
+          set -uo pipefail
+          emit() { printf '::notice title=%s::%s\n' "$1" "$2"; }
+          S=diag.safe.txt
+          emit "running-api"  "$(sed -n '/== RUNNING API ==/,/== PROMOTION GATE/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "promo-gate"   "$(sed -n '/== PROMOTION GATE/,/== RUNNING GATEWAY/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "gateway"      "$(sed -n '/== RUNNING GATEWAY ==/,/== ALIGNMENT LOG/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "align-log"    "$(sed -n '/== ALIGNMENT LOG/,/== PROMOTION + VERIFY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
+          emit "promo-events" "$(sed -n '/== PROMOTION + VERIFY/,/== LAST DEPLOY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
+          emit "last-deploy"  "$(sed -n '/== LAST DEPLOY/,/== END/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+
+      - name: Keep the transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wh-diagnostics
+          path: ${{ runner.temp }}/diag.safe.txt
+          if-no-files-found: warn
+
   extcheck:
     name: Inspect the live extension package (read-only)
     if: ${{ inputs.confirm == 'EXTCHECK' }}
