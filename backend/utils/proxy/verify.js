@@ -312,11 +312,26 @@ async function supabaseUserCheck(cfg, accessToken) {
     const email = (typeof user.email === 'string' && user.email.trim()) ? user.email.trim() : null;
     // The AUTHORITATIVE, stable identity is GoTrue's `id` (a UUID) — never the email (the user can
     // change it), never the cookie-supplied value (the client controls it) and never the masked
-    // form (ambiguous between accounts). An id we cannot recognise yields null, which makes the
-    // credential gate fail CLOSED and report `no_authoritative_account_id` instead of committing
-    // against an identity nobody vouched for.
+    // form (ambiguous between accounts).
     const rawId = typeof user.id === 'string' ? user.id.trim() : '';
     const accountKey = UUID_RE.test(rawId) ? rawId : null;
+    // An error-shaped body is not a user, whatever the status line says. GoTrue answers
+    // {code,msg} / {error,error_description}; a gateway or WAF in front of it can answer 200 with
+    // its own JSON. Neither is a signed-in user.
+    const errorShaped = !accountKey && (
+      typeof user.error === 'string' || typeof user.error_description === 'string' ||
+      typeof user.msg === 'string' || typeof user.message === 'string' || user.code !== undefined
+    );
+    // PROOF REQUIRES A USER. A real /auth/v1/user 200 always carries the user's `id`, so a 200 with
+    // {} , an error-shaped object, or an unrecognisable id is NOT evidence of a live session — it is
+    // INCONCLUSIVE. This matters beyond the credential commit: `canary:'passed'` is what
+    // candidateSync accepts as POSITIVE proof to PROMOTE a captured bundle, so treating a contentless
+    // 200 as passed would let an unproven bundle be promoted over a working one. Inconclusive is the
+    // honest answer — it cannot prove the session live, and must not prove it dead either (only an
+    // unambiguous 401 does that, below).
+    if (!accountKey) {
+      return { ok: false, status: resp.status, inconclusive: true, email, accountKey: null, malformed: true, errorShaped: !!errorShaped };
+    }
     return { ok: true, status: resp.status, inconclusive: false, email, accountKey };
   }
   // 401 with a structurally valid, unexpired JWT = the session itself is gone (signed out, revoked,

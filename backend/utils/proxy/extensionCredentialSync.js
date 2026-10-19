@@ -263,8 +263,15 @@ async function runEngine(account, toolKey, deps, source) {
         // Same stored bundle + same eligible tool + already inconclusive. Whether re-verifying can
         // possibly help depends on WHY it was inconclusive, so the reason decides:
         const transient = TRANSIENT_INCONCLUSIVE.has(String(st.inconclusiveReason || ''));
-        const budgetStale = !st.lastInconclusiveAt || (now - new Date(st.lastInconclusiveAt).getTime()) >= TRANSIENT_RETRY_RESET_MS;
-        const spent = !budgetStale && Number(st.transientTries || 0) >= TRANSIENT_MAX_TRIES;
+        // The budget is a WINDOW, timed from the attempt that OPENED it (`transientWindowAt`), not
+        // from the most recent attempt — otherwise each further failure pushes the deadline out and
+        // the window never actually elapses. Once it has elapsed the budget is spent no longer, and
+        // the persist below RESETS the counter rather than continuing to count up: a window that is
+        // merely "eligible" while its old counter survives would allow exactly one more attempt and
+        // then latch again, which is the defect this replaces.
+        const windowOpenedAt = st.transientWindowAt ? new Date(st.transientWindowAt).getTime() : null;
+        const windowElapsed = windowOpenedAt == null || (now - windowOpenedAt) >= TRANSIENT_RETRY_RESET_MS;
+        const spent = !windowElapsed && Number(st.transientTries || 0) >= TRANSIENT_MAX_TRIES;
         if (!transient || spent) {
           // Deterministic (aged/invalid data), or the bounded budget is spent for now → wait for a
           // genuine refresh (new bundle) or a tool change. No per-cycle respin.
@@ -289,6 +296,10 @@ async function runEngine(account, toolKey, deps, source) {
     const accountKey = (v && v.accountKey) || null;           // authoritative, stable Supabase user id
     // Record that we have CHECKED this exact stored bundle (drives the no-respin guard above).
     const detectBase = Object.assign({
+      // Default: any CONCLUSIVE outcome (verified / synced / rejected / failed) clears the transient
+      // budget, so a later unrelated blip starts from a full window instead of a stale count. The
+      // inconclusive branch re-applies its own values AFTER this object, so it still wins there.
+      transientTries: 0, transientWindowAt: null,
       lastDetectedAt: now, lastObservedHash: candHash, lastObservedTokenIat: candIat, lastSourceDeviceId: deviceId,
       eligibleToolId: toolIdStr, lastVerifyResult: vr, lastCanary: (v && v.canary) || null, lastCheckedHash: candHash, lastCheckedToolId: toolIdStr,
     }, reconcileStamp);
@@ -305,12 +316,25 @@ async function runEngine(account, toolKey, deps, source) {
     // wouldSync, and we NEVER fall back to the masked/cookie-supplied email as the security boundary.
     if (!(vr === 'working' && canaryOk && accountKey)) {
       const why = vr === 'working' ? (canaryOk ? 'no_authoritative_account_id' : 'canary_' + ((v && v.canary) || 'absent')) : vr;
-      // Count CONSECUTIVE transient attempts against the SAME stored bundle, so the retry stays
-      // bounded. A changed bundle, a different eligible Tool, or a deterministic reason resets it.
+      // Count transient attempts inside the CURRENT window against the SAME stored bundle, so the
+      // retry stays bounded. The window is opened by the first such attempt and RESET once it has
+      // elapsed; a changed bundle, a different eligible Tool, or a deterministic reason also reset
+      // it. `transientWindowAt` is what makes the reset real rather than nominal.
       const sameBundle = !!(candHash && st.lastCheckedHash === candHash && st.lastCheckedToolId === toolIdStr);
       const transientWhy = TRANSIENT_INCONCLUSIVE.has(why);
-      const transientTries = transientWhy ? ((sameBundle ? Number(st.transientTries || 0) : 0) + 1) : 0;
-      return persistPolicy(Object.assign({ stage: 'verification_inconclusive', lastResult: RESULT.INCONCLUSIVE, wouldSync: false, lastError: null, lastInconclusiveAt: now, inconclusiveReason: why, transientTries }, detectBase));
+      const prevWindowAt = st.transientWindowAt ? new Date(st.transientWindowAt).getTime() : null;
+      const windowLive = sameBundle && prevWindowAt != null && (now - prevWindowAt) < TRANSIENT_RETRY_RESET_MS;
+      let transientTries = 0;
+      let transientWindowAt = null;
+      if (transientWhy) {
+        transientTries = windowLive ? Number(st.transientTries || 0) + 1 : 1;
+        transientWindowAt = windowLive ? new Date(prevWindowAt) : now;
+      }
+      return persistPolicy(Object.assign(
+        { stage: 'verification_inconclusive', lastResult: RESULT.INCONCLUSIVE, wouldSync: false, lastError: null, lastInconclusiveAt: now, inconclusiveReason: why },
+        detectBase,
+        { transientTries, transientWindowAt },
+      ));
     }
 
     // VERIFIED (server canary). Identity is the AUTHORITATIVE, stable account id (NEVER maskedId).
@@ -397,6 +421,9 @@ async function runEngine(account, toolKey, deps, source) {
     if (setMap['credentials.payloadEncrypted']) tool.credentials = Object.assign({}, tool.credentials, { payloadEncrypted: setMap['credentials.payloadEncrypted'] });
     await persistPolicy(Object.assign({
       stage: 'synced', lastResult: RESULT.SYNCED, lastError: null, pending: false,
+      // A completed commit ends the transient-failure story: clear the budget so a later, unrelated
+      // provider blip starts from a full window instead of inheriting a spent counter.
+      transientTries: 0, transientWindowAt: null,
       lastDetectedAt: now, lastSyncAt: now, lastVerifiedAt: now,
       syncedHash: candHash, syncedTokenIat: candIat, syncedToolId: toolIdStr,
       boundIdentity, lastIdentity: displayId, lastSourceDeviceId: deviceId, eligibleToolId: toolIdStr,

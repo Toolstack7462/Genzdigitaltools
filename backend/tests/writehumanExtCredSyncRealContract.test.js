@@ -67,6 +67,24 @@ function liveBundle(tag) {
   const payload = JSON.stringify({ access_token: jwt, refresh_token: 'rt-' + (tag || 'A'), user: { email: EMAIL } });
   return { cookies: [{ name: 'sb-' + REF + '-auth-token', value: 'base64-' + Buffer.from(payload).toString('base64'), domain: '.writehuman.ai', path: '/', secure: true }], origin: 'https://writehuman.ai' };
 }
+// An EXPIRED access token: verify.js skips the canary fast path entirely, so the answer cannot
+// be made conclusive by asking the provider again — only a genuine browser refresh can fix it.
+function expiredBundle() {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '').replace(/\+/g, '-').replace(/\//g, '_');
+  const jwt = `${b64({ alg: 'HS256' })}.${b64({ iat: nowSec - 7200, exp: nowSec - 3600, email: EMAIL, session_id: 'sess-X' })}.sig`;
+  const payload = JSON.stringify({ access_token: jwt, refresh_token: 'rt-X', user: { email: EMAIL } });
+  return { cookies: [{ name: 'sb-' + REF + '-auth-token', value: 'base64-' + Buffer.from(payload).toString('base64'), domain: '.writehuman.ai', path: '/', secure: true }], origin: 'https://writehuman.ai' };
+}
+function accountWith(b) {
+  return {
+    _id: 'acct1', tool: TOOL, label: 'WriteHuman', isPrimary: true, status: 'active', session_status: 'working',
+    expectedIdentifier: null,
+    sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(b)),
+    cookieHash: authCookieHash(b, REF), bundleVersion: 1,
+    save() { return Promise.resolve(this); },
+  };
+}
 function account(tag) {
   const b = liveBundle(tag);
   return {
@@ -150,14 +168,30 @@ describe('1. the authoritative identity must actually be PRODUCED, not mocked', 
     });
   });
 
-  test('a 200 user object with NO id is live but UNPROVEN: no commit, identity requirement intact', async () => {
+  test('a 200 user object with NO id is NOT proof at all: inconclusive, no commit', async () => {
+    // Stricter than the first pass, deliberately. A real /auth/v1/user 200 always carries `id`, and
+    // `canary:'passed'` is what candidateSync accepts as positive proof to PROMOTE a bundle — so a
+    // contentless 200 must not reach 'passed' either. Liveness and identity now stand or fall
+    // together at this boundary.
     const a = account(); const pol = policyRec(); const t = extTool(); const before = t.credentialVersion;
     await withProvider(answer(200, JSON.stringify({ email: EMAIL })), async () => {
       const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t]));
       assert.strictEqual(out.result, RESULT.INCONCLUSIVE);
     });
-    assert.strictEqual(S(pol).inconclusiveReason, 'no_authoritative_account_id');
+    assert.strictEqual(S(pol).lastCanary, 'inconclusive', 'not promotable proof');
     assert.strictEqual(t.credentialVersion, before, 'nothing was written');
+  });
+
+  test('the ENGINE gate still rejects a verified-but-identityless result (no_authoritative_account_id)', async () => {
+    // The producer can no longer emit that shape, but the consumer's gate must stay closed anyway:
+    // this drives the engine directly so the branch keeps its coverage.
+    const a = account(); const pol = policyRec(); const t = extTool(); const before = t.credentialVersion;
+    const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t], {
+      reVerify: async () => ({ result: 'working', canary: 'passed', accountKey: null, maskedId: 'op****@example.com' }),
+    }));
+    assert.strictEqual(out.result, RESULT.INCONCLUSIVE);
+    assert.strictEqual(S(pol).inconclusiveReason, 'no_authoritative_account_id');
+    assert.strictEqual(t.credentialVersion, before);
   });
 
   test('the masked/cookie email is NEVER accepted as provider proof of identity', async () => {
@@ -179,7 +213,7 @@ describe('1. the authoritative identity must actually be PRODUCED, not mocked', 
       const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t]));
       assert.strictEqual(out.result, RESULT.INCONCLUSIVE);
     });
-    assert.strictEqual(S(pol).inconclusiveReason, 'no_authoritative_account_id');
+    assert.strictEqual(S(pol).lastCanary, 'inconclusive', 'an unrecognisable id is not proof');
     assert.strictEqual(t.credentialVersion, before);
   });
 
@@ -256,18 +290,23 @@ describe('3. a transient failure must not latch the engine permanently', () => {
     assert.deepStrictEqual(readerCookies(t).map(c => c.name), ['sb-' + REF + '-auth-token']);
   });
 
-  test('an AGED/invalid bundle still does not respin: deterministic reasons keep the short-circuit', async () => {
+  test('an AGED/EXPIRED bundle still does not respin: deterministic reasons keep the short-circuit', async () => {
     // The guard's original purpose, preserved: an expired stored token cannot be proven by asking
-    // again, so the engine must stay quiet until a genuine refresh changes the bundle.
-    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    // again, so the engine must stay quiet until a genuine refresh changes the bundle. The fixture
+    // is a REAL expired token, so verify.js never reaches the provider at all.
+    const a = accountWith(expiredBundle()); const pol = policyRec(); const t = extTool(); const list = [t];
     let calls = 0;
-    const counting = async (...args) => { calls += 1; return answer(200, JSON.stringify({ email: EMAIL }))(...args); };
+    const counting = async (...args) => { calls += 1; return answer(200, userJson())(...args); };
     await withProvider(counting, async () => {
-      await extSync.reconcileExtensionTool(a, TOOL, deps(pol, list, { now: minutesLater(0) }));
-      assert.strictEqual(S(pol).inconclusiveReason, 'no_authoritative_account_id', 'deterministic');
-      assert.strictEqual(calls, 1);
+      const o1 = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, list, { now: minutesLater(0) }));
+      assert.strictEqual(o1.result, RESULT.INCONCLUSIVE);
+      const why = S(pol).inconclusiveReason;
+      assert.ok(!extSync._internals.TRANSIENT_INCONCLUSIVE.has(String(why)),
+        `an expired token must be a DETERMINISTIC reason, got ${why}`);
+      const before = calls;
       await extSync.reconcileExtensionTool(a, TOOL, deps(pol, list, { now: minutesLater(5) }));
-      assert.strictEqual(calls, 1, 'no re-verify of an unchanged, deterministically-unprovable bundle');
+      assert.strictEqual(calls, before, 'no re-verify of an unchanged, deterministically-unprovable bundle');
+      assert.strictEqual(S(pol).transientTries, 0, 'a deterministic reason must not consume the budget');
     });
   });
 
@@ -315,5 +354,180 @@ describe('3. a transient failure must not latch the engine permanently', () => {
     });
     assert.strictEqual(S(pol).wouldSync, true, 'observe says what it WOULD do');
     assert.strictEqual(t.credentialVersion, before, 'and writes nothing');
+  });
+});
+
+describe('4. the retry budget is a real, resetting window (review lead B)', () => {
+  const minutesLater = (n) => new Date(Date.now() + n * 60 * 1000);
+  const MAX = extSync._internals.TRANSIENT_MAX_TRIES;
+  const RESET_MIN = extSync._internals.TRANSIENT_RETRY_RESET_MS / 60000;
+
+  // Only a reconcile/hook that actually REACHES the verifier consumes an attempt. A cycle that the
+  // short-circuit or the throttle answers does not, which is what keeps this bounded rather than
+  // merely slow.
+  async function drive(a, pol, list, impl, atMinutes) {
+    let calls = 0;
+    const counting = async (...args) => { calls += 1; return impl(...args); };
+    await withProvider(counting, async () => {
+      for (const m of atMinutes) await extSync.reconcileExtensionTool(a, TOOL, deps(pol, list, { now: minutesLater(m) }));
+    });
+    return calls;
+  }
+
+  test('REGRESSION: exhausted -> window elapses -> one more failure -> attempts REMAIN', async () => {
+    // The first fix made the window merely ELIGIBLE: the old counter survived, so the new window
+    // allowed exactly one attempt and then latched again. A window that does not reset its counter
+    // is not a renewed budget.
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    const fail = answer(500, 'boom');
+
+    const spent = await drive(a, pol, list, fail, Array.from({ length: MAX + 3 }, (_, i) => i * 2));
+    assert.strictEqual(spent, MAX, 'budget exhausts at MAX');
+    assert.strictEqual(S(pol).transientTries, MAX);
+
+    // the window elapses, and ONE more transient failure happens inside the new window
+    const one = await drive(a, pol, list, fail, [RESET_MIN + 2]);
+    assert.strictEqual(one, 1, 'the renewed window allows an attempt');
+    assert.strictEqual(S(pol).transientTries, 1, 'the counter RESET for the new window');
+
+    // attempts must REMAIN in this new window
+    const more = await drive(a, pol, list, fail, [RESET_MIN + 4, RESET_MIN + 6]);
+    assert.strictEqual(more, 2, 'the rest of the renewed budget is available');
+    assert.strictEqual(S(pol).transientTries, 3);
+  });
+
+  test('and it eventually recovers inside the renewed window, with no manual cookies', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    await drive(a, pol, list, answer(500, 'boom'), Array.from({ length: MAX + 2 }, (_, i) => i * 2));
+    const ok = await drive(a, pol, list, answer(200, userJson()), [RESET_MIN + 2]);
+    assert.strictEqual(ok, 1);
+    assert.strictEqual(S(pol).lastResult, RESULT.SYNCED);
+    assert.strictEqual(t.credentialVersion, 4);
+  });
+
+  test('a SUCCESSFUL sync clears the budget, so a later blip starts from a full window', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    await drive(a, pol, list, answer(500, 'boom'), [0, 2]);
+    assert.strictEqual(S(pol).transientTries, 2);
+    await drive(a, pol, list, answer(200, userJson()), [4]);
+    assert.strictEqual(S(pol).lastResult, RESULT.SYNCED);
+    assert.strictEqual(S(pol).transientTries, 0, 'a conclusive outcome clears the counter');
+    assert.strictEqual(S(pol).transientWindowAt, null);
+  });
+
+  test('a NEW bundle resets the budget (a genuine refresh is not the old failure)', async () => {
+    const a = account('A'); const pol = policyRec(); const t = extTool(); const list = [t];
+    await drive(a, pol, list, answer(500, 'boom'), Array.from({ length: MAX + 2 }, (_, i) => i * 2));
+    assert.strictEqual(S(pol).transientTries, MAX, 'budget spent on the old bundle');
+    // the browser refreshes: a different stored bundle, so a different hash
+    const b = liveBundle('B');
+    a.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(b));
+    a.cookieHash = authCookieHash(b, REF);
+    const after = await drive(a, pol, list, answer(500, 'boom'), [MAX * 2 + 4]);
+    assert.strictEqual(after, 1, 'the new bundle is verified despite the old exhausted budget');
+    assert.strictEqual(S(pol).transientTries, 1, 'and starts its own window');
+  });
+
+  test('a CHANGED (recreated) Tool resets the budget', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    await drive(a, pol, list, answer(500, 'boom'), Array.from({ length: MAX + 2 }, (_, i) => i * 2));
+    assert.strictEqual(S(pol).transientTries, MAX);
+    const t2 = extTool();                 // a NEW Tool id on the same official domain
+    const after = await drive(a, pol, [t2], answer(500, 'boom'), [MAX * 2 + 4]);
+    assert.strictEqual(after, 1, 'a recreated Tool is not the old failure');
+    assert.strictEqual(S(pol).transientTries, 1);
+  });
+
+  test('state lives in the policy record, so a process restart does not refill the budget', async () => {
+    // The counter and window are persisted fields, not module memory: a fresh engine invocation
+    // reading the same record must still see the budget as spent.
+    const a = account(); const pol = policyRec(); const t = extTool(); const list = [t];
+    await drive(a, pol, list, answer(500, 'boom'), Array.from({ length: MAX + 2 }, (_, i) => i * 2));
+    assert.strictEqual(S(pol).transientTries, MAX);
+    const windowAt = S(pol).transientWindowAt;
+    assert.ok(windowAt, 'the window start is persisted');
+    const afterRestart = await drive(a, pol, list, answer(500, 'boom'), [MAX * 2 + 4]);
+    assert.strictEqual(afterRestart, 0, 'a restart does not hand out a fresh budget');
+    assert.strictEqual(S(pol).transientWindowAt, windowAt, 'and does not move the window');
+  });
+
+  test('a failed Tool WRITE is pending, not a transient verification failure', async () => {
+    // A commit that is verified but whose guarded write loses the race must keep healing through
+    // `pending` — it must not be charged to the provider-failure budget.
+    const a = account(); const pol = policyRec(); const t = extTool();
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, {
+        Tool: conflicting, Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(0),
+      });
+      assert.notStrictEqual(out.result, RESULT.SYNCED);
+    });
+    assert.strictEqual(S(pol).pending, true, 'it heals via pending');
+    assert.strictEqual(Number(S(pol).transientTries || 0), 0, 'a write conflict is not a provider failure');
+  });
+
+  test('a pending commit is retried on the NEXT event even with an unchanged bundle', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool();
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+    await withProvider(answer(200, userJson()), async () => {
+      await extSync.reconcileExtensionTool(a, TOOL, { Tool: conflicting, Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(0) });
+    });
+    assert.strictEqual(S(pol).pending, true);
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t], { now: minutesLater(1) }));
+      assert.strictEqual(out.result, RESULT.SYNCED, 'pending bypasses the no-respin guard and heals');
+    });
+    assert.strictEqual(t.credentialVersion, 4);
+  });
+});
+
+describe('5. verification honesty: four separate facts stay separate (review lead C)', () => {
+  const minutesLater = (n) => new Date(Date.now() + n * 60 * 1000);
+
+  test('a failed Tool WRITE never advances the provider-verification or sync timestamps', async () => {
+    // Source receipt, provider verification, the committed Tool update and client access are four
+    // different facts. A verified bundle whose guarded write loses the race is NOT a sync, and the
+    // panel must not show it as freshly verified or freshly synced.
+    const a = account(); const pol = policyRec(); const t = extTool();
+    // seed a previous GOOD commit, so we can prove last-known-good survives the failure
+    pol.sync = { lastSyncAt: new Date(Date.now() - 3600e3), lastVerifiedAt: new Date(Date.now() - 3600e3), syncedHash: 'good-hash', syncedToolId: 'good-tool' };
+    const good = { ...pol.sync };
+    const conflicting = { find: async () => [t], patchGuarded: async () => 0 };
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, {
+        Tool: conflicting, Policy: policyModel(pol), deviceId: 'dev1', now: minutesLater(0),
+      });
+      assert.notStrictEqual(out.result, RESULT.SYNCED);
+    });
+    assert.strictEqual(S(pol).pending, true, 'it is pending, and says so');
+    assert.strictEqual(String(S(pol).lastSyncAt), String(good.lastSyncAt), 'lastSyncAt must NOT move');
+    assert.strictEqual(String(S(pol).lastVerifiedAt), String(good.lastVerifiedAt), 'lastVerifiedAt must NOT move');
+    assert.strictEqual(S(pol).syncedHash, 'good-hash', 'last-known-good bundle identity retained');
+    assert.strictEqual(S(pol).syncedToolId, 'good-tool', 'last-known-good Tool retained');
+  });
+
+  test('an INCONCLUSIVE check never advances lastVerifiedAt and never expires the session', async () => {
+    const a = account(); const pol = policyRec(); const t = extTool();
+    pol.sync = { lastVerifiedAt: new Date(Date.now() - 3600e3) };
+    const was = String(pol.sync.lastVerifiedAt);
+    await withProvider(answer(500, 'boom'), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t], { now: minutesLater(0) }));
+      assert.strictEqual(out.result, RESULT.INCONCLUSIVE);
+    });
+    assert.strictEqual(String(S(pol).lastVerifiedAt), was, 'our own failure is not a verification');
+    assert.strictEqual(a.session_status, 'working', 'and must not force the source session expired');
+  });
+
+  test('OBSERVE reports wouldSync but writes no credential and claims no sync', async () => {
+    const a = account(); const pol = policyRec({ mode: 'observe' }); const t = extTool();
+    const before = t.credentialVersion; const beforeBundle = t.sessionBundle.cookiesEncrypted;
+    await withProvider(answer(200, userJson()), async () => {
+      const out = await extSync.reconcileExtensionTool(a, TOOL, deps(pol, [t], { now: minutesLater(0) }));
+      assert.strictEqual(out.result, RESULT.OBSERVE);
+    });
+    assert.strictEqual(S(pol).wouldSync, true);
+    assert.strictEqual(t.credentialVersion, before, 'no revision bump');
+    assert.strictEqual(t.sessionBundle.cookiesEncrypted, beforeBundle, 'no credential written');
+    assert.ok(!S(pol).lastSyncAt, 'observe never claims a sync');
   });
 });
