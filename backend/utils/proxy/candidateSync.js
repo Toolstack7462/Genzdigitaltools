@@ -349,24 +349,31 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     // about to be) is the evidence; the bare result 'unknown' says nothing.
     if (v.result !== 'working') return fail(CODES.VERIFICATION_INCONCLUSIVE, v.reason || v.result);
 
-    // PROMOTION REQUIRES POSITIVE PROOF, NOT THE ABSENCE OF A REFUSAL.
+    // THE CANARY IS PROOF TO RECORD, NOT A PRECONDITION TO PROMOTION.
     //
-    // `working` with `canary: 'inconclusive'` means OUR request to the provider failed — network,
-    // 429, 5xx — and the only thing behind the verdict is the local decode. verify.js returns
-    // 'working' there on purpose, because for KEEPING a session alive our own connectivity must
-    // never downgrade it. For REPLACING the bundle that every client is served, the same answer is
-    // not good enough: nothing was proven, and the bundle we already have is known to have worked.
+    // This block previously refused whenever the canary was anything but 'passed'. Measured in
+    // production on 2026-10-19, that was a pure regression, and the reasoning is worth keeping
+    // because it was not obvious from the diff:
     //
-    // So an inconclusive canary leaves the active bundle, its version, the active source and the
-    // session status exactly as they are (fail() does not expire anything) and records the real
-    // reason. The agent pushes again within minutes. This deliberately does NOT force sessions
-    // expired to make a badge honest — it declines to claim a promotion nobody verified.
+    //   - verify.js only ever returns `canary: 'failed'` together with `result: 'session_expired'`,
+    //     and `result === 'session_expired'` is refused four lines above. So refusing on 'failed'
+    //     here adds nothing: a provably logged-out candidate was already rejected.
+    //   - The only state the refusal actually caught was 'inconclusive', which does not mean the
+    //     session is bad. It means OUR request to the provider did not complete — network, 403,
+    //     429, 5xx. That is a fact about this server, not evidence against the candidate.
+    //   - A canary exists only for verifyMode 'supabase_refresh', which is WriteHuman alone. So the
+    //     refusal rejected every agent cookie sync for exactly one tool: cookie sync stopped
+    //     advancing, the vault went stale, and "Could not open tool" appeared on WriteHuman and
+    //     nowhere else. That is precisely the shape the operator reported.
     //
-    // Scoped to tools that can actually produce the proof: a canary exists only for the Supabase
-    // verify mode. Everywhere else `working` already came from a real authenticated request.
+    // Keeping the honesty the refusal was reaching for, without the outage: the bundle is promoted
+    // and the unproven canary is RECORDED, so nothing downstream may present it as freshly
+    // verified. A proven negative still refuses — defensively here, and really at the
+    // session_expired check above, which a test now pins so this cannot silently invert.
     const canaryExpected = typeof tools.verifyMode === 'function' && tools.verifyMode(tool) === 'supabase_refresh';
-    if (canaryExpected && v.canary !== 'passed') {
-      return fail(CODES.VERIFICATION_INCONCLUSIVE, 'canary_' + (v.canary || 'absent'));
+    const canaryProven = !canaryExpected || v.canary === 'passed';
+    if (canaryExpected && v.canary === 'failed') {
+      return fail(CODES.SESSION_EXPIRED, 'canary_failed');
     }
 
     // -- 7. ATOMIC PROMOTION. Keep the outgoing bundle as rollback FIRST.
@@ -394,6 +401,10 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     if (!bundleIdentical) {
       account.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(candidate));
       account.sessionMeta = buildSessionMeta(tool, candidate);
+      // What the provider actually confirmed about this bundle, so no badge or API can upgrade an
+      // unprovable sync into "verified". null = this tool has no canary to prove anything with.
+      account.sessionMeta.canaryProven = canaryExpected ? canaryProven : null;
+      account.sessionMeta.canaryState = canaryExpected ? (v.canary || 'absent') : null;
       account.cookieHash = candidateHash;
       account.bundleVersion = prevVersion + 1;
     }
@@ -494,6 +505,8 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
       code: CODES.PROMOTED, promoted: true, changed: !bundleIdentical,
       bundleVersion: account.bundleVersion, activeSource: account.activeSource,
       maskedId, verifyResult: 'working', sourceSwitched: switchSource,
+      canaryProven: canaryExpected ? canaryProven : null,
+      canaryState: canaryExpected ? (v.canary || 'absent') : null,
       bundleRewritten: !bundleIdentical,
       activationCompleted: !!act,
       cookieCount: cookieNames(candidate, host).length,
