@@ -62,13 +62,22 @@ let liveChunks = 0;
   const man = await fetch(`${ORIGIN}/asset-manifest.json?cb=${Date.now()}`);
   const j = await man.json();
   const urls = [...new Set(Object.values(j.files || {}).filter((v) => String(v).endsWith('.js')))];
+  let failed = 0;
   for (const u of urls) {
-    const r = await fetch(new URL(u, ORIGIN).href);
-    if (!r.ok) continue;
-    const buf = Buffer.from(await r.arrayBuffer());
-    liveText.push(buf.toString('utf8'));
+    // One transient fetch must not abandon the whole comparison: retry, then record and continue.
+    let got = null;
+    for (let attempt = 1; attempt <= 3 && !got; attempt += 1) {
+      try {
+        const r = await fetch(new URL(u, ORIGIN).href);
+        if (r.ok) got = Buffer.from(await r.arrayBuffer());
+      } catch (_) { /* retry */ }
+      if (!got && attempt < 3) await new Promise((res) => setTimeout(res, 400 * attempt));
+    }
+    if (!got) { failed += 1; continue; }
+    liveText.push(got.toString('utf8'));
     liveChunks += 1;
   }
+  if (failed) say(`LIVE_FETCH_FAILED chunks=${failed} (comparison is incomplete by that much)`);
   say(`LIVE ${ORIGIN} chunks=${liveChunks} totalBytes=${liveText.reduce((a, t) => a + t.length, 0)}`);
 }
 
