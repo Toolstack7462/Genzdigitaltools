@@ -164,17 +164,64 @@ jobs:
             echo "candidateSync.js NOT FOUND under ${API:-none}"
           fi
 
-          # 3. The running gateway and whether the alignment fix is in it.
-          echo "== RUNNING GATEWAY =="
+          # 3. EVERY gateway, not the first match. They all share the package name
+          #    genz-proxy-gateway, so breaking on the first one reported ryne-gateway's code while
+          #    the question was about writehuman-gateway's.
+          echo "== RUNNING GATEWAYS (all) =="
           for p in $(pgrep -f 'node' 2>/dev/null); do
             cwd=$(readlink -f "/proc/$p/cwd" 2>/dev/null) || continue
-            if [ -f "$cwd/server.js" ] && grep -q 'proxy-gateway\|genz-proxy-gateway' "$cwd/package.json" 2>/dev/null; then
-              echo "pid=$p cwd=$cwd sha256=$(sha256sum "$cwd/server.js" | cut -c1-16)"
-              echo "align_fn=$(grep -c 'shouldAlignBrowserSession' "$cwd/server.js" 2>/dev/null || echo 0)"
-              echo "align_log=$(grep -c 'supabase_session_align' "$cwd/server.js" 2>/dev/null || echo 0)"
-              break
-            fi
+            [ -f "$cwd/server.js" ] || continue
+            echo "pid=$p name=$(basename "$cwd") sha256=$(sha256sum "$cwd/server.js" | cut -c1-16) align_fn=$(grep -c 'shouldAlignBrowserSession' "$cwd/server.js" 2>/dev/null || echo 0) align_log=$(grep -c 'supabase_session_align' "$cwd/server.js" 2>/dev/null || echo 0)"
           done
+          echo "-- writehuman-gateway on disk --"
+          W="$HOME/writehuman-gateway/server.js"
+          if [ -f "$W" ]; then
+            echo "sha256=$(sha256sum "$W" | cut -c1-16) bytes=$(stat -c %s "$W") mtime=$(date -u -r "$W" +%Y-%m-%dT%H:%M:%SZ)"
+            echo "align_fn=$(grep -c 'shouldAlignBrowserSession' "$W") align_log=$(grep -c 'supabase_session_align' "$W")"
+          else
+            echo "ABSENT"
+          fi
+          echo "-- alignment log volume --"
+          L="$HOME/writehuman-gateway/console.log"
+          if [ -f "$L" ]; then
+            echo "console.log bytes=$(stat -c %s "$L") mtime=$(date -u -r "$L" +%Y-%m-%dT%H:%M:%SZ) align_lines=$(grep -c supabase_session_align "$L")"
+            echo "last 5 align reasons:"; grep supabase_session_align "$L" | tail -5
+          fi
+
+          # 3b. Is the session the gateway hands out actually a signed-in one? Metadata ONLY:
+          #     column names first, then a projection chosen from them. No cookie or token value is
+          #     read, and nothing is refreshed, rotated or written.
+          echo "== VAULT SESSION METADATA =="
+          if [ -n "${API:-}" ] && [ -f "$API/.env" ]; then
+            cd "$API" 2>/dev/null && node -e '
+              require("dotenv").config();
+              const mysql = require("mysql2/promise");
+              (async () => {
+                let c;
+                try {
+                  c = await mysql.createConnection({
+                    host: process.env.DB_HOST, user: process.env.DB_USER,
+                    password: process.env.DB_PASSWORD, database: process.env.DB_NAME,
+                    port: Number(process.env.DB_PORT || 3306), connectTimeout: 8000,
+                  });
+                } catch (e) { console.log("DB_CONNECT_FAILED " + e.code); return; }
+                const [tables] = await c.query("SHOW TABLES");
+                const names = tables.map(r => Object.values(r)[0])
+                  .filter(n => /proxy|writehuman|account|session|lease|vault/i.test(n));
+                console.log("TABLES " + names.join(" "));
+                for (const t of names.slice(0, 12)) {
+                  const [cols] = await c.query("SHOW COLUMNS FROM ??", [t]);
+                  const safe = cols.map(x => x.Field)
+                    .filter(f => !/cookie|token|secret|password|payload|bundle|value|data|blob/i.test(f));
+                  const [[n]] = await c.query("SELECT COUNT(*) AS n FROM ??", [t]);
+                  console.log(`TABLE ${t} rows=${n.n} safecols=${safe.join(",")}`);
+                }
+                await c.end();
+              })().catch(e => console.log("DB_ERROR " + (e.code || e.message)));
+            ' 2>&1 | head -40
+          else
+            echo "no .env under ${API:-none} — skipping"
+          fi
 
           # 4. The gateway's OWN alignment log — safeLog already emits identifiers only.
           echo "== ALIGNMENT LOG (last 25) =="
@@ -218,7 +265,8 @@ jobs:
           S=diag.safe.txt
           emit "running-api"  "$(sed -n '/== RUNNING API ==/,/== PROMOTION GATE/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "promo-gate"   "$(sed -n '/== PROMOTION GATE/,/== RUNNING GATEWAY/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
-          emit "gateway"      "$(sed -n '/== RUNNING GATEWAY ==/,/== ALIGNMENT LOG/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "gateways"     "$(sed -n '/== RUNNING GATEWAYS/,/== VAULT SESSION/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
+          emit "vault-meta"   "$(sed -n '/== VAULT SESSION METADATA/,/== ALIGNMENT LOG/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "align-log"    "$(sed -n '/== ALIGNMENT LOG/,/== PROMOTION + VERIFY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
           emit "promo-events" "$(sed -n '/== PROMOTION + VERIFY/,/== LAST DEPLOY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
           emit "last-deploy"  "$(sed -n '/== LAST DEPLOY/,/== END/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
