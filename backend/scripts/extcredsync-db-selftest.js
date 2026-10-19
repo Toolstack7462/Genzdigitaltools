@@ -92,27 +92,39 @@ const raw = async (id) => { const r = await Tool._findRaw({ _id: id }); return r
     check('autoSync.sync is a JSON OBJECT, not a serialized string', typeof row.autoSync.sync === 'object' && row.autoSync.sync.n === 2, typeof row.autoSync.sync);
     check('updateJsonPath left control + unrelated fields intact', row.autoSync.enabled === true && row.autoSync.mode === 'enforce' && row.keepField === 'untouched');
 
+    // READ BACK WHAT WAS ACTUALLY STORED before guarding on it. The Tool model's own preSave bumps
+    // `credentialVersion` and `sessionBundle.version` whenever a credential/bundle field changes, and
+    // a create counts as a change — so the seeded 1/1 above is already 2/2 on disk. Guarding on the
+    // seeded value made patchGuarded correctly refuse the write (0 rows), while THREE content checks
+    // passed anyway off the preSave-bumped values. Derive the guards from the row instead: the
+    // optimistic lock is only meaningfully exercised when the expected value is the real one.
+    const seeded = await raw(ID);
+    const v0 = Number(seeded.credentialVersion);
+    const b0 = Number(seeded.sessionBundle && seeded.sessionBundle.version);
+    check('seed read back with the model-applied versions', Number.isFinite(v0) && Number.isFinite(b0), { v0, b0 });
+
     // 2. patchGuarded SUCCESS when all guards hold (version + authorization) — targeted write.
-    let rows = await Tool.patchGuarded(ID, { credentialVersion: 2, 'sessionBundle': { version: 2, cookiesEncrypted: JSON.stringify([{ name: 'new' }]) } },
-      { credentialVersion: 1, 'autoSync.enabled': true, 'autoSync.mode': 'enforce', 'autoSync.expectedAccountId': 'acctX' });
+    let rows = await Tool.patchGuarded(ID, { credentialVersion: v0 + 1, 'sessionBundle': { version: b0 + 1, cookiesEncrypted: JSON.stringify([{ name: 'new' }]) } },
+      { credentialVersion: v0, 'autoSync.enabled': true, 'autoSync.mode': 'enforce', 'autoSync.expectedAccountId': 'acctX' });
     row = await raw(ID);
     check('patchGuarded success returns 1 row', rows === 1, rows);
-    check('patchGuarded bumped credentialVersion', row.credentialVersion === 2, row.credentialVersion);
-    check('patchGuarded set sessionBundle as OBJECT', typeof row.sessionBundle === 'object' && row.sessionBundle.version === 2);
+    check('patchGuarded bumped credentialVersion', row.credentialVersion === v0 + 1, row.credentialVersion);
+    check('patchGuarded credentialVersion is a NUMBER, not a JSON string', typeof row.credentialVersion === 'number', typeof row.credentialVersion);
+    check('patchGuarded set sessionBundle as OBJECT', typeof row.sessionBundle === 'object' && row.sessionBundle.version === b0 + 1, row.sessionBundle && row.sessionBundle.version);
     check('patchGuarded preserved unrelated field', row.keepField === 'untouched');
 
     // 3. patchGuarded CONFLICT on a stale credentialVersion guard → 0 rows, no change.
-    rows = await Tool.patchGuarded(ID, { credentialVersion: 99 }, { credentialVersion: 1 /* stale */ });
+    rows = await Tool.patchGuarded(ID, { credentialVersion: 99 }, { credentialVersion: v0 /* stale now */ });
     row = await raw(ID);
     check('patchGuarded version conflict returns 0 rows', rows === 0, rows);
-    check('patchGuarded version conflict wrote nothing', row.credentialVersion === 2, row.credentialVersion);
+    check('patchGuarded version conflict wrote nothing', row.credentialVersion === v0 + 1, row.credentialVersion);
 
     // 4. patchGuarded AUTHORIZATION conflict: binding withdrawn (enabled=false) → 0 rows.
     await Tool.updateJsonPath(ID, 'autoSync.enabled', false);
-    rows = await Tool.patchGuarded(ID, { credentialVersion: 3 }, { credentialVersion: 2, 'autoSync.enabled': true });
+    rows = await Tool.patchGuarded(ID, { credentialVersion: v0 + 2 }, { credentialVersion: v0 + 1, 'autoSync.enabled': true });
     row = await raw(ID);
     check('patchGuarded authorization conflict returns 0 rows', rows === 0, rows);
-    check('patchGuarded authorization conflict wrote nothing', row.credentialVersion === 2);
+    check('patchGuarded authorization conflict wrote nothing', row.credentialVersion === v0 + 1, row.credentialVersion);
 
     // 5. NULL handling: guard requiring an ABSENT path matches only when truly absent.
     rows = await Tool.patchGuarded(ID, { marker: 'x' }, { 'nope.missing': null });

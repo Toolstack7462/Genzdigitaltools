@@ -167,48 +167,6 @@ jobs:
           done
           true
 
-      # Pinpoint probe: the self-test says the WRITE lands but patchGuarded reports 0 rows, which
-      # should be impossible. Print the driver's raw result header so the discrepancy is visible
-      # instead of inferred.
-      - name: 'PROBE: raw UPDATE result header from the real driver'
-        if: always()
-        continue-on-error: true
-        working-directory: backend
-        env:
-          DATABASE_URL: mysql://extsync_tester:ci-scratch-not-a-secret@127.0.0.1:3306/extsync_scratch
-          PROXY_VAULT_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
-          ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
-          COOKIES_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
-        run: |
-          node -e "
-          (async () => {
-            const adapter = require('./db/mysqlAdapter');
-            const Tool = require('./models/Tool');
-            await adapter.connect();
-            const ID = 'probe-' + Date.now();
-            await Tool.create({ _id: ID, name: 'PROBE', status: 'active', credentialVersion: 1, keep: 'k' });
-            const mysql = require('mysql2/promise');
-            const c = await mysql.createConnection(process.env.DATABASE_URL);
-            const sql = 'UPDATE \`tools\` SET data = JSON_SET(data, ?, JSON_EXTRACT(?, '\$')), updatedAt = ? WHERE id = ? AND JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?';
-            const params = ['\$.credentialVersion', JSON.stringify(2), new Date(), ID, '\$.credentialVersion', '1'];
-            const r = await c.query(sql, params);
-            const h = r[0] || {};
-            console.log('HEADER affectedRows=' + h.affectedRows + ' changedRows=' + h.changedRows + ' info=' + JSON.stringify(h.info||''));
-            console.log('DESTRUCTURED [res] typeof=' + typeof (r[0]) + ' isArray=' + Array.isArray(r[0]));
-            const after = await Tool.findById(ID);
-            console.log('AFTER credentialVersion=' + JSON.stringify(after && after.credentialVersion) + ' typeof=' + typeof (after && after.credentialVersion));
-            const viaAdapter = await Tool.patchGuarded(ID, { credentialVersion: 3 }, { credentialVersion: 2 });
-            console.log('ADAPTER patchGuarded returned=' + JSON.stringify(viaAdapter));
-            const after2 = await Tool.findById(ID);
-            console.log('AFTER2 credentialVersion=' + JSON.stringify(after2 && after2.credentialVersion));
-            await c.end();
-            await Tool.deleteOne({ _id: ID });
-            process.exit(0);
-          })().catch(e => { console.log('PROBE ERROR ' + e.message); process.exit(0); });
-          " 2>&1 | tee "$RUNNER_TEMP/probe.log"
-          sed -n '1,20p' "$RUNNER_TEMP/probe.log" | sed 's/%/%25/g' | while IFS= read -r l; do [ -n "$l" ] && echo "::error title=probe::$l"; done
-          true
-
       - name: 'DIAG A: refused to run (environment/isolation guard)'
         if: always()
         run: 'grep -q "REFUSING TO RUN" "$RUNNER_TEMP/selftest.log" && { echo "the script refused the environment"; exit 1; } || echo ok'

@@ -206,3 +206,26 @@ describe('datetime binding — the defect a real engine found and a fake driver 
     assert.ok(createdAt instanceof Date && !Number.isNaN(createdAt.getTime()), 'a valid Date is bound');
   });
 });
+
+describe('the Tool model bumps its own versions on create — the fixture assumption that was wrong', () => {
+  // WHY THIS IS HERE: the real-engine self-test seeded credentialVersion:1 / sessionBundle.version:1
+  // and then guarded patchGuarded on credentialVersion:1. But Tool's own preSave bumps both whenever
+  // a credential/bundle field changes, and a create counts — so 2/2 was stored and the guard could
+  // never match. patchGuarded was right to return 0 rows; the TEST was wrong, and three of its
+  // content checks passed vacuously off the bumped values. Pinning the model behaviour here means
+  // the next person writing a guard against a freshly created Tool sees it locally.
+  test('create() with a bundle stores versions ABOVE the seeded values', async () => {
+    const { pool, queries } = fakePool(1);
+    adapter.__test.setPool(pool);
+    const RealTool = require('../models/Tool');
+    await RealTool.create({
+      _id: 'presave-1', name: 'SEED', status: 'active', credentialVersion: 1,
+      sessionBundle: { version: 1, cookiesEncrypted: JSON.stringify([{ name: 'old' }]) },
+    });
+    const insert = queries.find(q => /INSERT INTO/.test(q.sql));
+    const stored = JSON.parse(insert.params[1]);
+    assert.strictEqual(stored.credentialVersion, 2, 'preSave bumped credentialVersion past the seed');
+    assert.strictEqual(stored.sessionBundle.version, 2, 'and bumped sessionBundle.version too');
+    assert.strictEqual(typeof stored.credentialVersion, 'number', 'and it stays a number');
+  });
+});
