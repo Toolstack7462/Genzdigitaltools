@@ -129,7 +129,7 @@ for (const path of ['/health', '/api/health']) {
 // ── does the API answer anything auto-sync shaped, and HOW does it refuse? ────────────────────
 // Unauthenticated on purpose: 401/403 proves the route EXISTS and is protected, 404 proves it is
 // absent, and an HTML body proves a prefix/proxy problem. No credential is sent either way.
-const CANDIDATES = [...new Set(
+let CANDIDATES = [...new Set(
   Object.values(seen).flatMap((v) => v.hits.flatMap((h) => h.paths)).filter((p) => /sync|credential|extension/i.test(p))
 )].slice(0, 10);
 say(`PROBE candidates=${CANDIDATES.length ? CANDIDATES.join(' ') : 'none'}`);
@@ -141,9 +141,62 @@ for (const p of CANDIDATES) {
   } catch (e) { say(`PROBE ${p} ERROR ${e.message}`); }
 }
 
+// ── THE LIVE EXTENSION PACKAGE ────────────────────────────────────────────────────────────────
+// The panel is called "EXTENSION Credential Auto-Sync", the served web app does not contain it on
+// either root, and the live package is independently known to diverge from git (v3.9.36 ships ~12KB
+// of background.js and ten files that are in no branch). So the extension's own pages are the next
+// place to look, and the tracked 3.9.31/3.9.32 ZIPs in git cannot answer it — only the live bytes.
+{
+  const ZIP = '/downloads/genz-digital-store-extension.zip';
+  const { execFileSync } = await import('child_process');
+  for (const origin of ORIGINS) {
+    const tag = origin.replace('https://', '');
+    const dir = `extlive-${tag.replace(/[^a-z0-9]/gi, '_')}`;
+    try {
+      const r = await get(`${origin}${ZIP}?cb=${Date.now()}`, false);
+      if (r.status !== 200) { say(`EXT ${tag} status=${r.status}`); continue; }
+      say(`EXT ${tag} bytes=${r.buf.length} sha=${sha(r.buf).slice(0, 16)}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(`${dir}.zip`, r.buf);
+      execFileSync('unzip', ['-q', '-o', `${dir}.zip`, '-d', dir]);
+      const ver = JSON.parse(fs.readFileSync(`${dir}/manifest.json`, 'utf8')).version;
+      const walk = (d) => fs.readdirSync(d, { withFileTypes: true })
+        .flatMap((e) => (e.isDirectory() ? walk(`${d}/${e.name}`) : [`${d}/${e.name}`]));
+      const files = walk(dir);
+      say(`EXT ${tag} v${ver} entries=${files.length}`);
+      let hits = 0;
+      for (const f of files) {
+        let t; try { t = fs.readFileSync(f, 'utf8'); } catch { continue; }
+        if (t.includes('\u0000')) continue;
+        for (const [label, re] of NEEDLES) {
+          const m = re.exec(t);
+          if (!m) continue;
+          hits += 1;
+          const from = Math.max(0, m.index - 3000), to = Math.min(t.length, m.index + 3000);
+          const paths = [...new Set([...t.slice(from, to).matchAll(/["'`](\/(?:api\/)?[a-z0-9][a-z0-9/_:-]{3,60})["'`]/gi)].map((x) => x[1]))];
+          const rel = f.slice(dir.length + 1);
+          say(`EXTHIT ${tag} ${rel} needle=${label} line=${t.slice(0, m.index).split('\n').length} paths=${paths.slice(0, 8).join(' ') || 'none-nearby'}`);
+          for (const pp of paths) if (/sync|credential|extension/i.test(pp)) CANDIDATES.push(pp);
+        }
+      }
+      if (!hits) say(`EXTNOHIT ${tag} v${ver} — the live package does not contain the panel either`);
+    } catch (e) { say(`EXT ${tag} ERROR ${e.message}`); }
+  }
+}
+
+// Probe whatever the extension scan turned up, the same unauthenticated way.
+for (const p of [...new Set(CANDIDATES)].slice(0, 12)) {
+  const url = `${API}${p.startsWith('/api/') ? p : '/api' + p}`;
+  try {
+    const r = await get(url);
+    say(`PROBE2 ${p} -> status=${r.status} ct=${r.ct.split(';')[0]} bytes=${r.buf.length} first=${r.text.replace(/\s+/g, ' ').slice(0, 90)}`);
+  } catch (e) { say(`PROBE2 ${p} ERROR ${e.message}`); }
+}
+
 fs.writeFileSync(process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/fe.txt` : 'fe.txt', out.join('\n') + '\n');
 const notice = (t, m) => console.log(`::notice title=${t}::${String(m).slice(0, 420)}`);
 notice('fe-roots', out.filter((l) => /^(MAIN|ROOTS|MATCH|COMMITTED) /.test(l)).join(' | '));
 notice('fe-hits', out.filter((l) => /^(HIT|NOHIT) /.test(l)).join(' | ') || 'no needle matched on either root');
 notice('fe-api', out.filter((l) => /^(API|PROBE) /.test(l)).join(' | '));
+notice('fe-ext', out.filter((l) => /^(EXT|EXTHIT|EXTNOHIT|PROBE2) /.test(l)).join(' | ') || 'extension not scanned');
 notice('fe-chunks', out.filter((l) => /^(MANIFEST|CHUNKS|INDEX) /.test(l)).join(' | '));
