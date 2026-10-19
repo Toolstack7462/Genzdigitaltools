@@ -43,6 +43,8 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/verify.js       "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verify.js" \
   -T backend/utils/proxy/applySession.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/routes/admin/proxyTools.js  "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/utils/proxy/extensionCredentialSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/extensionCredentialSync.js" \
+  -T backend/models/proxy/ExtAutoSyncPolicy.js "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   -T backend/routes/proxy/agentSync.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
   `# Both routes above require these at module load; shipping the routes without them boots` \
   `# Passenger into "Cannot find module" and takes the whole API down.` \

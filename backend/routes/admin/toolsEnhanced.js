@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const Tool = require('../../models/Tool');
 const ToolAssignment = require('../../models/ToolAssignment');
+const ProxyAccount = require('../../models/proxy/ProxyAccount');
+const proxyTools = require('../../utils/proxy/tools');
+const extensionCredentialSync = require('../../utils/proxy/extensionCredentialSync');
+const ExtAutoSyncPolicy = require('../../models/proxy/ExtAutoSyncPolicy');
 const ActivityLog = require('../../models/ActivityLog');
 const CredentialAccessLog = require('../../models/CredentialAccessLog');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
@@ -130,6 +134,25 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// When a Tool on a live-agent official domain (e.g. writehuman.ai) is created / updated / deleted,
+// reconcile that domain's auto-sync POLICY (which lives on the proxy source account, not the Tool)
+// so a freshly-created eligible Tool is auto-bound, or a deleted one goes idle — WITHOUT polling and
+// WITHOUT any hardcoded Tool id. Non-fatal and isolated from the Tool CRUD response.
+async function reconcilePolicyForDomain(domainOrUrl) {
+  try {
+    const dom = extensionCredentialSync.normDomain(domainOrUrl);
+    if (!dom) return;
+    // Policies live in their own record; reconcile each ENABLED policy whose official domain matches
+    // the changed Tool's domain, so a created/deleted Tool rebinds/idles without polling.
+    const policies = await ExtAutoSyncPolicy.find({ enabled: true });
+    for (const pol of policies) {
+      if (extensionCredentialSync.normDomain(pol.officialDomain || proxyTools.targetHost(pol.tool) || '') !== dom) continue;
+      const acct = await ProxyAccount.findById(pol.accountId);
+      if (acct) await extensionCredentialSync.reconcileExtensionTool(acct, pol.tool, { Tool, Policy: ExtAutoSyncPolicy });
+    }
+  } catch (e) { console.error('[tools] policy reconcile (non-fatal):', e && e.message); }
+}
+
 // ─── POST / — create tool ────────────────────────────────────────────────────
 router.post('/', normalizeStringInputs, validate(schemas.createTool), async (req, res) => {
   try {
@@ -156,6 +179,7 @@ router.post('/', normalizeStringInputs, validate(schemas.createTool), async (req
 
     const tool = await Tool.create(toolData);
     await ActivityLog.log('ADMIN', req.userId, 'TOOL_CREATED', { toolId: tool._id.toString(), toolName: tool.name });
+    await reconcilePolicyForDomain(tool.domain || tool.targetUrl);
 
     return res.status(201).json({ success: true, tool: sanitizeToolForAdmin(tool.toObject()) });
   } catch (err) {
@@ -191,6 +215,7 @@ router.put('/:id', normalizeStringInputs, validate(schemas.updateTool), async (r
     await tool.save();
 
     await ActivityLog.log('ADMIN', req.userId, 'TOOL_UPDATED', { toolId: tool._id.toString(), toolName: tool.name });
+    await reconcilePolicyForDomain(tool.domain || tool.targetUrl);
     return res.json({ success: true, tool: sanitizeToolForAdmin(tool.toObject()) });
   } catch (err) {
     console.error('Update tool error:', err);
@@ -204,10 +229,12 @@ router.delete('/:id', async (req, res) => {
     const tool = await Tool.findById(req.params.id);
     if (!tool) return res.status(404).json({ error: 'Tool not found' });
 
+    const deletedDomain = tool.domain || tool.targetUrl;
     await ToolAssignment.deleteMany({ toolId: tool._id });
     await tool.deleteOne();
 
     await ActivityLog.log('ADMIN', req.userId, 'TOOL_DELETED', { toolId: req.params.id, toolName: tool.name });
+    await reconcilePolicyForDomain(deletedDomain); // Tool now gone → policy goes safely idle (never recreated)
     return res.json({ success: true, message: 'Tool deleted' });
   } catch (err) {
     console.error('Delete tool error:', err);
