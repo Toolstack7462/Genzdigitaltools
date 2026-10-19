@@ -216,13 +216,19 @@ async function withActiveSource() {
 }
 
 describe('B. promotion requires positive proof', () => {
-  test('a ROUTINE push now asks for the canary, not only an activation', async () => {
+  test('a routine push is verified WITHOUT a provider round-trip', async () => {
+    // This test asserted the opposite, and that assertion was the outage. Proof on every push put
+    // an external HTTPS GET inside the agent's own POST, and the agent's pushes began timing out:
+    //   agent_report {"cdp":"200","pollCount":3833,
+    //                 "error":"post_failed: The operation was aborted due to timeout"}
+    // Proof still happens — out of the request path, in the seven-minute scheduler — and on
+    // activations, which are rare and operator-driven.
     reset();
     const { a, d } = await withActiveSource();
     verifyOpts = [];
     await ingestCandidate(a, TOOL, d.row, bundle(3000, null, 'sess-RDP').cookies, {});
     assert.strictEqual(verifyOpts.length, 1);
-    assert.strictEqual(verifyOpts[0].canary, true, 'a routine push must be proven, not decoded');
+    assert.ok(!verifyOpts[0].canary, 'a routine push must not wait on the provider');
     assert.strictEqual(verifyOpts[0].readOnly, true, 'and still never rotate the refresh token');
     assert.ok(!verifyOpts[0].forceLive, 'the browser remains the sole rotator');
   });
@@ -365,4 +371,42 @@ describe('C. ordering and concurrency', () => {
     const t = activeOf(a).cookies[0].value;
     assert.ok([7000, 7100].some((i) => t === bundle(i, null, 'sess-RDP').cookies[0].value));
   });
+});
+
+// ── H. the canary must stay OFF the agent's critical path ────────────────────────────────────
+// The canary is an external HTTPS GET to the provider. PR #15 widened it from activations only to
+// EVERY accepted push, which put that round-trip inside the agent's own POST on every sync. The
+// operator's live log recorded the result:
+//
+//     agent_report {"cdp":"200","pollCount":3833,
+//                   "error":"post_failed: The operation was aborted due to timeout"}
+//
+// The agent polling fine while its push times out is how the vault went stale with the admin page
+// still reporting "working". These pin the call site so it cannot widen again by accident.
+test('a routine agent sync does NOT make a provider call', async () => {
+  reset();
+  const { a, d } = await withActiveSource();
+  verifyOpts.length = 0;
+  await ingestCandidate(a, TOOL, d.row, bundle(9500, null, 'sess-RDP').cookies, {});
+  assert.ok(verifyOpts.length > 0, 'the candidate was still verified');
+  assert.equal(verifyOpts.filter((o) => o && o.canary === true).length, 0,
+    'a routine push must not wait on the provider');
+});
+
+test('an ACTIVATION still asks for proof — that is where the wait belongs', async () => {
+  reset();
+  const { a, d } = await withActiveSource();
+  verifyOpts.length = 0;
+  await ingestCandidate(a, TOOL, d.row, bundle(9600, null, 'sess-RDP').cookies, { activation: { id: 'act-1' } });
+  assert.ok(verifyOpts.some((o) => o && o.canary === true),
+    'an activation is rare and can afford the proof');
+});
+
+test('the call site is activation-gated in source, so it cannot widen unnoticed', () => {
+  const src = require('fs').readFileSync(
+    require('path').join(__dirname, '..', 'utils', 'proxy', 'candidateSync.js'), 'utf8');
+  assert.match(src, /act \? \{ readOnly: true, canary: true \} : \{ readOnly: true \}/);
+  assert.doesNotMatch(src.replace(/\/\/.*$/gm, ''),
+    /verifyAccountCookies\([^)]*\{ readOnly: true, canary: true \}\s*\)/,
+    'an unconditional canary on the ingest path is what caused the agent POST timeouts');
 });
