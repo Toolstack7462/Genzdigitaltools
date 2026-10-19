@@ -240,6 +240,34 @@ jobs:
           path: ${{ runner.temp }}/fe.txt
           if-no-files-found: warn
 
+  # ── FRONTEND PROVENANCE (read-only) ──────────────────────────────────────────────────────────
+  # The served bundle matches no committed build on any branch, so the live frontend was built from
+  # a tree that was never committed. This compares live and committed builds as sets of user-visible
+  # string literals — minification renames identifiers but leaves text intact — so a feature present
+  # in one and not the other is visible. Until that difference is known, deploying any branch's
+  # build would overwrite live code of unknown provenance.
+  feprov:
+    name: Diff the served frontend against this ref's committed build (read-only)
+    if: ${{ inputs.confirm == 'FEPROV' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.note }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Compare live literals with the committed build's
+        run: node .github/scripts/fe-provenance.mjs
+      - name: Keep the full transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fe-provenance
+          path: ${{ runner.temp }}/feprov.txt
+          if-no-files-found: warn
+
   extcheck:
     name: Inspect the live extension package (read-only)
     if: ${{ inputs.confirm == 'EXTCHECK' }}
