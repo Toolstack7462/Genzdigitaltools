@@ -411,3 +411,70 @@ test('resuming after a disconnect does not leave two retry chains running', asyn
   expect(added).toBeLessThanOrEqual(1);
   expect(mid).toBeGreaterThan(0);
 });
+
+// ── G. the bridge probe must not be a one-shot ────────────────────────────────────────────────
+// The extension can be loaded, reloaded or UPDATED after the page is already open, and bridge.js
+// can signal readiness only by setting data-genz-extension-ready — a marker that nothing but this
+// polling reads. The per-caller implementation restarted the probe on every mount, so navigating
+// re-detected it. One shared owner probes once, which left bridgeReady false forever and made
+// openTool answer "Extension not detected" with the extension sitting right there.
+test('an extension that appears AFTER the probe lapsed is still detected on the next mount', async () => {
+  document.documentElement.removeAttribute('data-genz-extension-ready');
+  window.postMessage = () => {};                       // no bridge at all yet
+  const a = await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(31000);                                   // exhaust the 60-attempt probe
+  expect(mod.__extensionOwnerForTest().hasPoll).toBe(false);
+  expect(mod.__extensionOwnerForTest().bridgeReady).toBe(false);
+
+  // The client now loads/updates the extension: the marker appears and the bridge answers.
+  document.documentElement.setAttribute('data-genz-extension-ready', 'true');
+  bridge = installBridge();
+
+  await mount(React.createElement(Consumer, { name: 'toolDetail' }));   // a route change
+  await tick(600);
+  expect(mod.__extensionOwnerForTest().bridgeReady).toBe(true);
+  expect(a).toBeDefined();
+});
+
+test('the probe stops itself once the bridge is ready, leaving exactly one', async () => {
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(600);
+  expect(mod.__extensionOwnerForTest().bridgeReady).toBe(true);
+  expect(mod.__extensionOwnerForTest().hasPoll).toBe(false);
+  // Mounting again must not start a probe when there is nothing to look for.
+  await mount(React.createElement(Consumer, { name: 'activity' }));
+  expect(mod.__extensionOwnerForTest().hasPoll).toBe(false);
+});
+
+test('openTool rechecks before claiming the extension is missing', async () => {
+  document.documentElement.removeAttribute('data-genz-extension-ready');
+  window.postMessage = () => {};
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(31000);
+  expect(mod.__extensionOwnerForTest().bridgeReady).toBe(false);
+
+  // The bridge is alive by the time Access is clicked, even though the probe had lapsed.
+  bridge = installBridge();
+  bridge.status = { connected: true, version: '3.9.37' };
+  const result = await openViaHook('42');
+  expect(result.error).not.toBe('extension_not_detected');
+});
+
+test('a genuinely absent extension still reports not detected, and re-arms the probe', async () => {
+  document.documentElement.removeAttribute('data-genz-extension-ready');
+  window.postMessage = () => {};
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(31000);
+  // openTool's last-chance refreshStatus waits on the bridge's own 5s timeout, so the clock has to
+  // be advanced while that call is in flight rather than awaited first.
+  let result;
+  const pending = openViaHook('42').then((r) => { result = r; });
+  await tick(6000);
+  await act(async () => { await pending; });
+  expect(result).toEqual({
+    success: false,
+    error: 'extension_not_detected',
+    message: 'Extension not detected. Reload the extension, then refresh the dashboard.',
+  });
+  expect(mod.__extensionOwnerForTest().hasPoll).toBe(true);   // looking again from now on
+});

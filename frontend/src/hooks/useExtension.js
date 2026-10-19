@@ -438,20 +438,36 @@ function startOwner() {
   document.addEventListener('GENZ_BRIDGE_READY', markReady);
 
   refreshStatus();
+  restartBridgeProbe();
+  startAutoConnect();
+}
+
+/**
+ * The bridge-readiness probe: it exists because the extension can be loaded, reloaded or updated
+ * AFTER the page is already open, and because bridge.js can signal readiness by setting
+ * `data-genz-extension-ready` without the page having heard the GENZ_BRIDGE_READY event — a marker
+ * only this polling reads.
+ *
+ * It is bounded at 60 attempts (30s) as it always was. What changed, and had to be put back: the
+ * per-caller implementation started a FRESH probe on every component mount, so simply navigating
+ * re-detected an extension that had appeared in the meantime. One shared owner probes once, so
+ * after those 30 seconds `bridgeReady` could stay false forever and openTool would answer
+ * "Extension not detected" with the extension sitting right there. acquireOwner() therefore
+ * restarts the probe whenever a caller mounts and the bridge is still not ready — the same moment
+ * the old code would have started one.
+ */
+function restartBridgeProbe() {
+  if (owner.pollTimer) return;                 // exactly one probe at a time
   owner.pollAttempts = 0;
-  // Bridge-readiness probe: supports the extension being loaded after the page opened. Bounded at
-  // 60 attempts (30s) exactly as before — but now once in total, not once per mounted caller.
   owner.pollTimer = setInterval(() => {
     owner.pollAttempts += 1;
     if (getBridgeMarker()) setBridgeReady(true);
     refreshStatus();
-    if (owner.pollAttempts >= 60) {
+    if (owner.pollAttempts >= 60 || owner.bridgeReady) {
       clearInterval(owner.pollTimer);
       owner.pollTimer = null;
     }
   }, 500);
-
-  startAutoConnect();
 }
 
 function stopOwner() {
@@ -466,7 +482,10 @@ function stopOwner() {
 function acquireOwner() {
   owner.refs += 1;
   if (owner.stopTimer) { clearTimeout(owner.stopTimer); owner.stopTimer = null; }
-  if (!owner.wired) startOwner();
+  if (!owner.wired) { startOwner(); return; }
+  // Already running, but if the bridge still is not ready the probe may have run out. A caller
+  // mounting is precisely when the old code began a new one.
+  if (!owner.bridgeReady) restartBridgeProbe();
 }
 
 function releaseOwner() {
@@ -532,7 +551,14 @@ async function openTool(rawToolId, meta = {}) {
     sessionId: meta.assignmentId || null,
   };
   if (!owner.bridgeReady && !getBridgeMarker()) {
-    return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension or refresh the dashboard.' };
+    // One last look before telling the user their extension is missing. An Access click can land
+    // while the shared owner's probe has lapsed, and answering "not detected" when the extension
+    // is in fact installed and responsive is the worst of the possible wrong answers.
+    await refreshStatus();
+    if (!owner.bridgeReady && !getBridgeMarker()) {
+      restartBridgeProbe();
+      return { success: false, error: 'extension_not_detected', message: 'Extension not detected. Reload the extension, then refresh the dashboard.' };
+    }
   }
 
   // Ensure a LIVE extension session without tearing down a working one.
