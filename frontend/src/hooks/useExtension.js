@@ -181,7 +181,11 @@ const owner = {
   gen: 0,
   connectPromise: null,
   autoAttempts: 0,
-  autoRunning: false,
+  // The auto-connect chain's identity, not a boolean. A boolean cannot tell "a chain is running"
+  // from "THIS chain is still the live one", so a chain parked on an await could not be superseded
+  // and a dormant one latched the flag true forever, making startAutoConnect a permanent no-op.
+  autoRun: 0,
+  autoSeq: 0,
   opening: new Map(),
   wired: false,
   pollTimer: null,
@@ -250,7 +254,7 @@ async function connectExtension(credentials = {}, options = {}) {
   if (owner.connectPromise) return owner.connectPromise;
 
   const g = owner.gen;
-  owner.connectPromise = (async () => {
+  const inFlight = (async () => {
     const apiUrl = getBackendOrigin();
     const forceReauth = !!(options?.forceReauth || credentials?.forceReauth);
     let payload = { apiUrl, forceReauth };
@@ -312,11 +316,14 @@ async function connectExtension(credentials = {}, options = {}) {
     }
     return resp;
   })();
+  owner.connectPromise = inFlight;
 
   try {
-    return await owner.connectPromise;
+    return await inFlight;
   } finally {
-    owner.connectPromise = null;
+    // Only the connect that installed the guard may clear it. An older one settling after a
+    // logout used to release the new lifecycle's guard, letting a second token be minted.
+    if (owner.connectPromise === inFlight) owner.connectPromise = null;
   }
 }
 
@@ -353,6 +360,7 @@ const messageHandler = (event) => {
   const data = event.data || {};
   if (data.type === 'GENZ_BRIDGE_READY') {
     setBridgeReady(true);
+    if (data.connected === false) resumeAutoConnect();   // re-injected, and not paired
     setStatus(prev => ({
       ...(prev || {}),
       installed: true,
@@ -366,6 +374,14 @@ const messageHandler = (event) => {
   if (data.type === 'GENZ_EXTENSION_CONNECTED') {
     setBridgeReady(true);
     setStatus(prev => ({ ...(prev || {}), installed: true, connected: true, checking: false, reason: null }));
+  }
+  // The worker was reloaded or updated: the bridge is gone until it is re-injected. Leaving
+  // bridgeReady latched true made openTool talk to a channel that no longer exists, and left the
+  // probe switched off because acquireOwner only re-arms it while the bridge is NOT ready.
+  if (data.type === 'GENZ_EXTENSION_CONTEXT_INVALIDATED') {
+    setStatus(prev => ({ ...(prev || {}), installed: false, connected: false, checking: false, reason: 'extension_context_invalidated' }));
+    setBridgeReady(false);
+    restartBridgeProbe();
   }
   if (data.type === 'GENZ_EXTENSION_DISCONNECTED') {
     setStatus(prev => ({ ...(prev || {}), installed: true, connected: false, checking: false, reason: data.reason || 'disconnected' }));
@@ -386,25 +402,34 @@ const messageHandler = (event) => {
 
 // Auto-connect while the tab is open, with exponential backoff. Exactly one of these runs.
 function startAutoConnect() {
-  if (owner.autoRunning || !owner.bridgeReady || !owner.wired) return;
-  owner.autoRunning = true;
+  if (!owner.bridgeReady || !owner.wired) return;
+  if (owner.autoRun) return;                       // a live chain already owns this
+  const run = (owner.autoSeq += 1);
+  owner.autoRun = run;
   owner.autoAttempts = 0;
   const g = owner.gen;
+  // This chain continues only while it is BOTH the live chain and in the current lifecycle.
+  const alive = () => owner.autoRun === run && fresh(g);
 
   const attempt = async () => {
-    if (!fresh(g) || !owner.autoRunning) return;
+    if (!alive()) return;
     const current = await refreshStatus();
-    if (!fresh(g) || !owner.autoRunning) return;
-    if (current?.connected) { owner.autoAttempts = 0; return; }
+    if (!alive()) return;
+    if (current?.connected) {
+      owner.autoAttempts = 0;
+      // Release the slot. Going dormant must not lock out a later resume.
+      if (owner.autoRun === run) owner.autoRun = 0;
+      return;
+    }
     const attemptNo = owner.autoAttempts + 1;
     owner.autoAttempts = attemptNo;
     const forceReauth = attemptNo > AUTO_CONNECT_FORCE_REAUTH_AFTER;
     try {
       await connectExtension({}, { forceReauth });
       await refreshStatus();
-      if (fresh(g)) owner.autoAttempts = 0;
+      if (alive()) { owner.autoAttempts = 0; owner.autoRun = 0; }
     } catch (err) {
-      if (!fresh(g) || !owner.autoRunning) return;
+      if (!alive()) return;
       const stage = err.stage || 'auto_connect_failed';
       logStage('auto_connect:fail', { attempt: attemptNo, stage, error: err.message });
       setStatus(prev => ({
@@ -422,27 +447,20 @@ function startAutoConnect() {
         AUTO_CONNECT_INITIAL_DELAY_MS * Math.pow(2, attemptNo - 1),
         AUTO_CONNECT_MAX_DELAY_MS
       );
-      owner.retryTimer = setTimeout(attempt, delay);
+      owner.retryTimer = setTimeout(() => { if (alive()) attempt(); }, delay);
     }
   };
 
   attempt();
 }
 
-/**
- * Resume auto-connecting after the extension has reported itself disconnected.
- *
- * The loop is deliberately dormant once a connect succeeds — `autoRunning` stays true so a second
- * chain cannot start. That leaves a gap the per-caller implementation used to cover by accident:
- * every component mount created its own auto-connect effect, so a disconnect followed by a route
- * change happened to retry. With one shared owner there is no such accident, so the disconnect
- * signal has to restart the loop explicitly. Any pending backoff timer is cleared first, otherwise
- * resuming would leave two chains running.
- */
 function resumeAutoConnect() {
   if (!owner.wired) return;
   if (owner.retryTimer) { clearTimeout(owner.retryTimer); owner.retryTimer = null; }
-  owner.autoRunning = false;
+  // Retire the current chain by id. One parked on an await then fails its own alive() check and
+  // stops instead of running alongside the replacement — clearing the backoff timer alone could
+  // not do that, so each disconnect used to add another chain burning its own activation tokens.
+  owner.autoRun = 0;
   owner.autoAttempts = 0;
   startAutoConnect();
 }
@@ -488,7 +506,7 @@ function restartBridgeProbe() {
 
 function stopOwner() {
   owner.wired = false;
-  owner.autoRunning = false;
+  owner.autoRun = 0;
   window.removeEventListener('message', messageHandler);
   document.removeEventListener('GENZ_BRIDGE_READY', markReady);
   if (owner.pollTimer) { clearInterval(owner.pollTimer); owner.pollTimer = null; }
@@ -526,17 +544,17 @@ export function resetExtensionOwner() {
   owner.gen += 1;
   owner.connectPromise = null;
   owner.autoAttempts = 0;
-  owner.autoRunning = false;
+  owner.autoRun = 0;
   owner.opening.clear();
   if (owner.retryTimer) { clearTimeout(owner.retryTimer); owner.retryTimer = null; }
   owner.bridgeReady = false;
   owner.status = initialStatus();
   emit();
-  // Keep serving whoever is still mounted: restart the loops for the new lifecycle.
-  if (owner.wired) {
-    stopOwner();
-    if (owner.refs > 0) startOwner();
-  }
+  // Stop, and stay stopped. clientLogout() calls this while the client layout is still mounted,
+  // so restarting here minted a fresh activation token and re-paired the extension to the session
+  // that had just ended — and on a 401 that drove a hard reload over the logout navigation. The
+  // next mount calls acquireOwner(), which starts a clean owner for the next client.
+  if (owner.wired) stopOwner();
 }
 
 async function openTool(rawToolId, meta = {}) {
@@ -678,9 +696,9 @@ async function openTool(rawToolId, meta = {}) {
       return { success: false, error: 'tool_access_expired', message: stageMessage('tool_access_expired') };
     }
     // Auth/token expiry → reconnect with a FRESH activation token, retry ONCE.
-    if (/auth_expired|token|authorization|401|reauth/i.test(msg)) {
+    if (err.needsReauth || /auth_expired|token|authorization|401|reauth/i.test(msg) || /auth_expired|reauth/i.test(String(extStage || ''))) {
       try {
-        logStage('stale_token_retry', { toolId, trigger: msg });
+        logStage('stale_token_retry', { toolId, trigger: err.needsReauth ? 'needsReauth' : (extStage || msg) });
         await connectExtension({}, { forceReauth: true });                       // fresh activation token
         const retryResult = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
         logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
@@ -752,7 +770,8 @@ export function __resetExtensionOwnerForTest() {
   owner.gen = 0;
   owner.connectPromise = null;
   owner.autoAttempts = 0;
-  owner.autoRunning = false;
+  owner.autoRun = 0;
+  owner.autoSeq = 0;
   owner.opening.clear();
   owner.bridgeReady = false;
   owner.status = initialStatus();
@@ -769,7 +788,8 @@ export function __extensionOwnerForTest() {
     gen: owner.gen,
     wired: owner.wired,
     subs: owner.subs.size,
-    autoRunning: owner.autoRunning,
+    autoRunning: owner.autoRun !== 0,
+    autoRun: owner.autoRun,
     hasPoll: owner.pollTimer !== null,
     hasRetry: owner.retryTimer !== null,
     hasStopTimer: owner.stopTimer !== null,

@@ -137,7 +137,24 @@ test('four simultaneously mounted callers share ONE owner, one poll and one auto
   expect(s.refs).toBe(4);
   expect(s.subs).toBeGreaterThanOrEqual(4);
   expect(s.wired).toBe(true);
-  expect(s.hasPoll).toBe(true);
+  // Exactly one auto-connect chain was ever created for the four callers. It has already released
+  // its slot here because the connect succeeded — going dormant must not latch the slot shut, or a
+  // later disconnect could never resume (see the resume tests below).
+  expect(s.autoRun).toBe(0);
+  expect(s.hasRetry).toBe(false);          // nothing left queued either
+});
+
+test('one auto-connect chain is created no matter how many callers mount', async () => {
+  bridge.connect = { success: false, error: 'backend_rejected_extension_token' };  // keep it running
+  await mount(React.createElement(React.Fragment, null,
+    React.createElement(Consumer, { key: 'a', name: 'zee' }),
+    React.createElement(Consumer, { key: 'b', name: 'dashboard' }),
+    React.createElement(Consumer, { key: 'c', name: 'toolDetail' }),
+    React.createElement(Consumer, { key: 'd', name: 'activity' }),
+  ));
+  await tick(0);
+  const s = mod.__extensionOwnerForTest();
+  expect(s.autoRun).toBe(1);        // the FIRST chain, not the fourth
   expect(s.autoRunning).toBe(true);
 });
 
