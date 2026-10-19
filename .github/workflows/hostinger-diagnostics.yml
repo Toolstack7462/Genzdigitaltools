@@ -169,6 +169,19 @@ jobs:
             refuses_unproven=$(grep -c "canary !== 'passed'" "$f" 2>/dev/null); refuses_unproven=${refuses_unproven:-0}
             records_proof=$(grep -c 'canaryProven' "$f" 2>/dev/null); records_proof=${records_proof:-0}
             echo "canaryExpected=$has_expected refuses_unproven=$refuses_unproven records_proof=$records_proof"
+            # Is the canary an EXTERNAL provider round-trip inside the agent's own POST? That is
+            # what made the agent's pushes time out ("post_failed: The operation was aborted due to
+            # timeout") and stopped cookie sync. It belongs on activations only.
+            gated=$(grep -c "act ? { readOnly: true, canary: true }" "$f" 2>/dev/null); gated=${gated:-0}
+            unconditional=$(grep -c "expectedIdentifier, { readOnly: true, canary: true }" "$f" 2>/dev/null); unconditional=${unconditional:-0}
+            echo "canary_activation_gated=$gated canary_every_push=$unconditional"
+            if [ "$unconditional" != "0" ]; then
+              echo "CRITICAL_PATH=PROVIDER_CALL_ON_EVERY_SYNC (agent pushes will time out)"
+            elif [ "$gated" != "0" ]; then
+              echo "CRITICAL_PATH=CLEAR (canary on activations only)"
+            else
+              echo "CRITICAL_PATH=UNRECOGNISED"
+            fi
             if [ "$refuses_unproven" != "0" ]; then
               echo "GATE=REFUSES_UNPROVEN (the WriteHuman-only outage is live)"
             elif [ "$records_proof" != "0" ]; then
