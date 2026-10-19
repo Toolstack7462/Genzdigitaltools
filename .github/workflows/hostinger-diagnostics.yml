@@ -183,6 +183,39 @@ jobs:
           ls -la "$RUNNER_TEMP/extout"
           echo "EXT_ZIP=$RUNNER_TEMP/extout/genz-digital-store-extension.zip" >> "$GITHUB_ENV"
 
+      # GATE 2 — EXECUTE THE BYTES THAT ARE ABOUT TO BE SERVED.
+      #
+      # This is the gate v3.9.36 needed and did not have. Its accessor called itself, so a cold
+      # message-driven wake overflowed the stack and the singleton factory was never reached — while
+      # every structural check passed, because not one of them ran the code. A warm worker worked,
+      # which is exactly why it got published.
+      #
+      # So the ZIP that is about to be uploaded is extracted here and the REAL registered message
+      # handler is driven out of those exact files (EXT_DIR), plus the transformation suite that
+      # executes a patched package's cold wake, repeat calls, warm init, independent wakes,
+      # concurrent Access and a failing factory. A failure here stops the release before anything is
+      # served; it does not touch the host.
+      - name: Run the message-handler suite against the FINAL packaged bytes
+        run: |
+          set -euo pipefail
+          FINAL="$RUNNER_TEMP/final-pkg"
+          rm -rf "$FINAL" && mkdir -p "$FINAL"
+          unzip -q -o "$EXT_ZIP" -d "$FINAL"
+          export FINAL
+          node --input-type=module -e '
+            import fs from "fs";
+            import { classify, countAccessorCalls } from "./scripts/lib/orchestratorAccessor.mjs";
+            const src = fs.readFileSync(process.env.FINAL + "/js/background.js", "utf8");
+            const state = classify(src).state;
+            const via = countAccessorCalls(src);
+            console.log(`packaged accessor state=${state} viaAccessor=${via}`);
+            if (state !== "correct") { console.error(`::error::packaged accessor state is ${state}`); process.exit(1); }
+            if (via < 1) { console.error("::error::no call site routed through the accessor"); process.exit(1); }
+          '
+          node --test chrome-extension/test/releasePatchTransform.test.js
+          EXT_DIR="$FINAL" node --test chrome-extension/test/workerWakeOrchestrator.test.js
+          echo "::notice title=packaged-bytes-tested::the handler suite ran against the extracted release ZIP, not the source tree"
+
       - name: Install deploy key and PINNED host key
         env:
           SSH_PRIVATE_KEY: ${{ secrets.HOSTINGER_SSH_PRIVATE_KEY }}

@@ -25,14 +25,32 @@
  * chrome-extension/js/background.js and covered by chrome-extension/test/
  * workerWakeOrchestrator.test.js — and routes the four call sites through it.
  *
- * IT REFUSES RATHER THAN GUESSES. Every assumption about the live file is asserted first: the null
- * declaration, the assignment inside initialize(), exactly the expected number of bare call sites,
- * and no accessor already present. If the live code has changed shape or has already been fixed,
- * this exits non-zero and says so instead of patching something it does not recognise.
+ * WHAT WENT WRONG THE FIRST TIME, AND WHY THE TRANSFORMATION NOW LIVES ELSEWHERE. v3.9.36 was
+ * built by three string operations inline in this file, and the last one was
+ *
+ *     bg.replace('orchestrator = getOrchestrator();', 'requireOrchestrator();')
+ *
+ * a FIRST-MATCH replace. By the time it ran, the first match was no longer initialize()'s
+ * assignment — it was the line this script had just inserted into its own accessor at the top of
+ * the file. The published accessor therefore read `if (!orchestrator) requireOrchestrator();` and
+ * recursed until the stack gave out on exactly the cold, message-driven wake the patch existed to
+ * fix, with the singleton factory never called. A warm worker was fine, which is how it passed.
+ *
+ * Every structural check here passed too, because none of them ran the code. So the transformation
+ * now lives in scripts/lib/orchestratorAccessor.mjs, is scoped by index instead of by first match,
+ * and is executed — not merely inspected — by chrome-extension/test/releasePatchTransform.test.js,
+ * which imports the same module this script does so the two cannot drift.
+ *
+ * IT REFUSES RATHER THAN GUESSES, and it distinguishes three states rather than two: no accessor
+ * (patch it), a self-recursive accessor (repair it — "an accessor exists" is not a health check,
+ * and treating it as one would refuse the one package that cannot run), and a correct accessor
+ * (nothing to do). Anything else, or an assignment that does not occur exactly once, stops the run.
  *
  * AND IT VERIFIES WHAT IT PRODUCES. The rebuilt package is unzipped again and checked: same entry
- * count, identical permissions, the new version, the accessor present, zero bare call sites, and
- * every other file byte-identical to the live original.
+ * count, identical permissions, the new version, the accessor in the CORRECT state, zero bare call
+ * sites, every call site routed through it, and every other file byte-identical to the live
+ * original. Those checks remain necessary and insufficient — the gate that would have caught
+ * v3.9.36 is the message-handler suite run against these extracted bytes before publication.
  *
  * THIS IS A HOTFIX, NOT A FIX TO THE PROCESS. The live extension source belongs in git; until it
  * is there, every release has to be done this way and `build-extension.mjs --check` cannot pass.
@@ -44,6 +62,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import { execFileSync } from 'child_process';
+import { patch, classify, codeOf, ACCESSOR_NAME } from './lib/orchestratorAccessor.mjs';
 
 const arg = (name, fallback = null) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -91,50 +110,31 @@ const manifest = JSON.parse(manifestRaw);
 const livePerms = (manifest.permissions || []).slice().sort();
 console.log(`live manifest: v${manifest.version}  perms ${livePerms.join(',')}`);
 
-// ── 3. assert the pre-state, then patch ───────────────────────────────────────────────────────
+// ── 3. classify the live file, then patch or REPAIR it ───────────────────────────────────────
+// "An accessor is present" is not a health check. v3.9.36 shipped an accessor that called itself,
+// so the previous `if (/function requireOrchestrator\(/) die('ALREADY fixed')` would have refused
+// to repair the one package that cannot run. The three states are kept distinct.
 const bgPath = path.join(src, 'js', 'background.js');
-let bg = fs.readFileSync(bgPath, 'utf8');
-const codeOf = (s) => s.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+const bgBefore = fs.readFileSync(bgPath, 'utf8');
 
-if (/function requireOrchestrator\(/.test(bg)) die('the live package is ALREADY fixed — nothing to do');
-const DECL = 'let orchestrator = null;';
-if (!bg.includes(DECL)) die('the live background.js does not declare `let orchestrator = null;` — its shape has changed, refusing to patch');
-const CALL = 'await orchestrator.executeLogin(';
-const callSites = codeOf(bg).split(CALL).length - 1;
-if (callSites < 1) die('no bare `await orchestrator.executeLogin(` call sites found — refusing to patch');
-console.log(`bare call sites to convert: ${callSites}`);
-
-const ACCESSOR = `${DECL}
-
-/**
- * The login orchestrator, guaranteed present on EVERY service-worker wake.
- *
- * Chrome terminates an idle MV3 worker and wakes it to deliver a MESSAGE — a wake that fires
- * neither chrome.runtime.onInstalled nor chrome.runtime.onStartup, the only two events that ran
- * initialize() and therefore the only two that assigned this variable. Clicking Access after an
- * idle period then produced:
- *
- *     Could not open tool: Cannot read properties of null (reading 'executeLogin')
- *
- * getOrchestrator() is a synchronous, side-effect-free singleton factory, so readiness is free and
- * must not drag the rest of initialize() along: no cleanup sync, no alarm re-arming, no bridge
- * re-injection, no re-pairing on an Access click. No optional chaining, no fabricated success and
- * no keep-alive either — the worker may sleep, and the dependency is rebuilt when it wakes.
- */
-function requireOrchestrator() {
-  if (!orchestrator) orchestrator = getOrchestrator();
-  return orchestrator;
-}`;
-bg = bg.replace(DECL, ACCESSOR);
-bg = bg.split(CALL).join('await requireOrchestrator().executeLogin(');
-// initialize() keeps its own work but reuses the one accessor, so the two paths cannot drift.
-bg = bg.replace('orchestrator = getOrchestrator();', 'requireOrchestrator();');
-
-const patchedCode = codeOf(bg);
-if (/(?<!require)[Oo]rchestrator\.executeLogin\(/.test(patchedCode)) die('a bare call site survived the patch');
-if ((patchedCode.match(/requireOrchestrator\(\)\.executeLogin\(/g) || []).length !== callSites) {
-  die('the patched file does not route every call site through the accessor');
+const state = classify(bgBefore).state;
+console.log(`live accessor state: ${state}`);
+if (state === 'correct') die('the live package already carries a correct, non-recursive accessor — nothing to do');
+if (state === 'unknown') die('the live package has an accessor of an unrecognised shape — refusing to patch it blindly');
+if (state === 'recursive') {
+  console.log('::warning::the live package carries a SELF-RECURSIVE accessor (the v3.9.36 defect) — repairing it');
 }
+
+let patched;
+try {
+  patched = patch(bgBefore);
+} catch (e) {
+  die(`the transformation refused this package: ${e.message}`);
+}
+const bg = patched.code;
+const callSites = patched.callSites;
+console.log(`action: ${patched.action}   call sites routed through ${ACCESSOR_NAME}(): ${callSites}`);
+if (bg === bgBefore) die('the transformation produced no change');
 fs.writeFileSync(bgPath, bg);
 
 // ── 4. bump the version (patch segment), preserving the manifest's formatting ─────────────────
@@ -175,9 +175,21 @@ const newPerms = (vm.permissions || []).slice().sort();
 if (newPerms.join(',') !== livePerms.join(',')) die('the permission list changed — that would force re-consent on upgrade');
 if (String(vm.manifest_version) !== String(manifest.manifest_version)) die('manifest_version changed');
 if ((vm.key || null) !== (manifest.key || null)) die('the extension key changed — that would change its identity');
-const vbg = codeOf(fs.readFileSync(path.join(check, 'js', 'background.js'), 'utf8'));
-if (!/function requireOrchestrator\(/.test(vbg)) die('the rebuilt package does not contain the accessor');
+// Verify the file as it exists INSIDE the rebuilt ZIP — the bytes that will be served.
+const vraw = fs.readFileSync(path.join(check, 'js', 'background.js'), 'utf8');
+const vstate = classify(vraw).state;
+if (vstate !== 'correct') die(`the rebuilt package's accessor state is "${vstate}", expected "correct"`);
+const vbg = codeOf(vraw);
 if (/(?<!require)[Oo]rchestrator\.executeLogin\(/.test(vbg)) die('the rebuilt package still has a bare call site');
+if ((vbg.match(new RegExp(`${ACCESSOR_NAME}\\(\\)\\.executeLogin\\(`, 'g')) || []).length !== callSites) {
+  die('the rebuilt package does not route every call site through the accessor');
+}
+// Structural checks are necessary and were never sufficient: v3.9.36 passed all of them. The
+// executable gate is the message-handler suite run against these extracted bytes by the workflow
+// step "Run the message-handler suite against the FINAL packaged bytes" before anything is served.
+console.log(`verified inside the rebuilt ZIP: accessor=correct  bareSites=0  viaAccessor=${callSites}`);
+console.log(`EXTRACTED_FOR_TEST=${check}`);
+if (process.env.GITHUB_ENV) fs.appendFileSync(process.env.GITHUB_ENV, `EXT_EXTRACTED=${check}\n`);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 const final = path.join(OUT_DIR, ZIP_NAME);
