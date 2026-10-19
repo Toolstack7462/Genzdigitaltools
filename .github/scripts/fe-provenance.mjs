@@ -39,7 +39,12 @@ const interesting = (s) =>
   !/^[./]/.test(s) &&                           // paths
   !/^(https?:|data:|#[0-9a-f]{3,8}$)/i.test(s) &&
   !/^[\d\s.,:;%-]+$/.test(s) &&
-  (/ /.test(s) || /^[A-Z][a-z]+[A-Z]/.test(s));
+  // Exclude code. The first pass matched minified fragments, so every "difference" it reported was
+  // a renamed identifier rather than a feature; user-visible text contains none of these.
+  !/[{}();=<>|&[\]]|=>|\breturn\b|\bconst\b|\bvar\b|\blet\b|\bawait\b|\bfunction\b/.test(s) &&
+  !/^\s|\s$/.test(s) &&
+  // Human text: a sentence, or a multi-word label.
+  (/^[A-Z][A-Za-z]+(\s+[A-Za-z0-9'’,.:%-]+){1,}$/.test(s) || /^[A-Z][a-z]+[A-Z][a-z]+$/.test(s) || / [a-z]+ /.test(s));
 
 const literalsOf = (text) => {
   const set = new Set();
@@ -84,7 +89,7 @@ say(`LITERALS live=${live.size} build=${built.size}`);
 const onlyLive = [...live].filter((s) => !built.has(s)).sort();
 const onlyBuild = [...built].filter((s) => !live.has(s)).sort();
 say(`ONLYLIVE count=${onlyLive.length}`);
-for (const s of onlyLive.slice(0, 120)) say(`  L| ${s}`);
+for (const s of onlyLive.slice(0, 200)) say(`  L| ${s}`);
 say(`ONLYBUILD count=${onlyBuild.length}`);
 for (const s of onlyBuild.slice(0, 120)) say(`  B| ${s}`);
 
@@ -95,5 +100,5 @@ say(`PANEL_CANDIDATES ${panel.length ? panel.join(' ~ ').slice(0, 500) : 'none'}
 fs.writeFileSync(process.env.RUNNER_TEMP ? `${process.env.RUNNER_TEMP}/feprov.txt` : 'feprov.txt', out.join('\n') + '\n');
 const notice = (t, m) => console.log(`::notice title=${t}::${String(m).slice(0, 420)}`);
 notice('prov-summary', out.filter((l) => /^(LIVE|BUILD|LITERALS|ONLYLIVE count|ONLYBUILD count|PANEL_CANDIDATES) /.test(l)).join(' | '));
-notice('prov-onlylive', onlyLive.slice(0, 18).join(' ~ ') || 'nothing live-only');
-notice('prov-onlybuild', onlyBuild.slice(0, 18).join(' ~ ') || 'nothing build-only');
+notice('prov-onlylive', onlyLive.slice(0, 24).join(' ~ ') || 'NOTHING live-only: no user-visible text exists live that the build lacks');
+notice('prov-onlybuild', onlyBuild.slice(0, 24).join(' ~ ') || 'NOTHING build-only');
