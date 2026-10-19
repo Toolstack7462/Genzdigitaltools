@@ -259,6 +259,28 @@ jobs:
             grep -E 'promot|candidate_sync|verification|canary' "$L" 2>/dev/null | tail -25
           done
 
+          # 5b. DOES THE RUNNING BACKEND HAVE AN AGENT -> EXTENSION-TOOL COOKIE SYNC?
+          #     Extension-based tools read Tool.sessionBundle (via /extension/tools/:id/credentials);
+          #     the proxy vault (ProxyAccount.sessionEncrypted) is a different store that only the
+          #     gateway serves. In THIS repository the only writer of Tool.sessionBundle is the admin
+          #     route toolsEnhanced.js, so nothing propagates agent-captured cookies to the
+          #     extension's store. The operator reports such a sync existed, and live code is known
+          #     to diverge from the repository, so the running tree is the place to settle it.
+          echo "== EXTENSION-TOOL COOKIE SYNC IN RUNNING CODE =="
+          if [ -n "${API:-}" ]; then
+            echo "-- files that WRITE Tool.sessionBundle --"
+            grep -rln "sessionBundle" "$API/routes" "$API/utils" "$API/cron" "$API/services" 2>/dev/null | head -20 | while read -r f; do
+              w=$(grep -cE "sessionBundle(\.[a-zA-Z]+)?\s*=|sessionBundle\s*=\s*\{" "$f" 2>/dev/null); w=${w:-0}
+              echo "   ${f#$API/}  writes=$w"
+            done
+            echo "-- routes whose path mentions an extension/cookie sync --"
+            grep -rnoE "router\.(get|post|put)\('[^']*(sync|cookie|credential)[^']*'" "$API/routes" 2>/dev/null | sed "s#^$API/##" | head -20
+            echo "-- any cron/scheduler that could propagate cookies --"
+            ls -1 "$API/cron" 2>/dev/null | head -12
+            echo "-- writehuman-v2 style /v2 ingest present in the running API? --"
+            n=$(grep -rl "v2/cookies/ingest\|cookies/ingest" "$API" 2>/dev/null | head -5 | wc -l); echo "   matches=$n"
+          fi
+
           # 6. When was the API last deployed?
           echo "== LAST DEPLOY =="
           ls -1t "$HOME/hbuilds/logs" 2>/dev/null | head -3 | while read -r d; do
@@ -287,6 +309,7 @@ jobs:
           emit "vault-meta"   "$(sed -n '/== VAULT SESSION METADATA/,/== ALIGNMENT LOG/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "align-log"    "$(sed -n '/== ALIGNMENT LOG/,/== PROMOTION + VERIFY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
           emit "promo-events" "$(sed -n '/== PROMOTION + VERIFY/,/== LAST DEPLOY/p' $S 2>/dev/null | tail -12 | tr '\n' '|' | cut -c1-420)"
+          emit "ext-sync"     "$(sed -n '/== EXTENSION-TOOL COOKIE SYNC/,/== LAST DEPLOY/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
           emit "last-deploy"  "$(sed -n '/== LAST DEPLOY/,/== END/p' $S 2>/dev/null | tr '\n' '|' | cut -c1-420)"
 
       - name: Keep the transcript
