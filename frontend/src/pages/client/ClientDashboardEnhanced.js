@@ -15,6 +15,7 @@ import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestEx
 import { isOlder } from '../../lib/semver';
 import { authService } from '../../services/authService';
 import { useExtension } from '../../hooks/useExtension';
+import { reportIssue } from '../../features/clientAssistant/assistantEvents';
 import StealthWriterCard from '../../components/StealthWriterCard';
 import RenewPlanLink from '../../components/RenewPlanLink';
 import { useStealthSummary } from '../../hooks/useStealthSummary';
@@ -669,6 +670,20 @@ const ClientDashboardEnhanced = () => {
       }
       // Tool genuinely removed from the dashboard list → message is now consistent.
     }
+
+    // Offer Gen Z Guide proactive, step-by-step troubleshooting for this real launch failure.
+    // Non-sensitive only (code + tool name + a safe retry); the assistant decides whether to
+    // auto-open (at most once per issue per session) or show a dismissible prompt.
+    try {
+      reportIssue({
+        code: result?.error || 'TOOL_LAUNCH_FAILED',
+        source: 'tool_launch',
+        toolId,
+        toolName: tool?.name,
+        recoverable: true,
+        retry: () => openTool(toolId),
+      });
+    } catch (_) { /* assistant is optional — never block the open flow */ }
 
     showToolError(sanitizeError(result));
   }, [bridgeReady, extMustUpdate, openTool, sanitizeError]);
