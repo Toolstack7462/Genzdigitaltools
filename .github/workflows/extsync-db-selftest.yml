@@ -153,6 +153,16 @@ jobs:
         run: cat "$RUNNER_TEMP/selftest.log" || true
 
       # ── failure classification; each step fails ONLY for its own category ────────────────────
+      # Job logs need admin rights on the repository; ANNOTATIONS do not - they come back from the
+      # check-runs API with ordinary read access. So the script's own failure lines are re-emitted as
+      # workflow annotations, which is what makes a red run diagnosable at all from outside.
+      - name: Surface the failure lines as annotations
+        if: always()
+        run: |
+          grep -aE "EXCEPTION|fatal|REFUSING TO RUN|passed=|connected db=" "$RUNNER_TEMP/selftest.log" > "$RUNNER_TEMP/fail.txt" || true
+          head -20 "$RUNNER_TEMP/fail.txt" | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error title=extsync-selftest::$line"; done
+          true
+
       - name: 'DIAG A: refused to run (environment/isolation guard)'
         if: always()
         run: 'grep -q "REFUSING TO RUN" "$RUNNER_TEMP/selftest.log" && { echo "the script refused the environment"; exit 1; } || echo ok'
