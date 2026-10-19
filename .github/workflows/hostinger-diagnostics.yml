@@ -159,7 +159,21 @@ jobs:
             echo "canary_mentions=$(grep -c 'canary' "$f" 2>/dev/null || echo 0)"
             echo "VERIFICATION_INCONCLUSIVE=$(grep -c 'VERIFICATION_INCONCLUSIVE' "$f" 2>/dev/null || echo 0)"
             echo "readOnly_verify=$(grep -c 'readOnly: true' "$f" 2>/dev/null || echo 0)"
-            if grep -q 'canaryExpected' "$f" 2>/dev/null; then echo "GATE=PRESENT"; else echo "GATE=ABSENT"; fi
+            # Three distinct states, because "canaryExpected is present" stopped being the signal
+            # once the gate was corrected to RECORD proof instead of refusing on its absence.
+            has_expected=$(grep -c 'canaryExpected' "$f" 2>/dev/null || echo 0)
+            refuses_unproven=$(grep -c "canary !== 'passed'" "$f" 2>/dev/null || echo 0)
+            records_proof=$(grep -c 'canaryProven' "$f" 2>/dev/null || echo 0)
+            echo "canaryExpected=$has_expected refuses_unproven=$refuses_unproven records_proof=$records_proof"
+            if [ "$refuses_unproven" != "0" ]; then
+              echo "GATE=REFUSES_UNPROVEN (the WriteHuman-only outage is live)"
+            elif [ "$records_proof" != "0" ]; then
+              echo "GATE=RECORDS_PROOF (corrected: promotes and labels, refuses only a proven negative)"
+            elif [ "$has_expected" != "0" ]; then
+              echo "GATE=UNRECOGNISED_SHAPE"
+            else
+              echo "GATE=ABSENT (no canary handling at all)"
+            fi
           else
             echo "candidateSync.js NOT FOUND under ${API:-none}"
           fi
