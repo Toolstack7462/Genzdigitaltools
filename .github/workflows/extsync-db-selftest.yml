@@ -124,7 +124,13 @@ jobs:
       # The script re-reads DATABASE(), CURRENT_USER(), VERSION() and SHOW GRANTS from the LIVE
       # adapter connection and refuses if any of it is wrong, so this is the adapter's own
       # connection being verified, not a separate probe.
-      - name: Run the real-engine self-test
+      # Captured, not failed-on, so the DIAG steps below can classify the outcome. Job logs require
+      # admin rights on the repository; step CONCLUSIONS do not. So the failure CATEGORY is encoded
+      # in the step NAMES below, which makes a red run self-describing to anyone (or anything) that
+      # can only read the jobs API.
+      - name: Run the real-engine self-test (captured)
+        id: selftest
+        continue-on-error: true
         working-directory: backend
         env:
           EXTCREDSYNC_SELFTEST_DB: '1'
@@ -133,7 +139,58 @@ jobs:
           PROXY_VAULT_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
           ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
           COOKIES_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
-        run: node scripts/extcredsync-db-selftest.js
+          JWT_SECRET: 'ci-only-not-a-secret-ci-only-not-a-secret'
+          JWT_REFRESH_SECRET: 'ci-only-not-a-secret-ci-only-not-a-secret-2'
+        run: |
+          set +e
+          node scripts/extcredsync-db-selftest.js 2>&1 | tee "$RUNNER_TEMP/selftest.log"
+          echo "${PIPESTATUS[0]}" > "$RUNNER_TEMP/selftest.code"
+          set -e
+          echo "exit code: $(cat "$RUNNER_TEMP/selftest.code")"
+
+      - name: Echo the captured self-test output
+        if: always()
+        run: cat "$RUNNER_TEMP/selftest.log" || true
+
+      # ── failure classification; each step fails ONLY for its own category ────────────────────
+      - name: 'DIAG A: refused to run (environment/isolation guard)'
+        if: always()
+        run: 'grep -q "REFUSING TO RUN" "$RUNNER_TEMP/selftest.log" && { echo "the script refused the environment"; exit 1; } || echo ok'
+
+      - name: 'DIAG B: fatal before any check ran'
+        if: always()
+        run: 'grep -q "\[selftest\] fatal" "$RUNNER_TEMP/selftest.log" && { echo "threw before the checks"; exit 1; } || echo ok'
+
+      - name: 'DIAG C: exception thrown mid-check'
+        if: always()
+        run: 'grep -q "EXCEPTION" "$RUNNER_TEMP/selftest.log" && { echo "exception during the checks"; exit 1; } || echo ok'
+
+      - name: 'DIAG D: updateJsonPath semantics'
+        if: always()
+        run: 'grep -E "^\s*.\s+(updateJsonPath|autoSync.sync)" "$RUNNER_TEMP/selftest.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG E: patchGuarded write semantics (revision/object/preserve)'
+        if: always()
+        run: 'grep -E "patchGuarded (success|bumped|set sessionBundle|preserved)" "$RUNNER_TEMP/selftest.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG F: patchGuarded conflict semantics (version/authorization)'
+        if: always()
+        run: 'grep -E "patchGuarded (version|authorization) conflict" "$RUNNER_TEMP/selftest.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG G: null-guard semantics'
+        if: always()
+        run: 'grep -E "null-guard" "$RUNNER_TEMP/selftest.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG H: throwaway row cleanup'
+        if: always()
+        run: 'grep -E "throwaway row cleaned up" "$RUNNER_TEMP/selftest.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'RESULT: the real-engine self-test passed'
+        if: always()
+        run: |
+          code=$(cat "$RUNNER_TEMP/selftest.code" 2>/dev/null || echo 99)
+          echo "self-test exit code: $code"
+          [ "$code" = "0" ] || exit 1
 
       - name: Record the engine actually tested
         if: always()
