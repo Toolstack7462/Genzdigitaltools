@@ -252,12 +252,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # This ref carries the script; the ref being COMPARED supplies only its committed build.
+      # (Checking out the compared ref instead would leave the script absent, as it first did.)
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.note }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      - name: Take the committed build from the ref under comparison
+        run: |
+          set -euo pipefail
+          REF="${{ inputs.note }}"
+          [ -n "$REF" ] || { echo "::error::pass the ref to compare in \`note\`"; exit 1; }
+          git fetch -q origin "$REF"
+          rm -rf frontend/build
+          git checkout -q FETCH_HEAD -- frontend/build
+          echo "comparing against $REF ($(git rev-parse --short FETCH_HEAD))"
+          ls frontend/build/static/js/main.*.js
       - name: Compare live literals with the committed build's
         run: node .github/scripts/fe-provenance.mjs
       - name: Keep the full transcript
