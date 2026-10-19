@@ -1,0 +1,155 @@
+# REAL-ENGINE self-test for the WriteHuman extension-auto-sync guarded writes.
+#
+# WHY THIS EXISTS: tests/adapterGuardedWrites.test.js pins the SQL we emit, but a fake driver
+# cannot stand in for an engine's JSON implementation, collation or privilege model. This job runs
+# backend/scripts/extcredsync-db-selftest.js against a DISPOSABLE database service, which is the
+# only way to get that result without a database on anyone's workstation.
+#
+# WHAT THIS IS NOT: it is not a deployment and shares nothing with one. It uses NO repository
+# secrets, touches no production host, and is deliberately not wired to any deploy trigger. The
+# database lives and dies inside the runner, is reachable only on 127.0.0.1 and contains nothing
+# but a throwaway row the script creates and deletes.
+#
+# ENGINE VERSION — READ THIS BEFORE TRUSTING A GREEN RUN. The matrix below is a reasonable default,
+# NOT a confirmed match for production. The script prints the live `VERSION()` it connected to;
+# compare that against the production engine (the read-only Hostinger diagnostics job reports it)
+# and, if it differs, re-run with the matching `engine_image` input. A pass on the wrong engine is
+# not evidence about production.
+name: ext-sync real-DB self-test (test-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_image:
+        description: 'Override the DB service image, e.g. mariadb:10.6 or mysql:8.4 — use the version production actually runs'
+        required: false
+        default: ''
+  push:
+    # Scoped to the recovery branch and to the files whose DB semantics this proves, so it runs
+    # by itself on the next push without needing anyone to dispatch it.
+    branches: [fix/writehuman-extension-autosync-restore]
+    paths:
+      - 'backend/db/mysqlAdapter.js'
+      - 'backend/scripts/extcredsync-db-selftest.js'
+      - 'backend/utils/proxy/extensionCredentialSync.js'
+      - '.github/workflows/extsync-db-selftest.yml'
+
+# Read-only. No deploy permissions, no id-token, no package write.
+permissions:
+  contents: read
+
+concurrency:
+  group: extsync-db-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both families, because the guarded SQL deliberately avoids CAST(... AS JSON) for MariaDB
+        # compatibility and that difference is exactly what a real engine has to confirm.
+        include:
+          - image: mariadb:10.11
+          - image: mysql:8.0
+    services:
+      db:
+        image: ${{ github.event.inputs.engine_image || matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-not-a-secret
+          MARIADB_ROOT_PASSWORD: ci-root-not-a-secret
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+
+    env:
+      # Throwaway, in-runner only. Not a secret and not usable anywhere else.
+      ROOT_PW: ci-root-not-a-secret
+      SCRATCH_DB: extsync_scratch
+      SCRATCH_USER: extsync_tester
+      SCRATCH_PW: ci-scratch-not-a-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Only the one driver the script needs. `npm ci` on the whole backend is unnecessary here and
+      # would pull the entire production tree into a test job.
+      - name: Install the mysql2 driver only
+        run: npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund mysql2@3.15.3
+        working-directory: backend
+
+      - name: Wait for the database service
+        run: |
+          for i in $(seq 1 60); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" --silent 2>/dev/null; then
+              echo "engine reachable"; mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e 'SELECT VERSION();'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "database service never became reachable"; exit 1
+
+      # The script REFUSES to run unless the connecting account is provably scoped to the scratch
+      # schema: no `ON *.*` grant other than the baseline USAGE, and a grant on <scratch>.*.
+      - name: Provision the scratch schema and a restricted user
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" <<SQL
+          DROP DATABASE IF EXISTS \`${SCRATCH_DB}\`;
+          CREATE DATABASE \`${SCRATCH_DB}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          DROP USER IF EXISTS '${SCRATCH_USER}'@'%';
+          CREATE USER '${SCRATCH_USER}'@'%' IDENTIFIED BY '${SCRATCH_PW}';
+          GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES ON \`${SCRATCH_DB}\`.* TO '${SCRATCH_USER}'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+          echo "--- grants the test account will present ---"
+          mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" -e "SHOW GRANTS FOR CURRENT_USER();"
+
+      - name: Prove the test account cannot reach any other schema
+        run: |
+          # It must be able to use the scratch schema...
+          mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" "$SCRATCH_DB" -e "SELECT 1;" >/dev/null
+          # ...and must NOT be able to read another one. A success here fails the job.
+          if mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" -e "SELECT COUNT(*) FROM mysql.user;" >/dev/null 2>&1; then
+            echo "ISOLATION FAILURE: the scratch account can read mysql.user"; exit 1
+          fi
+          echo "isolation confirmed: scratch schema only"
+
+      # The script re-reads DATABASE(), CURRENT_USER(), VERSION() and SHOW GRANTS from the LIVE
+      # adapter connection and refuses if any of it is wrong, so this is the adapter's own
+      # connection being verified, not a separate probe.
+      - name: Run the real-engine self-test
+        working-directory: backend
+        env:
+          EXTCREDSYNC_SELFTEST_DB: '1'
+          EXTCREDSYNC_EXPECTED_DB: extsync_scratch
+          DATABASE_URL: mysql://extsync_tester:ci-scratch-not-a-secret@127.0.0.1:3306/extsync_scratch
+          PROXY_VAULT_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          COOKIES_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+        run: node scripts/extcredsync-db-selftest.js
+
+      - name: Record the engine actually tested
+        if: always()
+        run: |
+          v=$(mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -N -B -e 'SELECT VERSION();' 2>/dev/null || echo unknown)
+          {
+            echo "### ext-sync real-DB self-test"
+            echo ""
+            echo "- requested image: \`${{ github.event.inputs.engine_image || matrix.image }}\`"
+            echo "- engine reported: \`$v\`"
+            echo "- scratch schema: \`extsync_scratch\` (restricted user, dropped with the runner)"
+            echo ""
+            echo "A pass is evidence about THIS engine version. Confirm it matches production before relying on it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tear down the scratch schema
+        if: always()
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e "DROP DATABASE IF EXISTS \`${SCRATCH_DB}\`; DROP USER IF EXISTS '${SCRATCH_USER}'@'%';" || true
