@@ -161,9 +161,13 @@ jobs:
             echo "readOnly_verify=$(grep -c 'readOnly: true' "$f" 2>/dev/null || echo 0)"
             # Three distinct states, because "canaryExpected is present" stopped being the signal
             # once the gate was corrected to RECORD proof instead of refusing on its absence.
-            has_expected=$(grep -c 'canaryExpected' "$f" 2>/dev/null || echo 0)
-            refuses_unproven=$(grep -c "canary !== 'passed'" "$f" 2>/dev/null || echo 0)
-            records_proof=$(grep -c 'canaryProven' "$f" 2>/dev/null || echo 0)
+            # No `|| echo 0`: grep -c already prints 0 and merely EXITS 1 on no match, so the
+            # fallback appended a second line and every numeric comparison below then compared
+            # against "0\n0" and took the wrong branch. The remote script runs under `set -u`
+            # alone, so a non-zero exit here is harmless.
+            has_expected=$(grep -c 'canaryExpected' "$f" 2>/dev/null); has_expected=${has_expected:-0}
+            refuses_unproven=$(grep -c "canary !== 'passed'" "$f" 2>/dev/null); refuses_unproven=${refuses_unproven:-0}
+            records_proof=$(grep -c 'canaryProven' "$f" 2>/dev/null); records_proof=${records_proof:-0}
             echo "canaryExpected=$has_expected refuses_unproven=$refuses_unproven records_proof=$records_proof"
             if [ "$refuses_unproven" != "0" ]; then
               echo "GATE=REFUSES_UNPROVEN (the WriteHuman-only outage is live)"
