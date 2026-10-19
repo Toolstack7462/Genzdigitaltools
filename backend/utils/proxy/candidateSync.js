@@ -325,10 +325,23 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
       // seconds later, from a decode.
       //
       // The canary is a single non-rotating GET of the provider's own /auth/v1/user. It does NOT
-      // exchange the refresh token, so it cannot disturb the browser that owns it, and it is the
-      // same call the scheduler already makes every seven minutes. Cost: one request per accepted
-      // push.
-      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, { readOnly: true, canary: true });
+      // exchange the refresh token, so it cannot disturb the browser that owns it.
+      //
+      // IT RUNS ON ACTIVATIONS ONLY, which is where it started and where it belongs. I had widened
+      // it to every accepted push, described as "cost: one request per accepted push". That cost
+      // is not one request — it is an EXTERNAL network round-trip placed inside the agent's own
+      // POST, on the agent's critical path, every single sync. The operator's live log shows the
+      // consequence directly:
+      //
+      //     agent_report {"cdp":"200","pollCount":3833,
+      //                   "error":"post_failed: The operation was aborted due to timeout"}
+      //
+      // The agent is alive and polling, and its push times out — so no fresh cookies land, the
+      // vault ages, and the client is served a stale session while verification still answers
+      // "working" from a decode. An activation is a rare, operator-driven moment that can afford
+      // to wait for proof; a routine sync cannot, and the periodic scheduler already makes this
+      // same call every seven minutes OUT of the request path, which is where proof belongs.
+      v = await verifyAccountCookies(tool, header, account.expectedIdentifier, act ? { readOnly: true, canary: true } : { readOnly: true });
     } catch (err) {
       return fail(CODES.VERIFICATION_INCONCLUSIVE, err && err.message);
     }
