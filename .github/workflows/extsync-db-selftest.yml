@@ -24,15 +24,32 @@ on:
         description: 'Override the DB service image, e.g. mariadb:10.6 or mysql:8.4 — use the version production actually runs'
         required: false
         default: ''
-  push:
-    # Scoped to the recovery branch and to the files whose DB semantics this proves, so it runs
-    # by itself on the next push without needing anyone to dispatch it.
-    branches: [fix/writehuman-extension-autosync-restore]
-    paths:
+  # PULL REQUESTS INTO main — this is the one that matters for safety. A push to `main` is what
+  # Hostinger's external auto-deploy watches, so a check that only starts after that push has
+  # already shipped the code is too late to prevent anything. Running on the PR puts the
+  # real-engine verification BEFORE the merge that triggers production.
+  #
+  # NOTE FOR THE REPOSITORY OWNER: this makes the check RUN on every relevant PR, but it cannot
+  # make it BLOCKING. Marking "selftest (mysql:8.0)" and "selftest (mariadb:10.11)" as required
+  # status checks on `main` is a branch-protection setting, which needs admin rights on the
+  # repository — it is not something a workflow file can grant itself.
+  pull_request:
+    branches: [main]
+    paths: &db_paths
+      # the adapter itself: every guarded-write primitive and the timestamp binding
       - 'backend/db/mysqlAdapter.js'
-      - 'backend/scripts/extcredsync-db-selftest.js'
+      # model VERSION behaviour: Tool's preSave is what bumps credentialVersion /
+      # sessionBundle.version, which is exactly what the guarded writes lock against
+      - 'backend/models/Tool.js'
+      - 'backend/models/proxy/ExtAutoSyncPolicy.js'
+      # the engine that issues those writes, and the self-test that proves them
       - 'backend/utils/proxy/extensionCredentialSync.js'
+      - 'backend/scripts/extcredsync-db-selftest.js'
       - '.github/workflows/extsync-db-selftest.yml'
+  push:
+    # Kept so the recovery branch keeps verifying itself without anyone dispatching it.
+    branches: [fix/writehuman-extension-autosync-restore]
+    paths: *db_paths
 
 # Read-only. No deploy permissions, no id-token, no package write.
 permissions:

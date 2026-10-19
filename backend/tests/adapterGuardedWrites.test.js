@@ -229,3 +229,40 @@ describe('the Tool model bumps its own versions on create — the fixture assump
     assert.strictEqual(typeof stored.credentialVersion, 'number', 'and it stays a number');
   });
 });
+
+describe('the real-engine check stays wired to the code it protects', () => {
+  // WHY: the guarded-write primitives and the Tool version behaviour are only truly verified by
+  // scripts/extcredsync-db-selftest.js against a real engine. If that job stops running on the
+  // files that can break it, the fake-driver tests above would be the only gate — and they passed
+  // through BOTH real defects (the DATETIME binding and the stale-guard fixture). This keeps the
+  // wiring honest. It is a string check on purpose: no YAML parser is a dependency of this suite.
+  const fs = require('fs');
+  const path = require('path');
+  const WF = path.join(__dirname, '..', '..', '.github', 'workflows', 'extsync-db-selftest.yml');
+
+  test('the workflow exists and runs on pull requests into main', () => {
+    assert.ok(fs.existsSync(WF), 'the real-DB workflow is present');
+    const src = fs.readFileSync(WF, 'utf8');
+    assert.match(src, /^\s*pull_request:/m, 'it runs on pull requests...');
+    assert.match(src, /pull_request:[\s\S]{0,200}?branches:\s*\[main\]/, '...targeting main, so it lands before the merge that triggers Hostinger');
+  });
+
+  test('it covers every file that can break the guarded writes', () => {
+    const src = fs.readFileSync(WF, 'utf8');
+    for (const f of [
+      'backend/db/mysqlAdapter.js',                        // the primitives + the timestamp binding
+      'backend/models/Tool.js',                            // preSave bumps the versions guards lock on
+      'backend/models/proxy/ExtAutoSyncPolicy.js',
+      'backend/utils/proxy/extensionCredentialSync.js',
+      'backend/scripts/extcredsync-db-selftest.js',
+    ]) {
+      assert.ok(src.includes(f), `the real-DB job must run when ${f} changes`);
+    }
+  });
+
+  test('it stays test-only: no repository secrets, read-only token', () => {
+    const src = fs.readFileSync(WF, 'utf8');
+    assert.doesNotMatch(src, /secrets\./, 'a test job must never carry production credentials');
+    assert.match(src, /permissions:\s*\n\s*contents:\s*read/, 'and must hold a read-only token');
+  });
+});
