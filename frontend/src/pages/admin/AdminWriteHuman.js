@@ -11,6 +11,7 @@ import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
 import { withCsrfRetry } from '../../services/launchService';
 import { getApiBaseUrl } from '../../services/api';
 import { useToast } from '../../components/Toast';
+import { signInDisplay } from './writeHumanSignIn';
 
 // ── small presentational helpers ──────────────────────────────────────────────
 const TONE = {
@@ -376,6 +377,8 @@ const AdminWriteHuman = () => {
   const syncTone = syncState === 'FRESH' ? 'ok' : syncState === 'FAILED' ? 'bad' : syncState ? 'warn' : 'mut';
 
   const loggedOut = sess === 'LOGIN_REQUIRED';
+  // Sign-in needs positive evidence; see writeHumanSignIn.js for what used to go green here.
+  const signIn = signInDisplay(a, sess);
   const showBanner = !!sess && sess !== 'HEALTHY';
   // Multi-device view.
   const devices = state?.devices || [];
@@ -681,9 +684,7 @@ const AdminWriteHuman = () => {
               <Row k="Overall"><Badge tone={healthTone}>{health === 'up' ? 'healthy' : health}</Badge></Row>
               <Row k="Session"><Badge tone={stTone}>{sessionLabel}</Badge></Row>
               <Row k="Client route"><span title={hs?.clientRoute?.reason || ''}><Badge tone={routeTone}>{routeLabel}</Badge></span></Row>
-              <Row k="Sign-in">{a.browserAuthCookies == null
-                ? <Badge tone="mut">{a.telemetryFrozen ? 'unknown · no device reporting' : 'unknown'}</Badge>
-                : loggedOut ? <Badge tone="bad">signed out</Badge> : <Badge tone="ok">signed in</Badge>}</Row>
+              <Row k="Sign-in"><Badge tone={signIn.tone}>{signIn.label}</Badge></Row>
               <Row k="Stored status">{a.status || '—'} / {a.sessionStatus || '—'}</Row>
               <Row k="Cookies stored">{a.cookieCount ?? '—'}</Row>
               <Row k="Bundle present">{a.hasBundle ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</Row>
