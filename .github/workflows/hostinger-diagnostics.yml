@@ -280,6 +280,32 @@ jobs:
           path: ${{ runner.temp }}/feprov.txt
           if-no-files-found: warn
 
+  # ── FIND THE THROW REPORTED AS "Extension error" (read-only, public download) ────────────────
+  # "Could not open tool: Extension error" is a fallback string, not a diagnosis: background.js
+  # returns `error: error.message`, and `new Error(undefined).message` is the empty string, so any
+  # message-less throw in the login path arrives at the dashboard with its real stage destroyed.
+  # This reads the LIVE package because the served background.js and LoginOrchestrator.js both
+  # differ from the repository. It prints code only.
+  whlogin:
+    name: Trace the WriteHuman login throw (read-only)
+    if: ${{ inputs.confirm == 'WHLOGIN' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Trace the live login path
+        run: node .github/scripts/wh-login-trace.mjs
+      - name: Keep the transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wh-login-trace
+          path: ${{ runner.temp }}/whlogin.txt
+          if-no-files-found: warn
+
   extcheck:
     name: Inspect the live extension package (read-only)
     if: ${{ inputs.confirm == 'EXTCHECK' }}
