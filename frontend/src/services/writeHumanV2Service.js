@@ -60,4 +60,13 @@ export const writeHumanV2Admin = {
   // Abandon a running activation. Nothing is promoted and the previous source keeps the session.
   cancelActivation: (headers = {}) =>
     api.post(`/admin/proxy-tools/${TOOL}/activation/cancel`, {}, { headers }),
+
+  // --- Extension credential auto-sync POLICY (separate from proxy cookie sync) ---------------
+  // Reads the persistent, Tool-independent policy + the dynamically-resolved eligible writehuman.ai
+  // Tool + the in-process observe status. Never returns cookies/tokens/keys.
+  getAutoSync: () => api.get(`/admin/proxy-tools/${TOOL}/extension-autosync`),
+  // State change (enable/observe/enforce, approve the authenticated account, disable). CSRF-gated -
+  // the caller supplies headers via withCsrfRetry. Body: { enabled, mode?, approveObserved?,
+  // approvedAccountKey?, clearApproval?, accountId? }.
+  setAutoSync: (payload, headers = {}) => api.put(`/admin/proxy-tools/${TOOL}/extension-autosync`, payload, { headers }),
 };

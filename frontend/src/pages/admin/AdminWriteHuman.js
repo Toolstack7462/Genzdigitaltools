@@ -3,6 +3,7 @@ import startVisiblePolling from '../../lib/visiblePolling';
 import { createLatestOnly } from '../../lib/latestOnly';
 import AdminLayoutEnhanced from '../../components/AdminLayoutEnhanced';
 import AdminProxyTools from './AdminProxyTools';
+import WriteHumanAutoSync from './WriteHumanAutoSync';
 import {
   PenTool, Activity, RefreshCw, Loader2, Chrome, CheckCircle2, AlertTriangle,
   Server, Cpu, Clock, Zap, RotateCw, Play, ShieldCheck, Cookie, Wifi, WifiOff, Bell, Save, Download,
@@ -820,6 +821,10 @@ const AdminWriteHuman = () => {
           Reuses the Proxy-Tools management UI locked to WriteHuman (embedded, no extra layout),
           reading/writing the SAME MySQL ProxyAccount vault + ProxyClient assignments as the live
           status above. Single source of truth; no separate store, no duplicate UI. */}
+      {/* Extension credential auto-sync (official-domain flow) - distinct from the proxy cookie
+          sync above. Self-contained section; reads/writes only the dedicated policy API. */}
+      <WriteHumanAutoSync />
+
       <div className="mt-8 pt-6 border-t border-slate-200">
         <AdminProxyTools fixedTool="writehuman" embedded />
       </div>
