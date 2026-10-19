@@ -12,6 +12,7 @@ import ClientSearchSelect from '../../components/admin/ClientSearchSelect';
 import ListFilterBar from '../../components/admin/ListFilterBar';
 import ClaudeUsageDashboard from '../../components/admin/ClaudeUsageDashboard';
 import ProxyServicesPanel from '../../components/admin/ProxyServicesPanel';
+import { describeLoadFailures } from './proxyToolsLoadErrors';
 
 // ── Lightweight client-side filters (lists are capped at 100 rows) ──────────────
 const ACCOUNT_FILTERS = [
@@ -110,31 +111,25 @@ const AdminProxyTools = ({ fixedTool = null, embedded = false }) => {
   }, []);
 
   const load = useCallback(async () => {
-    try {
-      setLoading(true);
-      const [st, ac, cl] = await Promise.all([
-        proxyToolsAdmin.getStats(tool),
-        proxyToolsAdmin.listAccounts(tool),
-        proxyToolsAdmin.listClients(tool, { limit: 100 }),
-      ]);
-      setStats(st.data?.stats || null);
-      setAccounts(ac.data?.accounts || []);
-      setClients(cl.data?.clients || []);
-    } catch (e) {
-      // A raw backend "Route not found" here means the proxy-tools API is not
-      // mounted on the running server (typically a stale backend deploy), NOT a
-      // bug in this page. Make that explicit instead of echoing the cryptic
-      // server string. The api client logs the exact method + path safely.
-      const status = e.response?.status;
-      const serverMsg = e.response?.data?.error;
-      showError(
-        status === 404 || serverMsg === 'Route not found'
-          ? 'Failed to load Proxy Tools — the proxy-tools API route is unavailable (404). The backend may need to be redeployed.'
-          : status
-            ? `Failed to load Proxy Tools (HTTP ${status})${serverMsg ? ` — ${serverMsg}` : ''}`
-            : 'Failed to load Proxy Tools — could not reach the server.'
-      );
-    } finally { setLoading(false); }
+    setLoading(true);
+    // allSettled, NOT all. These are three independent reads, and Promise.all discarded all three
+    // whenever any one rejected — so a single slow call blanked the account vault and the client
+    // assignments too, which is how this section appeared to vanish from the bottom of the
+    // WriteHuman admin page while two of its three calls were fine. Each part is applied on its
+    // own now, and the message names what actually failed. A raw backend "Route not found" still
+    // means the proxy-tools API is not mounted on the running server (typically a stale backend
+    // deploy) rather than a bug in this page; see proxyToolsLoadErrors.js.
+    const [st, ac, cl] = await Promise.allSettled([
+      proxyToolsAdmin.getStats(tool),
+      proxyToolsAdmin.listAccounts(tool),
+      proxyToolsAdmin.listClients(tool, { limit: 100 }),
+    ]);
+    if (st.status === 'fulfilled') setStats(st.value?.data?.stats || null);
+    if (ac.status === 'fulfilled') setAccounts(ac.value?.data?.accounts || []);
+    if (cl.status === 'fulfilled') setClients(cl.value?.data?.clients || []);
+    setLoading(false);
+    const msg = describeLoadFailures([['stats', st], ['accounts', ac], ['clients', cl]]);
+    if (msg) showError(msg);
   }, [tool, showError]);
 
   useEffect(() => { loadDefs(); }, [loadDefs]);
