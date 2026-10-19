@@ -1,4 +1,5 @@
 import api from './api';
+import { resetExtensionOwner } from '../hooks/useExtension';
 
 // Separate localStorage keys for admin and client — prevents cross-session contamination
 const ADMIN_USER_KEY = 'genz_admin_user';
@@ -86,6 +87,10 @@ class AuthService {
       console.error('Client logout error:', err);
     } finally {
       localStorage.removeItem(CLIENT_USER_KEY);
+      // End the extension connection lifecycle with the session. Without this, a bridge reply or
+      // activation-token response still in flight could land after the next client signs in and
+      // write the previous one's connection state over theirs.
+      resetExtensionOwner();
     }
   }
 
@@ -98,6 +103,7 @@ class AuthService {
     } finally {
       localStorage.removeItem(ADMIN_USER_KEY);
       localStorage.removeItem(CLIENT_USER_KEY);
+      resetExtensionOwner();
     }
   }
 
