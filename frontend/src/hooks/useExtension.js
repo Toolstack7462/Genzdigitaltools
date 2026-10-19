@@ -353,6 +353,7 @@ const messageHandler = (event) => {
   }
   if (data.type === 'GENZ_EXTENSION_DISCONNECTED') {
     setStatus(prev => ({ ...(prev || {}), installed: true, connected: false, checking: false, reason: data.reason || 'disconnected' }));
+    resumeAutoConnect();
   }
   if (data.type === 'GENZ_SYNC_COMPLETE') {
     setStatus(prev => ({ ...(prev || {}), toolCount: data.toolCount, lastSync: data.lastSync }));
@@ -410,6 +411,24 @@ function startAutoConnect() {
   };
 
   attempt();
+}
+
+/**
+ * Resume auto-connecting after the extension has reported itself disconnected.
+ *
+ * The loop is deliberately dormant once a connect succeeds — `autoRunning` stays true so a second
+ * chain cannot start. That leaves a gap the per-caller implementation used to cover by accident:
+ * every component mount created its own auto-connect effect, so a disconnect followed by a route
+ * change happened to retry. With one shared owner there is no such accident, so the disconnect
+ * signal has to restart the loop explicitly. Any pending backoff timer is cleared first, otherwise
+ * resuming would leave two chains running.
+ */
+function resumeAutoConnect() {
+  if (!owner.wired) return;
+  if (owner.retryTimer) { clearTimeout(owner.retryTimer); owner.retryTimer = null; }
+  owner.autoRunning = false;
+  owner.autoAttempts = 0;
+  startAutoConnect();
 }
 
 function startOwner() {

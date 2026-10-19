@@ -360,3 +360,54 @@ test('the returned callbacks are stable, so consumer effects do not re-run every
   expect(refs.length).toBeGreaterThan(1);
   expect(new Set(refs).size).toBe(1);
 });
+
+// ── F. a disconnect must restart the dormant auto-connect loop ───────────────────────────────
+// The loop stops after a successful connect so a second chain cannot start. The per-caller
+// implementation covered the aftermath by accident — every mount created another auto-connect
+// effect, so a disconnect plus a route change happened to retry. One shared owner has no such
+// accident, so the disconnect signal has to resume it explicitly.
+test('a disconnect while the tab stays open resumes auto-connecting', async () => {
+  bridge.status = { connected: true, version: '3.9.37', toolCount: 2 };
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(0);
+  expect(mod.__extensionOwnerForTest().status.connected).toBe(true);
+  const before = api.post.mock.calls.length;
+
+  // The extension drops its connection; the next status read reports it.
+  bridge.status = { connected: false, version: '3.9.37' };
+  await act(async () => {
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'worker_restarted' }, source: window,
+    }));
+    await Promise.resolve();
+  });
+  await tick(0);
+
+  expect(api.post.mock.calls.length).toBeGreaterThan(before);
+  expect(api.post.mock.calls.at(-1)[0]).toBe('/client/extension/activation-token');
+});
+
+test('resuming after a disconnect does not leave two retry chains running', async () => {
+  bridge.connect = { success: false, error: 'backend_rejected_extension_token' };
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(0);
+  await tick(1500);
+  const mid = api.post.mock.calls.length;
+
+  // Two disconnects in a row must not multiply the loop.
+  for (let i = 0; i < 2; i += 1) {
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'flap' }, source: window,
+      }));
+      await Promise.resolve();
+    });
+  }
+  await tick(0);
+  const afterResume = api.post.mock.calls.length;
+  await tick(1500);
+  const added = api.post.mock.calls.length - afterResume;
+  // One chain => at most one attempt per backoff window. Two chains would double it.
+  expect(added).toBeLessThanOrEqual(1);
+  expect(mid).toBeGreaterThan(0);
+});
