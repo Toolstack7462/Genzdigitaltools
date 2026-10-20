@@ -34,6 +34,40 @@ describe('writeHuman auto-sync — control gating (authorization safeguards)', (
     expect(d.canEnforce).toBe(false);
   });
 
+  // Two Tools CAN legitimately be active on the official domain (production 2026-10-20:
+  // "Write Human" 31 client assignments, "WH" 7). The backend resolves it with an explicit
+  // approvedToolId and reports the remaining ambiguity itself; deriving ambiguity from the count
+  // alone kept every control disabled forever, because the count stays >1 after binding too.
+  test('an honoured Tool binding clears ambiguity even though >1 Tool is eligible', () => {
+    const d = deriveControls({
+      enabled: true, approvedAccountKey: 'uid-1', mode: 'observe',
+      eligibleToolIds: ['t1', 't2'], approvedToolId: 't2', ambiguous: false,
+      eligibleTools: [{ id: 't1', name: 'WH' }, { id: 't2', name: 'Write Human' }],
+      status: { stage: 'verified', lastCanary: 'passed' },
+    });
+    expect(d.ambiguous).toBe(false);
+    expect(d.bindingHonoured).toBe(true);
+    expect(d.boundToolId).toBe('t2');
+    expect(d.canEnforce).toBe(true);
+  });
+
+  test('a stale binding (not eligible) stays ambiguous and keeps controls locked', () => {
+    const d = deriveControls({
+      enabled: true, approvedAccountKey: 'uid-1', mode: 'observe',
+      eligibleToolIds: ['t1', 't2'], approvedToolId: 'gone', ambiguous: true,
+      status: { stage: 'verified', lastCanary: 'passed' },
+    });
+    expect(d.ambiguous).toBe(true);
+    expect(d.bindingHonoured).toBe(false);
+    expect(d.canEnforce).toBe(false);
+  });
+
+  test('an older backend response without `ambiguous` still falls back to the count', () => {
+    const d = deriveControls({ enabled: true, eligibleToolIds: ['t1', 't2'] });
+    expect(d.ambiguous).toBe(true);
+    expect(d.canEnable).toBe(false);
+  });
+
   test('awaiting approval: approve offered, enforce NOT (no trust-on-first)', () => {
     const d = deriveControls(Object.assign({ enabled: true, mode: 'observe' }, verifiedAwaiting));
     expect(d.approvalState).toBe('awaiting');

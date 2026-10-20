@@ -15,15 +15,25 @@ export function verification(status) {
 }
 
 // Derive the UI/control state from the backend policy. Guards:
-//  - ambiguity (>1 eligible tool) blocks ALL activation.
+//  - ambiguity (>1 eligible tool, with none explicitly bound) blocks ALL activation.
 //  - approve is offered ONLY when a provider-authenticated account is awaiting approval and none is
 //    approved yet (never auto-approve).
 //  - enforce is allowed ONLY when enabled + an account is approved + current verification is Verified.
 export function deriveControls(policy) {
   const p = policy || {};
   const s = p.status || {};
-  const eligibleCount = Array.isArray(p.eligibleToolIds) ? p.eligibleToolIds.length : 0;
-  const ambiguous = !!p.ambiguous || eligibleCount > 1;
+  const eligibleToolIds = Array.isArray(p.eligibleToolIds) ? p.eligibleToolIds : [];
+  const eligibleCount = eligibleToolIds.length;
+  // Two Tools can legitimately be active on the official domain (production, 2026-10-20:
+  // "Write Human" with 31 client assignments and "WH" with 7). The backend resolves that with an
+  // explicit admin-set `approvedToolId` and reports the REMAINING ambiguity in `p.ambiguous`, so
+  // trust that field when the server sent it. Deriving it from the count alone would keep every
+  // control disabled forever even once a Tool had been bound — the count stays >1 either way.
+  const boundToolId = p.approvedToolId || null;
+  const bindingHonoured = !!boundToolId && eligibleToolIds.some((id) => String(id) === String(boundToolId));
+  const ambiguous = typeof p.ambiguous === 'boolean'
+    ? p.ambiguous
+    : (eligibleCount > 1 && !bindingHonoured);
   const idle = eligibleCount === 0;
   const enabled = !!p.enabled;
   const mode = p.mode === 'enforce' ? 'enforce' : 'observe';
@@ -34,6 +44,8 @@ export function deriveControls(policy) {
 
   return {
     eligibleCount, ambiguous, idle, enabled, mode, approved, awaiting, observedKey, verified,
+    boundToolId, bindingHonoured,
+    eligibleTools: Array.isArray(p.eligibleTools) ? p.eligibleTools : [],
     approvalState: approved ? 'approved' : (awaiting ? 'awaiting' : 'pending'),
     canEnable: !enabled && !ambiguous,
     canDisable: enabled,

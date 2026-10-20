@@ -139,8 +139,20 @@ export default function WriteHumanAutoSync() {
             </div>
 
             {ambiguous && (
-              <div className="rounded-lg p-2.5 mb-3 border border-amber-200 bg-amber-50 text-amber-800 text-[12px] flex items-center gap-2">
-                <AlertTriangle size={14} /> Multiple eligible <span className="font-mono">writehuman.ai</span> Tools detected — binding is blocked until exactly one remains. Remove the duplicate.
+              <div className="rounded-lg p-2.5 mb-3 border border-amber-200 bg-amber-50 text-amber-800 text-[12px] flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  {eligibleCount} eligible <span className="font-mono">writehuman.ai</span> Tools — auto-sync will not guess which one receives credentials.
+                  {d.eligibleTools.length > 0 && (
+                    <> Candidates: {d.eligibleTools.map((t) => t.name || t.id).join(', ')}.</>
+                  )}
+                  {' '}Bind one of them explicitly, or leave only one active. A Tool with clients assigned must <span className="font-semibold">not</span> be removed to resolve this.
+                </span>
+              </div>
+            )}
+            {!ambiguous && eligibleCount > 1 && d.bindingHonoured && (
+              <div className="rounded-lg p-2.5 mb-3 border border-emerald-200 bg-emerald-50 text-emerald-800 text-[12px] flex items-center gap-2">
+                <Lock size={14} /> {eligibleCount} Tools are eligible; auto-sync is explicitly bound to one of them. The others are never written to.
               </div>
             )}
             {eligibleCount === 0 && (
@@ -151,7 +163,17 @@ export default function WriteHumanAutoSync() {
 
             <div className="grid grid-cols-2 md:grid-cols-3 gap-y-3 gap-x-4 mb-3">
               <Field label="Verification">{ver.label}<span className="text-slate-400 font-normal"> · {ver.detail}</span></Field>
-              <Field label="Eligible Tool">{eligibleCount === 1 ? <span className="font-mono text-[12px]">{p.eligibleToolIds[0]}</span> : `${eligibleCount} tools`}</Field>
+              <Field label="Eligible Tool">{
+                eligibleCount === 1
+                  ? <span className="font-mono text-[12px]">{p.eligibleToolIds[0]}</span>
+                  : d.bindingHonoured
+                    ? <span className="inline-flex items-center gap-1">
+                        <Lock size={12} className="text-emerald-600" />
+                        <span>{(d.eligibleTools.find((t) => String(t.id) === String(d.boundToolId)) || {}).name || 'bound'}</span>
+                        <span className="text-slate-400 font-normal">(bound, {eligibleCount} eligible)</span>
+                      </span>
+                    : `${eligibleCount} tools`
+              }</Field>
               <Field label="Official domain">{p.officialDomain || '—'}</Field>
               <Field label="Approved account">{approved ? <span className="inline-flex items-center gap-1"><Fingerprint size={12} className="text-emerald-600" /><span className="font-mono text-[12px]">{p.approvedAccountKey}</span></span> : <span className="text-amber-600">not approved</span>}</Field>
               <Field label="Authenticated identity">{s.lastIdentity || '—'}{observedKey && !approved ? <span className="text-slate-400 font-normal"> (id {String(observedKey).slice(0, 8)}…)</span> : null}</Field>
