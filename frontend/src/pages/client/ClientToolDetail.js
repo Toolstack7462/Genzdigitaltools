@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import ClientLayoutEnhanced, { getCategoryTheme, CARD_VARIANTS } from '../../components/ClientLayoutEnhanced';
 import { ArrowLeft, Package, ExternalLink, Clock, Info, Shield, CheckCircle2, Loader2, AlertCircle, Lock, RefreshCw, AlertTriangle } from 'lucide-react';
 import api from '../../services/api';
+import { createLaunchAttempts } from '../../lib/launchAttempts';
 import { useToast } from '../../components/Toast';
 import { useExtension } from '../../hooks/useExtension';
 import { daysUntilExpiry as expiryDays, isAccessExpired } from '../../utils/expiry';
@@ -21,6 +22,14 @@ const ClientToolDetail = () => {
   const [tool, setTool] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Attempt identity, same rule as the dashboard card. Without it the 8s clear-timer from a first
+  // failed click wiped a second click's loading state, and a slower OLDER rejection could overwrite
+  // a newer SUCCESS — leaving a red message on a tool that had actually opened.
+  // Same shared, unit-tested owner the dashboard card uses — not a second copy of the rule.
+  const attemptsRef = useRef(null);
+  if (!attemptsRef.current) attemptsRef.current = createLaunchAttempts();
+  useEffect(() => () => attemptsRef.current.dispose(), []);
+
   /* ─── Access Now → extension-controlled open (inject session → open tool URL) ─ */
   const handleAccess = async () => {
     const toolId = tool?._id || tool?.id;
@@ -29,6 +38,10 @@ const ClientToolDetail = () => {
       setOpenState({ error: 'Install Extension' });
       return;
     }
+    const attempts = attemptsRef.current;
+    const attempt = attempts.begin(toolId);
+    const isCurrent = () => attempts.isCurrent(toolId, attempt);
+
     setOpenState({ loading: true });
     let result;
     try {
@@ -36,14 +49,17 @@ const ClientToolDetail = () => {
     } catch (err) {
       result = { success: false, error: err?.message || 'open_failed' };
     }
-    if (result?.success) {
+    if (!isCurrent()) return;                    // superseded by a newer click, or unmounted
+
+    if (result?.success || result?.error === 'already_opening') {
+      // A duplicate-open acknowledgement is not a failure: the first operation is still running
+      // or already finished, so this must not turn red.
+      attempts.settle(toolId);
       setOpenState({});
-    } else if (result?.error === 'already_opening') {
-      setOpenState({});
-    } else {
-      setOpenState({ error: result?.message || 'Could not open tool. Please try again.' });
-      setTimeout(() => setOpenState({}), 8000);
+      return;
     }
+    setOpenState({ error: result?.message || 'Could not open tool. Please try again.' });
+    attempts.scheduleClear(toolId, attempt, () => setOpenState({}), 8000);
   };
 
   useEffect(() => {

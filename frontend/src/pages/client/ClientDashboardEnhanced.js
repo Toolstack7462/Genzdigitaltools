@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 
 import api from '../../services/api';
+import { createLaunchAttempts } from '../../lib/launchAttempts';
 import { useToast } from '../../components/Toast';
 import { EXT_ZIP_URL, EXT_ZIP_FILENAME, extZipUrl, versionedZipName, getLatestExtension } from '../../lib/extension';
 import { isOlder } from '../../lib/semver';
@@ -215,6 +216,23 @@ const ClientDashboardEnhanced = () => {
   // must not tear down/recreate the poll interval on every heartbeat).
   const installedVersionRef = useRef(null);
   const seenAnnouncementIdsRef = useRef(null); // Set of announcement ids seen so far (null until first load)
+
+  // ── Per-card launch attempt identity ───────────────────────────────────────────────────────
+  // `toolOpenStates[toolId]` was written by whichever async path finished last, with no idea
+  // whether a newer attempt had already started. Two consequences were visible to clients:
+  //   * click → fail → click again → the FIRST attempt's 8s "clear the error" timer fired during
+  //     the second attempt and wiped its loading state (or wiped a freshly-set error);
+  //   * two in-flight attempts both wrote the same key, so a slower OLDER rejection could land
+  //     after a newer SUCCESS and leave a red card on a tool that had actually opened.
+  // Every attempt now takes a monotonic id; only the newest id for that card may write its state,
+  // and its clear-timer is tracked so it can be cancelled. dispose() stops a late response
+  // writing after unmount (navigation, logout, account switch).
+  // One owner for attempt identity + its clear-timer, shared with the tool-detail page and unit
+  // tested in lib/__tests__/launchAttempts.test.js with fake timers and deferred responses.
+  const attemptsRef = useRef(null);
+  if (!attemptsRef.current) attemptsRef.current = createLaunchAttempts();
+  const handleOpenToolRef = useRef(null);        // stable self-reference for retry consumers
+  useEffect(() => () => attemptsRef.current.dispose(), []);
 
   // Detect outdated extension at the DASHBOARD level (works for ALL installed
   // versions, including old builds that lack heartbeat update-awareness). Fetch
@@ -621,6 +639,13 @@ const ClientDashboardEnhanced = () => {
       return;
     }
 
+    // Claim this card for THIS attempt. Any older attempt still in flight is now stale and may
+    // no longer write, and any pending "clear the error" timer from an older attempt is cancelled
+    // so it cannot wipe the state this attempt is about to set.
+    const attempts = attemptsRef.current;
+    const attempt = attempts.begin(toolId);
+    const isCurrent = () => attempts.isCurrent(toolId, attempt);
+
     // openTool() wakes the extension and ensures a live session on its own —
     // no separate connect step needed here.
     setToolOpenStates(prev => ({ ...prev, [toolId]: { loading: true } }));
@@ -638,19 +663,27 @@ const ClientDashboardEnhanced = () => {
       // openTool should never throw (it returns {success:false}), but guard anyway.
       result = { success: false, error: err.message || 'unknown_error' };
     }
-    const clearState = () => setToolOpenStates(prev => {
-      const copy = { ...prev }; delete copy[toolId]; return copy;
-    });
+    const clearState = () => {
+      if (!isCurrent()) return;                  // a newer attempt owns this card now
+      attempts.settle(toolId);                 // drop this attempt's timer; nothing fires later
+      setToolOpenStates(prev => {
+        const copy = { ...prev }; delete copy[toolId]; return copy;
+      });
+    };
     const showToolError = (msg) => {
+      if (!isCurrent()) return;                  // stale rejection must not overwrite newer state
       if (!msg) { clearState(); return; }
       setToolOpenStates(prev => ({ ...prev, [toolId]: { error: msg } }));
-      setTimeout(clearState, 8000);
+      // Auto-clear belongs to THIS attempt only. It is tracked so a newer attempt cancels it,
+      // and it re-checks ownership when it fires.
+      attempts.scheduleClear(toolId, attempt, clearState, 8000);
     };
 
     if (result?.success) {
-      clearState();
+      clearState();                              // confirmed success clears this card immediately
       return;
     }
+    if (!isCurrent()) return;                    // a newer attempt superseded this one mid-flight
 
     // ── #9 guarantee: never show "expired"/"not assigned" for a tool the
     // dashboard's OWN (shared-helper) list still returns. Re-verify against a
@@ -668,6 +701,7 @@ const ClientDashboardEnhanced = () => {
       } catch (_) { /* keep stillVisible=false → fall through to precise message */ }
 
       if (stillVisible) {
+        if (!isCurrent()) return;                // superseded while the fresh list was fetched
         const retry = await openTool(toolId).catch(() => ({ success: false }));
         if (retry?.success) { clearState(); return; }
         showToolError('Could not open this tool right now. Please try again in a moment.');
@@ -686,12 +720,21 @@ const ClientDashboardEnhanced = () => {
         toolId,
         toolName: tool?.name,
         recoverable: true,
-        retry: () => openTool(toolId),
+        // Route the Guide's retry through the SAME state owner. It used to call openTool(toolId)
+        // directly, so a retry that actually SUCCEEDED never cleared this card — the tool opened
+        // and the red banner stayed up, which is the defect clients reported. Going through
+        // handleOpenTool means the retry takes a fresh attempt id, supersedes the failure and
+        // clears it on success, exactly like a normal click.
+        retry: () => handleOpenToolRef.current && handleOpenToolRef.current(tool),
       });
     } catch (_) { /* assistant is optional — never block the open flow */ }
 
     showToolError(sanitizeError(result));
   }, [bridgeReady, extMustUpdate, openTool, sanitizeError]);
+
+  // Keep a stable handle so retry consumers (the Guide) re-enter the SAME state path instead of
+  // calling openTool directly and leaving this card's error behind.
+  handleOpenToolRef.current = handleOpenTool;
 
   /* ─── Loading State — skeleton screens ─ */
   if (loading) {
