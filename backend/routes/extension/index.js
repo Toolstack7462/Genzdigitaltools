@@ -98,6 +98,30 @@ function accessDebug(stage, fields = {}) {
 }
 
 // Middleware to verify extension token
+/**
+ * Resolve the device hash a new extension token may be BOUND to.
+ *
+ * THE INVARIANT: `ExtensionToken.verifyToken` refuses (and historically revoked) any token whose
+ * `deviceIdHash` has no matching DeviceBinding row. So a token must only ever be bound to a hash
+ * that a binding can actually validate. Minting a device-bound token without that row is what
+ * produced the production re-pair loop on 2026-10-20: activation attached the extension hash to
+ * the binding only when `devicePolicy.enabled`, yet bound the token unconditionally, so every
+ * device-policy-off client got tokens that self-destructed on first use.
+ *
+ * Returns the hash when a binding backs it, otherwise null (an unbound token, which verifyToken
+ * accepts without any device check — the correct behaviour when device enforcement is not in use).
+ */
+async function bindableDeviceHash(clientId, hash) {
+  if (!hash) return null;
+  try {
+    const byDevice = await DeviceBinding.findOne({ clientId, deviceIdHash: hash });
+    if (byDevice) return hash;
+    const byExtension = await DeviceBinding.findOne({ clientId, extensionDeviceIdHash: hash });
+    if (byExtension) return hash;
+  } catch (_) { /* fall through: an unbound token is safe, a doomed bound one is not */ }
+  return null;
+}
+
 const verifyExtensionToken = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
@@ -215,7 +239,10 @@ router.post('/auth', authLimiter, async (req, res) => {
     // Create extension token (valid for 30 days). If the extension sends a
     // device hash, bind the token to that device; dashboard activation is the
     // preferred pairing flow because it uses the already-bound website device.
-    const deviceIdHash = req.headers['x-device-id-hash'] || null;
+    // Same invariant as dashboard activation: only bind to a hash a DeviceBinding can validate,
+    // otherwise mint an unbound token. This path never registered a binding at all, so an
+    // unverified header hash here produced exactly the same self-revoking token.
+    const deviceIdHash = await bindableDeviceHash(user._id, req.headers['x-device-id-hash'] || null);
     const tokenData = await ExtensionToken.createForClient(user._id, getExtensionTokenDays(), {
       userAgent: req.headers['user-agent'],
       ip: req.ip,
@@ -303,7 +330,13 @@ router.post('/auth/activate', authLimiter, async (req, res) => {
       await binding.save();
     }
 
-    const tokenDeviceIdHash = extensionDeviceIdHash || dashboardDeviceIdHash || null;
+    // Bind only to a hash a DeviceBinding can validate. When device policy is enabled the block
+    // above has just attached `extensionDeviceIdHash` to the binding and saved it, so the lookup
+    // succeeds and behaviour is unchanged. When it is disabled no binding exists, so the token is
+    // deliberately left UNBOUND rather than bound to something nothing can check.
+    const tokenDeviceIdHash = user.devicePolicy?.enabled
+      ? await bindableDeviceHash(user._id, extensionDeviceIdHash || dashboardDeviceIdHash)
+      : null;
     const tokenData = await ExtensionToken.createForClient(user._id, getExtensionTokenDays(), {
       userAgent: req.headers['user-agent'],
       ip: req.ip,

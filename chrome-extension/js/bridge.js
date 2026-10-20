@@ -172,12 +172,21 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
         ...safe,
       }, event.origin);
     } catch (err) {
+      // Carry the thrown error's STRUCTURED fields, not just its message. Collapsing them here is
+      // half of why a precise failure reached the client as "Extension error": the background
+      // supplies stage/code/reason/status, the page then read `error` as a stage, and anything
+      // that was not already a slug fell through to a generic message. Only these named,
+      // non-sensitive fields are forwarded — never a response body, cookie, token or bundle.
       window.postMessage({
         source: 'GENZ_DIGITAL_STORE_EXTENSION',
         type: `${type}_RESPONSE`,
         requestId,
         success: false,
-        error: err.message || 'Extension error',
+        error: err.message || err.code || 'Extension error',
+        ...(err.stage ? { stage: String(err.stage) } : {}),
+        ...(err.code ? { code: String(err.code) } : {}),
+        ...(err.reason ? { reason: String(err.reason) } : {}),
+        ...(typeof err.status === 'number' ? { status: err.status } : {}),
       }, event.origin);
     }
   });
