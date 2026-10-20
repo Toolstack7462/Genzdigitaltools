@@ -23,6 +23,9 @@ const crypto = require('crypto');
 const router = express.Router();
 
 const ProxyAccount = require('../../models/proxy/ProxyAccount');
+const Tool = require('../../models/Tool');
+const extensionCredentialSync = require('../../utils/proxy/extensionCredentialSync');
+const ExtAutoSyncPolicy = require('../../models/proxy/ExtAutoSyncPolicy');
 const tools = require('../../utils/proxy/tools');
 const { selectAccount } = require('../../utils/proxy/accountSelect');
 const deviceSync = require('../../utils/proxy/deviceSync');
@@ -461,6 +464,13 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       recordAttempt(account, device, 'HEARTBEAT', meta);
       const d = agentDirectives(account, tool, device);
       await account.save();
+      // Bounded, idempotent recovery: if a bound extension Tool's last credential commit failed (or
+      // drifted), reconcile it here - re-verifying the CURRENT session first - so a failed update
+      // self-heals without waiting for another natural rotation and without any extra polling. Cheap
+      // no-op when already in sync; non-fatal and isolated from the proxy flow.
+      try {
+        await extensionCredentialSync.reconcileExtensionTool(account, tool, { Tool, Policy: ExtAutoSyncPolicy, deviceId: device.deviceId });
+      } catch (e) { console.error('[agent-sync] extension reconcile (non-fatal):', e && e.message); }
       return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, ...d, activeSource: activeSourceView(account) }));
     }
 
@@ -502,6 +512,26 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
     const replyOk = [CODES.PROMOTED, CODES.COOKIE_BUNDLE_UNCHANGED, CODES.STANDBY_ROUTINE_REFRESH].includes(r.code);
     const d = agentDirectives(account, tool, device, { replyOk });
     await account.save();
+
+    // Extension-managed flow (non-fatal, isolated from the proxy result; no-op unless a policy is
+    // bound to this source). On a PROMOTE, the promote's fresh conclusive verify authorizes a commit
+    // (hook). On a non-promote cookie push (UNCHANGED / inconclusive), run the bounded RECONCILE so
+    // the engine still executes every regular cycle - this is the fix for WriteHuman, whose pushes
+    // rarely promote (verify often inconclusive): reconcile re-verifies (throttled, drift-gated) and
+    // commits only when the verification is conclusively 'working'. Reuses the engine's own throttle;
+    // adds no polling.
+    try {
+      if (r.promoted) {
+        await extensionCredentialSync.syncRotationToExtensionTool(
+          account, tool, { result: r.verifyResult, maskedId: r.maskedId },
+          { Tool, Policy: ExtAutoSyncPolicy, deviceId: device.deviceId }
+        );
+      } else {
+        await extensionCredentialSync.reconcileExtensionTool(
+          account, tool, { Tool, Policy: ExtAutoSyncPolicy, deviceId: device.deviceId }
+        );
+      }
+    } catch (e) { console.error('[agent-sync] extension tool sync (non-fatal):', e && e.message); }
 
     // STANDBY_ROUTINE_REFRESH is a SUCCESSFUL outcome, not a refusal: the server received the push,
     // judged it, and correctly declined to promote it. Answering 409 made the agent log
