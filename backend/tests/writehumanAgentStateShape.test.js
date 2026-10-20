@@ -251,7 +251,7 @@ async function verifySession(canaryStatus, canaryBody) {
 
 test('Verify Session is server-side: no Chrome launched, no device contacted, source untouched', async () => {
   ACCOUNTS = [account()];
-  const { status, body } = await verifySession(200, { email: 'k@example.com' });
+  const { status, body } = await verifySession(200, { id: '3f2504e0-4f89-11d3-9a0c-0305e82c3301', aud: 'authenticated', role: 'authenticated', email: 'k@example.com' });
   assert.strictEqual(status, 200);
   assert.strictEqual(body.result, 'working');
   assert.strictEqual(body.canary, 'passed', 'a REAL authenticated check ran, not a local JWT decode');
@@ -263,7 +263,7 @@ test('Verify Session is server-side: no Chrome launched, no device contacted, so
 
 test('Verify Session works with the source machine OFFLINE — that is the point of storing a session', async () => {
   ACCOUNTS = [account({ agentSeenMs: 6 * 60 * 60 * 1000, syncMs: 6 * 60 * 60 * 1000 })];
-  const { body } = await verifySession(200, { email: 'k@example.com' });
+  const { body } = await verifySession(200, { id: '3f2504e0-4f89-11d3-9a0c-0305e82c3301', aud: 'authenticated', role: 'authenticated', email: 'k@example.com' });
   assert.strictEqual(body.result, 'working');
   assert.strictEqual(body.chromeLaunched, false);
 });
@@ -287,7 +287,7 @@ test('a canary 403 or 5xx or network error NEVER downgrades a live session', asy
 
 test('with the token already expired, read-only verify does not rotate and does not expire', async () => {
   ACCOUNTS = [account({ tokenTtlSec: -300 })];
-  const { body, upstreamCalls } = await verifySession(200, { email: 'k@example.com' });
+  const { body, upstreamCalls } = await verifySession(200, { id: '3f2504e0-4f89-11d3-9a0c-0305e82c3301', aud: 'authenticated', role: 'authenticated', email: 'k@example.com' });
   assert.strictEqual(upstreamCalls, 0, 'no exchange, no call — the browser is the rotator');
   assert.strictEqual(body.result, 'unknown', 'inconclusive, NOT expired');
   assert.strictEqual(body.refreshed, false);

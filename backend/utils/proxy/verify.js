@@ -276,8 +276,12 @@ function applySupabaseRefresh(bundle, projectRef, newSession) {
  * This is the "lightweight authenticated capability/session check" the scheduler and the manual
  * Verify Session both run. Bounded timeout; never logs or returns the token.
  */
+// GoTrue user ids are UUIDs. Strict on purpose: an unrecognised id is reported as "no
+// authoritative identity" (fail closed, visible in the admin panel) rather than guessed at.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function supabaseUserCheck(cfg, accessToken) {
-  if (!accessToken) return { ok: false, status: 0, inconclusive: true, email: null };
+  if (!accessToken) return { ok: false, status: 0, inconclusive: true, email: null, accountKey: null };
   let resp;
   try {
     resp = await fetch(cfg.url + '/auth/v1/user', {
@@ -286,13 +290,49 @@ async function supabaseUserCheck(cfg, accessToken) {
       signal: AbortSignal.timeout(8000),
     });
   } catch (_) {
-    return { ok: false, status: 0, inconclusive: true, email: null };   // network — never a verdict
+    return { ok: false, status: 0, inconclusive: true, email: null, accountKey: null };   // network — never a verdict
   }
   let body = '';
   try { body = (await resp.text()).slice(0, 20000); } catch (_) {}
   if (resp.status >= 200 && resp.status < 300) {
-    const em = body.match(/"email":"([^"]+)"/i);
-    return { ok: true, status: resp.status, inconclusive: false, email: em ? em[1] : null };
+    // `/auth/v1/user` answers with the GoTrue USER OBJECT. PARSE it rather than regex-scraping the
+    // bytes: a 200 carrying an HTML interstitial, an empty body, a bare string or a JSON array is
+    // not an authenticated answer, and the old `body.match(/"email":"..."/)` would have accepted a
+    // CDN challenge page that merely happened to contain that text as PROOF of a live session.
+    // Unparseable 2xx is therefore INCONCLUSIVE — it cannot prove the session live, and it must not
+    // prove it dead either (only an unambiguous 401 does that, below).
+    let user = null;
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) user = parsed;
+    } catch (_) { /* not JSON */ }
+    if (!user) {
+      return { ok: false, status: resp.status, inconclusive: true, email: null, accountKey: null, malformed: true };
+    }
+    const email = (typeof user.email === 'string' && user.email.trim()) ? user.email.trim() : null;
+    // The AUTHORITATIVE, stable identity is GoTrue's `id` (a UUID) — never the email (the user can
+    // change it), never the cookie-supplied value (the client controls it) and never the masked
+    // form (ambiguous between accounts).
+    const rawId = typeof user.id === 'string' ? user.id.trim() : '';
+    const accountKey = UUID_RE.test(rawId) ? rawId : null;
+    // An error-shaped body is not a user, whatever the status line says. GoTrue answers
+    // {code,msg} / {error,error_description}; a gateway or WAF in front of it can answer 200 with
+    // its own JSON. Neither is a signed-in user.
+    const errorShaped = !accountKey && (
+      typeof user.error === 'string' || typeof user.error_description === 'string' ||
+      typeof user.msg === 'string' || typeof user.message === 'string' || user.code !== undefined
+    );
+    // PROOF REQUIRES A USER. A real /auth/v1/user 200 always carries the user's `id`, so a 200 with
+    // {} , an error-shaped object, or an unrecognisable id is NOT evidence of a live session — it is
+    // INCONCLUSIVE. This matters beyond the credential commit: `canary:'passed'` is what
+    // candidateSync accepts as POSITIVE proof to PROMOTE a captured bundle, so treating a contentless
+    // 200 as passed would let an unproven bundle be promoted over a working one. Inconclusive is the
+    // honest answer — it cannot prove the session live, and must not prove it dead either (only an
+    // unambiguous 401 does that, below).
+    if (!accountKey) {
+      return { ok: false, status: resp.status, inconclusive: true, email, accountKey: null, malformed: true, errorShaped: !!errorShaped };
+    }
+    return { ok: true, status: resp.status, inconclusive: false, email, accountKey };
   }
   // 401 with a structurally valid, unexpired JWT = the session itself is gone (signed out, revoked,
   // user deleted). That IS proof, and it is the case a local JWT decode can never see.
@@ -302,9 +342,9 @@ async function supabaseUserCheck(cfg, accessToken) {
   // needs_login at once — a self-inflicted outage dressed up as a verification result. Anything
   // that is not an unambiguous 401 stays inconclusive and cannot downgrade a live session.
   if (resp.status === 401) {
-    return { ok: false, status: resp.status, inconclusive: false, email: null };
+    return { ok: false, status: resp.status, inconclusive: false, email: null, accountKey: null };
   }
-  return { ok: false, status: resp.status, inconclusive: true, email: null };
+  return { ok: false, status: resp.status, inconclusive: true, email: null, accountKey: null };
 }
 
 /**
@@ -342,9 +382,13 @@ async function verifySupabaseRefresh(tool, cookieHeader, expectedIdentifier, opt
         const email = c.email || cookieEmail || null;
         const maskedId = email ? maskEmail(email) : null;
         if (expectedIdentifier && email && String(expectedIdentifier).trim().toLowerCase() !== email.toLowerCase()) {
-          return { result: 'wrong_account', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+          return { result: 'wrong_account', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed', accountKey: c.accountKey || null };
         }
-        return { result: 'working', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed' };
+        // `accountKey` is the provider-confirmed identity and the ONLY thing a credential commit
+        // may bind to. `canary:'passed'` proves LIVENESS; accountKey proves WHO. They are
+        // deliberately separate: a 200 user object without a recognisable id is a live session of
+        // unproven identity, which is enough to keep a session but not to publish credentials.
+        return { result: 'working', httpStatus: c.status, finalPath: '/auth/v1/user', redirectedToSignIn: false, maskedId, canary: 'passed', accountKey: c.accountKey || null };
       }
       if (!c.inconclusive) {
         // Proven dead while the JWT still looks valid — exactly the case the local decode misses.

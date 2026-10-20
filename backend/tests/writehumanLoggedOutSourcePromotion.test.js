@@ -38,6 +38,13 @@
  * No database and no network: the account is an in-memory stand-in with the shape mysqlAdapter
  * returns, and the one network call in the path is stubbed.
  */
+/**
+ * FIXTURE NOTE (2026-10-19): the provider bodies below carry a real `id`, because a genuine
+ * `/auth/v1/user` 200 always does. verify.js now requires that id before it will call the canary
+ * 'passed': a 200 with `{}`, an error-shaped object or no recognisable id is INCONCLUSIVE, since
+ * `canary:'passed'` is what candidateSync accepts as positive proof to PROMOTE a bundle. The
+ * earlier id-less fixtures encoded a contract the provider never produces.
+ */
 const test = require('node:test');
 const { describe } = require('node:test');
 const assert = require('node:assert');
@@ -89,7 +96,7 @@ describe('A. what the provider answer actually means', () => {
   });
 
   test('a live session: provider 200 -> working, canary passed', async () => {
-    await withFetch(userResp(200, '{"email":"operator@example.com"}'), async () => {
+    await withFetch(userResp(200, '{"id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","aud":"authenticated","role":"authenticated","email":"operator@example.com"}'), async () => {
       const v = await realVerify(TOOL, tokenCookieHeader({ ageSec: 60 }), null, { readOnly: true, canary: true });
       assert.strictEqual(v.result, 'working');
       assert.strictEqual(v.canary, 'passed');
@@ -126,7 +133,7 @@ describe('A. what the provider answer actually means', () => {
   });
 
   test('a mismatched identity is wrong_account even when the canary passes', async () => {
-    await withFetch(userResp(200, '{"email":"someone.else@example.com"}'), async () => {
+    await withFetch(userResp(200, '{"id":"b7c1d2e3-4f56-11d3-9a0c-0305e82c3399","aud":"authenticated","role":"authenticated","email":"someone.else@example.com"}'), async () => {
       const v = await realVerify(TOOL, tokenCookieHeader({ ageSec: 60 }), 'operator@example.com', { readOnly: true, canary: true });
       assert.strictEqual(v.result, 'wrong_account');
     });
@@ -136,7 +143,7 @@ describe('A. what the provider answer actually means', () => {
 describe('D. expiry boundaries (SIMULATED time — no test waits for a clock)', () => {
   test('a token inside its lifetime reaches the canary; one near expiry does not', async () => {
     // verify.js treats a token as live only while exp is more than 120s away.
-    await withFetch(userResp(200, '{"email":"operator@example.com"}'), async () => {
+    await withFetch(userResp(200, '{"id":"3f2504e0-4f89-11d3-9a0c-0305e82c3301","aud":"authenticated","role":"authenticated","email":"operator@example.com"}'), async () => {
       const live = await realVerify(TOOL, tokenCookieHeader({ ageSec: 10, ttlSec: 3600 }), null, { readOnly: true, canary: true });
       assert.strictEqual(live.canary, 'passed');
       // 60 seconds of lifetime left: inside `exp`, but inside the 120s guard band.

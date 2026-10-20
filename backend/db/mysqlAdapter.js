@@ -69,6 +69,9 @@ const tableNames = {
   // DELETE by primary key. See models/LaunchCode.js and utils/launchStore.js.
   LaunchCode: 'launch_codes',
   // ── Public support contact (single-row, admin-editable) — see utils/supportContact.js ─
+  // -- WriteHuman extension credential auto-sync policy (own record; see
+  //    models/proxy/ExtAutoSyncPolicy.js for why it must not live on ProxyAccount) --
+  ExtAutoSyncPolicy: 'ext_autosync_policies',
   SupportSettings: 'support_settings',
 };
 
@@ -521,6 +524,30 @@ class Document {
     return this;
   }
 
+  // Like save(), but persists with an optimistic compare-and-set on `guardField`: the write lands
+  // ONLY if the stored guard value still equals what was loaded (captured BEFORE preSave, so a
+  // preSave bump of that same field still guards on the pre-bump value). Returns true on success,
+  // false if a concurrent writer changed the guard first - in which case NO local mutation is
+  // applied, so the in-memory doc still reflects the load and the caller can retry/abort cleanly.
+  async saveGuarded(guardField) {
+    let data = this.toObject({ includeSensitive: true });
+    for (const [path, originalId] of Object.entries(this.__populatedPaths || {})) {
+      const current = getByPath(data, path);
+      setByPath(data, path, current?._id || originalId);
+    }
+    const expected = getByPath(this.__originalData || {}, guardField);
+    data = await this.__model._preSave(data, this.__originalData || null);
+    const now = new Date();
+    data.updatedAt = now;
+    if (!data.createdAt) data.createdAt = now;
+    const rows = await this.__model.replaceGuarded(String(data._id), guardField, expected, data);
+    if (!rows) return false;
+    Object.keys(this).forEach(k => delete this[k]);
+    Object.assign(this, hydrateDates(deepClone(data)));
+    this.__originalData = hydrateDates(deepClone(data));
+    return true;
+  }
+
   async deleteOne() {
     return this.__model.deleteOne({ _id: this._id });
   }
@@ -747,12 +774,89 @@ function createModel(name, options = {}) {
       if (!data._id) data._id = newId();
       if (!data.createdAt) data.createdAt = now;
       data.updatedAt = data.updatedAt || now;
+      // A model WITH a preSave hook receives its data through `_preSave`, which clones with
+      // deepClone() - a JSON round-trip - so Date objects arrive here as ISO-8601 STRINGS ending in
+      // `Z`. Bound straight to a DATETIME(3) column, a server in strict mode rejects them outright:
+      //   Incorrect datetime value: '2026-10-19T17:49:05.416Z' for column 'createdAt'
+      // That is the DEFAULT sql_mode on MySQL 8 and current MariaDB, so this only ever worked
+      // because the server in front of it happened to be lenient. 17 models have a preSave hook
+      // (Tool, User, ProxyAccount, ExtAutoSyncPolicy among them), and this is the single place those
+      // two columns are bound - so coercing here fixes every model and every caller at once, without
+      // touching hook semantics or the JSON actually stored in `data`.
+      const asDate = (v) => {
+        if (v instanceof Date) return v;
+        if (v == null) return now;
+        const d = new Date(v);
+        return Number.isNaN(d.getTime()) ? now : d;
+      };
       await runQuery(
         `INSERT INTO \`${table}\` (id, data, createdAt, updatedAt) VALUES (?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE data = VALUES(data), updatedAt = VALUES(updatedAt)`,
-        [String(data._id), serializeData(data), data.createdAt, data.updatedAt]
+        [String(data._id), serializeData(data), asDate(data.createdAt), asDate(data.updatedAt)]
       );
       return data;
+    }
+
+    // Atomic single-JSON-path write: modifies ONLY `$.<path>` inside the stored JSON, server-side,
+    // so it can NEVER clobber a concurrent change to any OTHER field. Portable across MySQL and
+    // MariaDB: the value is PARSED with JSON_EXTRACT(?, '$') (not CAST ... AS JSON, which MariaDB
+    // does not support the same way), which preserves JSON object type rather than storing a quoted
+    // string. Returns the affected-row count. Generic + additive; existing callers are unaffected.
+    static async updateJsonPath(id, path, value) {
+      const [res] = await runQuery(
+        `UPDATE \`${table}\` SET data = JSON_SET(data, ?, JSON_EXTRACT(?, '$')), updatedAt = ? WHERE id = ?`,
+        ['$.' + path, JSON.stringify(value === undefined ? null : value), new Date(), String(id)]
+      );
+      return (res && res.affectedRows) || 0;
+    }
+
+    // TARGETED, GUARDED, PARTIAL write. Sets ONLY the JSON paths in `setMap` (via JSON_SET - each
+    // value PARSED with JSON_EXTRACT(?, '$') so objects stay objects), leaving every other field
+    // untouched, and lands ONLY if every guard in `guardMap` still holds (optimistic multi-field
+    // lock at the DB boundary - e.g. credentialVersion AND the authorization/binding state). A guard
+    // value of null/undefined requires that path be absent/null. Returns the affected-row count
+    // (0 = a concurrent writer changed a guarded field -> caller re-reads + retries only if still
+    // authorized). Portable (no CAST ... AS JSON). Keys are JSON paths WITHOUT the leading `$.`.
+    static async patchGuarded(id, setMap, guardMap) {
+      const setFrags = []; const params = [];
+      for (const [p, v] of Object.entries(setMap || {})) {
+        setFrags.push(`?, JSON_EXTRACT(?, '$')`);
+        params.push('$.' + p, JSON.stringify(v === undefined ? null : v));
+      }
+      if (!setFrags.length) return 0;
+      params.push(new Date()); // updatedAt
+      const whereFrags = ['id = ?']; params.push(String(id));
+      for (const [p, exp] of Object.entries(guardMap || {})) {
+        if (exp === undefined || exp === null) { whereFrags.push('JSON_EXTRACT(data, ?) IS NULL'); params.push('$.' + p); }
+        else { whereFrags.push('JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?'); params.push('$.' + p, String(exp)); }
+      }
+      const [res] = await runQuery(
+        `UPDATE \`${table}\` SET data = JSON_SET(data, ${setFrags.join(', ')}), updatedAt = ? WHERE ${whereFrags.join(' AND ')}`,
+        params
+      );
+      return (res && res.affectedRows) || 0;
+    }
+
+    // Compare-and-set the whole doc, guarded on a JSON `field` still equalling `expected`
+    // (optimistic lock). The write lands ONLY if the guard holds; returns the affected-row count
+    // (0 = another writer changed the guard first -> the caller retries/aborts). Uses the adapter's
+    // established portable comparison `JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?` (see
+    // whereForStringKey), never CAST ... AS JSON. `expected` of null/undefined requires the field
+    // to be absent/null.
+    static async replaceGuarded(id, field, expected, data) {
+      const path = '$.' + field;
+      const params = [serializeData(data), new Date(), String(id), path];
+      let where;
+      if (expected === undefined || expected === null) {
+        where = 'JSON_EXTRACT(data, ?) IS NULL';
+      } else {
+        where = 'JSON_UNQUOTE(JSON_EXTRACT(data, ?)) = ?';
+        params.push(String(expected));
+      }
+      const [res] = await runQuery(
+        `UPDATE \`${table}\` SET data = ?, updatedAt = ? WHERE id = ? AND ${where}`, params
+      );
+      return (res && res.affectedRows) || 0;
     }
 
     static find(criteria = {}) { return new Query(this, 'find', criteria); }

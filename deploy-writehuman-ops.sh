@@ -40,6 +40,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/verifyAndApply.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
   -T backend/utils/proxy/healthAlerts.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/healthAlerts.js" \
   -T backend/routes/admin/proxyTools.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/models/proxy/ExtAutoSyncPolicy.js "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   `# required by proxyTools.js at module load — must ship together or the API boots into "Cannot find module"` \
   -T backend/utils/proxy/agentCommands.js     "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
   -T backend/utils/proxy/deviceState.js     "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceState.js" \
