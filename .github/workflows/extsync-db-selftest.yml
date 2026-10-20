@@ -47,8 +47,11 @@ on:
       - 'backend/scripts/extcredsync-db-selftest.js'
       - '.github/workflows/extsync-db-selftest.yml'
   push:
-    # Kept so the recovery branch keeps verifying itself without anyone dispatching it.
-    branches: [fix/writehuman-extension-autosync-restore]
+    # Kept so a recovery branch keeps verifying ITSELF without anyone dispatching it, which
+    # matters when no GitHub authentication is available to open a PR or dispatch a run.
+    branches:
+      - fix/writehuman-extension-autosync-restore
+      - fix/writehuman-autosync-restore-after-rollback
     paths: *db_paths
 
 # Read-only. No deploy permissions, no id-token, no package write.
