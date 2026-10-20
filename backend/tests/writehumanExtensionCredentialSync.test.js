@@ -182,33 +182,102 @@ test('a stale approvedToolId (not in the eligible set) still refuses — never f
   const a = account(); const pol = policyRec({ approvedToolId: 'tool-that-no-longer-exists' });
   const d = deps(pol, [extTool(), extTool()]);
   const out = await hook(a, d);
-  assert.strictEqual(out.result, 'ambiguous');
-  assert.strictEqual(S(pol).lastError, 'multiple_eligible_tools');
+  // Reported as the precise condition: the chosen target is gone, which is NOT the same thing as
+  // "there are several, pick one". Either way it refuses and writes nothing.
+  assert.strictEqual(out.result, 'target_unavailable');
+  assert.strictEqual(S(pol).lastError, 'bound_tool_unavailable');
+  assert.strictEqual(S(pol).eligibleToolId, null);
   assert.strictEqual(d.Tool.patchCalls, 0, 'nothing may be written when the binding cannot be honoured');
 });
 
-test('a binding never resurrects an INACTIVE Tool', async () => {
-  const a = account(); const live = extTool(); const dead = extTool({ status: 'disabled' });
-  const pol = policyRec({ approvedToolId: String(dead._id) });
-  const out = await hook(a, deps(pol, [live, dead]));
-  // `dead` is filtered before the tie-break, leaving exactly one eligible Tool.
-  assert.strictEqual(out.result, RESULT.SYNCED);
-  assert.strictEqual(out.toolId, String(live._id));
-  assert.strictEqual(dead.credentialVersion, 3, 'an inactive Tool must never receive credentials');
+// LIFECYCLE CONTRACT. An EXPLICIT binding is authoritative regardless of how many Tools are
+// eligible. The first version consulted it only when eligible.length > 1, so the selected Tool
+// being deleted or disabled silently promoted whatever single Tool happened to be left. With a
+// second, independently managed Tool in production ("WH", its own clients and its own
+// credentials) that is a credential overwrite of someone else's record. A stale explicit binding
+// is NOT an unbound policy. These cases pin the corrected contract.
+test('selected Tool DISABLED, another remains: refuses, writes nothing anywhere', async () => {
+  const a = account(); const other = extTool(); const selected = extTool({ status: 'disabled' });
+  const pol = policyRec({ approvedToolId: String(selected._id) });
+  const d = deps(pol, [other, selected]);
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, 'target_unavailable');
+  assert.strictEqual(S(pol).lastError, 'bound_tool_unavailable');
+  assert.strictEqual(d.Tool.patchCalls, 0, 'no Tool may be written when the selected target is gone');
+  assert.strictEqual(other.credentialVersion, 3, 'the unselected Tool must NOT be promoted');
+  assert.strictEqual(selected.credentialVersion, 3);
 });
 
-test('a binding never reaches a Tool on a different domain', async () => {
-  const a = account(); const wh = extTool(); const other = extTool({ domain: 'example.com', targetUrl: 'https://example.com/' });
-  const pol = policyRec({ approvedToolId: String(other._id) });
-  const out = await hook(a, deps(pol, [wh, other]));
-  assert.strictEqual(out.result, RESULT.SYNCED);
-  assert.strictEqual(out.toolId, String(wh._id), 'off-domain Tools are filtered before the tie-break');
-  assert.strictEqual(other.credentialVersion, 3);
+test('selected Tool moved OFF-DOMAIN, another remains: refuses, no fallback write', async () => {
+  const a = account(); const other = extTool();
+  const selected = extTool({ domain: 'example.com', targetUrl: 'https://example.com/' });
+  const pol = policyRec({ approvedToolId: String(selected._id) });
+  const d = deps(pol, [other, selected]);
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, 'target_unavailable');
+  assert.strictEqual(d.Tool.patchCalls, 0);
+  assert.strictEqual(other.credentialVersion, 3, 'an off-domain binding must not promote another Tool');
 });
 
-test('with ONE eligible Tool a mismatched binding is irrelevant and must not cause a refusal', async () => {
-  const a = account(); const pol = policyRec({ approvedToolId: 'something-else' });
-  const out = await hook(a, deps(pol, [extTool()]));
+test('selected Tool DELETED leaving exactly one other: the single survivor is NOT promoted', async () => {
+  const a = account(); const survivor = extTool();
+  const pol = policyRec({ approvedToolId: 'tool-wh-deleted-synthetic' });
+  const d = deps(pol, [survivor]);
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, 'target_unavailable');
+  assert.strictEqual(S(pol).lastError, 'bound_tool_unavailable');
+  assert.strictEqual(d.Tool.patchCalls, 0);
+  assert.strictEqual(survivor.credentialVersion, 3,
+    'a stale binding must not authorise writing the survivor');
+});
+
+test('selected Tool RECREATED under a new id: approval does NOT transfer by name', async () => {
+  const a = account();
+  const recreated = extTool({ _id: 'tool-wh-new-id-synthetic', name: 'Write Human' });
+  const pol = policyRec({ approvedToolId: 'tool-wh-old-id-synthetic' });
+  const d = deps(pol, [recreated]);
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, 'target_unavailable', 'same name, different id -> still unavailable');
+  assert.strictEqual(d.Tool.patchCalls, 0);
+  assert.strictEqual(recreated.credentialVersion, 3);
+});
+
+test('selected Tool RENAMED, same id and eligibility: continues without any name matching', async () => {
+  const a = account(); const selected = extTool({ name: 'Write Human (renamed 2027)' });
+  const pol = policyRec({ approvedToolId: String(selected._id) });
+  const out = await hook(a, deps(pol, [selected, extTool()]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(selected._id));
+});
+
+test('an UNSELECTED Tool is removed: the selected target just continues', async () => {
+  const a = account(); const selected = extTool(); const doomed = extTool();
+  const pol = policyRec({ approvedToolId: String(selected._id) });
+  let out = await hook(a, deps(pol, [selected, doomed]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(selected._id));
+  const vAfterFirst = selected.credentialVersion;
+  // Second cycle, the other Tool now gone. The stored bundle has not changed, so the truthful
+  // result is UNCHANGED rather than another write — and it must still be the SAME target.
+  out = await hook(a, deps(pol, [selected]));
+  assert.strictEqual(out.result, RESULT.UNCHANGED);
+  assert.strictEqual(S(pol).syncedToolId, String(selected._id));
+  assert.strictEqual(selected.credentialVersion, vAfterFirst, 'no redundant re-write');
+});
+
+test('a NEW unrelated eligible Tool appears: selected target continues, newcomer untouched', async () => {
+  const a = account(); const selected = extTool();
+  const pol = policyRec({ approvedToolId: String(selected._id) });
+  const newcomer = extTool({ name: 'Brand New WH' });
+  const out = await hook(a, deps(pol, [selected, newcomer]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(selected._id));
+  assert.strictEqual(newcomer.credentialVersion, 3, 'a newly added Tool must never be written to');
+});
+
+test('a genuinely UNBOUND policy with one eligible Tool keeps the legacy behaviour', async () => {
+  const a = account();
+  const out = await hook(a, deps(policyRec(), [extTool()]));
   assert.strictEqual(out.result, RESULT.SYNCED);
 });
 
@@ -216,6 +285,51 @@ test('no eligible Tool stays idle even with a binding set', async () => {
   const a = account(); const pol = policyRec({ approvedToolId: 'tool-x' });
   const out = await hook(a, deps(pol, [extTool({ domain: 'example.com', targetUrl: 'https://example.com/' })]));
   assert.strictEqual(out.result, 'idle');
+});
+
+test('the binding changing mid-flight is caught at the commit boundary (no write to the old target)', async () => {
+  const a = account(); const selected = extTool(); const pol = policyRec({ approvedToolId: String(selected._id) });
+  // another process re-pointed the binding (and bumped the epoch) after this cycle resolved
+  const fresh = policyRec({ approvedToolId: 'tool-wh-somewhere-else', policyEpoch: 99 });
+  const d = deps(pol, [selected], { withFindById: true, fresh });
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, RESULT.FAILED);
+  assert.strictEqual(d.Tool.patchCalls, 0, 'a delayed commit must not write a newly unauthorised target');
+  assert.strictEqual(selected.credentialVersion, 3);
+});
+
+// RESOURCE BOUND. These resolution outcomes return BEFORE the normal reconcile stamp was written,
+// so nothing recorded that we had looked and the existing early rate gate could never throttle
+// them: every agent heartbeat ran a full Tool.find({status:'active'}) forever. Production sat in
+// `ambiguous` while this was true. They now stamp lastReconcileAt and reuse that same gate.
+test('a bound-but-ineligible target is throttled like any other outcome (no per-heartbeat scan)', async () => {
+  const a = account(); const pol = policyRec({ approvedToolId: 'tool-wh-gone-synthetic' });
+  const d = deps(pol, [extTool()]);
+  let out = await reconcile(a, d);
+  assert.strictEqual(out.result, 'target_unavailable');
+  assert.ok(S(pol).lastReconcileAt, 'the outcome must stamp lastReconcileAt for the early gate');
+  out = await reconcile(a, d);
+  assert.strictEqual(out.code, 'throttled', 'the second immediate cycle must short-circuit');
+});
+
+test('ambiguity is throttled too, and still never picks a candidate', async () => {
+  const a = account(); const pol = policyRec(); const d = deps(pol, [extTool(), extTool()]);
+  let out = await reconcile(a, d);
+  assert.strictEqual(out.result, 'ambiguous');
+  assert.strictEqual(S(pol).eligibleToolId, null, 'never nominate first/oldest/most-assigned');
+  assert.ok(S(pol).lastReconcileAt);
+  out = await reconcile(a, d);
+  assert.strictEqual(out.code, 'throttled');
+});
+
+test('no eligible Tools: idle and throttled, not a busy loop', async () => {
+  const a = account(); const pol = policyRec({ approvedToolId: 'tool-wh-x-synthetic' });
+  const d = deps(pol, []);
+  let out = await reconcile(a, d);
+  assert.strictEqual(out.result, 'idle', 'zero candidates is idle even with a binding set');
+  assert.ok(S(pol).lastReconcileAt);
+  out = await reconcile(a, d);
+  assert.strictEqual(out.code, 'throttled');
 });
 
 test('non-matching domains are ignored when resolving eligibility', async () => {

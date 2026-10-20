@@ -254,30 +254,60 @@ async function runEngine(account, toolKey, deps, source) {
       return { result: patch.lastResult, code: patch.code || null, toolId: patch.eligibleToolId || null, bundleVersion: patch.bundleVersion || null };
     };
 
-    // DYNAMIC eligibility — resolve the single ACTIVE extension Tool on the normalized official
-    // domain. NEVER by id. 0 → safely idle (never create a Tool). >1 → ambiguity, STOP (never guess).
+    // DYNAMIC eligibility — the candidate set is every ACTIVE Tool on the normalized official
+    // domain. Membership is never decided by id, name or assignment count.
+    //
+    // RESOURCE NOTE: these resolution outcomes return before the normal `reconcileStamp` below, so
+    // originally none of them recorded that we had looked. The early rate gate keys off
+    // `lastReconcileAt`, so it could never throttle them and every agent heartbeat ran a full
+    // Tool.find({status:'active'}) for as long as the policy stayed idle/ambiguous/unavailable —
+    // indefinitely. They now stamp it and reuse that same existing gate; no new timer or worker.
+    const resolveStamp = source === 'reconcile' ? { lastReconcileAt: now } : {};
     let eligible;
     try { eligible = (await Tool.find({ status: 'active' })).filter(t => toolDomain(t) === officialDomain); }
-    catch (e) { return persistPolicy({ lastResult: RESULT.FAILED, lastError: 'lookup_failed', lastFailureAt: now }); }
-    if (eligible.length === 0) return persistPolicy({ lastResult: 'idle', lastError: null, lastCheckedAt: now, eligibleToolId: null });
+    catch (e) { return persistPolicy(Object.assign({ lastResult: RESULT.FAILED, lastError: 'lookup_failed', lastFailureAt: now }, resolveStamp)); }
+    if (eligible.length === 0) return persistPolicy(Object.assign({ lastResult: 'idle', lastError: null, lastCheckedAt: now, eligibleToolId: null }, resolveStamp));
 
-    // >1 eligible → ambiguity. STOP, UNLESS an admin has explicitly bound one of them via
-    // `policy.approvedToolId` (a control field, written only by the admin endpoint — the engine
-    // never sets it, exactly like approvedAccountKey). Two Tools can legitimately be active on one
-    // official domain: measured in production on 2026-10-20, writehuman.ai had "Write Human" (31
-    // client assignments) and "WH" (7 assignments, separately maintained credentials), so refusing
-    // forever was not a safe default either — it left every client on a session that had expired.
+    // TARGET RESOLUTION.
     //
-    // The binding is applied by FILTERING the already-eligible set, never by looking a Tool up by
-    // id. So it cannot reach an inactive Tool or one on another domain, and a binding that matches
-    // nothing (deleted/renamed/disabled Tool) leaves the refusal exactly as it was rather than
-    // silently falling back to a guess.
-    let chosen = eligible[0];
-    if (eligible.length > 1) {
-      const boundId = (policy.approvedToolId != null && policy.approvedToolId !== '') ? String(policy.approvedToolId) : null;
-      const match = boundId ? eligible.filter(t => String(t._id) === boundId) : [];
-      if (match.length !== 1) return persistPolicy({ lastResult: 'ambiguous', lastError: 'multiple_eligible_tools', lastFailureAt: now, eligibleToolId: null, eligibleCount: eligible.length });
+    // An EXPLICIT admin binding (`policy.approvedToolId`) is AUTHORITATIVE, and it is checked
+    // regardless of how many Tools are eligible. It is a control field written only by the admin
+    // endpoint — the engine never sets it, exactly like `approvedAccountKey` — so a persisted
+    // binding is admin configuration, not inferred state.
+    //
+    // WHY NOT ONLY WHEN >1 (the first version's mistake): consulting it only to break a tie means
+    // that when the selected Tool is deleted or disabled and one other Tool happens to remain, the
+    // engine silently promotes that other Tool and overwrites its credentials. Two Tools are
+    // legitimately active on this official domain in production, each with its own clients and its
+    // own independently maintained credentials, so that is someone else's record. A STALE EXPLICIT
+    // BINDING IS NOT AN UNBOUND POLICY: it means "this target, and no other".
+    //
+    // Resolution is by FILTERING the candidate set, so a binding can never reach a Tool that is
+    // inactive or off-domain, and it never matches by name — a Tool recreated under a new id is a
+    // different Tool and does not inherit the approval.
+    const boundId = (policy.approvedToolId != null && policy.approvedToolId !== '') ? String(policy.approvedToolId) : null;
+    let chosen;
+    if (boundId) {
+      const match = eligible.filter(t => String(t._id) === boundId);
+      if (match.length !== 1) {
+        // Accurate unavailable-target state. NOT 'ambiguous' (that means "choose one"); this means
+        // "the one you chose is gone". No fallback write, whatever the candidate count.
+        return persistPolicy(Object.assign({
+          lastResult: 'target_unavailable', lastError: 'bound_tool_unavailable',
+          lastFailureAt: now, eligibleToolId: null, eligibleCount: eligible.length,
+        }, resolveStamp));
+      }
       chosen = match[0];
+    } else if (eligible.length > 1) {
+      // Genuinely unbound and more than one candidate: STOP and surface the candidates for an
+      // explicit choice. Never the first, oldest, most-assigned or most-recently-used.
+      return persistPolicy(Object.assign({
+        lastResult: 'ambiguous', lastError: 'multiple_eligible_tools',
+        lastFailureAt: now, eligibleToolId: null, eligibleCount: eligible.length,
+      }, resolveStamp));
+    } else {
+      // Genuinely unbound with exactly one candidate: the pre-existing contract, preserved.
+      chosen = eligible[0];
     }
 
     const tool = chosen;
@@ -462,6 +492,11 @@ async function runEngine(account, toolKey, deps, source) {
       if (Number(fp.policyEpoch || 0) !== Number(policy.policyEpoch || 0)) return failPending('policy_changed');
       if ((fp.mode === 'enforce' ? 'enforce' : 'observe') !== 'enforce') return failPending('policy_mode_changed');
       if (normDomain(fp.officialDomain || officialDomain) !== officialDomain) return failPending('policy_rebound');
+      // Binding revision, re-checked explicitly rather than relying on the epoch alone: a delayed
+      // commit must never land on a target the admin has since re-pointed away from or cleared.
+      const freshBound = (fp.approvedToolId != null && fp.approvedToolId !== '') ? String(fp.approvedToolId) : null;
+      if (freshBound !== boundId) return failPending('policy_tool_rebound');
+      if (freshBound && freshBound !== toolIdStr) return failPending('policy_tool_rebound');
     }
 
     let rows;

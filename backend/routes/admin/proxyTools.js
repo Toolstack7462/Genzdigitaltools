@@ -247,8 +247,17 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
       return res.status(409).json({ error: `No ${req.proxyTool} proxy account to attach the policy to`, code: r.code });
     }
     const acct = r.account;
-    const enable = req.body.enabled === true;
-    const mode = req.body.mode === 'enforce' ? 'enforce' : 'observe';
+    // PARTIAL BODIES. `enabled` and `mode` used to be read as `req.body.enabled === true` and
+    // `req.body.mode === 'enforce' ? ... : 'observe'`, so ANY request that omitted them meant
+    // "disabled, observe". The panel has to be able to save a Tool binding by itself, and that
+    // would then have disabled the policy, dropped Enforce back to Observe and reset `boundAt` —
+    // silently undoing an operator's approval as a side effect of choosing a Tool. An omitted
+    // field now keeps its stored value; an explicitly supplied one still wins exactly as before.
+    const hasEnabled = Object.prototype.hasOwnProperty.call(req.body, 'enabled');
+    const hasMode = Object.prototype.hasOwnProperty.call(req.body, 'mode');
+    let enable = false;
+    let mode = 'observe';
+    let bindingChange = null;   // 'bound' | 'unbound' | null — drives the audit record below
 
     // A Tool binding that names something which is not CURRENTLY an active Tool on the official
     // domain would persist as a dead value and leave the engine refusing (it only ever filters the
@@ -272,6 +281,12 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
     let pol;
     await keyedLock.withLock('extAutoSync:acct:' + String(acct._id), async () => {
       pol = await ExtAutoSyncPolicy.findOne({ tool: req.proxyTool, accountId: String(acct._id) });
+      // Resolved HERE, not before the lock: an omitted field falls back to the stored policy, so
+      // it has to be read first.
+      enable = hasEnabled ? (req.body.enabled === true) : !!(pol && pol.enabled);
+      mode = hasMode
+        ? (req.body.mode === 'enforce' ? 'enforce' : 'observe')
+        : ((pol && pol.mode === 'enforce') ? 'enforce' : 'observe');
       // Explicit identity approval (ties binding to the admin-approved account; no trust-on-first).
       // `approvedAccountKey:"<id>"` pins an exact authoritative Supabase id; `approveObserved:true`
       // pins the id the engine currently SURFACED in status.observedAccountKey (after you reviewed it).
@@ -283,8 +298,10 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
       // forward so an unrelated control change (enable/disable/mode) cannot silently drop it —
       // the same reason approvedAccountKey is read back above.
       let approvedToolId = (pol && pol.approvedToolId) || null;
+      const priorToolId = approvedToolId;
       if (typeof req.body.approvedToolId === 'string' && req.body.approvedToolId.trim()) approvedToolId = req.body.approvedToolId.trim();
       if (req.body.clearToolBinding === true) approvedToolId = null;
+      if (String(approvedToolId || '') !== String(priorToolId || '')) bindingChange = approvedToolId ? 'bound' : 'unbound';
       const control = {
         tool: req.proxyTool, accountId: String(acct._id),
         enabled: enable, mode,
@@ -292,7 +309,12 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
         disabledExplicitly: enable ? false : true,
         approvedAccountKey,
         approvedToolId,
-        boundAt: enable ? new Date() : (pol && pol.boundAt) || null,
+        // `boundAt` records when the policy was last deliberately ENABLED. It must not move for a
+        // binding-only save, a mode flip or a re-save, or the panel reports a fresh bind that
+        // never happened. It advances only when an explicit enable actually turns a policy on.
+        boundAt: (!pol)
+          ? (enable ? new Date() : null)
+          : ((hasEnabled && enable && !pol.enabled) ? new Date() : (pol.boundAt || (enable ? new Date() : null))),
         boundBy: req.userId,
         policyEpoch: Date.now(),   // bumped on every control change -> engine detects a mid-flight change
       };
@@ -305,7 +327,21 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
         pol = Object.assign(pol, control);
       }
     });
-    await ActivityLog.log('ADMIN', req.userId, enable ? 'EXT_AUTOSYNC_ENABLED' : 'EXT_AUTOSYNC_DISABLED', { tool: req.proxyTool, mode, accountId: String(acct._id), ip: getClientIp(req) });
+    // AUDIT. A binding change is its own action: recording it as ENABLED/DISABLED would describe
+    // an activation that did not happen, and a binding-only save used to be logged as a DISABLE.
+    const auditBase = { tool: req.proxyTool, mode, accountId: String(acct._id), ip: getClientIp(req) };
+    if (bindingChange) {
+      await ActivityLog.log('ADMIN', req.userId,
+        bindingChange === 'bound' ? 'EXT_AUTOSYNC_TOOL_BOUND' : 'EXT_AUTOSYNC_TOOL_UNBOUND',
+        Object.assign({}, auditBase, { toolId: (pol && pol.approvedToolId) || null }));
+    }
+    if (hasEnabled) {
+      await ActivityLog.log('ADMIN', req.userId, enable ? 'EXT_AUTOSYNC_ENABLED' : 'EXT_AUTOSYNC_DISABLED', auditBase);
+    } else if (hasMode) {
+      await ActivityLog.log('ADMIN', req.userId, 'EXT_AUTOSYNC_MODE_CHANGED', auditBase);
+    } else if (!bindingChange) {
+      await ActivityLog.log('ADMIN', req.userId, 'EXT_AUTOSYNC_UPDATED', auditBase);
+    }
 
     const eligible = await eligibleExtensionTools(req.proxyTool);
     let reconcile = null;
