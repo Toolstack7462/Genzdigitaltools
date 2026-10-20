@@ -62,10 +62,17 @@ function fingerprint() {
     h.update('\0');
     // Normalise line endings: the working copy is CRLF on Windows and LF in git, and a build is
     // not stale merely because it was made on a different platform.
+    //
+    // Text is detected by CONTENT, not by an extension whitelist. A whitelist silently missed
+    // `public/.htaccess` (no extension at all) and `public/sitemap.xml`, both of which the
+    // `public` input matches with /.*/ — so a build stamped on Windows could never match the same
+    // source checked out on Linux. The check then failed for a pure platform difference while
+    // reporting "frontend/src has changed since the committed build was made", which sends you
+    // looking in the wrong place entirely. A NUL byte in the first 8 KiB is the binary signal:
+    // PNG/zip/woff all have one, and git leaves those bytes alone anyway.
     const buf = fs.readFileSync(path.join(FRONTEND, rel));
-    h.update(/\.(js|jsx|ts|tsx|css|scss|json|html|txt|md)$/i.test(rel)
-      ? Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8')
-      : buf);
+    const isBinary = buf.subarray(0, 8192).includes(0);
+    h.update(isBinary ? buf : Buffer.from(buf.toString('utf8').replace(/\r\n/g, '\n'), 'utf8'));
     h.update('\0');
   }
   return { fingerprint: h.digest('hex'), fileCount: rels.length };
