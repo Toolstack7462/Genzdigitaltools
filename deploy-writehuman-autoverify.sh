@@ -42,6 +42,7 @@ curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/utils/proxy/verifyAndApply.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/verifyAndApply.js" \
   -T backend/utils/proxy/applySession.js   "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/applySession.js" \
   -T backend/routes/admin/proxyTools.js    "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/utils/proxy/extensionCredentialSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/extensionCredentialSync.js" \
   -T backend/models/proxy/ExtAutoSyncPolicy.js "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   `# proxyTools.js require()s deviceSync.js at module load — without it Passenger boots into` \
   `# "Cannot find module" and the whole API is down. candidateSync.js rides along for the same` \

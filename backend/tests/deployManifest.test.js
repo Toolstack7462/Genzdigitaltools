@@ -157,3 +157,61 @@ test('the manifest never ships tests or local secrets', () => {
     assert.ok(!/(^|\/)\.env/.test(f), 'env files must never be deployed: ' + f);
   }
 });
+
+/**
+ * AGENT DISTRIBUTION IS NOT PART OF A CODE RELEASE.
+ *
+ * The approved Windows Agent installer (3.5.15 at the time of writing) is served by
+ * routes/proxy/agentDownload.js from WH_AGENT_DIST_DIR — default ~/writehuman-agent — which lives
+ * OUTSIDE the versioned build tree and is populated by hand. That route is GET-only and reads with
+ * readFileSync, so nothing in the application can publish an installer.
+ *
+ * The hazard is the other direction. `writehuman-v2/agent/dist/` in a WORKING COPY holds whatever
+ * the developer last built, and writehumanAgentVersionDrift.test.js actively pushes people to run
+ * `node writehuman-v2/agent/build-installer.mjs` to make the local suite pass. The repository's own
+ * agent source is OLDER than what is published, so that build produces an OLDER installer. If any
+ * deploy script or workflow ever uploaded that directory, a routine code release would silently
+ * DOWNGRADE the public download and rewrite latest.json's version, size and sha256 to the old
+ * build's. Being gitignored does not help: an explicit `-T`/`mirror`/`put` of a path does not care.
+ *
+ * So the publication path is blocked at the release surface rather than by trusting gitignore: no
+ * deploy script may mention the artifact at all, and no workflow may either, except the read-only
+ * diagnostic whose whole job is to REPORT the published metadata without touching it.
+ */
+const ARTIFACT_RE = /writehuman-v2\/agent\/dist|WriteHuman-Agent-Setup[^\s"']*\.exe|writehuman-agent\/latest\.json|WH_AGENT_DIST_DIR/;
+const READ_ONLY_DIAGNOSTIC = 'hostinger-diagnostics.yml';
+const WORKFLOW_DIR = path.join(ROOT, '.github', 'workflows');
+
+function matchingLines(file, re) {
+  return fs.readFileSync(file, 'utf8').split(/\r?\n/)
+    .map((line, i) => ({ n: i + 1, line }))
+    .filter(({ line }) => re.test(line));
+}
+
+test('no deploy script can publish the locally built Agent installer', () => {
+  for (const name of deployScripts()) {
+    const hits = matchingLines(path.join(ROOT, name), ARTIFACT_RE);
+    assert.deepStrictEqual(hits.map(h => `${name}:${h.n}`), [],
+      `${name} references the Agent installer artifact. Publishing the Agent is a deliberate, `
+      + `separate act — a code deploy must never carry it, or a stale local build replaces the `
+      + `approved distribution. Offending line(s):\n  `
+      + hits.map(h => `${h.n}: ${h.line.trim()}`).join('\n  '));
+  }
+});
+
+test('only the read-only diagnostic may even mention the Agent installer artifact', () => {
+  if (!fs.existsSync(WORKFLOW_DIR)) return;              // branch without workflows: nothing to check
+  for (const name of fs.readdirSync(WORKFLOW_DIR).filter(f => /\.ya?ml$/.test(f))) {
+    const hits = matchingLines(path.join(WORKFLOW_DIR, name), ARTIFACT_RE);
+    if (!hits.length) continue;
+    assert.strictEqual(name, READ_ONLY_DIAGNOSTIC,
+      `${name} references the Agent installer artifact. Only ${READ_ONLY_DIAGNOSTIC} may, and only `
+      + `to read it. Line(s):\n  ` + hits.map(h => `${h.n}: ${h.line.trim()}`).join('\n  '));
+    // Even there, every mention must be an inspection — never an upload.
+    for (const { n, line } of hits) {
+      assert.ok(!/(^|\s)(-T|--upload-file|scp|mirror|put)(\s|$)/.test(line),
+        `${name}:${n} mentions the Agent artifact with an UPLOAD verb — the diagnostic must only `
+        + `read it:\n  ${line.trim()}`);
+    }
+  }
+});

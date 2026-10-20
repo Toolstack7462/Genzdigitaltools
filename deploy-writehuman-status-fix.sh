@@ -24,6 +24,7 @@ RESTART_TMP="$(mktemp)"; date -u +"restart %Y-%m-%dT%H:%M:%SZ" > "${RESTART_TMP}
 echo "==> [1/2] Uploading + restart"
 curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/admin/proxyTools.js   "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
+  -T backend/utils/proxy/extensionCredentialSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/extensionCredentialSync.js" \
   -T backend/models/proxy/ExtAutoSyncPolicy.js "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   `# required by proxyTools.js at module load — must ship together or the API boots into "Cannot find module"` \
   -T backend/utils/proxy/agentCommands.js    "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
