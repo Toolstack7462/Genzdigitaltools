@@ -183,7 +183,15 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__ &&
         type: `${type}_RESPONSE`,
         requestId,
         success: false,
-        error: err.message || 'Extension error',
+        error: err.message || err.code || 'Extension error',
+        // Same reason as the orchestrator return in background.js: a thrown error's structured
+        // fields were dropped here too, so a message-less throw reached the page as the bare
+        // words 'Extension error'. Named, non-sensitive fields only — never a response body,
+        // cookie, token or session bundle.
+        ...(err.stage ? { stage: String(err.stage) } : {}),
+        ...(err.code ? { code: String(err.code) } : {}),
+        ...(err.reason ? { reason: String(err.reason) } : {}),
+        ...(typeof err.status === 'number' ? { status: err.status } : {}),
       }, event.origin);
     }
   });

@@ -2068,6 +2068,15 @@ async function _handleOpenToolInner(payload) {
       requiresManualAction: result.requiresManualAction || false,
       actionableError: result.actionableError || null,
       tabId: targetTabId,
+      // Carry the producer's own reason. Without it a failing strategy arrived at the page with
+      // success:false and nothing else, so the dashboard had no stage/code/error to map, fell back
+      // to the literal 'Extension error' and showed the generic "refresh the dashboard" line for
+      // EVERY orchestrator failure. `actionableError` is only populated for the manual-action and
+      // permission cases, so every other cause was anonymous. These are named, non-sensitive
+      // fields only — never a response body, cookie, token or bundle.
+      ...(result.error ? { error: String(result.error) } : {}),
+      ...(result.stage ? { stage: String(result.stage) } : {}),
+      ...(result.code ? { code: String(result.code) } : {}),
     };
   } catch (err) {
     logger.error('Strategy execution failed', { error: err.message });
