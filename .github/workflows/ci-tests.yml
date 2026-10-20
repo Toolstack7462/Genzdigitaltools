@@ -1,0 +1,112 @@
+# Test-only PR check. Deliberately carries NO deployment credentials and NO secrets: it runs the
+# suites and the production build, and nothing else. deploy-frontend.yml stays the only thing that
+# can publish, and it still triggers solely on a push to main.
+#
+# WHY THIS EXISTS. Until now nothing ran on a pull request at all, so every gate in backend/tests —
+# including the deploy clean-room check that catches "Passenger boots into Cannot find module" —
+# only ever ran on someone's laptop. A PR could look perfectly healthy and still be undeployable.
+name: CI (tests only)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches-ignore: [main]
+
+# No secrets are referenced anywhere in this file; make the token read-only as well.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: deployCleanRoom.test.js builds the pre-deploy server tree from the commit
+      # being deployed ONTO. The default shallow checkout cannot resolve any such ref, and the test
+      # used to skip silently — so the one gate that catches "Passenger boots into Cannot find
+      # module" never actually ran in CI. It now fails rather than skips when CI is set, so this
+      # must stay. The repository's history is ~30 MB; this is a one-off clone cost per job.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The baseline is what the server already holds, not this branch's previous commit: for a
+      # pull request that is the base branch's tip; for a branch push it is origin/main, since main
+      # is what any deploy would be cut onto.
+      - name: Resolve deploy baseline
+        env:
+          # Via env, not `${{ }}` inside the script: interpolating a workflow expression into a
+          # shell block substitutes it as TEXT before the shell parses it. A base SHA is not
+          # realistically hostile, but the pattern is, and this job's sibling holds deploy
+          # credentials. Asserted repo-wide by backend/tests/deployWorkflowSecurity.test.js.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "${PR_BASE_SHA:-}" ]; then
+            echo "DEPLOY_BASELINE_REF=$PR_BASE_SHA" >> "$GITHUB_ENV"
+          else
+            echo "DEPLOY_BASELINE_REF=origin/main" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install
+        working-directory: backend
+        run: npm install --legacy-peer-deps
+      - name: Syntax check
+        working-directory: backend
+        run: npm run check
+      # `npm run test:ci` is the whole suite. writehumanAgentVersionDrift is back in it: its four
+      # SOURCE-ONLY assertions (semver shape, protocol floors, dashboard/source agreement, build
+      # script derives its version) run on every pull request. Only its fifth assertion needs the
+      # ~90 MB installer, and dist/ is gitignored, so that one reports that it could not run
+      # instead of failing CI on a missing artifact.
+      #
+      # The binary side is NOT dropped — it is a MANDATORY RELEASE GATE:
+      #     npm run test:release-gate
+      # run from a working copy holding the candidate dist (where deploys are cut from). That gate
+      # goes further than CI ever could: it opens the PE and compares the EMBEDDED agent source
+      # byte for byte against this repo, because the agent's own 222-test suite reports the same
+      # number with or without the exe present — none of its tests read the real binary.
+      - name: Tests
+        working-directory: backend
+        run: npm run test:ci
+
+  frontend:
+    name: Frontend tests + production build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install
+        working-directory: frontend
+        run: npm install --legacy-peer-deps
+      - name: Tests
+        working-directory: frontend
+        env:
+          CI: 'true'
+        run: npx craco test --watchAll=false
+      # CI=false matches deploy-frontend.yml: this repo carries pre-existing exhaustive-deps
+      # warnings in unrelated admin/client pages, and warnings-as-errors would fail on those rather
+      # than on anything the PR changed.
+      - name: Production build
+        working-directory: frontend
+        env:
+          CI: 'false'
+          GENERATE_SOURCEMAP: 'false'
+        run: npm run build
+      # NOTE: the committed bundle is a deployed artifact (deploy-frontend-only.sh ships it as-is),
+      # and it IS gated — by backend/tests/frontendBuildFreshness.test.js in the backend job above,
+      # which recomputes the stamp with the repo's own scripts/stamp-build.js. A second check here
+      # would be a duplicate reimplementation of that comparison, and the first attempt at one got
+      # it wrong in two ways (fingerprint() returns an object, and the stamp key is
+      # `sourceFingerprint`), failing every run. One source of truth is the point.
