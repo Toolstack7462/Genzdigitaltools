@@ -10,11 +10,16 @@
 # database lives and dies inside the runner, is reachable only on 127.0.0.1 and contains nothing
 # but a throwaway row the script creates and deletes.
 #
-# ENGINE VERSION — READ THIS BEFORE TRUSTING A GREEN RUN. The matrix below is a reasonable default,
-# NOT a confirmed match for production. The script prints the live `VERSION()` it connected to;
-# compare that against the production engine (the read-only Hostinger diagnostics job reports it)
-# and, if it differs, re-run with the matching `engine_image` input. A pass on the wrong engine is
-# not evidence about production.
+# ENGINE VERSION — READ THIS BEFORE TRUSTING A GREEN RUN. Production (Hostinger) was measured
+# directly over SSH on 2026-10-20 and runs `11.8.9-MariaDB-log` with
+# sql_mode=NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION (NOT strict) and the server clock on UTC.
+# `mariadb:11.8` is therefore first in the matrix and is the row that speaks about production; the
+# other two are kept for cross-family regression cover only. The script prints the live `VERSION()`
+# it connected to — check it. A pass on the wrong engine is not evidence about production.
+#
+# The health probe deliberately tries `mariadb-admin` before `mysqladmin`: MariaDB 11.x dropped the
+# `mysql*` compatibility symlinks, so a `mysqladmin`-only probe never reports healthy on 11.8 and
+# the job fails having never run a single check (exit code 99, not a code failure).
 name: ext-sync real-DB self-test (test-only)
 
 on:
@@ -72,6 +77,9 @@ jobs:
         # Both families, because the guarded SQL deliberately avoids CAST(... AS JSON) for MariaDB
         # compatibility and that difference is exactly what a real engine has to confirm.
         include:
+          # Production (Hostinger) runs 11.8.9 — verified over SSH on 2026-10-20. Keep this first:
+          # a pass on 10.11 or 8.0 alone is not evidence about production.
+          - image: mariadb:11.8
           - image: mariadb:10.11
           - image: mysql:8.0
     services:
@@ -82,7 +90,7 @@ jobs:
           MARIADB_ROOT_PASSWORD: ci-root-not-a-secret
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret"
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret || mysqladmin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret"
           --health-interval=5s --health-timeout=5s --health-retries=30
 
     env:
