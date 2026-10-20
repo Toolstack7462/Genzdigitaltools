@@ -70,8 +70,15 @@ const ExtensionToken = createModel('ExtensionToken', {
           binding = await DeviceBinding.findOne({ clientId, extensionDeviceIdHash: extensionToken.deviceIdHash });
         }
         if (!binding) {
-          extensionToken.isRevoked = true;
-          await extensionToken.save();
+          // DENY, but do NOT revoke. A hash MISMATCH above means this token was presented from a
+          // different device, which is a theft signal worth destroying it over. Finding no binding
+          // ROW at all is a different thing: a server-side bookkeeping gap. Revoking here turned
+          // that gap into a self-reinforcing loop — measured in production on 2026-10-20, a client
+          // whose device policy was OFF received a device-bound token that no binding could ever
+          // validate, so every freshly minted token was destroyed on its first use and the
+          // extension re-activated about every 1.5 seconds, for ever, minting thousands of rows
+          // with `lastUsedAt = null, isRevoked = true`. Access is still refused; only the
+          // destructive side effect and the churn are gone.
           return null;
         }
         binding.lastSeenAt = new Date();
