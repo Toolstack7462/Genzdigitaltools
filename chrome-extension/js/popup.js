@@ -81,14 +81,20 @@ openDashBtn.addEventListener('click', () => {
 syncBtn.addEventListener('click', async () => {
   syncBtn.disabled = true;
   syncBtn.textContent = '⏳ Syncing…';
-  chrome.runtime.sendMessage({ type: 'CHECK_UPDATES' }, () => {
-    Storage.get(['lastSync', 'tools']).then(d => {
-      lastSyncEl.textContent = d.lastSync ? relativeTime(d.lastSync) : 'Just now';
+  chrome.runtime.sendMessage({ type: 'CHECK_UPDATES' }, async (response) => {
+    const portFailed = !!chrome.runtime.lastError;
+    try {
+      const d = await Storage.get(['lastSync', 'tools']);
+      lastSyncEl.textContent = d.lastSync ? relativeTime(d.lastSync) : 'Not yet synced';
       if (d.tools) toolCount.textContent = `${d.tools.length} tools`;
-    });
-    syncBtn.disabled = false;
-    syncBtn.textContent = '🔄 Sync Tools Now';
-    showToast('Synced!', 'success');
+      if (!portFailed && response?.success === true) showToast('Synced!', 'success');
+      else showToast('Sync did not complete. Please refresh the dashboard and try again.', 'error');
+    } catch (_) {
+      showToast('Sync status could not be read. Please try again.', 'error');
+    } finally {
+      syncBtn.disabled = false;
+      syncBtn.textContent = '🔄 Sync Tools Now';
+    }
   });
 });
 

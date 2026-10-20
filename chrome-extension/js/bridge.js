@@ -9,18 +9,11 @@
  */
 'use strict';
 
-if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
-  try {
-    // safeVersion is defined in the else block; use inline fallback here
-    const _ver = (() => { try { return chrome.runtime.getManifest().version || '3.8.0'; } catch (_) { return '3.8.0'; } })();
-    window.postMessage({
-      type: 'GENZ_BRIDGE_READY',
-      installed: true,
-      version: _ver,
-      duplicate: true,
-      ts: Date.now(),
-    }, window.location.origin);
-  } catch (_) {}
+if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__ &&
+    typeof globalThis.__GENZ_REFRESH_BRIDGE_STATUS__ === 'function') {
+  // Reinjection is not a disconnect. Ask the existing bridge for current status
+  // instead of emitting READY without `connected` (the page treated that as false).
+  globalThis.__GENZ_REFRESH_BRIDGE_STATUS__();
 } else {
   globalThis.__GENZ_DASHBOARD_BRIDGE_V34__ = true;
 
@@ -122,7 +115,18 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
     });
   }
 
+  let readyStatusEpoch = 0;
+  let readyStatusFlight = null;
   async function postBridgeReady() {
+    if (readyStatusFlight) return readyStatusFlight;
+    const epoch = readyStatusEpoch;
+    const job = readAndPostBridgeReady(epoch);
+    readyStatusFlight = job;
+    try { return await job; }
+    finally { if (readyStatusFlight === job) readyStatusFlight = null; }
+  }
+
+  async function readAndPostBridgeReady(epoch) {
     if (!contextAlive()) {
       setMarkers({ connected: false });
       postToPage({
@@ -139,6 +143,8 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
       status = await sendToBackground('GENZ_GET_EXTENSION_STATUS', {});
     } catch (_) {}
 
+    // A push notification represents a newer auth transition than this request.
+    if (epoch !== readyStatusEpoch) return true;
     setMarkers(status);
     try {
       document.dispatchEvent(new CustomEvent('GENZ_BRIDGE_READY', { detail: status }));
@@ -172,21 +178,12 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
         ...safe,
       }, event.origin);
     } catch (err) {
-      // Carry the thrown error's STRUCTURED fields, not just its message. Collapsing them here is
-      // half of why a precise failure reached the client as "Extension error": the background
-      // supplies stage/code/reason/status, the page then read `error` as a stage, and anything
-      // that was not already a slug fell through to a generic message. Only these named,
-      // non-sensitive fields are forwarded — never a response body, cookie, token or bundle.
       window.postMessage({
         source: 'GENZ_DIGITAL_STORE_EXTENSION',
         type: `${type}_RESPONSE`,
         requestId,
         success: false,
-        error: err.message || err.code || 'Extension error',
-        ...(err.stage ? { stage: String(err.stage) } : {}),
-        ...(err.code ? { code: String(err.code) } : {}),
-        ...(err.reason ? { reason: String(err.reason) } : {}),
-        ...(typeof err.status === 'number' ? { status: err.status } : {}),
+        error: err.message || 'Extension error',
       }, event.origin);
     }
   });
@@ -194,12 +191,14 @@ if (globalThis.__GENZ_DASHBOARD_BRIDGE_V34__) {
   try {
     chrome.runtime.onMessage.addListener((message) => {
       if (!message || !SAFE_PUSH_TYPES.has(message.type)) return;
+      if (message.type === 'GENZ_EXTENSION_CONNECTED' || message.type === 'GENZ_EXTENSION_DISCONNECTED') readyStatusEpoch += 1;
       postToPage(message);
       if (message.type === 'GENZ_EXTENSION_CONNECTED') setMarkers({ connected: true });
       if (message.type === 'GENZ_EXTENSION_DISCONNECTED') setMarkers({ connected: false });
     });
   } catch (_) {}
 
+  globalThis.__GENZ_REFRESH_BRIDGE_STATUS__ = postBridgeReady;
   postBridgeReady();
   let ticks = 0;
   const timer = setInterval(async () => {
