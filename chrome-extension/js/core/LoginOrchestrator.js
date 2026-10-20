@@ -46,9 +46,24 @@ export class LoginOrchestrator {
   }
 
   /**
+   * Open the target URL in the tab the BACKGROUND already launched and owns (passed as
+   * options.tabId), instead of opening a second visible tab. background._handleOpenToolInner
+   * creates/reuses exactly one tab and hands its id here; every "open the target" path must
+   * reuse it, or one Access click yields TWO tabs. Falls back to create ONLY when no tab was
+   * supplied (legacy/direct orchestrator callers that own no tab).
+   * @returns {Promise<chrome.tabs.Tab>}
+   */
+  async _openOrReuseTab(options, url) {
+    if (options && options.tabId != null) {
+      return await chrome.tabs.update(options.tabId, { url, active: true });
+    }
+    return await chrome.tabs.create({ url, active: true });
+  }
+
+  /**
    * Execute one-click login for a tool
    * Main entry point - handles all modes (normal, auto, hidden, combo)
-   * 
+   *
    * @param {Object} tool - Tool configuration
    * @param {Object} credentials - Credentials from API
    * @param {Object} options - Additional options (auto, hidden, sourceTabId)
@@ -101,7 +116,7 @@ export class LoginOrchestrator {
       if (comboAuth.triggerOnAuto && isAutoMode === false) {
         this.logger.info('Combo auth configured for auto trigger only, skipping');
         // Just open the tool normally
-        const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+        const tab = await this._openOrReuseTab(options, tool.targetUrl);
         result.tabId = tab.id;
         result.finalUrl = tool.targetUrl;
         result.method = 'direct_open';
@@ -121,7 +136,7 @@ export class LoginOrchestrator {
           await chrome.tabs.update(sourceTabId, { url: tool.targetUrl });
           result.tabId = sourceTabId;
         } else {
-          const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+          const tab = await this._openOrReuseTab(options, tool.targetUrl);
           result.tabId = tab.id;
         }
         
@@ -312,7 +327,7 @@ export class LoginOrchestrator {
       const alreadyLoggedIn = await this.checkAlreadyLoggedIn(tool, credentials);
       if (alreadyLoggedIn.success) {
         this.logger.info('Already logged in, skipping auth');
-        const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+        const tab = await this._openOrReuseTab(options, tool.targetUrl);
         return {
           success: true,
           method: 'already_logged_in',
@@ -508,7 +523,7 @@ export class LoginOrchestrator {
         const loginCheck = await this.checkAlreadyLoggedIn(tool, credentials);
         if (loginCheck.success) {
           this.logger.info('Session data login successful!');
-          const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+          const tab = await this._openOrReuseTab(options, tool.targetUrl);
           return {
             success: true,
             method: 'parallel_session',
@@ -557,7 +572,7 @@ export class LoginOrchestrator {
 
     // If we have session data but no auth method, just open the target URL
     if (hasSessionData && (!authMethod || authMethod === 'none')) {
-      const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+      const tab = await this._openOrReuseTab(options, tool.targetUrl);
       return {
         success: true,
         method: 'parallel_session_only',
@@ -625,7 +640,7 @@ export class LoginOrchestrator {
         await this.sleep(1500);
         const quickCheck = await this.checkAlreadyLoggedIn(tool, credentials);
         if (quickCheck.success) {
-          const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+          const tab = await this._openOrReuseTab(options, tool.targetUrl);
           return {
             success: true,
             method: 'session_bundle',
@@ -734,7 +749,7 @@ export class LoginOrchestrator {
       const verifyResult = await this.checkAlreadyLoggedIn(tool, credentials);
       
       if (verifyResult.success) {
-        const tab = await chrome.tabs.create({ url: tool.targetUrl, active: true });
+        const tab = await this._openOrReuseTab(options, tool.targetUrl);
         return {
           success: true,
           method: 'parallel_verified',

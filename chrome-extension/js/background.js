@@ -47,6 +47,26 @@ function describeError(error, ctx = {}) {
 
 // State
 let orchestrator = null;
+
+/**
+ * The login orchestrator, guaranteed present on EVERY service-worker wake.
+ *
+ * Chrome terminates an idle MV3 worker and wakes it to deliver a MESSAGE — a wake that fires
+ * neither chrome.runtime.onInstalled nor chrome.runtime.onStartup, the only two events that ran
+ * initialize() and therefore the only two that assigned this variable. Clicking Access after an
+ * idle period then produced:
+ *
+ *     Could not open tool: Cannot read properties of null (reading 'executeLogin')
+ *
+ * getOrchestrator() is a synchronous, side-effect-free singleton factory, so readiness is free and
+ * must not drag the rest of initialize() along: no cleanup sync, no alarm re-arming, no bridge
+ * re-injection, no re-pairing on an Access click. No optional chaining, no fabricated success and
+ * no keep-alive either — the worker may sleep, and the dependency is rebuilt when it wakes.
+ */
+function requireOrchestrator() {
+  if (!orchestrator) orchestrator = getOrchestrator();
+  return orchestrator;
+}
 let isInitialized = false; // FIX7: prevent duplicate initialization
 let activeLogins = new Map();
 let toolCredentialsCache = new Map();
@@ -55,21 +75,82 @@ let domainToolMap = new Map();
 let openIntentLock = new Map();
 // Prevents overlapping handleOpenTool invocations (OceanHub safe pattern)
 let isToolOpening = false;
+// Only the newest completed request may publish assigned-tool metadata.
+// Credential revisions do not describe list membership, renewal dates or names.
+let toolsSyncGeneration = 0;
+let toolsSyncPending = null;
+// Serialize only storage commits, never network waits. An obsolete 401 must not
+// erase a replacement connection while a cache write is in flight.
+let sessionMutationQueue = Promise.resolve();
+let deviceIdPending = null;
+let connectionGeneration = 0;
+let connectionPending = null;
+const connectionFlights = new Map();
+const recentConnections = new Map(); // short-lived, memory-only redemption receipts
+
+function withSessionMutation(work) {
+  const job = sessionMutationQueue.then(work, work);
+  sessionMutationQueue = job.catch(() => {});
+  return job;
+}
+function sameAuthSession(a, b) {
+  return !!a && !!b && a.extensionToken === b.extensionToken &&
+    normalizeApiBase(a.apiUrl || '') === normalizeApiBase(b.apiUrl || '');
+}
+function accessError(code, message, status = null) {
+  const err = new Error(message || code);
+  err.code = code;
+  err.status = status;
+  err.payload = { code };
+  return err;
+}
+async function fetchJsonWithDeadline(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    let result;
+    try { result = await response.json(); }
+    catch (err) {
+      if (controller.signal.aborted) throw err;
+      result = { error: 'Non-JSON API response' };
+    }
+    return { response, result };
+  } finally { clearTimeout(timer); }
+}
 
 // ============================================================================
 // STORAGE UTILITIES
 // ============================================================================
 
 async function getStorage(keys) {
-  return new Promise(resolve => chrome.storage.local.get(keys, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.get(keys, result => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(accessError('storage_read_failed', 'Extension storage could not be read.'));
+      else resolve(result || {});
+    });
+  });
 }
 
 async function setStorage(data) {
-  return new Promise(resolve => chrome.storage.local.set(data, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set(data, () => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(accessError('storage_write_failed', 'Extension storage could not be saved.'));
+      else resolve();
+    });
+  });
 }
 
 async function removeStorage(keys) {
-  return new Promise(resolve => chrome.storage.local.remove(keys, resolve));
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.remove(keys, () => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(accessError('storage_write_failed', 'Extension storage could not be cleared.'));
+      else resolve();
+    });
+  });
 }
 
 const EXTENSION_SESSION_KEYS = [
@@ -83,15 +164,21 @@ const EXTENSION_SESSION_KEYS = [
   'userName'
 ];
 
-async function clearExtensionAuthSession(reason = 'force_reauth') {
-  await removeStorage(EXTENSION_SESSION_KEYS);
-  await clearAllSessionCaches(); // drop cached decrypted sessionBundles on logout/reauth
-  toolCredentialsCache.clear();
-  domainToolMap.clear();
-  try {
-    chrome.action.setBadgeText({ text: '' });
-  } catch (_) {}
-  logger.info('Cleared extension auth/session cache', { reason });
+async function clearExtensionAuthSession(reason = 'force_reauth', expectedSession = null) {
+  return withSessionMutation(async () => {
+    const current = await getStorage(['extensionToken', 'apiUrl']);
+    if (expectedSession && !sameAuthSession(current, expectedSession)) return false;
+    toolsSyncGeneration += 1;
+    // Explicit reset/logout also invalidates outstanding activation responses.
+    if (!expectedSession) { connectionGeneration += 1; recentConnections.clear(); }
+    await removeStorage(EXTENSION_SESSION_KEYS);
+    await clearAllSessionCaches(true);
+    toolCredentialsCache.clear();
+    domainToolMap.clear();
+    try { chrome.action.setBadgeText({ text: '' }); } catch (_) {}
+    logger.info('Cleared extension auth/session cache', { reason });
+    return true;
+  });
 }
 
 // ============================================================================
@@ -103,14 +190,20 @@ async function clearExtensionAuthSession(reason = 'force_reauth') {
 // Purpose: allow the server-side Risk Engine to detect new/unknown devices.
 // The fingerprint is hashed before transmission — the raw value stays local.
 async function getOrCreateDeviceId() {
-  const stored = await getStorage(['_deviceId']);
-  if (stored._deviceId) return stored._deviceId;
-  const id = crypto.randomUUID
-    ? crypto.randomUUID()
-    : Array.from(crypto.getRandomValues(new Uint8Array(16)))
-        .map(b => b.toString(16).padStart(2,'0')).join('');
-  await setStorage({ _deviceId: id });
-  return id;
+  if (deviceIdPending) return deviceIdPending;
+  const job = (async () => {
+    const stored = await getStorage(['_deviceId']);
+    if (stored._deviceId) return stored._deviceId;
+    const id = crypto.randomUUID
+      ? crypto.randomUUID()
+      : Array.from(crypto.getRandomValues(new Uint8Array(16)))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+    await setStorage({ _deviceId: id });
+    return id;
+  })();
+  deviceIdPending = job;
+  try { return await job; }
+  finally { if (deviceIdPending === job) deviceIdPending = null; }
 }
 
 async function digestSha256(value) {
@@ -135,7 +228,7 @@ async function apiRequest(endpoint, options = {}) {
   const data = await getStorage(['apiUrl', 'extensionToken']);
 
   if (!data.apiUrl || !data.extensionToken) {
-    throw new Error('Not authenticated');
+    throw accessError('extension_token_invalid', 'Extension authorization required.', 401);
   }
 
   // Defensive: an older install may have stored apiUrl WITH /api/crm appended.
@@ -152,12 +245,13 @@ async function apiRequest(endpoint, options = {}) {
   
   logger.debug('API Request', { endpoint, method: options.method || 'GET' });
 
-  const response = await fetch(url, { ...options, headers });
-  let result = {};
-  try {
-    result = await response.json();
-  } catch (_) {
-    result = { error: response.statusText || 'Non-JSON API response' };
+  let response, result;
+  if (endpoint === '/tools') {
+    ({ response, result } = await fetchJsonWithDeadline(url, { ...options, headers }, 12000));
+  } else {
+    response = await fetch(url, { ...options, headers });
+    try { result = await response.json(); }
+    catch (_) { result = { error: response.statusText || 'Non-JSON API response' }; }
   }
 
   // ── Safe per-request log: HTTP status + success + counts ONLY (never values).
@@ -189,21 +283,27 @@ async function apiRequest(endpoint, options = {}) {
     logger.info('[extension/api] fetch', safe);
   } catch (_) {}
 
+  // Both successful and failed old-session responses are obsolete. Do not use
+  // old credentials, clear a new token or notify dashboards to reconnect again.
+  const currentSession = await getStorage(['extensionToken', 'apiUrl']);
+  if (!sameAuthSession(data, currentSession)) {
+    throw accessError('connection_changed', 'Connection changed; please retry.');
+  }
   if (response.status === 401) {
-    // Only 401 means the extension token itself is invalid. Do not clear the
-    // extension session for 403 business errors such as consumed intent, tool
-    // not assigned, missing permission, or assignment expiry.
-    logger.warn('Extension token rejected by server, clearing session', { status: response.status });
-    await clearExtensionAuthSession('token_rejected_401');
-    chrome.action.setBadgeText({ text: '!' });
-    chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
-    notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'token_expired' });
-    throw new Error(result.error || 'Extension authorization expired');
+    const cleared = await clearExtensionAuthSession('token_rejected_401', data);
+    if (cleared) {
+      chrome.action.setBadgeText({ text: '!' });
+      chrome.action.setBadgeBackgroundColor({ color: '#ef4444' });
+      notifyDashboardTabs({ type: 'GENZ_EXTENSION_DISCONNECTED', reason: 'token_expired' });
+    }
+    throw accessError(cleared ? 'extension_token_invalid' : 'connection_changed',
+      cleared ? 'Extension authorization expired.' : 'Connection changed; please retry.', 401);
   }
 
   if (!response.ok) {
     const err = new Error(result.error || 'Request failed');
     err.status = response.status;
+    err.code = result.code || null;
     err.payload = result;
     throw err;
   }
@@ -293,7 +393,7 @@ async function initialize() {
   logger.info('Initializing Gen Z Digital Store Extension v3.7');
   
   // Initialize orchestrator
-  orchestrator = getOrchestrator();
+  requireOrchestrator();
   
   // Keep session-risk scanner active by default
   await setStorage({ scannerEnabled: true });
@@ -322,8 +422,9 @@ async function initialize() {
 
 async function loadCachedData() {
   const data = await getStorage(['tools', 'domainToolMap']);
+  domainToolMap.clear(); // rebuild, never retain removed or renamed host mappings
   
-  if (data.tools) {
+  if (Array.isArray(data.tools)) {
     // Build domain to tool map
     for (const tool of data.tools) {
       if (tool.domain) {
@@ -397,17 +498,84 @@ async function applyExtensionUpdateInfo(update) {
   }
 }
 
+// /tools is assignment-based and can legitimately repeat a Tool after renewal.
+// Collapse coherent rows using the backend's furthest UTC-inclusive end boundary.
+// Conflicting Tool metadata is rejected; no URL/permission/credential is invented.
+function assignedToolEnd(endDate) {
+  if (!endDate) return Infinity;
+  if (typeof endDate === 'string') {
+    const m = endDate.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}):(\d{2}))?/);
+    if (m && (m[4] === undefined || (m[4] === '00' && m[5] === '00' && m[6] === '00'))) {
+      return Date.UTC(+m[1], +m[2] - 1, +m[3], 23, 59, 59, 999);
+    }
+  }
+  const dt = new Date(endDate);
+  if (!Number.isFinite(dt.getTime())) throw accessError('invalid_tools_response', 'Invalid assignment metadata.');
+  if (dt.getUTCHours() === 0 && dt.getUTCMinutes() === 0 && dt.getUTCSeconds() === 0 && dt.getUTCMilliseconds() === 0) dt.setUTCHours(23, 59, 59, 999);
+  return dt.getTime();
+}
+function normalizeAssignedTools(rows) {
+  const byId = new Map();
+  for (const raw of rows) {
+    if (!raw || !['string', 'number'].includes(typeof raw.id) || !String(raw.id).trim()) {
+      throw accessError('invalid_tools_response', 'Invalid assigned-tool metadata.');
+    }
+    const tool = { ...raw, id: String(raw.id) };
+    const previous = byId.get(tool.id);
+    if (!previous) { byId.set(tool.id, tool); continue; }
+    const signature = entry => {
+      const out = {};
+      for (const k of Object.keys(entry).sort()) if (k !== 'assignment') out[k] = entry[k];
+      return JSON.stringify(out);
+    };
+    if (signature(previous) !== signature(tool)) {
+      throw accessError('conflicting_tool_metadata', 'Conflicting Tool records returned by the server.');
+    }
+    // Only server-returned active assignments participate. The credential route
+    // still authorizes every open; this is normalization, not an access grant.
+    if (assignedToolEnd(tool.assignment?.endDate) > assignedToolEnd(previous.assignment?.endDate)) byId.set(tool.id, tool);
+  }
+  return [...byId.values()];
+}
 async function checkForUpdates() {
+  const generation = ++toolsSyncGeneration;
+  const job = performToolsSync(generation);
+  toolsSyncPending = job;
+  try { return await job; }
+  finally { if (toolsSyncPending === job) toolsSyncPending = null; }
+}
+async function waitForAssignedTools() {
+  for (let i = 0; i < 4; i++) {
+    const job = toolsSyncPending || checkForUpdates();
+    const result = await job;
+    if (result?.error !== 'sync_superseded') return result;
+  }
+  return { success: false, error: 'sync_busy', stage: 'tools_sync', message: 'Another sync is finishing. Please try again.' };
+}
+
+async function performToolsSync(generation) {
+  let syncSession = null;
   try {
-    const stored = await getStorage(['toolVersions', 'sessionBundleVersions', 'extensionToken']);
+    const stored = await getStorage(['toolVersions', 'sessionBundleVersions', 'extensionToken', 'apiUrl', 'tools']);
+    syncSession = stored;
     
     if (!stored.extensionToken) {
       logger.debug('Not authenticated, skipping sync');
-      return;
+      return { success: false, error: 'auth_expired', needsReauth: true, stage: 'tools_sync', status: 401, message: 'Open your dashboard to connect first.' };
     }
     
     const result = await apiRequest('/tools');
-    const tools = result.tools || [];
+    if (!result || result.success !== true || !Array.isArray(result.tools)) {
+      throw accessError('invalid_tools_response', 'Invalid assigned-tool response; retrying sync');
+    }
+    const tools = normalizeAssignedTools(result.tools);
+    const ids = new Set(tools.map(tool => tool.id));
+    const currentSession = await getStorage(['extensionToken', 'apiUrl']);
+    if (generation !== toolsSyncGeneration ||
+        currentSession.extensionToken !== stored.extensionToken ||
+        normalizeApiBase(currentSession.apiUrl || '') !== normalizeApiBase(stored.apiUrl || '')) {
+      return { success: false, error: 'sync_superseded', message: 'Connection changed; please sync again.' }; // discard old-client metadata
+    }
     // Heartbeat self-update check (backend compares installed vs latest release).
     if (result.extensionUpdate) await applyExtensionUpdateInfo(result.extensionUpdate);
     const oldVersions = stored.toolVersions || {};
@@ -464,6 +632,24 @@ async function checkForUpdates() {
       }
     }
     
+    const committed = await withSessionMutation(async () => {
+      const current = await getStorage(['extensionToken', 'apiUrl']);
+      if (generation !== toolsSyncGeneration || !sameAuthSession(current, syncSession)) return false;
+    // Publish EVERY valid authoritative snapshot, including unchanged versions and
+    // an empty assignment list. Previously these writes were under totalUpdates>0,
+    // leaving a missing WriteHuman entry stuck at tool_not_synced indefinitely.
+    await setStorage({
+      toolVersions: newVersions,
+      sessionBundleVersions: newBundleVersions,
+      tools,
+    });
+    const removedIds = new Set([
+      ...Object.keys(oldVersions),
+      ...(Array.isArray(stored.tools) ? stored.tools.map(t => String(t.id)) : []),
+    ].filter(id => !ids.has(id)));
+    for (const id of removedIds) toolCredentialsCache.delete(id);
+    if (removedIds.size) await removeStorage([...removedIds].map(sessionCacheKey));
+
     // Combine all updates
     const totalUpdates = credentialUpdates.length + sessionBundleUpdates.length;
     
@@ -476,13 +662,6 @@ async function checkForUpdates() {
       // Show badge for updates
       chrome.action.setBadgeText({ text: String(totalUpdates) });
       chrome.action.setBadgeBackgroundColor({ color: '#22c55e' }); // Green for session updates
-      
-      // Store updated versions
-      await setStorage({ 
-        toolVersions: newVersions,
-        sessionBundleVersions: newBundleVersions,
-        tools: tools // Cache full tool list
-      });
       
       // Notify about session bundle updates (important for user)
       if (sessionBundleUpdates.length > 0) {
@@ -510,26 +689,45 @@ async function checkForUpdates() {
     // Successful sync → cancel any pending backoff retry.
     try { await chrome.alarms.clear(SYNC_RETRY_ALARM); } catch (_) {}
 
+      return true;
+    });
+    if (!committed) return { success: false, error: 'sync_superseded' };
+    notifyDashboardTabs({ type: 'GENZ_SYNC_COMPLETE', toolCount: tools.length, lastSync: new Date().toISOString() });
+
     // Reconcile expired/revoked tool sessions alongside the version sync.
     runCleanupSync('version_sync').catch(() => {});
+    return { success: true, toolCount: tools.length };
 
   } catch (error) {
+    if (generation !== toolsSyncGeneration) return { success: false, error: 'sync_superseded' };
+    if (syncSession) {
+      const currentSession = await getStorage(['extensionToken', 'apiUrl']);
+      if (currentSession.extensionToken !== syncSession.extensionToken ||
+          normalizeApiBase(currentSession.apiUrl || '') !== normalizeApiBase(syncSession.apiUrl || '')) return { success: false, error: 'sync_superseded' };
+    }
     // ── Safe, readable failure handling. Never throws, never breaks tool
     // access (assigned tools stay cached + usable), never logs secrets. ──
     const prev = await getStorage(['syncRetryCount']);
     const retry = (Number(prev.syncRetryCount) || 0) + 1;
     const info = describeError(error, { step: 'checkForUpdates', endpoint: '/tools', retry });
-    const isAuth = info.status === 401 || /token|unauthor|401/i.test(info.message || '');
+    const isAuth = info.status === 401 || info.code === 'extension_token_invalid';
     const isNetwork = info.status == null && /fetch|network|failed to fetch|load failed|timeout|offline/i.test(info.message || '');
 
     logger.warn('Sync check failed', info);
 
-    // Friendly status for popup/dashboard — assigned tools remain usable.
-    await setStorage({
-      syncStatus: isAuth ? 'auth' : (isNetwork ? 'offline' : 'error'),
-      syncRetryCount: retry,
-      lastSyncError: { message: info.message, status: info.status, code: info.code, at: new Date().toISOString() },
-    });
+    // Store safe diagnostics only; a quota/write failure must not become a false
+    // success or an unhandled rejection while recording the original failure.
+    try {
+      await withSessionMutation(async () => {
+        const current = await getStorage(['extensionToken', 'apiUrl']);
+        if (generation !== toolsSyncGeneration || !sameAuthSession(current, syncSession)) return;
+        await setStorage({
+          syncStatus: isAuth ? 'auth' : (isNetwork ? 'offline' : 'error'),
+          syncRetryCount: retry,
+          lastSyncError: { message: 'Tool sync did not complete.', status: info.status, code: info.code || 'sync_failed', stage: 'tools_sync', at: new Date().toISOString() },
+        });
+      });
+    } catch (_) { /* the caller still receives the precise storage error */ }
 
     // Only an auth failure changes the badge; a transient network/backend hiccup
     // must NOT alarm the user or block tool access.
@@ -549,6 +747,82 @@ async function checkForUpdates() {
     } catch (e) {
       logger.debug('Could not schedule sync retry', describeError(e, { step: 'retry_backoff', retry }));
     }
+    return { success: false, error: isAuth ? 'auth_expired' : 'sync_failed', needsReauth: isAuth, stage: 'tools_sync', status: info.status, code: info.code || 'sync_failed', message: 'Tool sync did not complete. Please try again.' };
+  }
+}
+
+// Activation and assigned-tool synchronization are distinct stages. Reply as soon
+// as the new authorization is committed; slow /tools must not consume the page's
+// activation timeout and cause another token to be minted every few seconds.
+async function connectDashboardExtension(payload) {
+  const { apiUrl, email, password, activationToken, forceReauth } = payload || {};
+  if (!apiUrl || (!activationToken && (!email || !password))) return { success: false, error: 'apiUrl and activationToken required' };
+  const base = normalizeApiBase(apiUrl);
+  const key = activationToken ? base + '\n' + activationToken : null;
+  if (key && connectionFlights.has(key)) return connectionFlights.get(key);
+  if (key && recentConnections.has(key)) {
+    const receipt = recentConnections.get(key);
+    const current = await getStorage(['extensionToken', 'apiUrl']);
+    if (receipt.until > Date.now() && sameAuthSession(receipt.session, current)) return receipt.result;
+    recentConnections.delete(key);
+  }
+  const generation = ++connectionGeneration;
+  // The assignment cache belongs to a connection; an old pending sync must not
+  // commit while a replacement activation is being validated.
+  toolsSyncGeneration += 1;
+  const job = (async () => {
+    const expected = await getStorage(['extensionToken', 'apiUrl']);
+    try {
+      const deviceId = await getOrCreateDeviceId();
+      if (forceReauth) await clearExtensionAuthSession('dashboard_forced_reauth', expected);
+      const { response: r, result: d } = await fetchJsonWithDeadline(base + '/api/crm/extension' + (activationToken ? '/auth/activate' : '/auth'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Extension-Version': chrome.runtime.getManifest().version,
+          'X-Device-Id-Hash': await digestSha256(deviceId) },
+        body: JSON.stringify(activationToken ? { activationToken } : { email, password }),
+      }, 10000);
+      if (generation !== connectionGeneration) return { success: false, error: 'connection_changed', stage: 'activation' };
+      if (!r.ok || typeof d.token !== 'string' || !d.token) {
+        const code = typeof d.code === 'string' && /^[a-z0-9_]+$/i.test(d.code) ? d.code : null;
+        if (r.status === 401 || r.status === 403) await clearExtensionAuthSession('activation_rejected', expected);
+        return { success: false, error: code || 'activation_failed', code, status: r.status, stage: 'activation' };
+      }
+      const session = { extensionToken: d.token, apiUrl: base };
+      const committed = await withSessionMutation(async () => {
+        if (generation !== connectionGeneration) return false;
+        toolsSyncGeneration += 1;
+        await clearAllSessionCaches(true);
+        toolCredentialsCache.clear(); domainToolMap.clear();
+        await setStorage({ ...session, tokenExpiresAt: d.expiresAt || null,
+          userEmail: d.user?.email || null, userName: d.user?.name || null,
+          tools: [], toolVersions: {}, sessionBundleVersions: {}, lastSync: null,
+          syncStatus: 'pending', lastSyncError: null, syncRetryCount: 0 });
+        return true;
+      });
+      if (!committed) return { success: false, error: 'connection_changed', stage: 'activation' };
+      chrome.action.setBadgeText({ text: '' });
+      const result = { success: true, connected: true, synced: false, syncStatus: 'pending', user: d.user,
+        toolCount: 0, lastSync: null, version: chrome.runtime.getManifest().version };
+      if (key) {
+        for (const [k, rec] of recentConnections) if (rec.until <= Date.now()) recentConnections.delete(k);
+        if (recentConnections.size >= 16) recentConnections.delete(recentConnections.keys().next().value);
+        recentConnections.set(key, { until: Date.now() + 30000, session, result });
+      }
+      notifyDashboardTabs({ type: 'GENZ_EXTENSION_CONNECTED', connected: true, syncStatus: 'pending',
+        userEmail: d.user?.email || null, tokenExpiresAt: d.expiresAt || null, version: chrome.runtime.getManifest().version });
+      checkForUpdates().catch(() => {});
+      return result;
+    } catch (err) {
+      return { success: false, error: generation !== connectionGeneration ? 'connection_changed' : 'activation_failed',
+        code: err?.code || (err?.name === 'AbortError' ? 'activation_timeout' : 'activation_failed'), stage: 'activation' };
+    }
+  })();
+  connectionPending = job;
+  if (key) connectionFlights.set(key, job);
+  try { return await job; }
+  finally {
+    if (connectionPending === job) connectionPending = null;
+    if (key && connectionFlights.get(key) === job) connectionFlights.delete(key);
   }
 }
 
@@ -638,7 +912,7 @@ async function handleLoginRequired(data, sender) {
     }
 
     // ── Interactive credentials (form/sso/token) → orchestrator, with bundle. ──
-    const result = await orchestrator.executeLogin(tool, creds, {
+    const result = await requireOrchestrator().executeLogin(tool, creds, {
       tabId,
       currentUrl: url,
       sessionBundle: bundle,
@@ -779,7 +1053,7 @@ async function executeOneClickLogin(toolId, tool) {
     }
     
     // Execute login via orchestrator with session bundle
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+    const result = await requireOrchestrator().executeLogin(tool, credentialData.credentials, {
       sessionBundle: credentialData.sessionBundle,
       toolInfo: credentialData.tool
     });
@@ -1166,12 +1440,12 @@ async function getSessionCache(toolId) {
 async function setSessionCache(toolId, data) {
   try { await setStorage({ [sessionCacheKey(toolId)]: data }); } catch (_) {}
 }
-async function clearAllSessionCaches() {
+async function clearAllSessionCaches(strict = false) {
   try {
     const all = await getStorage(null);
     const keys = Object.keys(all).filter(k => k.startsWith(SESSION_CACHE_PREFIX));
     if (keys.length) await removeStorage(keys);
-  } catch (_) {}
+  } catch (err) { if (strict) throw err; }
 }
 
 // One tiny GET (no decrypt) → a version signature for this tool. Returns null on
@@ -1338,18 +1612,36 @@ async function _handleOpenToolInner(payload) {
   // Auto-clear lock after 15 seconds
   setTimeout(() => openIntentLock.delete(toolId), 15000);
 
-  // ── 3. Load tool info (compare ids as strings — id may be number or string) ─
-  let stored = await getStorage(['tools']);
-  let tool = (stored.tools || []).find(t => String(t.id) === toolIdStr);
+  // ── 3. Wait for activation/sync rather than reading an obsolete empty list. ──
+  for (let i = 0; connectionPending && i < 4; i++) {
+    const current = connectionPending;
+    const activation = await current;
+    if (activation?.error === 'connection_changed' && connectionPending && connectionPending !== current) continue;
+    if (!activation?.success) { openIntentLock.delete(toolId); return activation; }
+  }
+  if (connectionPending) { openIntentLock.delete(toolId); return { success: false, error: 'connection_busy', stage: 'activation' }; }
+  let stored = await getStorage(['tools', 'extensionToken', 'apiUrl']);
+  if (!stored.extensionToken) {
+    openIntentLock.delete(toolId);
+    return { success: false, error: 'auth_expired', needsReauth: true, stage: 'connection' };
+  }
+  const openSession = stored;
+  let tool = (Array.isArray(stored.tools) ? stored.tools : []).find(t => String(t.id) === toolIdStr);
   if (!tool) {
     logger.info('Tool not found in cache; refreshing tool list', { toolId: toolIdStr });
-    await checkForUpdates();
-    stored = await getStorage(['tools']);
-    tool = (stored.tools || []).find(t => String(t.id) === toolIdStr);
+    const synced = await waitForAssignedTools();
+    if (!synced?.success) { openIntentLock.delete(toolId); return synced || { success: false, error: 'sync_failed', stage: 'tools_sync' }; }
+    stored = await getStorage(['tools', 'extensionToken', 'apiUrl']);
+    if (!sameAuthSession(openSession, stored)) {
+      openIntentLock.delete(toolId);
+      return { success: false, error: 'connection_changed', stage: 'tools_sync' };
+    }
+    tool = (Array.isArray(stored.tools) ? stored.tools : []).find(t => String(t.id) === toolIdStr);
   }
   if (!tool) {
     openIntentLock.delete(toolId);
-    return { success: false, error: 'tool_not_synced', message: 'Tool not found. Please refresh the dashboard and try again.' };
+    return { success: false, error: 'tool_not_synced', stage: 'assigned_tools', code: 'tool_absent_from_synced_list',
+      message: 'The server did not return this Tool for the current connection. Contact admin.' };
   }
 
   // Normalize the tool target URL from any of the supported field names.
@@ -1463,6 +1755,7 @@ async function _handleOpenToolInner(payload) {
           const stage = (code === 'assignment_expired') ? 'tool_access_expired' : code;
           return { success: false, error: stage, stage, code };
         }
+        if (code === 'connection_changed') return { success: false, error: 'connection_changed', stage: 'credentials' };
         if (code === 'extension_token_invalid') {
           return { success: false, error: 'auth_expired', needsReauth: true, code, message: 'Refreshing secure access. Please wait...' };
         }
@@ -1521,6 +1814,10 @@ async function _handleOpenToolInner(payload) {
     };
   }
 
+  if (!sameAuthSession(openSession, await getStorage(['extensionToken', 'apiUrl']))) {
+    openIntentLock.delete(toolId);
+    return { success: false, error: 'connection_changed', stage: 'credentials' };
+  }
   const creds            = credentialData?.credentials;
   const bundle           = credentialData?.sessionBundle;
   const credType         = creds?.type || 'none';
@@ -1739,7 +2036,7 @@ async function _handleOpenToolInner(payload) {
     if (forceFreshSession && hasBundleStorage) {
       await clearPageStorageForTab(targetTabId);
     }
-    const result = await orchestrator.executeLogin(tool, creds, {
+    const result = await requireOrchestrator().executeLogin(tool, creds, {
       tabId: targetTabId,
       sessionBundle: bundle,
       toolInfo: credentialData?.tool,
@@ -1771,6 +2068,15 @@ async function _handleOpenToolInner(payload) {
       requiresManualAction: result.requiresManualAction || false,
       actionableError: result.actionableError || null,
       tabId: targetTabId,
+      // Carry the producer's own reason. Without it a failing strategy arrived at the page with
+      // success:false and nothing else, so the dashboard had no stage/code/error to map, fell back
+      // to the literal 'Extension error' and showed the generic "refresh the dashboard" line for
+      // EVERY orchestrator failure. `actionableError` is only populated for the manual-action and
+      // permission cases, so every other cause was anonymous. These are named, non-sensitive
+      // fields only — never a response body, cookie, token or bundle.
+      ...(result.error ? { error: String(result.error) } : {}),
+      ...(result.stage ? { stage: String(result.stage) } : {}),
+      ...(result.code ? { code: String(result.code) } : {}),
     };
   } catch (err) {
     logger.error('Strategy execution failed', { error: err.message });
@@ -1970,11 +2276,15 @@ async function clearCookiesForConfig(cleanup, protectedDomains) {
   let removed = 0;
   const domainsChecked = [];
   const skipped = [];
+  const protectedCookieDomain = (host) => !!(protectedDomains && [...protectedDomains].some(d => {
+    const activeHost = String(d || '').replace(/^\./, '').toLowerCase();
+    return activeHost && (host === activeHost || host.endsWith('.' + activeHost) || activeHost.endsWith('.' + host));
+  }));
   const domains = [...new Set([...(cleanup?.cookieDomains || []), ...(cleanup?.domains || [])])];
   for (let domain of domains) {
     domain = String(domain || '').replace(/^\./, '').toLowerCase();
     if (!domain || isProtectedHost(domain) || domainsChecked.includes(domain)) continue;
-    if (protectedDomains && protectedDomains.has(domain)) {
+    if (protectedCookieDomain(domain)) {
       skipped.push(domain);                      // another ACTIVE assignment still needs it
       continue;
     }
@@ -1983,11 +2293,14 @@ async function clearCookiesForConfig(cleanup, protectedDomains) {
       const cookies = await chrome.cookies.getAll({ domain });
       const results = await Promise.allSettled((cookies || []).map(cookie => {
         const host = cookie.domain.replace(/^\./, '');
-        if (isProtectedHost(host)) return Promise.resolve(null);
-        return chrome.cookies.remove({
-          url: `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path}`,
+        if (isProtectedHost(host) || protectedCookieDomain(host.toLowerCase())) return Promise.resolve(null);
+        const details = {
+          url: `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path || '/'}`,
           name: cookie.name,
-        });
+        };
+        if (cookie.storeId != null) details.storeId = cookie.storeId;
+        if (cookie.partitionKey) details.partitionKey = cookie.partitionKey;
+        return chrome.cookies.remove(details);
       }));
       // Count only actually-removed cookies (remove resolves with details, or
       // null when it couldn't remove — e.g. missing host permission).
@@ -2077,16 +2390,26 @@ async function clearStorageAndRedirectTabs(cleanup, toolName, reason, opts) {
       }
     }
 
-    // Clear page storage IN the tool origin before navigating away.
+    // Re-check ownership before clearing anything, as well as before navigation.
+    if (wantToolId && binding) {
+      const current = await getTabBinding(tab.id);
+      if (!current || String(current.toolId) !== wantToolId || current.gen !== binding.gen) continue;
+    }
+    // localStorage belongs to the ORIGIN, not to the expiring assignment. Clearing
+    // it while a sibling is active broadcasts a storage event to that sibling.
+    // Keep shared origin storage; sessionStorage is limited to this expiring tab.
     try {
       const res = await chrome.scripting.executeScript({
         target: { tabId: tab.id },
-        func: () => {
+        func: (clearOriginStorage) => {
           let n = 0;
-          try { n += localStorage.length; localStorage.clear(); } catch (_) {}
+          if (clearOriginStorage) {
+            try { n += localStorage.length; localStorage.clear(); } catch (_) {}
+          }
           try { n += sessionStorage.length; sessionStorage.clear(); } catch (_) {}
           return n;
         },
+        args: [!hostShared],
       });
       storageCleared = true; // storage clear executed on at least one tool tab
       void res;
@@ -2136,6 +2459,14 @@ async function cleanupToolSession(entry, activeScope) {
   let hostSharedWithActive = false;
   if (activeScope) {
     protectedDomains = activeScope.domains || null;
+    const ownDomains = [...(cleanup.cookieDomains || []), ...(cleanup.domains || [])];
+    if (protectedDomains) {
+      hostSharedWithActive = ownDomains.some(d => {
+        const host = String(d || '').replace(/^\./, '').toLowerCase();
+        return host && [...protectedDomains].some(activeHost =>
+          host === activeHost || host.endsWith('.' + activeHost) || activeHost.endsWith('.' + host));
+      });
+    }
     const pats = activeScope.patterns;
     if (pats) {
       for (const p of (cleanup.tabUrlPatterns || [])) {
@@ -2228,8 +2559,18 @@ async function runCleanupSync(reason = 'manual') {
       return;
     }
 
-    const active = Array.isArray(manifest?.active) ? manifest.active : [];
-    const revoked = Array.isArray(manifest?.revoked) ? manifest.revoked : [];
+    // Malformed/partial responses are NOT a revocation of every known assignment.
+    // A genuine empty pair of arrays remains authoritative and still ends access.
+    if (!manifest || manifest.ok === false || manifest.success === false ||
+        !Array.isArray(manifest.active) || !Array.isArray(manifest.revoked) ||
+        [...manifest.active, ...manifest.revoked].some(e => !e ||
+          !['string', 'number'].includes(typeof e.toolId) || !String(e.toolId).trim())) {
+      throw new Error('Invalid cleanup manifest; retrying without destructive cleanup');
+    }
+    const currentSession = await getStorage(['extensionToken']);
+    if (currentSession.extensionToken !== stored.extensionToken) return;
+    const active = manifest.active;
+    const revoked = manifest.revoked;
     const activeIds = new Set(active.map(t => String(t.toolId)));
 
     // Forget bindings for tabs the user has closed (also covers a missed onRemoved
@@ -2569,7 +2910,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle messages from popup
   switch (message.type) {
     case 'CHECK_UPDATES':
-      checkForUpdates().then(() => sendResponse({ success: true }));
+      checkForUpdates()
+        .then(result => sendResponse(result || { success: false, error: 'sync_incomplete' }))
+        .catch(() => sendResponse({ success: false, error: 'sync_failed', message: 'Tool sync did not complete. Please try again.' }));
       return true;
       
     case 'CLEAR_BADGE':
@@ -2664,10 +3007,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case 'GENZ_GET_EXTENSION_STATUS':
-      getStorage(['extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate', 'syncStatus']).then(async d => {
+      getStorage(['apiUrl', 'extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate', 'syncStatus', 'lastSyncError']).then(async d => {
         const expired = d.tokenExpiresAt && Date.parse(d.tokenExpiresAt) <= Date.now();
         if (expired) {
-          await clearExtensionAuthSession('stored_token_expired');
+          const cleared = await clearExtensionAuthSession('stored_token_expired', d);
+          if (!cleared) d = await getStorage(['apiUrl', 'extensionToken', 'tokenExpiresAt', 'lastSync', 'tools', 'userEmail', 'extensionUpdate', 'syncStatus', 'lastSyncError']);
+          if (cleared) {
           sendResponse({
             success: true,
             connected: false,
@@ -2677,6 +3022,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             version: chrome.runtime.getManifest().version,
           });
           return;
+          }
         }
         const expiresAt = d.tokenExpiresAt ? Date.parse(d.tokenExpiresAt) : null;
         const expiresInDays = expiresAt ? Math.ceil((expiresAt - Date.now()) / (24 * 60 * 60 * 1000)) : null;
@@ -2692,76 +3038,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           version: chrome.runtime.getManifest().version,
           extensionUpdate: d.extensionUpdate || null,
           syncStatus: d.syncStatus || null,
+          connecting: !!connectionPending,
+          syncErrorCode: d.lastSyncError?.code || null,
+          syncHttpStatus: d.lastSyncError?.status || null,
+          syncStage: d.lastSyncError?.stage || null,
         });
       });
       return true;
 
     case 'GENZ_CONNECT_EXTENSION':
-      (async () => {
-        const { apiUrl, email, password, activationToken, forceReauth } = message.payload || {};
-        if (!apiUrl || (!activationToken && (!email || !password))) {
-          sendResponse({ success: false, error: 'apiUrl and activationToken required' });
-          return;
-        }
-        try {
-          if (forceReauth) {
-            await clearExtensionAuthSession('dashboard_forced_reauth');
-          }
-          const base = normalizeApiBase(apiUrl);
-          const url = activationToken
-            ? `${base}/api/crm/extension/auth/activate`
-            : `${base}/api/crm/extension/auth`;
-          const deviceId = await getOrCreateDeviceId();
-          const body = activationToken ? { activationToken } : { email, password };
-          const r = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-Extension-Version': chrome.runtime.getManifest().version,
-              'X-Device-Id-Hash': await digestSha256(deviceId),
-            },
-            body: JSON.stringify(body),
-          });
-          const d = await r.json();
-          if (!r.ok || !d.token) {
-            // Server-side rejection. If the activation flow says the token is
-            // invalid/expired/used, also wipe any stale extension session — the
-            // next dashboard attempt will start completely clean.
-            const code = d.code || '';
-            if (r.status === 401 || r.status === 403 || /extension_token_invalid|activation/i.test(code)) {
-              await clearExtensionAuthSession('auth_rejected_' + (code || r.status));
-            }
-            sendResponse({
-              success: false,
-              error: d.error || 'Authentication failed',
-              code: code || null,
-              status: r.status,
-            });
-            return;
-          }
-          await setStorage({
-            extensionToken: d.token,
-            apiUrl: base,
-            tokenExpiresAt: d.expiresAt,
-            userEmail: d.user?.email || null,
-            userName: d.user?.name || null
-          });
-          chrome.action.setBadgeText({ text: '' });
-          await checkForUpdates();
-          notifyDashboardTabs({
-            type: 'GENZ_EXTENSION_CONNECTED',
-            connected: true,
-            userEmail: d.user?.email || null,
-            tokenExpiresAt: d.expiresAt,
-            version: chrome.runtime.getManifest().version
-          });
-          sendResponse({ success: true, user: d.user, version: chrome.runtime.getManifest().version, connected: true });
-        } catch (err) {
-          sendResponse({ success: false, error: err.message });
-        }
-      })();
+      connectDashboardExtension(message.payload || {})
+        .then(sendResponse)
+        .catch(() => sendResponse({ success: false, error: 'activation_failed', stage: 'activation' }));
       return true;
-
 
     case 'GENZ_RESET_EXTENSION_SESSION':
       (async () => {
@@ -3471,7 +3760,7 @@ async function executeOneClickLoginWithOptions(toolId, tool, options = {}) {
     }
     
     // FIX8: Use credentials then immediately clear from memory
-    const result = await orchestrator.executeLogin(tool, credentialData.credentials, {
+    const result = await requireOrchestrator().executeLogin(tool, credentialData.credentials, {
       sessionBundle: credentialData.sessionBundle,
       toolInfo: credentialData.tool,
       auto: options.auto || false,

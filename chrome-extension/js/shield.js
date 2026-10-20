@@ -119,10 +119,75 @@
     }
     catch (e) { return false; }
   }
+  // WriteHuman editor's "Enhanced" mode is a working control, NOT account chrome.
+  // Its upgrade-related href/title may otherwise match the generic account shield.
+  // Match the exact control ONLY when it sits beside "Standard" in the small editor
+  // mode toolbar. All billing / profile / upgrade links keep their existing policy.
+  var WH_HOST = (function () {
+    var h = String(location.hostname || location.host || '').toLowerCase().replace(/:\d+$/, '');
+    return h === 'writehuman.ai' || h.endsWith('.writehuman.ai');
+  })();
+  var WH_MODE_KEEP = 'data-genz-wh-enhanced-mode';
+  function whModeLabel(n) {
+    return String((n && n.textContent) || '').replace(/\s+/g, ' ').trim()
+      .replace(/^[^a-z]+/i, '').replace(/[^a-z]+$/i, '').toLowerCase();
+  }
+  function preserveWriteHumanEnhanced(n) {
+    if (!WH_HOST || !n || n.nodeType !== 1) return false;
+    // Hot-path guard: never traverse large editor/results containers on a sweep.
+    var initialTag = (n.tagName || '').toLowerCase();
+    var initialRole = n.getAttribute && n.getAttribute('role');
+    if (initialTag !== 'button' && initialTag !== 'a' && initialTag !== 'span' &&
+        initialRole !== 'button' && initialRole !== 'tab') return false;
+    if (String(n.textContent || '').length > 40 || whModeLabel(n) !== 'enhanced') return false;
+    var c = n, steps = 0, tag, role;
+    while (c && steps++ < 4) {
+      tag = (c.tagName || '').toLowerCase();
+      role = c.getAttribute && c.getAttribute('role');
+      if (tag === 'button' || tag === 'a' || role === 'button' || role === 'tab') break;
+      // Only climb from the exact text, never from a generic ancestor.
+      if (whModeLabel(c) !== 'enhanced') return false;
+      c = c.parentElement;
+    }
+    if (!c || whModeLabel(c) !== 'enhanced') return false;
+    // An Enhanced subscription plan elsewhere on the site must NOT be exempt.
+    if (c.closest && c.closest('nav,header,aside,[role="menu"],[role="dialog"]')) return false;
+    var row = c.parentElement;
+    for (var depth = 0; row && depth < 5; depth++, row = row.parentElement) {
+      var label = String(row.textContent || '').replace(/\s+/g, ' ').trim();
+      if (label.length > 220) break;
+      // Adjacent button labels often concatenate as "StandardEnhanced" in
+      // textContent; find the actual Standard control, never a string fragment.
+      var controls = row.querySelectorAll('button,a,[role="button"],[role="tab"],span');
+      var hasStandard = false;
+      for (var k = 0; k < controls.length; k++) {
+        if (controls[k] !== c && whModeLabel(controls[k]) === 'standard') {
+          hasStandard = true;
+          break;
+        }
+      }
+      if (!hasStandard) continue;
+      // Mark only the Enhanced control and wrappers containing that control alone;
+      // never mark the entire Standard/Enhanced toolbar or unrelated account UI.
+      for (var x = c, i = 0; x && x !== row && i < 4; x = x.parentElement, i++) {
+        if (x === c || whModeLabel(x) === 'enhanced') {
+          x.setAttribute(WH_MODE_KEEP, '1');
+          if (x.getAttribute('data-genz-shield-hidden') === '1') {
+            x.removeAttribute('data-genz-shield-hidden');
+            if (x.style && x.style.getPropertyValue('display') === 'none' &&
+                typeof x.style.removeProperty === 'function') x.style.removeProperty('display');
+          }
+        }
+      }
+      return true;
+    }
+    return false;
+  }
   function hide(n) {
     if (!n || n.nodeType !== 1) return;
     if (isWorkArea(n) || hasWorkArea(n) || isCaptchaNode(n)) return;     // never hide working area / captcha
     if (isOwnUi(n)) return;
+    if (preserveWriteHumanEnhanced(n)) return;
     try { n.style.setProperty('display', 'none', 'important'); n.setAttribute('data-genz-shield-hidden', '1'); } catch (e) {}
   }
 
@@ -138,11 +203,13 @@
   // this stylesheet at document_start with EMPTY hideSelectors, and the real config arrives
   // later. A plain `if (exists) return;` would freeze the empty version forever and silently
   // drop every per-host hide selector. Rebuilding the text is idempotent and cheap.
+  // Only WriteHuman's verified Enhanced editor control gets the href-CSS exception.
   function injectStyle() {
     var parts = [];
-    for (var i = 0; i < hrefSubs.length; i++) parts.push('a[href*="' + hrefSubs[i] + '" i]');
+    var whExcept = WH_HOST ? ':not([' + WH_MODE_KEEP + '="1"])' : '';
+    for (var i = 0; i < hrefSubs.length; i++) parts.push('a[href*="' + hrefSubs[i] + '" i]' + whExcept);
     for (var j = 0; j < hideSelectors.length; j++) { if (hideSelectors[j]) parts.push(hideSelectors[j]); }
-    parts.push('[data-genz-shield-hidden="1"]');
+    parts.push('[data-genz-shield-hidden="1"]' + whExcept);
     // Menu policy rows: the attribute survives a React re-render that rewrites the inline
     // style attribute, so the row stays hidden without us having to win a styling race.
     parts.push('[data-genz-menu-blocked="1"]');
@@ -184,6 +251,7 @@
     // a captcha node still cannot be hidden; it just costs nothing to walk past one.
     if (isOwnUi(n) || isWorkArea(n)) { n.__genzShield = sweepGen; return; }
     n.__genzShield = sweepGen;
+    if (preserveWriteHumanEnhanced(n)) return;
     var tag = (n.tagName || '').toLowerCase();
     var isControl = tag === 'a' || tag === 'button' || (n.getAttribute && n.getAttribute('role') === 'button');
     if (isControl && attrMatches(n)) { hide(n); return; }
