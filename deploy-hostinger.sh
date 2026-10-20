@@ -165,7 +165,6 @@ curl --fail-with-body --ftp-create-dirs \
   -T backend/models/proxy/ClaudeUsage.js         "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ClaudeUsage.js" \
   -T backend/models/proxy/ClaudeSettings.js      "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ClaudeSettings.js" \
   -T backend/routes/admin/proxyTools.js          "sftp://${HOST}:${PORT}${API_ROOT}/routes/admin/proxyTools.js" \
-  -T backend/utils/proxy/extensionCredentialSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/extensionCredentialSync.js" \
   -T backend/models/proxy/ExtAutoSyncPolicy.js   "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   -T backend/routes/client/proxyTools.js         "sftp://${HOST}:${PORT}${API_ROOT}/routes/client/proxyTools.js" \
   -T backend/routes/proxy/gateway.js             "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/gateway.js" \

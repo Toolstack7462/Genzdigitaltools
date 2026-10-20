@@ -19,10 +19,6 @@ const ActivityLog = require('../../models/ActivityLog');
 const ProxyClient = require('../../models/proxy/ProxyClient');
 const ProxyLease = require('../../models/proxy/ProxyLease');
 const ProxyAccount = require('../../models/proxy/ProxyAccount');
-const Tool = require('../../models/Tool');
-const extensionCredentialSync = require('../../utils/proxy/extensionCredentialSync');
-const ExtAutoSyncPolicy = require('../../models/proxy/ExtAutoSyncPolicy');
-const keyedLock = require('../../utils/keyedLock');
 const { requireAuth, requireAdmin, getClientIp } = require('../../middleware/authEnhanced');
 const { validate } = require('../../middleware/validation');
 const vaultCrypto = require('../../utils/proxy/vaultCrypto');
@@ -183,111 +179,6 @@ function safePagination(query) {
 // ─── Tool list (for the admin tab switcher) ──────────────────────────────────
 router.get('/tools', async (req, res) => {
   return res.json({ success: true, tools: tools.TOOL_KEYS.map(k => tools.publicInfo(k)) });
-});
-
-// --- Extension auto-sync POLICY (persistent, Tool-independent) -------------------------------
-// GET  shows the current policy + the dynamically-resolved eligible extension Tool (by official
-//      domain) + ambiguity, without exposing secrets.
-// PUT  sets the persistent policy on the live-agent source account (NOT on any Tool). enabled:false
-//      is an explicit disable that the engine never auto-re-enables. On enable, a fresh-verify
-//      reconcile binds the current eligible Tool immediately (never a hardcoded Tool id).
-function liveAgentOrNull(tool) { return tools.isValidTool(tool) && tools.hasLiveAgent(tool) ? tool : null; }
-// Resolve the ONE account the policy attaches to. Never silently pick the first of many - ambiguity
-// must be resolved by an explicit accountId (mirrors extensionCredentialSync.resolveBindAccount).
-async function resolvePolicyAccount(tool, wantAccountId) {
-  const accts = await ProxyAccount.find({ tool });
-  return extensionCredentialSync.resolveBindAccount(accts, wantAccountId);
-}
-async function eligibleExtensionTools(tool) {
-  const dom = extensionCredentialSync.normDomain(tools.targetHost(tool));
-  const all = await Tool.find({ status: 'active' });
-  return all.filter(t => extensionCredentialSync.normDomain(t.domain || t.targetUrl || '') === dom);
-}
-function policyView(pol, eligible) {
-  const p = pol || {};
-  return {
-    enabled: !!p.enabled, mode: p.mode || 'observe', disabledExplicitly: !!p.disabledExplicitly,
-    officialDomain: p.officialDomain || null, boundAt: p.boundAt || null,
-    approvedAccountKey: p.approvedAccountKey || null,          // the admin's explicitly approved account
-    observedAccountKey: (p.sync && p.sync.observedAccountKey) || null, // authenticated id awaiting approval
-    status: p.sync || null,
-    eligibleToolIds: eligible.map(t => String(t._id)),
-    ambiguous: eligible.length > 1,
-  };
-}
-
-function ambiguityBody(tool, accts) {
-  return { error: `Multiple ${tool} accounts exist; specify accountId to attach the policy unambiguously`, code: 'ambiguous_account', accounts: accts.map(a => ({ id: String(a._id), label: a.label || null, isPrimary: !!a.isPrimary })) };
-}
-
-router.get('/:tool/extension-autosync', async (req, res) => {
-  try {
-    if (!liveAgentOrNull(req.proxyTool)) return res.status(400).json({ error: 'Not a live-agent tool' });
-    const r = await resolvePolicyAccount(req.proxyTool, req.query.accountId ? String(req.query.accountId) : null);
-    if (r.error) {
-      if (r.code === 'ambiguous_account') return res.status(409).json(ambiguityBody(req.proxyTool, await ProxyAccount.find({ tool: req.proxyTool })));
-      return res.status(409).json({ error: `No ${req.proxyTool} proxy account`, code: r.code });
-    }
-    const eligible = await eligibleExtensionTools(req.proxyTool);
-    const pol = await ExtAutoSyncPolicy.findOne({ tool: req.proxyTool, accountId: String(r.account._id) });
-    return res.json({ success: true, accountId: String(r.account._id), policy: policyView(pol, eligible) });
-  } catch (e) { console.error('[proxyTools] autosync GET:', e && e.message); return res.status(500).json({ error: 'Failed to read policy' }); }
-});
-
-router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
-  try {
-    if (!liveAgentOrNull(req.proxyTool)) return res.status(400).json({ error: 'Not a live-agent tool' });
-    const r = await resolvePolicyAccount(req.proxyTool, req.body.accountId ? String(req.body.accountId) : null);
-    if (r.error) {
-      if (r.code === 'ambiguous_account') return res.status(409).json(ambiguityBody(req.proxyTool, await ProxyAccount.find({ tool: req.proxyTool })));
-      return res.status(409).json({ error: `No ${req.proxyTool} proxy account to attach the policy to`, code: r.code });
-    }
-    const acct = r.account;
-    const enable = req.body.enabled === true;
-    const mode = req.body.mode === 'enforce' ? 'enforce' : 'observe';
-
-    // The policy is its OWN record (never on the ProxyAccount), so the hardened agent pipeline's
-    // whole-record account saves can never restore a stale policy / undo this change. Serialize
-    // against the engine via the SAME per-account lock; reconcile runs OUTSIDE it (re-entrant lock).
-    let pol;
-    await keyedLock.withLock('extAutoSync:acct:' + String(acct._id), async () => {
-      pol = await ExtAutoSyncPolicy.findOne({ tool: req.proxyTool, accountId: String(acct._id) });
-      // Explicit identity approval (ties binding to the admin-approved account; no trust-on-first).
-      // `approvedAccountKey:"<id>"` pins an exact authoritative Supabase id; `approveObserved:true`
-      // pins the id the engine currently SURFACED in status.observedAccountKey (after you reviewed it).
-      let approvedAccountKey = (pol && pol.approvedAccountKey) || null;
-      if (typeof req.body.approvedAccountKey === 'string' && req.body.approvedAccountKey.trim()) approvedAccountKey = req.body.approvedAccountKey.trim();
-      else if (req.body.approveObserved === true) approvedAccountKey = (pol && pol.sync && pol.sync.observedAccountKey) || approvedAccountKey;
-      if (req.body.clearApproval === true) approvedAccountKey = null;
-      const control = {
-        tool: req.proxyTool, accountId: String(acct._id),
-        enabled: enable, mode,
-        officialDomain: extensionCredentialSync.normDomain(tools.targetHost(req.proxyTool)),
-        disabledExplicitly: enable ? false : true,
-        approvedAccountKey,
-        boundAt: enable ? new Date() : (pol && pol.boundAt) || null,
-        boundBy: req.userId,
-        policyEpoch: Date.now(),   // bumped on every control change -> engine detects a mid-flight change
-      };
-      if (!pol) {
-        pol = await ExtAutoSyncPolicy.create(Object.assign({ sync: {} }, control));
-      } else {
-        // Atomic multi-path control write; NEVER touches the engine-owned `sync` sub-object.
-        const setMap = {}; for (const k of Object.keys(control)) setMap[k] = control[k];
-        await ExtAutoSyncPolicy.patchGuarded(String(pol._id), setMap, {});
-        pol = Object.assign(pol, control);
-      }
-    });
-    await ActivityLog.log('ADMIN', req.userId, enable ? 'EXT_AUTOSYNC_ENABLED' : 'EXT_AUTOSYNC_DISABLED', { tool: req.proxyTool, mode, accountId: String(acct._id), ip: getClientIp(req) });
-
-    const eligible = await eligibleExtensionTools(req.proxyTool);
-    let reconcile = null;
-    if (enable) {
-      try { reconcile = await extensionCredentialSync.reconcileExtensionTool(acct, req.proxyTool, { Tool, Policy: ExtAutoSyncPolicy, force: true }); }
-      catch (e) { reconcile = { result: 'failed', code: 'reconcile_error' }; }
-    }
-    return res.json({ success: true, accountId: String(acct._id), policy: policyView(pol, eligible), reconcile });
-  } catch (e) { console.error('[proxyTools] autosync PUT:', e && e.message); return res.status(500).json({ error: 'Failed to update policy' }); }
 });
 
 // ─── Claude token-quota configuration (claude-only, read) ─────────────────────

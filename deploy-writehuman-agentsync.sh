@@ -20,7 +20,6 @@ echo "==> Uploading agentSync.js (+ its multi-device modules) + restart"
 # travel together — re-uploading a module the server already has is a harmless no-op.
 curl --fail-with-body --ftp-create-dirs -u "${USER}:${SFTP_PASS}" \
   -T backend/routes/proxy/agentSync.js "sftp://${HOST}:${PORT}${API_ROOT}/routes/proxy/agentSync.js" \
-  -T backend/utils/proxy/extensionCredentialSync.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/extensionCredentialSync.js" \
   -T backend/models/proxy/ExtAutoSyncPolicy.js "sftp://${HOST}:${PORT}${API_ROOT}/models/proxy/ExtAutoSyncPolicy.js" \
   -T backend/utils/proxy/agentCommands.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/agentCommands.js" \
   -T backend/utils/proxy/deviceState.js "sftp://${HOST}:${PORT}${API_ROOT}/utils/proxy/deviceState.js" \
