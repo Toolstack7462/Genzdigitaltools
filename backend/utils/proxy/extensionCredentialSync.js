@@ -260,9 +260,27 @@ async function runEngine(account, toolKey, deps, source) {
     try { eligible = (await Tool.find({ status: 'active' })).filter(t => toolDomain(t) === officialDomain); }
     catch (e) { return persistPolicy({ lastResult: RESULT.FAILED, lastError: 'lookup_failed', lastFailureAt: now }); }
     if (eligible.length === 0) return persistPolicy({ lastResult: 'idle', lastError: null, lastCheckedAt: now, eligibleToolId: null });
-    if (eligible.length > 1) return persistPolicy({ lastResult: 'ambiguous', lastError: 'multiple_eligible_tools', lastFailureAt: now, eligibleToolId: null, eligibleCount: eligible.length });
 
-    const tool = eligible[0];
+    // >1 eligible → ambiguity. STOP, UNLESS an admin has explicitly bound one of them via
+    // `policy.approvedToolId` (a control field, written only by the admin endpoint — the engine
+    // never sets it, exactly like approvedAccountKey). Two Tools can legitimately be active on one
+    // official domain: measured in production on 2026-10-20, writehuman.ai had "Write Human" (31
+    // client assignments) and "WH" (7 assignments, separately maintained credentials), so refusing
+    // forever was not a safe default either — it left every client on a session that had expired.
+    //
+    // The binding is applied by FILTERING the already-eligible set, never by looking a Tool up by
+    // id. So it cannot reach an inactive Tool or one on another domain, and a binding that matches
+    // nothing (deleted/renamed/disabled Tool) leaves the refusal exactly as it was rather than
+    // silently falling back to a guess.
+    let chosen = eligible[0];
+    if (eligible.length > 1) {
+      const boundId = (policy.approvedToolId != null && policy.approvedToolId !== '') ? String(policy.approvedToolId) : null;
+      const match = boundId ? eligible.filter(t => String(t._id) === boundId) : [];
+      if (match.length !== 1) return persistPolicy({ lastResult: 'ambiguous', lastError: 'multiple_eligible_tools', lastFailureAt: now, eligibleToolId: null, eligibleCount: eligible.length });
+      chosen = match[0];
+    }
+
+    const tool = chosen;
     const toolIdStr = String(tool._id);
     const st = policy.sync || {};
 

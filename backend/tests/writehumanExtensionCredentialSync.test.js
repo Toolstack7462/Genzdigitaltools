@@ -155,6 +155,69 @@ test('duplicate: two eligible writehuman.ai Tools → ambiguity, STOP, never gue
   assert.strictEqual(S(pol).lastError, 'multiple_eligible_tools');
 });
 
+// ---------------------------------------------------------------------------------------------
+// EXPLICIT TOOL BINDING (policy.approvedToolId) — the tie-break for the case above.
+//
+// MEASURED IN PRODUCTION 2026-10-20: two Tools were legitimately ACTIVE on writehuman.ai —
+// "Write Human" (31 client assignments, 489 credential fetches) and "WH" (7 assignments, 61
+// fetches, its own independently maintained cookies). The engine refused with
+// multiple_eligible_tools, which is correct, and there was NO way to resolve it: neither the
+// policy nor the admin endpoint could name a Tool, and the endpoint rewrites `officialDomain`
+// from the registry on every control change so that field cannot carry the distinction either.
+//
+// The binding only ever FILTERS the already-eligible set, so the engine still never writes to a
+// Tool that is not active and on the official domain, and still refuses when it cannot be sure.
+test('two eligible Tools + an explicit approvedToolId → commits to the BOUND Tool', async () => {
+  const a = account(); const t1 = extTool(); const t2 = extTool();
+  const pol = policyRec({ approvedToolId: String(t2._id) });
+  const out = await hook(a, deps(pol, [t1, t2]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(t2._id), 'it must resolve to the bound Tool');
+  assert.strictEqual(S(pol).syncedToolId, String(t2._id));
+  // the OTHER Tool must be left completely untouched — 7 real clients depend on it
+  assert.strictEqual(t1.credentialVersion, 3, 'the unbound Tool must not be written to');
+});
+
+test('a stale approvedToolId (not in the eligible set) still refuses — never falls back to guessing', async () => {
+  const a = account(); const pol = policyRec({ approvedToolId: 'tool-that-no-longer-exists' });
+  const d = deps(pol, [extTool(), extTool()]);
+  const out = await hook(a, d);
+  assert.strictEqual(out.result, 'ambiguous');
+  assert.strictEqual(S(pol).lastError, 'multiple_eligible_tools');
+  assert.strictEqual(d.Tool.patchCalls, 0, 'nothing may be written when the binding cannot be honoured');
+});
+
+test('a binding never resurrects an INACTIVE Tool', async () => {
+  const a = account(); const live = extTool(); const dead = extTool({ status: 'disabled' });
+  const pol = policyRec({ approvedToolId: String(dead._id) });
+  const out = await hook(a, deps(pol, [live, dead]));
+  // `dead` is filtered before the tie-break, leaving exactly one eligible Tool.
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(live._id));
+  assert.strictEqual(dead.credentialVersion, 3, 'an inactive Tool must never receive credentials');
+});
+
+test('a binding never reaches a Tool on a different domain', async () => {
+  const a = account(); const wh = extTool(); const other = extTool({ domain: 'example.com', targetUrl: 'https://example.com/' });
+  const pol = policyRec({ approvedToolId: String(other._id) });
+  const out = await hook(a, deps(pol, [wh, other]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+  assert.strictEqual(out.toolId, String(wh._id), 'off-domain Tools are filtered before the tie-break');
+  assert.strictEqual(other.credentialVersion, 3);
+});
+
+test('with ONE eligible Tool a mismatched binding is irrelevant and must not cause a refusal', async () => {
+  const a = account(); const pol = policyRec({ approvedToolId: 'something-else' });
+  const out = await hook(a, deps(pol, [extTool()]));
+  assert.strictEqual(out.result, RESULT.SYNCED);
+});
+
+test('no eligible Tool stays idle even with a binding set', async () => {
+  const a = account(); const pol = policyRec({ approvedToolId: 'tool-x' });
+  const out = await hook(a, deps(pol, [extTool({ domain: 'example.com', targetUrl: 'https://example.com/' })]));
+  assert.strictEqual(out.result, 'idle');
+});
+
 test('non-matching domains are ignored when resolving eligibility', async () => {
   const a = account(); const pol = policyRec(); const wh = extTool(); const other = extTool({ domain: 'example.com', targetUrl: 'https://example.com/' });
   const out = await hook(a, deps(pol, [other, wh]));
