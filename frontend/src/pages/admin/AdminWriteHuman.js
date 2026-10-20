@@ -801,6 +801,16 @@ const AdminWriteHuman = () => {
             </Panel>
           </div>
 
+          {/* Extension credential auto-sync (official-domain flow) — DISTINCT from the proxy cookie
+              sync above. Self-contained section; reads/writes only the dedicated policy API
+              (/api/crm/admin/proxy-tools/writehuman/extension-autosync) through the existing
+              authenticated service. Positioned here deliberately: after the Agent/status,
+              System health, Health alerts and Actions sections, and directly ABOVE Live logs,
+              full width of the existing page container. It is the SAME single instance that
+              previously rendered below Live logs — moved, not duplicated, so there is still
+              exactly one panel and one set of data requests. */}
+          <WriteHumanAutoSync />
+
           {/* Live logs */}
           <div className="ds-card rounded-xl p-5 mt-4">
             <div className="flex items-center gap-2 mb-3"><Activity size={16} className="text-slate-500" /><h2 className="font-semibold text-slate-700 text-sm">Live logs</h2><span className="text-[11px] text-slate-400">({logs.length} events)</span></div>
@@ -821,10 +831,6 @@ const AdminWriteHuman = () => {
           Reuses the Proxy-Tools management UI locked to WriteHuman (embedded, no extra layout),
           reading/writing the SAME MySQL ProxyAccount vault + ProxyClient assignments as the live
           status above. Single source of truth; no separate store, no duplicate UI. */}
-      {/* Extension credential auto-sync (official-domain flow) - distinct from the proxy cookie
-          sync above. Self-contained section; reads/writes only the dedicated policy API. */}
-      <WriteHumanAutoSync />
-
       <div className="mt-8 pt-6 border-t border-slate-200">
         <AdminProxyTools fixedTool="writehuman" embedded />
       </div>
