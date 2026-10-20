@@ -68,6 +68,40 @@ describe('writeHuman auto-sync — control gating (authorization safeguards)', (
     expect(d.canEnable).toBe(false);
   });
 
+  // A selected Tool that is no longer eligible is a DIFFERENT state from "several candidates":
+  // the engine reports target_unavailable and refuses to write anything, including to a lone
+  // survivor. The panel must say so and offer reselection, never suggest deleting a Tool.
+  test('a stale binding is reported as stale, and the Tool selector stays available', () => {
+    const d = deriveControls({
+      enabled: true, mode: 'enforce', approvedAccountKey: 'uid-1',
+      eligibleToolIds: ['t-survivor'], approvedToolId: 't-deleted',
+      eligibleTools: [{ id: 't-survivor', name: 'Other' }],
+      status: { stage: 'synced', lastResult: 'target_unavailable', lastError: 'bound_tool_unavailable' },
+    });
+    expect(d.bindingStale).toBe(true);
+    expect(d.bindingHonoured).toBe(false);
+    expect(d.canSelectTool).toBe(true);
+  });
+
+  test('the Tool selector is available whenever a choice is meaningful', () => {
+    // two candidates, nothing bound yet
+    expect(deriveControls({ enabled: true, eligibleToolIds: ['a', 'b'] }).canSelectTool).toBe(true);
+    // one candidate, already bound to it -> still offered, so it can be changed or cleared
+    expect(deriveControls({ enabled: true, eligibleToolIds: ['a'], approvedToolId: 'a' }).canSelectTool).toBe(true);
+    // single candidate, nothing bound -> no choice to make
+    expect(deriveControls({ enabled: true, eligibleToolIds: ['a'] }).canSelectTool).toBe(false);
+    // nothing eligible at all and nothing bound
+    expect(deriveControls({ enabled: true, eligibleToolIds: [] }).canSelectTool).toBe(false);
+  });
+
+  test('a stale binding does not read as honoured just because one Tool is left', () => {
+    const d = deriveControls({
+      enabled: true, eligibleToolIds: ['only-one'], approvedToolId: 'gone', ambiguous: false,
+    });
+    expect(d.bindingHonoured).toBe(false);
+    expect(d.bindingStale).toBe(true);
+  });
+
   test('awaiting approval: approve offered, enforce NOT (no trust-on-first)', () => {
     const d = deriveControls(Object.assign({ enabled: true, mode: 'observe' }, verifiedAwaiting));
     expect(d.approvalState).toBe('awaiting');

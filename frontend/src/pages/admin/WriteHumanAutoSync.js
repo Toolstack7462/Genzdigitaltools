@@ -5,7 +5,7 @@
 // cookie sync shown above. It reflects the real backend state and never shows a "verified" or
 // "synced" status from agent connectivity or a stale verification — only from a server
 // canary-confirmed result the backend reports.
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   ShieldCheck, RefreshCw, Loader2, CheckCircle2, AlertTriangle, HelpCircle, Play, Pause,
   UserCheck, Lock, Globe, Clock, XCircle, Fingerprint,
@@ -14,6 +14,7 @@ import { writeHumanV2Admin } from '../../services/writeHumanV2Service';
 import { withCsrfRetry } from '../../services/launchService';
 import { useToast } from '../../components/Toast';
 import { verification, deriveControls } from './writeHumanAutoSyncLogic';
+import { createLatestOnly } from '../../lib/latestOnly';
 
 const VER_ICON = { Verified: CheckCircle2, Failed: XCircle, Inconclusive: HelpCircle, Pending: Clock };
 
@@ -69,35 +70,67 @@ export default function WriteHumanAutoSync() {
   const [data, setData] = useState(null);     // { accountId, policy }
   const [busy, setBusy] = useState('');
   const [confirm, setConfirm] = useState(null); // { kind, ... }
+  const [pick, setPick] = useState('');         // the Tool chosen in the selector, not yet saved
+
+  // ORDERING GUARD — the SAME `createLatestOnly` gate AdminWriteHuman and AdminProxyTools already
+  // use, not a second implementation. A Refresh and an action can be in flight at once, and the
+  // slower response used to win simply by arriving last: a delayed status read could overwrite the
+  // state a successful Enable/Approve/binding save had just returned, showing the operator the OLD
+  // policy and inviting them to "fix" it again. `inFlight` additionally collapses repeated Refresh
+  // clicks; `busy` already serialises the actions.
+  const gate = useRef(createLatestOnly());
+  const inFlight = useRef(false);
 
   const load = useCallback(async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    const ticket = gate.current.issue();
     setLoading(true); setErr('');
     try {
       const { data: resp } = await writeHumanV2Admin.getAutoSync();
+      if (!gate.current.accept(ticket)) return;
       setData(resp && resp.success ? resp : null);
       if (!resp || !resp.success) setErr('Auto-sync policy is unavailable.');
     } catch (e) {
       const code = e?.response?.status;
+      if (!gate.current.accept(ticket)) return;
+      // The existing policy in hand is kept: a failed read must not fabricate empty settings.
       setErr(code === 401 ? 'Your admin session expired — please sign in again.' : code === 400 ? 'WriteHuman is not a live-agent tool on this backend.' : code === 409 ? 'No WriteHuman source account is configured.' : 'Could not reach the auto-sync API.');
-      setData(null);
-    } finally { setLoading(false); }
+    } finally { inFlight.current = false; setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
 
+  // Follow the persisted binding whenever the policy we hold changes (including after a save), so
+  // the selector shows what is actually in force rather than a stale local choice.
+  const persistedToolId = data?.policy?.approvedToolId || '';
+  useEffect(() => { setPick(persistedToolId); }, [persistedToolId]);
+
   const mutate = useCallback(async (payload, kind, successMsg) => {
+    if (busy) return null;                                  // one action at a time
+    const ticket = gate.current.issue();
     setBusy(kind);
     try {
       const { data: resp } = await withCsrfRetry((headers) => writeHumanV2Admin.setAutoSync(payload, headers));
-      if (resp && resp.success) { setData(resp); toast?.success?.(successMsg || 'Updated'); }
-      else toast?.error?.('The backend rejected the change.');
+      if (resp && resp.success) {
+        if (gate.current.accept(ticket)) setData(resp);      // the PERSISTED post-action state
+        toast?.success?.(successMsg || 'Updated');
+      } else toast?.error?.('The backend rejected the change.');
       return resp;
     } catch (e) {
       const code = e?.response?.status;
-      toast?.error?.(code === 409 ? (e?.response?.data?.error || 'Conflict — refresh and retry.') : code === 401 ? 'Session expired — sign in again.' : 'Update failed.');
+      const body = e?.response?.data;
+      // A 409 from the Tool picker names what IS selectable; surface that rather than a generic
+      // conflict, and refresh so the stale option disappears from the list.
+      if (code === 409 && body?.code === 'tool_not_eligible') {
+        toast?.error?.('That Tool is no longer an active WriteHuman Tool — the list has been refreshed.');
+        load();
+      } else {
+        toast?.error?.(code === 409 ? (body?.error || 'Conflict — refresh and retry.') : code === 401 ? 'Session expired — sign in again.' : 'Update failed.');
+      }
       return null;
     } finally { setBusy(''); setConfirm(null); }
-  }, [toast]);
+  }, [toast, busy, load]);
 
   const p = data?.policy || null;
   const s = p?.status || {};
@@ -153,6 +186,75 @@ export default function WriteHumanAutoSync() {
             {!ambiguous && eligibleCount > 1 && d.bindingHonoured && (
               <div className="rounded-lg p-2.5 mb-3 border border-emerald-200 bg-emerald-50 text-emerald-800 text-[12px] flex items-center gap-2">
                 <Lock size={14} /> {eligibleCount} Tools are eligible; auto-sync is explicitly bound to one of them. The others are never written to.
+              </div>
+            )}
+            {d.bindingStale && (
+              <div className="rounded-lg p-2.5 mb-3 border border-red-200 bg-red-50 text-red-700 text-[12px] flex items-start gap-2">
+                <XCircle size={14} className="mt-0.5 shrink-0" />
+                <span>
+                  The selected Tool is no longer available — it has been deleted, disabled or moved off{' '}
+                  <span className="font-mono">{p.officialDomain || 'the official domain'}</span>.
+                  Auto-sync has stopped and will <span className="font-semibold">not</span> fall back to any other Tool.
+                  Select the intended Tool below to resume.
+                </span>
+              </div>
+            )}
+
+            {/* TOOL SELECTION. Deliberately not gated on activation: ambiguity and a stale binding
+                are precisely the states where this control is the only way forward. */}
+            {d.canSelectTool && (
+              <div className="rounded-lg p-3 mb-3 border border-slate-200 bg-slate-50">
+                <div className="flex items-center gap-1.5 text-[12px] font-semibold text-slate-700 mb-1.5">
+                  <Lock size={14} /> Auto-sync target Tool
+                </div>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Several Tools serve this official domain. Only the Tool you select here ever receives
+                  synced credentials; the others are left entirely untouched, including their own
+                  credentials and client assignments.
+                </p>
+                <div className="flex items-end gap-2 flex-wrap">
+                  <label className="min-w-0 flex-1">
+                    <span className="block text-[11px] uppercase tracking-wide text-slate-400 font-semibold mb-1">Selected Tool</span>
+                    <select
+                      value={pick}
+                      disabled={!!busy}
+                      onChange={(e) => setPick(e.target.value)}
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-[13px] text-slate-700 disabled:opacity-60"
+                    >
+                      <option value="">— none selected —</option>
+                      {d.eligibleTools.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {(t.name || 'Unnamed Tool')}{t.domain ? ` · ${t.domain}` : ''} · id …{String(t.id).slice(-6)}
+                        </option>
+                      ))}
+                      {d.bindingStale && d.boundToolId && (
+                        <option value={d.boundToolId} disabled>
+                          (previously selected, no longer available) · id …{String(d.boundToolId).slice(-6)}
+                        </option>
+                      )}
+                    </select>
+                  </label>
+                  <button
+                    disabled={!!busy || !pick || String(pick) === String(d.boundToolId || '')}
+                    onClick={() => setConfirm({ kind: 'bindTool', toolId: pick })}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-semibold text-white bg-slate-800 hover:bg-slate-700 disabled:opacity-60"
+                  >
+                    {busy === 'bindTool' ? <Loader2 size={14} className="animate-spin" /> : <Lock size={14} />} Save target
+                  </button>
+                  {d.boundToolId && (
+                    <button
+                      disabled={!!busy}
+                      onClick={() => setConfirm({ kind: 'clearTool' })}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-[12px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-60"
+                    >
+                      {busy === 'clearTool' ? <Loader2 size={14} className="animate-spin" /> : <XCircle size={14} />} Clear selection
+                    </button>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Saving a target changes only the target. It does not enable or disable auto-sync,
+                  does not change Observe/Enforce, and does not alter the approved account.
+                </p>
               </div>
             )}
             {eligibleCount === 0 && (
@@ -235,6 +337,27 @@ export default function WriteHumanAutoSync() {
       <Confirm open={confirm?.kind === 'disable'} title="Disable auto-sync?" tone="red" confirmLabel="Disable" busy={busy === 'disable'}
         body="Auto-sync will stop updating the extension credential record. Existing credentials are left untouched; the proxy flow is unaffected."
         onCancel={() => setConfirm(null)} onConfirm={() => mutate({ enabled: false }, 'disable', 'Auto-sync disabled')} />
+      {/* Binding-only payloads. The backend preserves omitted enabled/mode, so saving a target
+          cannot disable the policy or drop Enforce as a side effect. */}
+      <Confirm open={confirm?.kind === 'bindTool'} title="Set the auto-sync target Tool?" tone="slate" confirmLabel="Save target" busy={busy === 'bindTool'}
+        body={<>
+          Synced credentials will be written <span className="font-semibold">only</span> to{' '}
+          <span className="font-semibold">{(d.eligibleTools.find((t) => String(t.id) === String(confirm?.toolId)) || {}).name || 'the selected Tool'}</span>
+          {' '}(id <span className="font-mono">…{String(confirm?.toolId || '').slice(-6)}</span>).
+          {d.boundToolId && String(d.boundToolId) !== String(confirm?.toolId || '') && <> This replaces the current target.</>}
+          {' '}Every other Tool on this domain keeps its own credentials and client assignments, untouched.
+          Auto-sync stays {enabled ? 'enabled' : 'disabled'} and in {mode === 'enforce' ? 'Enforce' : 'Observe'} mode.
+        </>}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => mutate({ approvedToolId: confirm?.toolId }, 'bindTool', 'Auto-sync target saved')} />
+      <Confirm open={confirm?.kind === 'clearTool'} title="Clear the auto-sync target?" tone="red" confirmLabel="Clear selection" busy={busy === 'clearTool'}
+        body={<>
+          Auto-sync will have no selected Tool. With more than one eligible Tool it will stop and wait
+          for a choice rather than guess, so credentials will not be updated until you select a target
+          again. Nothing is written to any Tool in the meantime, and the approved account is kept.
+        </>}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => mutate({ clearToolBinding: true }, 'clearTool', 'Auto-sync target cleared')} />
       <Confirm open={confirm?.kind === 'approve'} title="Approve this WriteHuman account?" tone="emerald" confirmLabel="Approve account" busy={busy === 'approve'}
         body={<>You are approving account <span className="font-mono">{s.lastIdentity || '(masked)'}</span> (id <span className="font-mono">{observedKey}</span>) as the authorized source. Only credentials for this exact account will ever be synced. Confirm you have independently verified this is correct.</>}
         onCancel={() => setConfirm(null)} onConfirm={() => mutate({ enabled: true, mode, approveObserved: true }, 'approve', 'Account approved')} />

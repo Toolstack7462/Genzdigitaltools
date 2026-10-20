@@ -31,6 +31,11 @@ export function deriveControls(policy) {
   // control disabled forever even once a Tool had been bound — the count stays >1 either way.
   const boundToolId = p.approvedToolId || null;
   const bindingHonoured = !!boundToolId && eligibleToolIds.some((id) => String(id) === String(boundToolId));
+  // A selected Tool that is no longer eligible (deleted, disabled, moved off-domain) is NOT the
+  // same condition as "several candidates, choose one": the engine reports it as
+  // target_unavailable and refuses to write anything, including to a lone survivor. The operator
+  // needs to reselect, not to delete a Tool.
+  const bindingStale = !!boundToolId && !bindingHonoured;
   const ambiguous = typeof p.ambiguous === 'boolean'
     ? p.ambiguous
     : (eligibleCount > 1 && !bindingHonoured);
@@ -44,8 +49,11 @@ export function deriveControls(policy) {
 
   return {
     eligibleCount, ambiguous, idle, enabled, mode, approved, awaiting, observedKey, verified,
-    boundToolId, bindingHonoured,
+    boundToolId, bindingHonoured, bindingStale,
     eligibleTools: Array.isArray(p.eligibleTools) ? p.eligibleTools : [],
+    // Tool selection stays available whenever a choice is meaningful OR has to be corrected —
+    // deliberately NOT gated on activation, because ambiguity is exactly when it is needed.
+    canSelectTool: eligibleCount > 1 || bindingStale || !!boundToolId,
     approvalState: approved ? 'approved' : (awaiting ? 'awaiting' : 'pending'),
     canEnable: !enabled && !ambiguous,
     canDisable: enabled,
