@@ -131,3 +131,61 @@ test('no fixture credential value leaks into the response or the logs', async (t
   assert.equal(JSON.stringify(out).includes('FIXTURE-ONLY-NOT-REAL'), false);
   assert.equal(JSON.stringify(e.calls.logs).includes('FIXTURE-ONLY-NOT-REAL'), false);
 });
+
+// ── POST-LAUNCH TASKS MUST NEVER FAIL A COMPLETED OPEN ────────────────────────────────────────
+// The operator reported "WriteHuman opened correctly, but the dashboard still showed the red
+// failure", so every awaited task that runs AFTER the session is applied was audited for whether
+// it can turn a finished open into a reported failure. Two were candidates:
+//
+//   logToolOpened()  — POSTs /tools/:id/opened (audit telemetry: CredentialAccessLog TOOL_OPENED
+//                      + ActivityLog + presence). It is NOT an authorization gate; access was
+//                      already enforced at the credential fetch.
+//   setSessionCache() — the fast-open cache. Pure performance, no security role.
+//
+// Both already swallow their own errors, so neither is the cause. These tests pin that, because
+// the property is invisible in the happy path and a future edit could silently remove it — and
+// the audit call itself must stay (it is not removed, only made unable to break the launch).
+test('a FAILED audit POST does not turn a completed open into a failure', async (t) => {
+  const e = env({
+    storage: { extensionToken: null }, permission: true,
+    fetch: (url, init) => {
+      const p = new URL(url).pathname;
+      if (p.endsWith('/opened')) return response({ error: 'audit sink down' }, 500);
+      return routeWithCreds(url, init);
+    },
+  });
+  t.after(e.close);
+  installOrchestrator(e, `async () => ({ success: true, method: 'cookies' })`);
+  const out = await connectAndOpen(e);
+  assert.equal(out.success, true, 'telemetry is not a launch prerequisite: ' + JSON.stringify(out));
+  assert.ok(e.calls.network.some((c) => c.url.endsWith('/opened')), 'the audit call must still be ATTEMPTED');
+});
+
+test('a FAILING storage write (session cache) does not turn a completed open into a failure', async (t) => {
+  const e = env({
+    storage: { extensionToken: null }, permission: true, fetch: routeWithCreds,
+    // Fail exactly the fast-open cache write, nothing else.
+    writeError: (data) => (Object.keys(data).some((k) => k.startsWith('genzSessionCache')) ? 'QUOTA_BYTES exceeded' : null),
+  });
+  t.after(e.close);
+  installOrchestrator(e, `async () => ({ success: true, method: 'cookies' })`);
+  const out = await connectAndOpen(e);
+  assert.equal(out.success, true, 'an optional cache write must not fail the launch: ' + JSON.stringify(out));
+});
+
+test('a duplicate click is reported as already_opening, never as a red failure reason', async (t) => {
+  const e = env({ storage: { extensionToken: null }, permission: true, fetch: routeWithCreds });
+  t.after(e.close);
+  autoCompleteTabLoads(e);
+  const connected = await e.message({ type: 'GENZ_CONNECT_EXTENSION', payload });
+  assert.equal(connected.connected, true);
+  installOrchestrator(e, `async () => { await new Promise(r => setTimeout(r, 30)); return { success: true, method: 'cookies' }; }`);
+  const [a, b] = await Promise.all([
+    e.message({ type: 'GENZ_OPEN_TOOL', payload: { toolId: WH.id } }),
+    e.message({ type: 'GENZ_OPEN_TOOL', payload: { toolId: WH.id } }),
+  ]);
+  const outs = [a, b];
+  assert.equal(outs.filter((o) => o.success === true).length, 1, 'exactly one intended open');
+  const dup = outs.find((o) => o.success !== true);
+  assert.equal(dup.error, 'already_opening', 'the duplicate must be identifiable, not a generic failure');
+});
