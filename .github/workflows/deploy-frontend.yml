@@ -26,11 +26,16 @@ name: Deploy frontend to Hostinger
 # frontend/.env.production, which CRA loads automatically during `npm run build`.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/deploy-frontend.yml'
+  # NO push trigger. The live interface is released from the branch that HOLDS it
+  # (release/frontend-owner-fix -> main.0641f2d0.js, confirmed against the served bundle).
+  # main's committed build is OLDER (main.020d28e1.js), and this file is the legacy
+  # password-SFTP job with no gate, no rollback point and no backup of what it replaces.
+  # So an automatic publish from a push to main could only mirror an older bundle over both
+  # live web roots and undo frontend work that is already released. It nearly happened on
+  # 2026-10-20: a merge touching frontend/scripts and frontend/build fired this workflow and
+  # was stopped only by an unrelated guard failing first. Releasing stays deliberate:
+  # dispatch the reviewed workflow from the branch carrying the current interface.
+  # Guarded by backend/tests/frontendDeployTriggerGuard.test.js.
   workflow_dispatch: {}
 
 concurrency:
