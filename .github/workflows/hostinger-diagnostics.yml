@@ -33,7 +33,11 @@ env:
   SFTP_HOST: '147.79.103.253'
   SFTP_PORT: '65002'
   SFTP_USER: 'u171982351'
-  API_ROOT: '/home/u171982351/domains/api.genzdigitalstore.com/nodejs'
+  # NOTE: the application root is NOT hardcoded. `nodejs/` is a stale copy nothing reads --
+  # Passenger serves `.builds/current/nodejs` via PassengerAppRoot in the live
+  # public_html/.htaccess (see deploy-lib.sh). It is resolved FROM that file at run time,
+  # because a hardcoded guess would report a directory the running app does not use.
+  API_DOMAIN_DIR: '/home/u171982351/domains/api.genzdigitalstore.com'
   MAIN_WEB: '/home/u171982351/domains/genzdigitalstore.com/public_html'
   APP_WEB: '/home/u171982351/domains/app.genzdigitalstore.com/public_html'
 
@@ -189,6 +193,55 @@ jobs:
 
           say "CRON AND BACKGROUND JOBS (duplication across workers)"
           run 'crontab -l 2>/dev/null | grep -v "^#" | head -20 || echo "(no crontab for this user)"'
+
+          # ONE subshell: the resolved root is a shell variable, never a file on the server.
+          # Writing $HOME/.diag_approot would be a production write, which a read-only
+          # diagnostic must not make.
+          say "RUNNING BACKEND: ROOT, DEPLOYMENT METADATA AND FILE STATES"
+          run 'H="$HOME/domains/api.genzdigitalstore.com/public_html/.htaccess";
+               if [ ! -e "$H" ]; then echo "htaccess: MISSING ($H)"; elif [ ! -r "$H" ]; then echo "htaccess: UNREADABLE ($H)"; else echo "htaccess: readable ($H)"; fi;
+               A=""; SRC="";
+               if [ -r "$H" ]; then A="$(grep -ivE "^[[:space:]]*#" "$H" | grep -ihoE "PassengerAppRoot[[:space:]]+\"?[^\"[:space:]]+" | head -1 | sed -E "s/^[^[:space:]]+[[:space:]]+\"?//")"; fi;
+               CMT="$(grep -icE "^[[:space:]]*#[[:space:]]*PassengerAppRoot" "$H" 2>/dev/null)";
+               if [ -n "$A" ]; then SRC="ACTIVE-DIRECTIVE (authoritative)"; else A="$HOME/domains/api.genzdigitalstore.com/.builds/current/nodejs"; SRC="FALLBACK-GUESS (NOT authoritative - treat the revision below as UNCONFIRMED)"; fi;
+               echo "application root: $A";
+               echo "root source     : $SRC";
+               echo "commented-out PassengerAppRoot directives: ${CMT:-0}  (sleep/wake parks an app by commenting these out)";
+               if [ ! -d "$A" ]; then echo "root state      : MISSING - resolution is wrong or the app moved"; elif [ ! -r "$A" ]; then echo "root state      : UNREADABLE"; else echo "root state      : present"; fi;
+               echo;
+               echo "--- deployment metadata (correlate with the hashes; hashes alone are partial evidence) ---";
+               B="$HOME/domains/api.genzdigitalstore.com/.builds";
+               if [ -d "$B" ]; then echo "builds dir:"; ls -1dt "$B"/* 2>/dev/null | head -5; echo "current -> $(readlink -f "$B/current" 2>/dev/null || echo "(not a symlink / unreadable)")"; else echo "builds dir: MISSING"; fi;
+               for m in package.json package-lock.json; do q="$A/$m"; if [ ! -e "$q" ]; then echo "manifest $m: MISSING"; elif [ ! -r "$q" ]; then echo "manifest $m: UNREADABLE"; elif [ ! -s "$q" ]; then echo "manifest $m: EMPTY"; else echo "manifest $m: $(sha256sum "$q" | cut -c1-16)  $(wc -c < "$q") bytes  $(date -u -r "$q" +%Y-%m-%dT%H:%M:%SZ)"; fi; done;
+               if [ -d "$A/node_modules" ]; then echo "node_modules entries: $(ls -1 "$A/node_modules" 2>/dev/null | wc -l)"; else echo "node_modules: MISSING"; fi;
+               echo;
+               echo "--- file states: MISSING / UNREADABLE / EMPTY come from command results, not from any hash ---";
+               for f in server-crm.js db/mysqlAdapter.js models/Tool.js utils/proxy/verify.js routes/admin/proxyTools.js routes/admin/toolsEnhanced.js routes/proxy/agentSync.js utils/proxy/extensionCredentialSync.js models/proxy/ExtAutoSyncPolicy.js scripts/extcredsync-db-selftest.js; do
+                 q="$A/$f";
+                 if   [ ! -e "$q" ]; then printf "%-11s %-58s %s\n" "MISSING" "-" "$f";
+                 elif [ ! -r "$q" ]; then printf "%-11s %-58s %s\n" "UNREADABLE" "-" "$f";
+                 elif [ ! -s "$q" ]; then printf "%-11s %-58s %s\n" "EMPTY" "0 bytes" "$f";
+                 else printf "%-11s %-58s %s\n" "present" "$(sha256sum "$q" | cut -c1-16)  $(wc -c < "$q") bytes  $(date -u -r "$q" +%Y-%m-%dT%H:%M:%SZ)" "$f"; fi;
+               done'
+          run 'H="$HOME/domains/api.genzdigitalstore.com/public_html/.htaccess"; A="$(grep -ivE "^[[:space:]]*#" "$H" 2>/dev/null | grep -ihoE "PassengerAppRoot[[:space:]]+\"?[^\"[:space:]]+" | head -1 | sed -E "s/^[^[:space:]]+[[:space:]]+\"?//")"; [ -n "$A" ] || A="$HOME/domains/api.genzdigitalstore.com/.builds/current/nodejs"; echo "newest 12 .js under the application root (an mtime after the last main deploy is hand-deploy evidence):"; find "$A" -type f -name "*.js" -not -path "*/node_modules/*" -printf "%TY-%Tm-%TdT%TH:%TM:%TSZ\t%P\n" 2>/dev/null | sort -r | head -12 || echo "(unreadable)"'
+
+          # Engine facts via ~/.my.cnf ONLY. Nothing here imports application code, so no model is
+          # loaded and ensureTables() cannot run - a diagnostic must not CREATE the table it is
+          # checking for. No writes, no restarts.
+          say "DATABASE: SELECTED SCHEMA, ENGINE AND STRICTNESS (read-only; UNKNOWN when unavailable)"
+          run 'command -v mysql >/dev/null || { echo "mysql client: MISSING -> engine facts UNKNOWN"; exit 0; };
+               [ -r "$HOME/.my.cnf" ] || { echo "~/.my.cnf: MISSING or UNREADABLE -> engine facts UNKNOWN (this diagnostic will not read credentials out of application config)"; exit 0; };
+               OUT="$(mysql --defaults-file="$HOME/.my.cnf" -N -B -e "SELECT CONCAT(\"selected_schema=\", IFNULL(DATABASE(),\"(none selected)\")), CONCAT(\"version=\",@@version), CONCAT(\"sql_mode=\",@@sql_mode), CONCAT(\"session_tz=\",@@session.time_zone), CONCAT(\"global_tz=\",@@global.time_zone)" 2>&1)"; RC=$?;
+               if [ "$RC" -ne 0 ]; then echo "engine facts: UNKNOWN (query failed, rc=$RC)"; echo "$OUT" | head -2; else echo "$OUT" | tr "\t" "\n"; fi'
+
+          say "AUTO-SYNC POLICY: PRESENCE AND ROW COUNT ONLY (never policy values; UNKNOWN is not none)"
+          run 'command -v mysql >/dev/null || { echo "ext_autosync_policies: UNKNOWN (no mysql client)"; exit 0; };
+               [ -r "$HOME/.my.cnf" ] || { echo "ext_autosync_policies: UNKNOWN (no usable ~/.my.cnf)"; exit 0; };
+               T="$(mysql --defaults-file="$HOME/.my.cnf" -N -B -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name=\"ext_autosync_policies\"" 2>&1)"; RC=$?;
+               if [ "$RC" -ne 0 ]; then echo "ext_autosync_policies: UNKNOWN (schema query failed, rc=$RC)"; echo "$T" | head -2; exit 0; fi;
+               if [ "$T" = "0" ]; then echo "ext_autosync_policies: ABSENT from the selected schema (the feature has never written - a finding, not an error)"; exit 0; fi;
+               C="$(mysql --defaults-file="$HOME/.my.cnf" -N -B -e "SELECT COUNT(*) FROM ext_autosync_policies" 2>&1)"; RC=$?;
+               if [ "$RC" -ne 0 ]; then echo "ext_autosync_policies: PRESENT, row count UNKNOWN (rc=$RC)"; echo "$C" | head -2; else echo "ext_autosync_policies: PRESENT, rows=$C  (count only - no policy values are read)"; fi'
 
           say "SAMPLE TAKEN"
           run 'date -u +%Y-%m-%dT%H:%M:%SZ'
