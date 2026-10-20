@@ -212,7 +212,11 @@ function policyView(pol, eligible) {
     observedAccountKey: (p.sync && p.sync.observedAccountKey) || null, // authenticated id awaiting approval
     status: p.sync || null,
     eligibleToolIds: eligible.map(t => String(t._id)),
-    ambiguous: eligible.length > 1,
+    // Names too: when two Tools are eligible the admin has to pick one, and an id alone is not a
+    // choice anyone can make from a UI.
+    eligibleTools: eligible.map(t => ({ id: String(t._id), name: t.name || null, domain: t.domain || t.targetUrl || null })),
+    approvedToolId: p.approvedToolId || null,                  // explicit tie-break, admin-set only
+    ambiguous: eligible.length > 1 && !(p.approvedToolId && eligible.some(t => String(t._id) === String(p.approvedToolId))),
   };
 }
 
@@ -246,6 +250,22 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
     const enable = req.body.enabled === true;
     const mode = req.body.mode === 'enforce' ? 'enforce' : 'observe';
 
+    // A Tool binding that names something which is not CURRENTLY an active Tool on the official
+    // domain would persist as a dead value and leave the engine refusing (it only ever filters the
+    // eligible set), so it is rejected here instead of being stored. The eligible ids+names are
+    // returned so the caller can correct it without guessing.
+    if (typeof req.body.approvedToolId === 'string' && req.body.approvedToolId.trim()) {
+      const want = req.body.approvedToolId.trim();
+      const elig = await eligibleExtensionTools(req.proxyTool);
+      if (!elig.some(t => String(t._id) === want)) {
+        return res.status(409).json({
+          error: 'That Tool is not an active extension Tool on the official domain',
+          code: 'tool_not_eligible',
+          eligibleTools: elig.map(t => ({ id: String(t._id), name: t.name || null })),
+        });
+      }
+    }
+
     // The policy is its OWN record (never on the ProxyAccount), so the hardened agent pipeline's
     // whole-record account saves can never restore a stale policy / undo this change. Serialize
     // against the engine via the SAME per-account lock; reconcile runs OUTSIDE it (re-entrant lock).
@@ -259,12 +279,19 @@ router.put('/:tool/extension-autosync', requireCsrf, async (req, res) => {
       if (typeof req.body.approvedAccountKey === 'string' && req.body.approvedAccountKey.trim()) approvedAccountKey = req.body.approvedAccountKey.trim();
       else if (req.body.approveObserved === true) approvedAccountKey = (pol && pol.sync && pol.sync.observedAccountKey) || approvedAccountKey;
       if (req.body.clearApproval === true) approvedAccountKey = null;
+      // Explicit TOOL binding, consulted by the engine ONLY to break a >1-eligible tie. Carried
+      // forward so an unrelated control change (enable/disable/mode) cannot silently drop it —
+      // the same reason approvedAccountKey is read back above.
+      let approvedToolId = (pol && pol.approvedToolId) || null;
+      if (typeof req.body.approvedToolId === 'string' && req.body.approvedToolId.trim()) approvedToolId = req.body.approvedToolId.trim();
+      if (req.body.clearToolBinding === true) approvedToolId = null;
       const control = {
         tool: req.proxyTool, accountId: String(acct._id),
         enabled: enable, mode,
         officialDomain: extensionCredentialSync.normDomain(tools.targetHost(req.proxyTool)),
         disabledExplicitly: enable ? false : true,
         approvedAccountKey,
+        approvedToolId,
         boundAt: enable ? new Date() : (pol && pol.boundAt) || null,
         boundBy: req.userId,
         policyEpoch: Date.now(),   // bumped on every control change -> engine detects a mid-flight change
