@@ -308,3 +308,14 @@
 @media (prefers-reduced-motion: reduce) {
   .cga-chip, .cga-progress-fill { transition: none !important; }
 }
+
+/* Completion beat at the end of a flow. Scoped to .cga-done*; no global rules, no new assets.
+   Separated from the step row by a hairline so it reads as a closing question, not a 3rd nav
+   button. Buttons reuse .cga-btn, so they inherit the existing focus ring and hit area. */
+.cga-done { margin-top: 10px; padding-top: 10px; border-top: 1px solid #EEF2F6; }
+.cga-done-q { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: #334155; }
+.cga-done-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.cga-done-ok,
+.cga-done-warn { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.cga-done-ok { color: #0F766E; }
+.cga-done-warn { color: #B45309; }

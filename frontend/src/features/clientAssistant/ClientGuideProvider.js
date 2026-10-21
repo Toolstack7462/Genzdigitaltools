@@ -11,6 +11,8 @@ import { buildRenewWhatsAppUrl } from '../../lib/support';
 import { flowForIssue, ISSUE } from './diagnosticFlows';
 import { flowHintToSemantic } from './avatarStates';
 import { INTENTS, matchIntent } from './assistantIntents';
+
+const MAX_HISTORY = 40;   // bounded transcript (§ resource limits); oldest messages drop first
 import { buildAssistantSupportUrl } from './supportHandoff';
 import { subscribeIssues, shouldAutoOpen, markAutoOpened, logEvent } from './assistantEvents';
 
@@ -55,6 +57,9 @@ export function ClientGuideProvider({ children }) {
   // paint, and take focus back. The launcher unmounts while the panel is open, so the element that
   // opened the assistant cannot simply be re-focused by reference — it no longer exists.
   const [returnFocusToken, setReturnFocusToken] = useState(0);
+  // Did the client say the guidance worked? null = not asked/answered yet. This is the client's own
+  // answer, never inferred from a timer, an animation or an opened tab.
+  const [outcome, setOutcome] = useState(null);
 
   const openAssistant = useCallback(() => { setOpen(true); setAvatarState('greeting'); logEvent('assistant_opened'); }, []);
   const closeAssistant = useCallback(() => {
@@ -73,11 +78,16 @@ export function ClientGuideProvider({ children }) {
   // really does start over.
   const resetConversation = useCallback(() => {
     setFlow(null); setHistory([]); setAvatarState('idle'); setStepIndex(0); setDraft('');
+    setOutcome(null);
     lastIssueRef.current = null; setLastIssueCode(null);
   }, []);
 
-  const pushGuide = useCallback((text) => setHistory((h) => [...h, { role: 'guide', text }]), []);
-  const pushClient = useCallback((text) => setHistory((h) => [...h, { role: 'client', text }]), []);
+  // The transcript is bounded. It was an unbounded array, and it lives in a provider that outlives
+  // every route change, so a long session grew it without limit and re-rendered the whole thread on
+  // each message. Oldest messages drop first; nothing is persisted.
+  const appendBounded = (h, m) => (h.length < MAX_HISTORY ? [...h, m] : [...h.slice(h.length - MAX_HISTORY + 1), m]);
+  const pushGuide = useCallback((text) => setHistory((h) => appendBounded(h, { role: 'guide', text })), []);
+  const pushClient = useCallback((text) => setHistory((h) => appendBounded(h, { role: 'client', text })), []);
 
   // Start a specific diagnostic flow by (normalised or raw) issue code + optional context.
   const startIssueByCode = useCallback((code, ctx = {}) => {
@@ -86,6 +96,7 @@ export function ClientGuideProvider({ children }) {
     setLastIssueCode(f.code);
     setFlow({ ...f, ctx });
     setStepIndex(0);                 // a new flow always starts at its first step
+    setOutcome(null);
     setAvatarState(flowHintToSemantic(f.avatar));
     pushGuide(f.title);
     setOpen(true);
@@ -194,8 +205,13 @@ export function ClientGuideProvider({ children }) {
         setAvatarState('thinking'); logEvent('retry_attempted', { code: flow && flow.code, toolId: c.toolId });
         let res;
         try {
+          // ONLY the action the raiser registered. `ext.openTool(c.toolId)` used to be the fallback
+          // here, and that was a second launch owner: it bypasses the dashboard's launch-attempt
+          // owner (lib/launchAttempts), so the card that reported the failure never learns the
+          // result — it keeps its red banner while the tool opens, or an older attempt's clear-timer
+          // wipes the new state. Without a registered retry there is nothing safe to re-run from
+          // here, so hand the client back to the page that owns the launch.
           if (typeof c.retry === 'function') res = await c.retry();
-          else if (c.toolId && ext && ext.openTool) res = await ext.openTool(c.toolId);
           else { navigate('/client/tools'); setOpen(false); return; }
         } catch { res = { success: false }; }
         if (res && res.success) { setAvatarState('success'); pushGuide('Done — your tool should be open now.'); logEvent('guidance_completed', { code: flow && flow.code }); }
@@ -222,6 +238,20 @@ export function ClientGuideProvider({ children }) {
     }
   }), [startIssueByCode, dismissedCodes]);
 
+  // The client's own verdict on a finished flow. 'worked' is recorded only from a deliberate click,
+  // and 'stuck' routes to the existing human handoff — neither claims anything about tool state.
+  const resolveOutcome = useCallback((answer) => {
+    setOutcome(answer);
+    if (answer === 'worked') {
+      setAvatarState('success');
+      pushGuide('Great — glad that sorted it. I’m here if anything else comes up.');
+      logEvent('guidance_completed', { code: flow && flow.code, confirmedBy: 'client' });
+    } else {
+      setAvatarState('warning');
+      pushGuide('Sorry that didn’t do it. A human can take it from here.');
+    }
+  }, [flow, pushGuide]);
+
   const stepCount = (flow && Array.isArray(flow.steps)) ? flow.steps.length : 0;
   const nextStep = useCallback(() => setStepIndex((i) => Math.min(i + 1, Math.max(0, stepCount - 1))), [stepCount]);
   const prevStep = useCallback(() => setStepIndex((i) => Math.max(0, i - 1)), []);
@@ -235,7 +265,7 @@ export function ClientGuideProvider({ children }) {
     if (identityRef.current === identity) return;
     identityRef.current = identity;
     setOpen(false); setFlow(null); setHistory([]); setPrompt(null);
-    setStepIndex(0); setDraft(''); setDismissedCodes(new Set());
+    setStepIndex(0); setDraft(''); setDismissedCodes(new Set()); setOutcome(null);
     setAvatarState('idle'); lastIssueRef.current = null; setLastIssueCode(null);
   }, [identity]);
 
@@ -247,10 +277,11 @@ export function ClientGuideProvider({ children }) {
     lastIssueCode,
     stepIndex, stepCount, nextStep, prevStep,
     draft, setDraft,
+    outcome, resolveOutcome,
     openAssistant, closeAssistant, dismissPrompt, resetConversation,
     startIntent, startIssueByCode, handleFreeText, performAction, setAvatarState,
   }), [open, flow, avatarState, history, prompt, returnFocusToken, user, status, lastIssueCode,
-    stepIndex, stepCount, nextStep, prevStep, draft,
+    stepIndex, stepCount, nextStep, prevStep, draft, outcome, resolveOutcome,
     openAssistant, closeAssistant, dismissPrompt, resetConversation, startIntent, startIssueByCode,
     handleFreeText, performAction]);
 

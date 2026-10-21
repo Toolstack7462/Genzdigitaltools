@@ -16,7 +16,7 @@
 //     a conversation rather than a wall.
 import { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
-import { X, RotateCcw, Send, LifeBuoy, ChevronLeft, ChevronRight, ChevronDown, Wrench, Puzzle, AlertCircle } from 'lucide-react';
+import { X, RotateCcw, Send, LifeBuoy, ChevronLeft, ChevronRight, ChevronDown, Wrench, Puzzle, AlertCircle, Check } from 'lucide-react';
 import AvatarRenderer from './AvatarRenderer';
 import { useClientGuide } from './ClientGuideProvider';
 import { INTENTS, MAX_INPUT_LENGTH } from './assistantIntents';
@@ -74,7 +74,7 @@ export default function ClientGuidePanel() {
   const {
     flow, history, avatarState, client, performAction, startIntent, startIssueByCode,
     resetConversation, extensionKind, lastIssueCode, stepIndex, stepCount, nextStep, prevStep,
-    draft, setDraft, handleFreeText,
+    draft, setDraft, handleFreeText, outcome, resolveOutcome,
   } = g;
 
   // WELCOME vs CHAT. Anything the client has actually done — a message, a flow — moves Zee out of
@@ -200,6 +200,37 @@ export default function ClientGuidePanel() {
                         </button>
                       ))}
                     </div>
+
+                    {/* COMPLETION. A flow used to just stop on its last step: no closing beat, and
+                        the only way to say it had not worked was to re-read the thread. The client
+                        answers for themselves — Zee never decides this from a timer, an animation
+                        or an opened tab — and "Still stuck" goes to the existing human handoff. */}
+                    {stepIndex + 1 === stepCount && (
+                      <div className="cga-done" role="group" aria-label="Did this help?">
+                        {outcome === null ? (
+                          <>
+                            <p className="cga-done-q">Did that sort it?</p>
+                            <div className="cga-done-row">
+                              <button type="button" className="cga-btn cga-btn-primary" onClick={() => resolveOutcome('worked')}>
+                                <Check size={14} /> Yes, thanks
+                              </button>
+                              {/* Only when the step itself is not ALREADY the support hand-off. Otherwise the
+                                  last step showed three routes to the same place — its own "Contact support",
+                                  this one, and "Talk to a human" in the footer. */}
+                              {step.action !== 'support' && (
+                                <button type="button" className="cga-btn cga-btn-ghost" onClick={() => { resolveOutcome('stuck'); performAction('support', flow.ctx); }}>
+                                  <LifeBuoy size={14} /> Still stuck
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <p className={outcome === 'worked' ? 'cga-done-ok' : 'cga-done-warn'}>
+                            {outcome === 'worked' ? 'Marked as sorted.' : 'Handed over to support.'}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </section>
                 )}
 

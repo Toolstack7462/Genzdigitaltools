@@ -16,7 +16,8 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const PW = '/opt/node-tools/node_modules/playwright';
+// Resolvable on more than one machine: the hardcoded path meant this ran nowhere else.
+const PW = process.env.ZEE_PLAYWRIGHT || '/opt/node-tools/node_modules/playwright';
 const { chromium } = require(PW);
 
 const FIXTURE = process.env.ZEE_FIXTURE || path.join(os.tmpdir(), 'zee-redesign', 'zee-redesign.html');
@@ -40,7 +41,7 @@ async function main() {
     process.exit(2);
   }
   fs.mkdirSync(OUT, { recursive: true });
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(Object.assign({}, {}, process.env.ZEE_CHROMIUM ? { executablePath: process.env.ZEE_CHROMIUM } : {}));
 
   // ── DESKTOP ────────────────────────────────────────────────────────────────────────────────
   const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });

@@ -58,6 +58,7 @@ const base = (over = {}) => ({
   extensionKind: 'unknown', lastIssueCode: null,
   stepIndex: 0, stepCount: 0, nextStep: () => {}, prevStep: () => {},
   draft: '', setDraft: () => {},
+  outcome: null, resolveOutcome: () => {},
   ...over,
 });
 
@@ -83,6 +84,28 @@ const STATES = {
     extensionKind: 'disconnected', lastIssueCode: 'EXTENSION_DISCONNECTED',
     draft: 'dusra tool bhi',
   }),
+  // The closing beat: a flow's LAST step now asks the client whether it worked, and then shows
+  // their own answer. Previously a flow simply stopped on its last step.
+  done: base({
+    avatarState: 'speaking',
+    history: [
+      { role: 'client', text: 'mera tool open nahi ho raha' },
+      { role: 'guide', text: 'Reconnect the extension' },
+    ],
+    flow: FLOW, stepIndex: FLOW.steps.length - 1, stepCount: FLOW.steps.length,
+    extensionKind: 'disconnected', lastIssueCode: 'EXTENSION_DISCONNECTED',
+  }),
+  doneOk: base({
+    avatarState: 'success',
+    history: [
+      { role: 'client', text: 'mera tool open nahi ho raha' },
+      { role: 'guide', text: 'Reconnect the extension' },
+      { role: 'guide', text: 'Great — glad that sorted it.' },
+    ],
+    flow: FLOW, stepIndex: FLOW.steps.length - 1, stepCount: FLOW.steps.length,
+    outcome: 'worked',
+    extensionKind: 'ok', lastIssueCode: 'EXTENSION_DISCONNECTED',
+  }),
 };
 
 test('builds a multi-state Chromium fixture of the redesigned Zee', () => {
@@ -107,6 +130,18 @@ test('builds a multi-state Chromium fixture of the redesigned Zee', () => {
   expect(rendered.chat).toContain('cga-stepcard');
   expect(rendered.chat).toContain('Step 1 of 3');
   expect(rendered.chatStep2).toContain('Step 2 of 3');
+  // The completion beat appears only on the LAST step, and only until the client answers.
+  expect(rendered.chat).not.toContain('cga-done');
+  expect(rendered.done).toContain('Did that sort it?');
+  // This flow's last step IS the support hand-off, so the completion row must NOT offer support a
+  // second time: the step button and the footer's "Talk to a human" already do.
+  // The step's own COPY says "Still stuck? ..."; what must not exist is a second support BUTTON.
+  expect(rendered.done).not.toContain('Still stuck</button>');
+  expect((rendered.done.match(/Contact support|Talk to a human/g) || []).length).toBe(2);
+  expect(rendered.doneOk).toContain('Marked as sorted.');
+  expect(rendered.doneOk).not.toContain('Did that sort it?');
+  // It reports the client's answer, never a claim about the tool or the session.
+  expect(rendered.doneOk).not.toMatch(/logged in|all good|fixed/i);
 
   mockGuide = base({ open: false });
   const launcher = renderToStaticMarkup(React.createElement(ClientGuideLauncher));
@@ -152,6 +187,8 @@ ${css}
     ${cell('welcome', 'Desktop · welcome', rendered.welcome)}
     ${cell('chat', 'Desktop · conversation, step 1', rendered.chat)}
     ${cell('chat2', 'Desktop · step 2 + draft', rendered.chatStep2)}
+    ${cell('done', 'Desktop · last step · did that sort it?', rendered.done)}
+    ${cell('doneOk', 'Desktop · client answered: sorted', rendered.doneOk)}
     <section class="cell" style="width:120px">
       <p class="label">Launcher</p>
       <div id="launcher-stage">${launcher}</div>
