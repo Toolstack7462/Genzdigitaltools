@@ -1,27 +1,52 @@
 #!/bin/sh
-# Validate-then-promote for a hand-deployed backend patch set.
+# Validate-then-promote for a hand-deployed backend patch set.  EMERGENCY USE ONLY.
 #
-# WHY THIS EXISTS. The 2026-10-21 CRM backend deploy ran, per uploaded file:
+# PREFER THE ESTABLISHED RELEASE PATH. Pushing to `main` makes Hostinger clone the repo, run
+# `npm install`, copy the tree into a NEW version directory and switch the `current` symlink to
+# it. That swap is a single rename: either the whole release is live or none of it is, and the
+# previous version directory stays on disk. Proven on 2026-10-21 (build 01a16024 from main
+# ac29e45: "Mode: publish ... Switching current to the new version", 8.9s, no mixed state).
+# This script replaces files IN PLACE inside the live version directory and cannot offer that.
+# Use it only when the git path is unavailable, and prefer a single file when you do.
+#
+# WHY IT EXISTS. The 2026-10-21 CRM backend deploy ran, per uploaded file:
 #
 #     base64 -d > "$f.new" && mv "$f.new" "$f" && node -c "$f" && echo ok
 #
-# The promotion (`mv`) happened BEFORE the syntax check, and `node` is not on the remote
-# non-interactive PATH, so every check failed with "node: command not found" while the files were
-# already live. A broken file would have been promoted and the failure only reported afterwards.
+# Two separate defects, and only the first was fixed at the time:
 #
-# This script inverts that order and makes a missing runtime fatal:
-#   1. refuse to start unless a usable node is resolved from the APPLICATION'S configuration;
-#   2. syntax-check every staged "<file>.new";
-#   3. only if ALL checks pass, back up and promote them;
-#   4. exit non-zero on any failure, having promoted nothing.
+#   1. ORDER. The promotion (`mv`) happened BEFORE the check, so a file was already live when its
+#      check ran - and `node` is absent from the remote non-interactive PATH, so every check
+#      reported "node: command not found" against files that had already replaced the originals.
+#      (The later `node --check "$f.new"` form has a different trap: `--check` rejects an unknown
+#      extension outright, so it fails on the NAME before it ever parses the contents. That is a
+#      check that cannot pass, not a check that lets bad code through - the defect was still the
+#      ORDER. This script checks a copy carrying the real extension.)
 #
-# Node is resolved from PassengerNodejs in the serving .htaccess - the interpreter the app actually
-# runs - never a guessed path. Override with CRM_DEPLOY_NODE when testing.
+#   2. PARTIAL FAILURE. Validation stops nothing once promotion starts. With two files, the first
+#      `mv` succeeding and the second failing left one new file and one old file - a MIXED patch
+#      set - and the script merely exited non-zero. Nothing undid the first promotion.
+#
+# So: resolve a usable node from the APPLICATION'S configuration; syntax-check every staged file;
+# only then back up and promote; and if any promotion fails, put the already-promoted files back
+# from their backups and re-stage them, leaving the tree as it was found.
+#
+# WHAT THIS DOES NOT GUARANTEE. It is NOT crash-atomic. A SIGKILL, a host reboot or a dropped
+# connection between two renames leaves a mixed set that no code here can undo, because the
+# process that would roll it back is gone. The leftover lock directory is the detection signal:
+# if `<app-root>/.crm-promote.lock` exists and holds a `promoted` journal, a run died mid-flight
+# and that journal lists exactly which files were already replaced. Restore those by hand from
+# the backup directory, and activate nothing until the tree is consistent again.
+#
+# Node is resolved from PassengerNodejs in the serving .htaccess - the interpreter the app
+# actually runs - never a guessed path. Override with CRM_DEPLOY_NODE when testing.
 #
 #   Usage:  crm-deploy-promote.sh <app-root> <backup-dir> <relative-file> [more files...]
 #   Each <relative-file> must already exist as <app-root>/<relative-file>.new
 #
-# Exit: 0 all promoted · 2 no usable node · 3 a staged file is missing · 4 a syntax check failed.
+# Exit: 0 all promoted - 2 no usable node - 3 a staged file is missing - 4 a syntax check failed
+#       5 another promotion holds the lock - 6 promotion failed, fully rolled back
+#       7 promotion failed AND rollback was incomplete: MIXED STATE, manual recovery required.
 
 set -eu
 
@@ -30,6 +55,13 @@ BACKUP_DIR="${1:?backup dir required}"; shift
 [ "$#" -gt 0 ] || { echo "no files given" >&2; exit 3; }
 
 HTACCESS="${CRM_DEPLOY_HTACCESS:-/home/u171982351/domains/api.genzdigitalstore.com/public_html/.htaccess}"
+
+# The file-moving commands are indirected ONLY so the guard tests can inject a failure at an
+# exact step without this script carrying fault-injection logic of its own. Unset in production,
+# these are plain `mv` and `cp`.
+MV="${CRM_DEPLOY_MV:-mv}"
+CP="${CRM_DEPLOY_CP:-cp}"
+ROLLBACK_CP="${CRM_DEPLOY_ROLLBACK_CP:-$CP}"
 
 resolve_node() {
   # 1. whatever the caller pinned (tests)
@@ -56,6 +88,28 @@ echo "node: $NODE"
 mkdir -p "$BACKUP_DIR"
 BACKUP_DIR=$(cd "$BACKUP_DIR" && pwd)
 cd "$APP_ROOT" || { echo "app root not readable: $APP_ROOT" >&2; exit 3; }
+APP_ROOT=$(pwd)
+
+# ---- 0. one promotion at a time ------------------------------------------------------------
+# `mkdir` is the atomic test-and-set: two releases cannot both believe they hold it, so a second
+# run cannot interleave its renames with this one's on the same files. A leftover lock is NOT
+# cleared automatically - it is the evidence that a previous run died mid-flight.
+LOCK="$APP_ROOT/.crm-promote.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "REFUSING TO PROMOTE: another promotion holds $LOCK" >&2
+  [ -f "$LOCK/owner" ] && sed 's/^/      held by: /' "$LOCK/owner" >&2
+  if [ -s "$LOCK/promoted" ]; then
+    echo "      that run left a promotion journal - the tree may be MIXED. Already replaced:" >&2
+    sed 's/^/        /' "$LOCK/promoted" >&2
+    echo "      Restore those from the backup directory by hand before promoting again." >&2
+  fi
+  exit 5
+fi
+trap 'rm -rf "$LOCK"' EXIT
+trap 'rm -rf "$LOCK"; exit 1' INT TERM HUP
+printf 'pid %s at %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK/owner"
+JOURNAL="$LOCK/promoted"
+: > "$JOURNAL"
 
 # ---- 1. every staged file must exist -------------------------------------------------------
 for rel in "$@"; do
@@ -66,9 +120,8 @@ done
 failed=0
 for rel in "$@"; do
   # `node --check` refuses an unknown extension outright (ERR_UNKNOWN_FILE_EXTENSION), so a
-  # "<file>.new" is rejected for its NAME before its syntax is ever parsed - which would make
-  # every check "fail" and, worse, make a check that merely looks at exit status meaningless.
-  # Check a copy that keeps the real extension instead.
+  # "<file>.new" is rejected for its NAME before its contents are ever parsed. Check a copy that
+  # keeps the real extension instead, or the check can only ever fail.
   probe="$(dirname "$rel")/.crmcheck.$$.$(basename "$rel")"
   cp "$rel.new" "$probe"
   if "$NODE" --check "$probe" 2>/tmp/crm-deploy-check.$$; then
@@ -86,16 +139,58 @@ if [ "$failed" -ne 0 ]; then
   exit 4
 fi
 
-# ---- 3. back up, then promote ---------------------------------------------------------------
+# ---- 3. back up, preserving the originals' mode and timestamps ------------------------------
 for rel in "$@"; do
   if [ -f "$rel" ]; then
     mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
     cp -p "$rel" "$BACKUP_DIR/$rel"
   fi
 done
+
+# ---- 4. promote; on any failure, undo what was already promoted ----------------------------
+rollback() {
+  mixed=''
+  while IFS= read -r done_rel; do
+    [ -n "$done_rel" ] || continue
+    # re-stage the new content so the release can simply be retried...
+    if [ -f "$done_rel" ] && ! $ROLLBACK_CP -p "$done_rel" "$done_rel.new" 2>/dev/null; then
+      mixed="$mixed $done_rel"; continue
+    fi
+    # ...then put the original back, or remove the file if there was no original
+    if [ -f "$BACKUP_DIR/$done_rel" ]; then
+      if ! $ROLLBACK_CP -p "$BACKUP_DIR/$done_rel" "$done_rel" 2>/dev/null; then
+        mixed="$mixed $done_rel"
+      fi
+    else
+      rm -f "$done_rel" || mixed="$mixed $done_rel"
+    fi
+  done < "$JOURNAL"
+  printf '%s' "$mixed"
+}
+
 for rel in "$@"; do
-  mv "$rel.new" "$rel"
-  echo "  promoted   $rel"
+  # The replacement arrives from base64/sftp with whatever mode that produced, so carry the live
+  # file's own mode over rather than letting a release silently change it.
+  mode=''
+  if [ -f "$rel" ]; then mode=$(stat -c '%a' "$rel" 2>/dev/null || true); fi
+  if [ -n "$mode" ]; then chmod "$mode" "$rel.new" 2>/dev/null || true; fi
+  if $MV "$rel.new" "$rel"; then
+    printf '%s\n' "$rel" >> "$JOURNAL"
+    echo "  promoted   $rel"
+  else
+    echo "PROMOTION FAILED on $rel - undoing the files already replaced." >&2
+    mixed=$(rollback)
+    if [ -n "$mixed" ]; then
+      echo "MIXED STATE: rollback did not complete. These files are NOT the originals:" >&2
+      for m in $mixed; do echo "      $m" >&2; done
+      echo "      Restore them from $BACKUP_DIR by hand. DO NOT touch tmp/restart.txt:" >&2
+      echo "      an un-activated mixed set is still recoverable; an activated one is an outage." >&2
+      exit 7
+    fi
+    echo "Rolled back: every file is the original again, and the new content is staged as <file>.new." >&2
+    echo "Nothing was activated - DO NOT touch tmp/restart.txt. Fix the cause and re-run." >&2
+    exit 6
+  fi
 done
 
 echo "backup: $BACKUP_DIR"
