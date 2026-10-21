@@ -239,3 +239,62 @@ test('a late create response cannot override a deliberate later selection', asyn
   await flush();
   expect(summary().textContent).toContain('Ali Raza');
 });
+
+// ── a COMMITTED create whose response was lost ────────────────────────────────────────────────
+// The synchronous guard stops simultaneous clicks; it does nothing about a request that reached
+// the server and whose answer never came back. Without a key the retry creates a SECOND contact.
+// The server side of this (one row, one audit event, UNIQUE column, cross-actor conflict) runs on
+// a real engine in backend/scripts/crm-db-selftest.js.
+test('the create carries an idempotency key', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelector('input'), 'Keyed Client');
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const create = contactCreates()[0];
+  expect(create).toBeTruthy();
+  expect(typeof create[1].idempotencyKey).toBe('string');
+  expect(create[1].idempotencyKey.length).toBeGreaterThan(8);
+});
+
+test('a lost response then a retry reuses the SAME key - one intended contact', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelector('input'), 'Keyed Client');
+
+  mockCreateImpl = async () => { throw new Error('Network Error'); };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  expect(contactCreates()).toHaveLength(1);
+  const firstKey = contactCreates()[0][1].idempotencyKey;
+  expect(modal()).toBeTruthy();                       // still open so the operator can retry
+
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Keyed Client' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all).toHaveLength(2);
+  expect(all[1][1].idempotencyKey).toBe(firstKey);    // same operation, so the server replays
+  expect(new Set(all.map((c) => c[1].idempotencyKey)).size).toBe(1);
+});
+
+test('editing the name before retrying mints a NEW key - a different intended contact', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelector('input'), 'First Name');
+  mockCreateImpl = async () => { const e = new Error('x'); e.response = { status: 400, data: { error: 'bad' } }; throw e; };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  const firstKey = contactCreates()[0][1].idempotencyKey;
+
+  await setInput(modal().querySelector('input'), 'Corrected Name');
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Corrected Name' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all[1][1].name).toBe('Corrected Name');
+  expect(all[1][1].idempotencyKey).not.toBe(firstKey);
+});

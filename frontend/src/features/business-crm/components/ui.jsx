@@ -218,7 +218,15 @@ export function Combobox({
     </div>}
   </div>;
 }
-export function Modal({ open, title, children, onClose, footer }) { if (!open) return null; return <div className="bcrm-modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="bcrm-modal" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="Close"><X size={19}/></button></header><div className="bcrm-modal-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>; }
+export function Modal({ open, title, children, onClose, footer }) { if (!open) return null; return <div className="bcrm-modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="bcrm-modal" role="dialog" aria-modal="true" aria-label={title}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter') return;
+        const tag = event.target && event.target.tagName;
+        if (tag === 'TEXTAREA') return;
+        if (tag === 'BUTTON' || tag === 'A') return;   // a focused control still activates
+        event.preventDefault();
+      }}
+    ><header><h2>{title}</h2><button type="button" onClick={onClose} aria-label="Close"><X size={19}/></button></header><div className="bcrm-modal-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>; }
 
 /**
  * Pager — server-side paging for the CRM lists.

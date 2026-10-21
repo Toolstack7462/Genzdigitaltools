@@ -111,7 +111,12 @@ export default function SaleForm() {
           // malformed `totals` into [] would have the panel state "None in PKR" - a confident
           // claim about someone's money derived from a response we could not read.
           if (totals === null) return { ...current, state: 'failed', totals: null };
-          return { ...current, state: 'ready', totals, contact: current.contact || contactFields(body) };
+          // The existing-sale path seeds a NAME-ONLY stub, so `current.contact || ...` kept that
+          // stub and threw away the phone/email/company this very response just returned. Prefer
+          // the fresh authorised values; a field the operator has deliberately CLEARED comes back
+          // as null/'' and must be shown as cleared, not restored from the stale seed.
+          const fresh = contactFields(body);
+          return { ...current, state: 'ready', totals, contact: fresh || current.contact };
         });
       })
       .catch(() => {
@@ -255,6 +260,8 @@ export default function SaleForm() {
   // Cancelling the modal, or any later deliberate selection, supersedes an in-flight create so its
   // late answer cannot select a client the operator has already moved away from (also observed).
   const quickGeneration = useRef(0);
+  // Key bound to the exact submitted payload: an edit mints a new one, an unchanged retry reuses it.
+  const quickAttempt = useRef({ key: null, payload: null });
 
   const createQuickClient = async () => {
     if (quickInFlight.current) return;
@@ -262,7 +269,18 @@ export default function SaleForm() {
     const mine = quickGeneration.current + 1; quickGeneration.current = mine;
     setQuickSaving(true); setQuickError('');
     try {
-      const payload = { name: quickClient.name.trim(), whatsapp: quickClient.whatsapp.trim() || '', email: quickClient.email.trim() || '', company: '', address: '', taxId: '', notes: '', status: 'active' };
+      // ONE identity for one intended contact. The synchronous guard stops simultaneous clicks; it
+      // does nothing about a committed request whose RESPONSE was lost, where a second attempt
+      // would otherwise create a duplicate contact. contactService replays on this key and the
+      // column is UNIQUE, so the same key is the same contact.
+      const base = { name: quickClient.name.trim(), whatsapp: quickClient.whatsapp.trim() || '', email: quickClient.email.trim() || '', company: '', address: '', taxId: '', notes: '', status: 'active' };
+      const serialised = JSON.stringify(base);
+      if (quickAttempt.current.payload !== serialised) {
+        let fresh;
+        try { fresh = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : null; } catch (_) { fresh = null; }
+        quickAttempt.current = { key: fresh || `contact-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, payload: serialised };
+      }
+      const payload = { ...base, idempotencyKey: quickAttempt.current.key };
       if (!payload.name) throw new Error('Client name is required.');
       const response = await crmApi.post('/contacts/clients', payload);
       if (mine !== quickGeneration.current) return;   // superseded: do not select, do not reopen
