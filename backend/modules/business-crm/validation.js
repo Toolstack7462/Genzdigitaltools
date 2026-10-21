@@ -27,8 +27,17 @@ const productShape = {
   active: Joi.boolean().default(true), notes: Joi.string().max(5000).allow('', null),
 };
 const schemas = {
-  clientCreate: Joi.object(contact), clientUpdate: Joi.object({ ...contact, version: version.required() }),
-  vendorCreate: Joi.object(contact), vendorUpdate: Joi.object({ ...contact, version: version.required() }),
+  // `idempotencyKey` is declared on the CREATE schemas only. contactService.createContact already
+  // replays on it (SELECT ... WHERE idempotency_key) and the column is VARCHAR(128) NULL UNIQUE,
+  // so the database itself refuses a duplicate - but validate() runs with stripUnknown:true, so a
+  // key sent by the browser was silently discarded before the service ever saw it and a retry
+  // after a lost response created a SECOND contact.
+  // Deliberately NOT added to the update schemas: update is version-checked, not key-replayed, and
+  // its semantics are unchanged.
+  clientCreate: Joi.object({ ...contact, idempotencyKey: Joi.string().max(128).allow('', null) }),
+  clientUpdate: Joi.object({ ...contact, version: version.required() }),
+  vendorCreate: Joi.object({ ...contact, idempotencyKey: Joi.string().max(128).allow('', null) }),
+  vendorUpdate: Joi.object({ ...contact, version: version.required() }),
   productCreate: Joi.object(productShape), productUpdate: Joi.object({ ...productShape, version: version.required() }),
   saleCreate: Joi.object({
     clientId: id.required(), vendorId: nullableId, saleDate: date.required(), orderType: Joi.string().valid('new', 'renewal').default('new'),

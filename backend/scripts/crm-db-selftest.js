@@ -262,6 +262,46 @@ const clientPaid = async (saleId) => {
     check('the balance is unchanged after the refused second reversal', await clientPaid(saleId) === '0.00', await clientPaid(saleId));
   }
 
+  // -- 10. CONTACT CREATE: a repeated key is ONE contact and ONE audit event -------------------
+  // The whole chain: the create SCHEMA must carry the key through validate({stripUnknown:true}),
+  // contactService must replay on it, and the UNIQUE column must refuse a duplicate under a race.
+  {
+    const contacts = require(path.join(MODULE_DIR, 'services', 'contactService'));
+    const { validate } = require(path.join(MODULE_DIR, 'validation'));
+    const key = crypto.randomUUID();
+    const name = `Selftest Contact ${Date.now()}`;
+
+    // run the body through the REAL validation middleware, exactly as the route does
+    const runValidation = (body) => new Promise((resolve, reject) => {
+      const req = { body };
+      validate('clientCreate')(req, { status: () => ({ json: (b) => reject(new Error('validation refused: ' + JSON.stringify(b))) }) }, () => resolve(req.validated));
+    });
+    const validated = await runValidation({ name, whatsapp: '03001234567', idempotencyKey: key });
+    check('the create schema carries idempotencyKey through stripUnknown', validated.idempotencyKey === key, validated);
+
+    const auditBefore = await countAudit('client');
+    const first = await contacts.createContact(makeReq(ACTOR), 'clients', validated);
+    const second = await contacts.createContact(makeReq(ACTOR), 'clients', await runValidation({ name, whatsapp: '03001234567', idempotencyKey: key }));
+
+    const rows = await db.query('SELECT COUNT(*) c FROM biz_crm_clients WHERE idempotency_key=:k', { k: key });
+    check('a repeated contact key creates ONE contact', Number(rows[0].c) === 1, rows[0].c);
+    check('a repeated contact key returns the same contact id', String(first.id) === String(second.id));
+    check('a repeated contact key writes ONE create audit event', (await countAudit('client')) - auditBefore === 1);
+    check('the stored key is never echoed back to the caller', first.idempotency_key === undefined && second.idempotency_key === undefined);
+
+    const raceKey = crypto.randomUUID();
+    const raceName = `Selftest Race ${Date.now()}`;
+    const bodies = [await runValidation({ name: raceName, idempotencyKey: raceKey }), await runValidation({ name: raceName, idempotencyKey: raceKey })];
+    const results = await Promise.allSettled(bodies.map((b) => contacts.createContact(makeReq(ACTOR), 'clients', b)));
+    const raceRows = await db.query('SELECT COUNT(*) c FROM biz_crm_clients WHERE idempotency_key=:k', { k: raceKey });
+    check('concurrent same-key contact creates leave ONE row', Number(raceRows[0].c) === 1, { rows: raceRows[0].c, settled: results.map((r) => r.status) });
+
+    let conflict = null;
+    try { await contacts.createContact(makeReq(OTHER_ACTOR), 'clients', await runValidation({ name, idempotencyKey: key })); }
+    catch (error) { conflict = error.code; }
+    check('another actor reusing the key is refused', conflict === 'CONTACT_IDEMPOTENCY_CONFLICT', conflict);
+  }
+
   console.log(`\n[crm-selftest] passed=${passed} failed=${failed}`);
   await db.close().catch(() => {});
   process.exit(failed === 0 ? 0 : 1);
