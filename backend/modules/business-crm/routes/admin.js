@@ -85,10 +85,76 @@ router.put('/access/:userId', requirePermission('access.manage'), validate('acce
 router.post('/access/:userId/reset-password', requirePermission('access.manage'), asyncHandler(async (req, res) => {
   throw httpError('Password resets are managed by the existing admin tooling, not the Business CRM', 405, 'CRM_USER_WRITE_DISABLED');
 }));
+// ── Audit list response contract ───────────────────────────────────────────────────────────────
+// The handler used to `SELECT *` and serialise the row as-is. `biz_crm_audit_logs` stores
+// `before_json` / `after_json`, so every snapshot was shipped to the browser — and those snapshots
+// carry the very fields other endpoints gate. `GET /exports/sales.csv` deletes `subtotal_cost`
+// unless the caller holds `profit.view`; the same purchase costs sat inside `after_json` for anyone
+// holding only `audit.view`. The audit screen was a way around the profit gate.
+//
+// The fix is an explicit allow-list, not React-side hiding and not widening `profit.view`. Stored
+// snapshots, the transactional writes in audit.js and all history are left exactly as they are:
+// this changes what the LIST returns, nothing about what is recorded. A snapshot-detail endpoint is
+// deliberately NOT introduced here.
+//
+// Checked before removing anything: the only consumer is frontend AuditPage.jsx, which renders
+// created_at, action_key, actor_user_id, actor_role, entity_type, entity_id, ip_address and
+// request_id. It never reads before_json/after_json.
+const AUDIT_COLUMNS = 'id, created_at, action_key, entity_type, entity_id, actor_user_id, actor_role, ip_address, user_agent, request_id';
+
+// Readable labels for the keys actually written by this module (grep: audit.write). The stable
+// `action_key` is still returned alongside, so filters and any downstream tooling keep working; an
+// unknown/future key falls back to the raw key rather than inventing wording for it.
+const AUDIT_ACTION_LABELS = {
+  'access-link.discovered': 'Website access discovered',
+  'access-link.financial-linked': 'Website access linked to a sale',
+  'access-link.financial-status': 'Website access financial status changed',
+  'access.update': 'Staff access updated',
+  'expense.create': 'Expense recorded', 'expense.update': 'Expense updated', 'expense.void': 'Expense voided',
+  'import.csv': 'CSV import run',
+  'payment.reverse': 'Payment reversed',
+  'product.create': 'Product created', 'product.update': 'Product updated',
+  'reminder.open': 'Reminder opened', 'reminder.prepare': 'Reminder prepared',
+  'sale.create': 'Sale created', 'sale.delete': 'Sale deleted', 'sale.update': 'Sale updated',
+  'settings.update': 'Settings updated',
+  'task.create': 'Task created', 'task.update': 'Task updated',
+};
+function auditActionLabel(key) { return AUDIT_ACTION_LABELS[key] || String(key || ''); }
+
+/**
+ * Staff names for one PAGE of audit rows: a single lookup over the distinct actor ids on that page,
+ * never one query per displayed row and never an unrestricted user-directory response. Only the
+ * display name is read. A deleted or unreadable user yields null, and the caller keeps showing the
+ * stable actor id — an honest gap rather than a fabricated name.
+ */
+async function auditActorNames(rows) {
+  const ids = [...new Set(rows.map((row) => String(row.actor_user_id || '')).filter((id) => id && id !== 'system'))];
+  if (!ids.length) return new Map();
+  try {
+    const docs = await User.find({ _id: { $in: ids } }).select('fullName');
+    return new Map(docs.map((doc) => [String(doc._id || doc.id), doc.fullName || null]));
+  } catch (_) {
+    return new Map();   // the list must still render without names
+  }
+}
+
 router.get('/audit', requirePermission('audit.view'), asyncHandler(async (req, res) => {
   const { page, pageSize, offset } = pageParams(req.query); const where = ['1=1']; const params = { limit: pageSize, offset };
   if (req.query.action) { where.push('action_key=:action'); params.action = req.query.action; } if (req.query.actor) { where.push('actor_user_id=:actorFilter'); params.actorFilter = req.query.actor; }
-  const [rows, count] = await Promise.all([db.query(`SELECT * FROM biz_crm_audit_logs WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT :limit OFFSET :offset`, params), db.query(`SELECT COUNT(*) total FROM biz_crm_audit_logs WHERE ${where.join(' AND ')}`, params)]); res.json({ rows, page, pageSize, total: Number(count[0]?.total || 0) });
+  if (req.query.entityType) { where.push('entity_type=:entityType'); params.entityType = req.query.entityType; }
+  if (req.query.from) { where.push('created_at>=:fromDate'); params.fromDate = req.query.from; }
+  if (req.query.to) { where.push('created_at<=:toDate'); params.toDate = req.query.to; }
+  // `created_at` alone is not a total order — audit rows written inside one transaction share a
+  // timestamp, so a row could appear on two pages or on neither. `id` is the primary key.
+  const [rows, count] = await Promise.all([
+    db.query(`SELECT ${AUDIT_COLUMNS} FROM biz_crm_audit_logs WHERE ${where.join(' AND ')} ORDER BY created_at DESC, id DESC LIMIT :limit OFFSET :offset`, params),
+    db.query(`SELECT COUNT(*) total FROM biz_crm_audit_logs WHERE ${where.join(' AND ')}`, params),
+  ]);
+  const names = await auditActorNames(rows);
+  res.json({
+    rows: rows.map((row) => ({ ...row, action_label: auditActionLabel(row.action_key), actor_name: names.get(String(row.actor_user_id)) || null })),
+    page, pageSize, total: Number(count[0]?.total || 0),
+  });
 }));
 router.post('/imports/:kind', requirePermission('imports.manage'), express.text({ type: ['text/csv','text/plain','application/csv'], limit: '2mb' }), asyncHandler(async (req, res) => {
   const kind = req.params.kind; const config = {
