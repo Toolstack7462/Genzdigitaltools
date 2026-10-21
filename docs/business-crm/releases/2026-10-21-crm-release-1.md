@@ -244,10 +244,20 @@ and `tests/testManifestComplete.test.js` fails if it happens again.
 
 * **Authenticated read-only audit verification on the intended origin.** A 401 proves nothing about
   the payload, and a generic 200 proves nothing about the handler. What is proven above is
-  file-level, on the served tree. What is not proven is an authenticated `GET /api/crm/admin/audit`
-  returning the corrected payload, and the restricted-role check (`audit.view` **without**
-  `profit.view` must not see costs). Both need an existing admin browser session; no credential was
-  requested, minted or read.
+  file-level, on the served tree. The exact endpoint — the module mounts at
+  `/api/crm/admin/business`, and its admin router adds `/admin` — is:
+
+  ```
+  GET https://api.genzdigitalstore.com/api/crm/admin/business/admin/audit?page=1&pageSize=20
+  ```
+
+  Unauthenticated it answers `401 {"error":"Admin authentication required"}`, which confirms the
+  route loads under the new build and nothing more. What remains to be seen, once, from a signed-in
+  admin tab: the response rows carry `id, created_at, action_key, entity_type, entity_id,
+  actor_user_id, actor_role, ip_address, user_agent, request_id` plus `action_label` and
+  `actor_name`, and **no** `before_json`/`after_json`; and the restricted-role check — a role with
+  `audit.view` but **without** `profit.view` must see no costs. No credential was requested, minted
+  or read to get this far.
 * **Normal-browser operator acceptance**: client search → details/balance → product auto-fill →
   quick-create open/cancel with the draft preserved → pagination → audit → Zee → an existing Tool
   Access. No production write was performed for a test, by design.
