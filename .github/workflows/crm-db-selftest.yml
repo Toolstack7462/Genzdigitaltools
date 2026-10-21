@@ -1,0 +1,137 @@
+# REAL-ENGINE self-test for Business CRM financial safety.
+#
+# WHY THIS EXISTS: the Release 1 UI tests prove what the browser SENDS - one request per intended
+# payment, a stable idempotency key, a frozen payload while an outcome is unknown. They cannot
+# prove what the ENGINE does with a repeated key under concurrency, whether two simultaneous
+# writers can overpay an invoice, or whether a replay produces a second financial row and a second
+# audit event. Those are locking and isolation questions, and only a real database answers them.
+#
+# This is a SEPARATE job from extsync-db-selftest.yml. That one verifies the WriteHuman auto-sync
+# guarded writes and says nothing whatsoever about CRM transactions.
+#
+# WHAT THIS IS NOT: it is not a deployment and shares nothing with one. It uses NO repository
+# secrets, touches no production host, and is wired to no deploy trigger. The database lives and
+# dies inside the runner, is reachable only on 127.0.0.1, and contains only rows the script itself
+# creates. The script additionally REFUSES to run unless the connecting account is provably scoped
+# to the scratch schema (no `ON *.*` grant beyond the baseline USAGE) and the live
+# `SELECT DATABASE()` equals the expected scratch name.
+#
+# ENGINE VERSION - READ THIS BEFORE TRUSTING A GREEN RUN. Production (Hostinger) was measured over
+# SSH and runs `11.8.9-MariaDB-log`, sql_mode NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION (NOT
+# strict), clock on UTC. `mariadb:11.8` is therefore first and is the row that speaks about
+# production. The script prints the live VERSION() - check it. A pass on another engine is not
+# evidence about production.
+#
+# The health probe tries `mariadb-admin` before `mysqladmin`: MariaDB 11.x dropped the `mysql*`
+# compatibility symlinks, so a `mysqladmin`-only probe never reports healthy on 11.8.
+name: CRM real-DB self-test (test-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_image:
+        description: 'Override the DB service image, e.g. mariadb:10.11 - use the version production actually runs'
+        required: false
+        default: ''
+  pull_request:
+    branches: [main]
+    paths: &crm_paths
+      - 'backend/modules/business-crm/services/paymentService.js'
+      - 'backend/modules/business-crm/services/salesService.js'
+      - 'backend/modules/business-crm/schema.sql'
+      - 'backend/modules/business-crm/db.js'
+      - 'backend/modules/business-crm/money.js'
+      - 'backend/scripts/crm-db-selftest.js'
+      - '.github/workflows/crm-db-selftest.yml'
+  push:
+    # So the Release 1 candidate verifies ITSELF without anyone dispatching a run.
+    branches:
+      - fix/crm-audit-response
+      - feat/crm-release1-backend
+    paths: *crm_paths
+
+# Read-only. No deploy permissions, no id-token, no package write.
+permissions:
+  contents: read
+
+concurrency:
+  group: crm-db-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: mariadb:11.8     # what production runs - keep first
+          - image: mariadb:10.11
+    services:
+      db:
+        image: ${{ github.event.inputs.engine_image || matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-not-a-secret
+          MARIADB_ROOT_PASSWORD: ci-root-not-a-secret
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret || mysqladmin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+
+    env:
+      # Throwaway, in-runner only. Not a secret and not usable anywhere else.
+      ROOT_PW: ci-root-not-a-secret
+      SCRATCH_DB: crm_scratch
+      SCRATCH_USER: crm_tester
+      SCRATCH_PW: ci-scratch-not-a-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Only the driver the script needs. `npm ci` on the whole backend would pull the entire
+      # production tree into a test job.
+      - name: Install the mysql2 driver only
+        run: npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund mysql2@3.15.3
+        working-directory: backend
+
+      - name: Wait for the database service
+        run: |
+          for i in $(seq 1 60); do
+            if mariadb-admin ping -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" --silent 2>/dev/null \
+               || mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" --silent 2>/dev/null; then
+              echo "engine reachable"
+              (mariadb -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e 'SELECT VERSION();' \
+                || mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e 'SELECT VERSION();')
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "database service never became reachable"; exit 1
+
+      # The script refuses to run unless this account is provably confined to the scratch schema.
+      - name: Provision the scratch schema and a restricted user
+        run: |
+          CLI="mariadb"; command -v mariadb >/dev/null 2>&1 || CLI="mysql"
+          "$CLI" -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" <<SQL
+          DROP DATABASE IF EXISTS \`${SCRATCH_DB}\`;
+          CREATE DATABASE \`${SCRATCH_DB}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          DROP USER IF EXISTS '${SCRATCH_USER}'@'%';
+          CREATE USER '${SCRATCH_USER}'@'%' IDENTIFIED BY '${SCRATCH_PW}';
+          GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES ON \`${SCRATCH_DB}\`.* TO '${SCRATCH_USER}'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+          echo "--- grants the test account will present ---"
+          "$CLI" -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" -e "SHOW GRANTS FOR CURRENT_USER();"
+
+      - name: Run the CRM financial-safety self-test
+        working-directory: backend
+        env:
+          DATABASE_URL: mysql://crm_tester:ci-scratch-not-a-secret@127.0.0.1:3306/crm_scratch
+          CRM_SELFTEST_DB: '1'
+          CRM_SELFTEST_EXPECTED_DB: crm_scratch
+        run: node scripts/crm-db-selftest.js
