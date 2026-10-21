@@ -262,12 +262,18 @@ export default function SaleForm() {
   const quickGeneration = useRef(0);
   // Key bound to the exact submitted payload: an edit mints a new one, an unchanged retry reuses it.
   const quickAttempt = useRef({ key: null, payload: null });
+  // An attempt whose outcome is UNKNOWN (no response / 5xx). The contact may already exist, so the
+  // key and the exact body that was sent are frozen: editing the name or phone must not mint a new
+  // identity for money-adjacent data that may already be recorded.
+  const quickUnresolved = useRef(null);
+  const [quickUnresolvedState, setQuickUnresolvedState] = useState(false);
 
   const createQuickClient = async () => {
     if (quickInFlight.current) return;
     quickInFlight.current = true;
     const mine = quickGeneration.current + 1; quickGeneration.current = mine;
     setQuickSaving(true); setQuickError('');
+    let dispatchedOp = null;
     try {
       // ONE identity for one intended contact. The synchronous guard stops simultaneous clicks; it
       // does nothing about a committed request whose RESPONSE was lost, where a second attempt
@@ -275,14 +281,20 @@ export default function SaleForm() {
       // column is UNIQUE, so the same key is the same contact.
       const base = { name: quickClient.name.trim(), whatsapp: quickClient.whatsapp.trim() || '', email: quickClient.email.trim() || '', company: '', address: '', taxId: '', notes: '', status: 'active' };
       const serialised = JSON.stringify(base);
-      if (quickAttempt.current.payload !== serialised) {
+      if (!quickUnresolved.current && quickAttempt.current.payload !== serialised) {
         let fresh;
         try { fresh = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : null; } catch (_) { fresh = null; }
         quickAttempt.current = { key: fresh || `contact-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, payload: serialised };
       }
-      const payload = { ...base, idempotencyKey: quickAttempt.current.key };
+      // While unresolved, send the ORIGINAL body under the ORIGINAL key. Any edits made since stay
+      // in the form - they are a PROPOSAL, and the notice says so rather than implying they were
+      // saved. Reconciling first is what stops one uncertain contact becoming two.
+      const sendBase = quickUnresolved.current ? JSON.parse(quickUnresolved.current.payload) : base;
+      const payload = { ...sendBase, idempotencyKey: quickUnresolved.current ? quickUnresolved.current.key : quickAttempt.current.key };
       if (!payload.name) throw new Error('Client name is required.');
+      dispatchedOp = { key: payload.idempotencyKey, payload: JSON.stringify(sendBase) };
       const response = await crmApi.post('/contacts/clients', payload);
+      quickUnresolved.current = null; setQuickUnresolvedState(false);
       if (mine !== quickGeneration.current) return;   // superseded: do not select, do not reopen
       const created = response.data?.id ? response.data : response.data?.client;
       // Selecting the new client only touches these two pieces of state, so everything already typed
@@ -295,7 +307,17 @@ export default function SaleForm() {
       setClients((current) => [created, ...current]);
       setQuickClient(null);
     } catch (requestError) {
-      if (mine === quickGeneration.current) setQuickError(messageFromError(requestError));
+      if (mine !== quickGeneration.current) return;
+      const status = requestError?.response?.status;
+      // Only a request that actually went out and gave no usable answer is uncertain. A local
+      // "name is required" or an explicit 4xx is a definite refusal: the operator corrects it and
+      // submits normally under a fresh key.
+      if (dispatchedOp && (status === undefined || status >= 500)) {
+        quickUnresolved.current = dispatchedOp; setQuickUnresolvedState(true);
+        setQuickError('This contact may already have been created - the result is unknown. Press "Save and select" again to check with the same operation key. Any edits you make now are NOT saved yet and will not be sent until that is resolved.');
+      } else {
+        setQuickError(messageFromError(requestError));
+      }
     }
     finally { quickInFlight.current = false; setQuickSaving(false); }
   };

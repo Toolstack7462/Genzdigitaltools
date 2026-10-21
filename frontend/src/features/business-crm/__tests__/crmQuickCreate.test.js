@@ -298,3 +298,95 @@ test('editing the name before retrying mints a NEW key - a different intended co
   expect(all[1][1].name).toBe('Corrected Name');
   expect(all[1][1].idempotencyKey).not.toBe(firstKey);
 });
+
+// ── THE UNCOVERED CASE: committed, answer lost, operator EDITS, then retries ───────────────────
+// Previously covered: an UNCHANGED retry after a network error, and an EDITED retry after an
+// explicit 400. Neither is this. Here the server committed, the answer never arrived, and the
+// operator "fixes" the phone number before trying again - the exact sequence where a new key
+// turns one uncertain contact into two.
+test('editing after an UNKNOWN outcome still retries the ORIGINAL operation', async () => {
+  await mount();
+  await openQuickCreate();
+  const nameField = () => modal().querySelectorAll('input')[0];
+  const phoneField = () => modal().querySelectorAll('input')[1];
+
+  await setInput(nameField(), 'Ayesha Siddiqui');
+  if (phoneField()) await setInput(phoneField(), '03001111111');
+
+  // the create COMMITS on the server; the response is lost
+  mockCreateImpl = async () => { throw new Error('Network Error'); };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const first = contactCreates();
+  expect(first).toHaveLength(1);
+  const originalKey = first[0][1].idempotencyKey;
+  const originalPhone = first[0][1].whatsapp;
+  expect(modal()).toBeTruthy();
+  expect(modal().textContent).toMatch(/may already have been created/i);
+  expect(modal().textContent).toMatch(/not saved yet/i);
+
+  // the operator edits the phone number, believing nothing was saved
+  if (phoneField()) await setInput(phoneField(), '03002222222');
+  expect(phoneField().value).toBe('03002222222');        // the proposal is preserved on screen
+
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Ayesha Siddiqui', whatsapp: originalPhone } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all).toHaveLength(2);
+  // SAME key and SAME body: the server replays the original row instead of creating a second one
+  expect(all[1][1].idempotencyKey).toBe(originalKey);
+  expect(all[1][1].whatsapp).toBe(originalPhone);
+  expect(all[1][1].whatsapp).not.toBe('03002222222');
+  expect(new Set(all.map((c) => c[1].idempotencyKey)).size).toBe(1);
+});
+
+test('after reconciliation a genuinely NEW contact gets its own key', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'First Contact');
+  mockCreateImpl = async () => { throw new Error('Network Error'); };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  const originalKey = contactCreates()[0][1].idempotencyKey;
+
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'First Contact' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  expect(modal()).toBeFalsy();                            // resolved and selected
+
+  // a second, deliberate contact afterwards is a different operation
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Second Contact');
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all[all.length - 1][1].name).toBe('Second Contact');
+  expect(all[all.length - 1][1].idempotencyKey).not.toBe(originalKey);
+});
+
+test('an explicit validation rejection stays correctable and submits normally', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Bad Name');
+  mockCreateImpl = async () => { const e = new Error('x'); e.response = { status: 400, data: { error: 'name must be at least 2 characters' } }; throw e; };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  expect(modal().textContent).toMatch(/at least 2 characters/i);
+  expect(modal().textContent).not.toMatch(/may already have been created/i);   // NOT uncertain
+
+  const rejectedKey = contactCreates()[0][1].idempotencyKey;
+  await setInput(modal().querySelectorAll('input')[0], 'Corrected Name');
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Corrected Name' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all[1][1].name).toBe('Corrected Name');          // the correction really is sent
+  expect(all[1][1].idempotencyKey).not.toBe(rejectedKey); // a definite refusal is a new operation
+  expect(modal()).toBeFalsy();
+});
