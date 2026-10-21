@@ -390,3 +390,118 @@ test('an explicit validation rejection stays correctable and submits normally', 
   expect(all[1][1].idempotencyKey).not.toBe(rejectedKey); // a definite refusal is a new operation
   expect(modal()).toBeFalsy();
 });
+
+// ── CLOSING THE DIALOG DOES NOT CANCEL A REQUEST ALREADY SENT ─────────────────────────────────
+// Cancel/Close bumps quickGeneration, and the catch used to `return` on a generation mismatch
+// BEFORE recording the uncertain operation. So closing the modal erased all knowledge of a
+// request that may have committed, and the next attempt created a duplicate. Ownership of the
+// SCREEN and bookkeeping of the OPERATION are now separate concerns.
+test('closing while a create is pending keeps the operation known, without touching the selection', async () => {
+  const slow = deferred();
+  mockDetail.cA = { name: 'Ali Raza', whatsapp: '03001234567', totals: [] };
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Pending Contact');
+
+  mockCreateImpl = () => slow.promise;
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  const sentKey = contactCreates()[0][1].idempotencyKey;
+
+  // the operator gives up on the dialog and picks an existing client instead
+  await act(async () => { modalButton(/cancel/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  await pickExistingClient('Ali Raza');
+  expect(summary().textContent).toContain('Ali Raza');
+
+  // the server had committed; the answer is lost
+  await act(async () => { slow.reject(new Error('Network Error')); });
+  await flush();
+
+  // the newer deliberate selection is untouched...
+  expect(summary().textContent).toContain('Ali Raza');
+  expect(summary().textContent).not.toContain('Pending Contact');
+
+  // ...but the uncertain operation is still known, so reopening retries THAT one
+  await openQuickCreate();
+  expect(modal().textContent).toMatch(/still unconfirmed|may already have been created/i);
+  await setInput(modal().querySelectorAll('input')[0], 'Renamed Contact');
+  mockCreateImpl = async () => ({ data: { id: 'cPEND', name: 'Pending Contact' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const all = contactCreates();
+  expect(all).toHaveLength(2);
+  expect(all[1][1].idempotencyKey).toBe(sentKey);          // same operation, not a new contact
+  expect(all[1][1].name).toBe('Pending Contact');          // original body, not the rename
+  expect(new Set(all.map((c) => c[1].idempotencyKey)).size).toBe(1);
+});
+
+test('a superseded SUCCESS resolves the operation without moving the selection', async () => {
+  const slow = deferred();
+  mockDetail.cA = { name: 'Ali Raza', whatsapp: '03001234567', totals: [] };
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Pending Contact');
+  mockCreateImpl = () => slow.promise;
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+  await act(async () => { modalButton(/cancel/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  await pickExistingClient('Ali Raza');
+
+  await act(async () => { slow.resolve({ data: { id: 'cPEND', name: 'Pending Contact' } }); });
+  await flush();
+
+  expect(summary().textContent).toContain('Ali Raza');      // late success does not hijack
+  // and the operation is resolved, so the next quick-create is a genuinely new one
+  await openQuickCreate();
+  expect(modal().textContent).not.toMatch(/still unconfirmed|may already have been created/i);
+  await setInput(modal().querySelectorAll('input')[0], 'Brand New');
+  mockCreateImpl = async () => ({ data: { id: 'cNEW2', name: 'Brand New' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  const all = contactCreates();
+  expect(all[all.length - 1][1].idempotencyKey).not.toBe(all[0][1].idempotencyKey);
+});
+
+// ── WHAT WAS ACTUALLY SAVED ───────────────────────────────────────────────────────────────────
+test('after reconciliation the operator is told which values were really saved', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Ayesha Siddiqui');
+  const phone = modal().querySelectorAll('input')[1];
+  if (phone) await setInput(phone, '03001111111');
+
+  mockCreateImpl = async () => { throw new Error('Network Error'); };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  // the operator "corrects" the phone, then reconciles
+  if (modal().querySelectorAll('input')[1]) await setInput(modal().querySelectorAll('input')[1], '03002222222');
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Ayesha Siddiqui', whatsapp: '03001111111', email: '' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  const body = container.textContent;
+  expect(body).toMatch(/Reconciled to the contact that was already created/i);
+  expect(body).toMatch(/later edits were not sent/i);
+  expect(body).toContain('03001111111');                    // what the server actually holds
+  expect(body).toContain('03002222222');                    // what the operator typed, not lost
+  expect(body).toMatch(/Open the contact to correct it/i);  // the existing edit workflow
+  expect(contactCreates()).toHaveLength(2);                 // still ONE operation identity
+  expect(new Set(contactCreates().map((c) => c[1].idempotencyKey)).size).toBe(1);
+});
+
+test('a reconciliation with NO differences shows no scary notice', async () => {
+  await mount();
+  await openQuickCreate();
+  await setInput(modal().querySelectorAll('input')[0], 'Same Values');
+  mockCreateImpl = async () => { throw new Error('Network Error'); };
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+
+  mockCreateImpl = async () => ({ data: { id: 'cNEW', name: 'Same Values', whatsapp: '', email: '' } });
+  await act(async () => { modalButton(/save and select/i).dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  expect(container.textContent).not.toMatch(/Reconciled to the contact/i);
+});

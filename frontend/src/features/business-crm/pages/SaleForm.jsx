@@ -267,6 +267,9 @@ export default function SaleForm() {
   // identity for money-adjacent data that may already be recorded.
   const quickUnresolved = useRef(null);
   const [quickUnresolvedState, setQuickUnresolvedState] = useState(false);
+  // Set when a reconciliation confirmed the ORIGINAL contact while the operator had typed
+  // something different. Display-only; it never writes.
+  const [quickReconciled, setQuickReconciled] = useState(null);
 
   const createQuickClient = async () => {
     if (quickInFlight.current) return;
@@ -294,9 +297,24 @@ export default function SaleForm() {
       if (!payload.name) throw new Error('Client name is required.');
       dispatchedOp = { key: payload.idempotencyKey, payload: JSON.stringify(sendBase) };
       const response = await crmApi.post('/contacts/clients', payload);
+      const created = response.data?.id ? response.data : response.data?.client;
+      // The operation is resolved either way - that is bookkeeping, not ownership.
+      const wasReconciling = Boolean(quickUnresolved.current);
       quickUnresolved.current = null; setQuickUnresolvedState(false);
       if (mine !== quickGeneration.current) return;   // superseded: do not select, do not reopen
-      const created = response.data?.id ? response.data : response.data?.client;
+
+      // WHAT WAS ACTUALLY SAVED. On a reconciliation the server replays the ORIGINAL row, so any
+      // values typed after the uncertain attempt were never sent. Saying nothing would let the
+      // operator believe their correction was stored. Nothing is auto-updated and no second
+      // contact is created: the difference is shown, and a correction goes through the existing
+      // contact-edit screen.
+      if (wasReconciling) {
+        const typed = { name: quickClient.name.trim(), whatsapp: quickClient.whatsapp.trim() || '', email: quickClient.email.trim() || '' };
+        const differing = Object.keys(typed).filter((field) => String(typed[field] || '') !== String(created[field] || ''));
+        if (differing.length) {
+          setQuickReconciled({ id: created.id, name: created.name, fields: differing.map((field) => ({ field, saved: created[field] || '-', typed: typed[field] || '-' })) });
+        }
+      }
       // Selecting the new client only touches these two pieces of state, so everything already typed
       // into the sale — items, prices, credentials, notes — is still there when the modal closes.
       update('clientId', created.id);
@@ -307,17 +325,22 @@ export default function SaleForm() {
       setClients((current) => [created, ...current]);
       setQuickClient(null);
     } catch (requestError) {
-      if (mine !== quickGeneration.current) return;
       const status = requestError?.response?.status;
       // Only a request that actually went out and gave no usable answer is uncertain. A local
       // "name is required" or an explicit 4xx is a definite refusal: the operator corrects it and
       // submits normally under a fresh key.
-      if (dispatchedOp && (status === undefined || status >= 500)) {
-        quickUnresolved.current = dispatchedOp; setQuickUnresolvedState(true);
-        setQuickError('This contact may already have been created - the result is unknown. Press "Save and select" again to check with the same operation key. Any edits you make now are NOT saved yet and will not be sent until that is resolved.');
-      } else {
-        setQuickError(messageFromError(requestError));
-      }
+      const uncertain = Boolean(dispatchedOp) && (status === undefined || status >= 500);
+
+      // BOOKKEEPING FIRST, regardless of who owns the dialog now. Closing the modal or selecting
+      // another client does NOT cancel a request already sent, so forgetting it here is how a
+      // possibly-committed contact becomes invisible and then gets created a second time. The
+      // generation check below only governs what may be written to the SCREEN.
+      if (uncertain) { quickUnresolved.current = dispatchedOp; setQuickUnresolvedState(true); }
+
+      if (mine !== quickGeneration.current) return;   // superseded: do not touch the selection
+      setQuickError(uncertain
+        ? 'This contact may already have been created - the result is unknown. Press "Save and select" again to check with the same operation key. Any edits you make now are NOT saved yet and will not be sent until that is resolved.'
+        : messageFromError(requestError));
     }
     finally { quickInFlight.current = false; setQuickSaving(false); }
   };
@@ -471,8 +494,20 @@ export default function SaleForm() {
             placeholder="Search clients…" emptyHint="No client matches that search"
             onSelect={(option) => { quickGeneration.current += 1; update('clientId', option.id); setClientLabel(option.label); loadClientSummary(option.id, option.raw || { name: option.label }); }}
             onClear={() => { update('clientId', ''); setClientLabel(''); clearClientSummary(); }}
-            footer={crm.has('clients.create') && <Button type="button" variant="ghost" icon={UserPlus} onClick={() => { setQuickError(''); setQuickClient(blankQuickClient()); }}>Create new client</Button>}
+            footer={crm.has('clients.create') && <Button type="button" variant="ghost" icon={UserPlus} onClick={() => {
+              setQuickError(quickUnresolved.current ? 'An earlier contact attempt is still unconfirmed. Press "Save and select" to check it with the same operation key before creating anything new.' : '');
+              setQuickClient(blankQuickClient());
+            }}>Create new client</Button>}
           />
+          {quickReconciled && <div className="bcrm-banner warning" role="status">
+            <strong>Reconciled to the contact that was already created.</strong> Your later edits were not sent, so these values are the saved ones:
+            <ul className="bcrm-reconciled">
+              {quickReconciled.fields.map((row) => <li key={row.field}><span>{row.field}</span> saved as <strong>{row.saved}</strong>, you typed <em>{row.typed}</em></li>)}
+            </ul>
+            <Link to={crmPath(`clients/${quickReconciled.id}`)}>Open the contact to correct it</Link>
+            {' '}&middot;{' '}
+            <button type="button" className="bcrm-clientsum-retry" onClick={() => setQuickReconciled(null)}>Keep the saved values</button>
+          </div>}
           {clientSummary && clientSummary.id === form.clientId && <div className="bcrm-clientsum" aria-live="polite">
             <div className="bcrm-clientsum-head">
               <strong>{clientSummary.contact?.name || clientLabel}</strong>

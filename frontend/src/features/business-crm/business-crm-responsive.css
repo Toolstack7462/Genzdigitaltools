@@ -510,3 +510,6 @@
 }
 .bcrm-clientsum-retry { background: none; border: 0; padding: 0 0 0 4px; color: #2563EB;
   font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
+.bcrm-reconciled { margin: 6px 0; padding-left: 18px; font-size: 13px; }
+.bcrm-reconciled li { margin: 2px 0; }
+.bcrm-reconciled span { text-transform: capitalize; color: #64748B; }
