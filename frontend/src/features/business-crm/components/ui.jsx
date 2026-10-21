@@ -107,13 +107,23 @@ export function Combobox({
   const wrap = useRef(null);
   const listId = useId();
 
+  // STALE RESULTS. The ticket used to advance inside the debounce callback, i.e. only once a
+  // delayed request actually STARTED. Anything that happened while a request was already in
+  // flight - clearing the text, closing the dropdown, dropping below minChars, choosing an
+  // option, a currency change that swaps `search`, or unmounting - left that request "current",
+  // so its answer still landed and repopulated the list. An old client could then be highlighted
+  // and chosen as if it matched what was on screen.
+  //
+  // The ticket is now bumped the moment the inputs change and again on cleanup, so an obsolete
+  // request is invalidated immediately rather than when its successor eventually fires.
   useEffect(() => {
-    if (!open) return undefined;
+    const mine = ticket.current + 1; ticket.current = mine;
+    if (!open) { setBusy(false); return () => { ticket.current += 1; }; }
     const text = term.trim();
-    if (text.length < minChars) { setOptions([]); setBusy(false); setFailed(''); return undefined; }
+    if (text.length < minChars) { setOptions([]); setBusy(false); setFailed(''); return () => { ticket.current += 1; }; }
     setBusy(true);
     const timer = setTimeout(async () => {
-      const mine = ticket.current + 1; ticket.current = mine;
+      if (mine !== ticket.current) return;          // superseded while waiting out the debounce
       try {
         const found = await search(text);
         if (mine !== ticket.current) return;
@@ -123,7 +133,7 @@ export function Combobox({
         setOptions([]); setActive(-1); setFailed('Could not search right now');
       } finally { if (mine === ticket.current) setBusy(false); }
     }, debounceMs);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); ticket.current += 1; };
   }, [term, open, minChars, debounceMs, search]);
 
   // Close when focus or a click leaves the widget entirely.
@@ -134,7 +144,8 @@ export function Combobox({
     return () => document.removeEventListener('mousedown', onDocDown);
   }, [open]);
 
-  const choose = (option) => { onSelect(option); setOpen(false); setTerm(''); setOptions([]); setActive(-1); };
+  const invalidate = () => { ticket.current += 1; };
+  const choose = (option) => { invalidate(); onSelect(option); setOpen(false); setTerm(''); setOptions([]); setActive(-1); setBusy(false); };
   const onKeyDown = (event) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -162,7 +173,7 @@ export function Combobox({
         <button type="button" className="bcrm-combo-value" disabled={disabled} onClick={() => { if (!disabled) { setOpen(true); setTerm(''); } }} aria-label={`${valueLabel} — change selection`}>
           <span>{valueLabel}</span><ChevronDown size={15} aria-hidden="true"/>
         </button>
-        {onClear && !disabled && <button type="button" className="bcrm-combo-clear" onClick={() => { onClear(); setTerm(''); setOpen(false); }} aria-label="Clear selection"><X size={14}/></button>}
+        {onClear && !disabled && <button type="button" className="bcrm-combo-clear" onClick={() => { invalidate(); onClear(); setTerm(''); setOptions([]); setActive(-1); setBusy(false); setOpen(false); }} aria-label="Clear selection"><X size={14}/></button>}
       </div>
       : <div className="bcrm-combo-input">
         <Search size={15} aria-hidden="true"/>

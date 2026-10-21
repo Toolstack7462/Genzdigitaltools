@@ -33,7 +33,7 @@ jest.mock('../api', () => ({
     get: async (url) => {
       if (url.startsWith('/contacts/clients')) return { data: { rows: [{ id: 'client-1', name: 'Synthetic Client' }], total: 1 } };
       if (url.startsWith('/contacts/vendors')) return { data: { rows: [], total: 0 } };
-      if (url.startsWith('/products')) return { data: { rows: [], total: 0 } };
+      if (url.startsWith('/products')) return { data: { rows: [{ id: 'prod-1', name: 'Selftest Product', category: 'Software', accountType: 'private', durationLabel: '1 Month', defaultSalePrice: '500.00', defaultPurchaseCost: '200.00', currencyCode: 'PKR', active: true }], total: 1 } };
       return { data: { rows: [], total: 0 } };
     },
     post: (...args) => { mockPosts.push(args); return mockPostImpl(...args); },
@@ -43,7 +43,11 @@ jest.mock('../api', () => ({
 }));
 
 const mockCrm = {
-  currency: 'PKR', has: () => true, bootstrap: { user: { id: 'u1' }, settings: {} },
+  currency: 'PKR',
+  // mutable per test: a restricted role is what makes SaleForm throw BEFORE any request
+  denied: new Set(),
+  has(permission) { return !mockCrm.denied.has(permission); },
+  bootstrap: { user: { id: 'u1' }, settings: {} },
   queued: 0, setQueued: () => {},
 };
 jest.mock('../BusinessCrmContext', () => ({ __esModule: true, useBusinessCrm: () => mockCrm }));
@@ -82,12 +86,14 @@ const submitForm = async () => {
 };
 
 beforeEach(() => {
+  jest.useFakeTimers();
+  mockCrm.denied = new Set();
   mockPosts.length = 0;
   mockPostImpl = async () => ({ data: { id: 'sale-created-1' } });
   document.body.innerHTML = '';
   Object.defineProperty(window.navigator, 'onLine', { value: true, configurable: true });
 });
-afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; });
+afterEach(async () => { if (root) await act(async () => root.unmount()); root = null; jest.useRealTimers(); });
 
 test('the create carries an idempotency key', async () => {
   await mount();
@@ -173,4 +179,67 @@ test('a DEFINITE refusal is not frozen - the operator may correct and resubmit u
   await submitForm();
   expect(container.textContent).not.toMatch(/result of this sale is unknown/i);
   expect(container.textContent).toMatch(/Select a catalogue product/i);
+});
+
+// ── a LOCAL validation error is not an uncertain outcome ──────────────────────────────────────
+// Reported against this file's own subject: submit() treated ANY caught error without an HTTP
+// status as an unknown sale outcome, and the "select a catalogue product" throw happens BEFORE a
+// request exists. A restricted operator who forgot a product therefore had the form frozen over a
+// sale that never left the browser.
+test('a restricted role missing a catalogue product makes NO request and is not frozen', async () => {
+  mockCrm.denied = new Set(['profit.view']);        // cost hidden -> every item needs a productId
+  await mount();
+  await submitForm();
+
+  expect(mockPosts.filter((call) => call[0] === '/sales')).toHaveLength(0);
+  expect(container.textContent).toMatch(/Select a catalogue product/i);
+  expect(container.textContent).not.toMatch(/result of this sale is unknown/i);
+  expect(container.textContent).not.toMatch(/may already have been created/i);
+});
+
+test('after correcting the INPUT the sale submits normally, under a real key', async () => {
+  mockCrm.denied = new Set(['profit.view']);        // cost hidden -> a catalogue product is required
+  await mount();
+  await submitForm();
+  expect(mockPosts.filter((call) => call[0] === '/sales')).toHaveLength(0);
+
+  // The operator corrects the input itself: pick the catalogue product the restriction demands.
+  const productBox = [...container.querySelectorAll('input')].find((i) => /Search catalogue/i.test(i.placeholder || ''));
+  expect(productBox).toBeTruthy();
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(productBox, 'self');
+    productBox.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => { jest.advanceTimersByTime(400); await Promise.resolve(); });
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+  const option = container.querySelector('[role="option"] button') || container.querySelector('[role="option"]');
+  expect(option).toBeTruthy();
+  await act(async () => { option.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+  await submitForm();
+  const created = mockPosts.filter((call) => call[0] === '/sales');
+  expect(created).toHaveLength(1);
+  expect(created[0][1].items[0].productId).toBe('prod-1');
+  expect(typeof created[0][1].idempotencyKey).toBe('string');
+  expect(container.textContent).not.toMatch(/result of this sale is unknown/i);
+});
+
+test('an uncertain outcome still freezes a REAL dispatch, with a non-null key and payload', async () => {
+  await mount();
+  mockPostImpl = async () => { throw new Error('Network Error'); };
+  await submitForm();
+
+  const sent = mockPosts.filter((call) => call[0] === '/sales');
+  expect(sent).toHaveLength(1);
+  expect(sent[0][1].idempotencyKey).toBeTruthy();
+  expect(container.textContent).toMatch(/result of this sale is unknown/i);
+
+  // and the retry carries that same real identity - never a frozen null
+  mockPostImpl = async () => ({ data: { id: 'sale-created-1' } });
+  await submitForm();
+  const all = mockPosts.filter((call) => call[0] === '/sales');
+  expect(all[1][1].idempotencyKey).toBe(all[0][1].idempotencyKey);
+  expect(all[1][1].idempotencyKey).not.toBe(null);
 });

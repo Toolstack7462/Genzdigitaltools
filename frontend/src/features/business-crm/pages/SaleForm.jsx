@@ -231,6 +231,13 @@ export default function SaleForm() {
     if (inFlight.current) return;
     inFlight.current = true;
     setSaving(true); setError('');
+    // Only a request that was actually DISPATCHED can have an uncertain result. Local validation
+    // throws below (a missing catalogue product, the offline refusals) happen before anything is
+    // sent, and treating those as an unknown sale outcome froze the form over a sale that never
+    // left the browser. `confirmed` separates a completed save from a later navigation/render
+    // error, which must not reopen the uncertain path either.
+    let dispatched = null;      // { key, payload } exactly as sent - never null when used
+    let confirmed = false;
     try {
       const items = form.items.map((item) => {
         const output = {
@@ -264,14 +271,18 @@ export default function SaleForm() {
       const resend = !editing && unresolvedRef.current;
       const sent = resend ? unresolvedRef.current.payload : payload;
       const body = editing ? sent : { ...sent, idempotencyKey: keyForPayload(JSON.stringify(sent)) };
+      // Captured BEFORE dispatch, so an uncertain outcome always has a real key and payload to
+      // reconcile with rather than a null one.
+      if (!editing) dispatched = { key: body.idempotencyKey, payload: sent };
       const response = editing ? await crmApi.put(`/sales/${id}`, body) : await crmApi.post('/sales', body);
+      confirmed = true;
       unresolvedRef.current = null; setUnresolvedSale(null);
       navigate(crmPath(`sales/${response.data.id}`));
     } catch (requestError) {
       const status = requestError?.response?.status;
-      if (!editing && (status === undefined || status >= 500)) {
-        // No usable answer. The sale may exist. Freeze this operation's identity and payload.
-        const frozen = unresolvedRef.current || { key: attempt.current.key, payload: pendingPayload.current };
+      if (!editing && dispatched && !confirmed && (status === undefined || status >= 500)) {
+        // A request really went out and gave no usable answer. The sale may exist.
+        const frozen = unresolvedRef.current || dispatched;
         unresolvedRef.current = frozen; setUnresolvedSale(frozen);
         setError('The result of this sale is unknown - it may already have been created with its invoice number. Press Save sale again to check with the same operation key. Do not change the form: an edit would create a second sale.');
       } else {
