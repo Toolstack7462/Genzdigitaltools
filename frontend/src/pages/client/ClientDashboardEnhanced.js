@@ -601,9 +601,12 @@ const ClientDashboardEnhanced = () => {
     if (/context invalidated|Extension context/i.test(raw)) {
       return 'Extension was reloaded. Refresh this page, then click Access again.';
     }
-    // Extension did not respond in time (service worker sleeping).
-    if (/did not respond in time|timeout/i.test(raw)) {
-      return 'Extension is waking up. Please wait 5 seconds and try again.';
+    // Still opening. "Extension is waking up" was a guess that read as a failure: a slow open is
+    // usually the extension still working (cookies applied, tab created, storage being injected),
+    // and the tab is frequently already open and usable. Do not call that a failure.
+    if (result?.error === 'open_pending' || result?.pending === true
+        || /still opening|did not respond in time|timeout/i.test(raw)) {
+      return 'The tool is still opening. Check the new tab before clicking Access again.';
     }
     return raw || 'Could not open tool.';
   }, []);

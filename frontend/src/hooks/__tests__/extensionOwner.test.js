@@ -545,3 +545,62 @@ test('a truly empty failure still says something, and never the bare fallback as
   expect(r.success).toBe(false);
   expect(r.message).not.toBe('Could not open tool: Extension error');
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// A SLOW OPEN IS NOT A FAILED OPEN.
+//
+// Reported by the owner, 2026-10-21: "Could not open tool. Please refresh the dashboard and try
+// again. that is showing but the tools is open". Reproduced with the real extension 3.9.38 driven
+// in Chrome (bundled Chromium, --load-extension) against a slow destination and a session bundle
+// carrying localStorage — the Write Human shape, since Supabase keeps its session there and this
+// is the only tool whose bundle takes the page-storage path:
+//
+//     RESULT after 33124ms: {"success":true,"method":"session",...}
+//     >>> /opened POSTED at +34397ms
+//     tabs open on writehuman.ai: 2
+//
+// The open WORKED. The dashboard's 20s budget expired first, so the bridge rejected with
+// "Extension did not respond in time" and the client was told to refresh a tool that was already
+// open in the next tab — and because the open is only recorded at the very end of that path, the
+// operator's TOOL_OPENED telemetry showed 46 CREDENTIALS_FETCHED and ZERO opens for this tool
+// while every other tool logged opens roughly 1:1.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+test('the open is still in flight at 20s — the old budget was not a verdict', async () => {
+  bridge.status = { connected: true, version: '3.9.38' };
+  await mount(React.createElement(Consumer, { name: 'dashboard' }));
+  await tick(0);
+  bridge.holdOnly('GENZ_OPEN_TOOL');            // status still answers; the open never replies
+
+  let result;
+  openViaHook('tool-slow').then((r) => { result = r; });
+
+  // openTool awaits its own status check first, so the open's timer does not exist at t0. Advance
+  // only once it has actually been dispatched, or the clock runs out before the timer is armed and
+  // this test proves nothing.
+  for (let i = 0; i < 50 && !bridge.sent.some((m) => m.type === 'GENZ_OPEN_TOOL'); i++) {
+    await act(async () => { jest.advanceTimersByTime(100); await Promise.resolve(); });
+  }
+  expect(bridge.sent.some((m) => m.type === 'GENZ_OPEN_TOOL')).toBe(true);
+
+  // The measured open needs ~33s. At 20s — the budget that produced "Could not open tool. Please
+  // refresh the dashboard and try again." over a WriteHuman tab that was open and usable — the
+  // request must still be outstanding rather than already rejected.
+  await tick(20001);
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+  expect(result).toBeUndefined();
+}, 90000);
+
+// The timeout rejection carries exactly this message from sendToBridge, so replying with it
+// exercises the same mapping without advancing 45s of fake time through the 500ms status poll
+// (which costs more wall-clock than the assertion is worth).
+test('a timed-out open reports "still opening", never the generic could-not-open', async () => {
+  const r = await openWith({ success: false, message: 'Extension did not respond in time' });
+
+  expect(r.error).toBe('open_pending');
+  expect(r.pending).toBe(true);
+  expect(r.message).toMatch(/still opening/i);
+  // The two wordings that misdescribed a working tab.
+  expect(r.message).not.toMatch(/Could not open tool/i);
+  expect(r.message).not.toMatch(/waking up/i);
+});

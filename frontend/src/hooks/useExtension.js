@@ -15,6 +15,21 @@ import { useEffect, useSyncExternalStore } from 'react';
 import api from '../services/api';
 
 const BRIDGE_TIMEOUT_MS = 15000;
+
+// Opening a tool is the ONE bridge call that performs a real navigation: the extension applies
+// cookies, creates the tab, waits for it to load, injects page-scoped storage and reloads. That
+// is legitimately slow and is NOT the generic request budget.
+//
+// MEASURED, 2026-10-21, real extension 3.9.38 driven in Chrome against a slow destination with a
+// storage-bearing session bundle (the Write Human shape — Supabase keeps its session in
+// localStorage, so this tool alone takes the storage path): the open returned success after
+// 33,124ms and the open was recorded at +34,397ms. With a 20s budget the dashboard had already
+// rejected a launch that genuinely worked, which is what put "Could not open tool. Please refresh
+// the dashboard and try again." under a WriteHuman tab that was open and usable.
+//
+// This is a per-operation budget for that one navigation, sized to the measured worst case. The
+// generic BRIDGE_TIMEOUT_MS above is deliberately left at 15s.
+const OPEN_TOOL_BRIDGE_TIMEOUT_MS = 45000;
 // Auto-connect uses exponential backoff and runs as long as the dashboard tab
 // is open — we never "give up" silently. After this many consecutive failures
 // we also automatically escalate to `forceReauth: true` to defeat any stale
@@ -641,7 +656,7 @@ async function openTool(rawToolId, meta = {}) {
     // weaken access control — it just removes the gate that was blocking the
     // tab from ever opening.
     logStage('open_tool:send', { toolId });
-    let result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
+    let result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, OPEN_TOOL_BRIDGE_TIMEOUT_MS);
     logStage('open_tool:result', { toolId, success: result?.success !== false, error: result?.error || null, method: result?.method || null });
 
     // Auto-request missing host permission, then retry. Never tell user to use popup.
@@ -649,7 +664,7 @@ async function openTool(rawToolId, meta = {}) {
       try {
         const permission = await sendToBridge('GENZ_REQUEST_PERMISSION', { originPattern: result.originPattern }, 20000);
         if (permission?.success || permission?.granted) {
-          result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
+          result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, OPEN_TOOL_BRIDGE_TIMEOUT_MS);
         } else {
           return { success: false, error: 'permission_denied', message: 'Domain access could not be granted automatically. Contact admin.' };
         }
@@ -672,7 +687,7 @@ async function openTool(rawToolId, meta = {}) {
     if (result?.needsReauth || (result?.error && /auth_expired|token|authorization|401|reauth/i.test(String(result.error)))) {
       logStage('stale_token_retry', { toolId, trigger: result?.error || 'needsReauth' });
       await connectExtension({}, { forceReauth: true });
-      result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
+      result = await sendToBridge('GENZ_OPEN_TOOL', openPayload, OPEN_TOOL_BRIDGE_TIMEOUT_MS);
       logStage('stale_token_retry:result', { toolId, success: result?.success !== false, error: result?.error || null });
     }
 
@@ -700,7 +715,7 @@ async function openTool(rawToolId, meta = {}) {
       try {
         logStage('stale_token_retry', { toolId, trigger: err.needsReauth ? 'needsReauth' : (extStage || msg) });
         await connectExtension({}, { forceReauth: true });                       // fresh activation token
-        const retryResult = await sendToBridge('GENZ_OPEN_TOOL', openPayload, 20000);
+        const retryResult = await sendToBridge('GENZ_OPEN_TOOL', openPayload, OPEN_TOOL_BRIDGE_TIMEOUT_MS);
         logStage('stale_token_retry:result', { toolId, success: retryResult?.success !== false, error: retryResult?.error || null });
         return retryResult;
       } catch (retryErr) {
@@ -710,6 +725,13 @@ async function openTool(rawToolId, meta = {}) {
         logStage('stale_token_retry:fail', { toolId, stage, error: rmsg });
         return { success: false, error: stage, message: stageMessage(stage, retryErr) };
       }
+    }
+    // A TIMEOUT on the open is not a verdict. The extension may have opened the tool and still be
+    // finishing the session work, so claiming failure here is wrong in both directions: it hides a
+    // working tab and invites a second click. Report it as unfinished, not as failure.
+    if (/did not respond in time/i.test(msg)) {
+      return { success: false, error: 'open_pending', pending: true,
+               message: 'The tool is still opening. Check the new tab before clicking Access again.' };
     }
     // Surface the extension's own wording when it gave one; "Could not open tool: Extension error"
     // told the operator nothing and hid a stage the extension already knew.
