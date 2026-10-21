@@ -58,6 +58,18 @@ Three separate things had to be true at once, and they were:
    `--authorize-session-limit-recovery` writes `config.json`, never the halt. There was no
    supported action, so the install was blocked for its remaining life.
 
+   The owner's own helper agrees. `~/Downloads/Repair-WriteHuman-ReLogin.ps1` (17 Oct 2026) is the
+   scripted operator path, and against this state it refuses three separate times before it would
+   change anything - all three read from the agent's own `--workflow-status`:
+
+   | Its check | Value in this incident | Result |
+   |---|---|---|
+   | `buildId -eq '3.5.13-captcha-rc1'` | `3.5.15-retry-rc1` | "Install the supplied 3.5.13 RC1 build first" |
+   | `submissionUnresolved` (`credentialSubmitted && !closed`) | `true` | "A previous password submission is unresolved" |
+   | `haltedReason -in ('captcha_required','mfa_required')` | `submission_outcome_unknown` | "Separate review required: submission_outcome_unknown" |
+
+   So the halt was unresolvable from the agent, from the operator script, and across restarts.
+
 ## 5. The correction
 
 Agent source only, `writehuman-v2/agent/cookie-sync-agent.js`, two small changes:
