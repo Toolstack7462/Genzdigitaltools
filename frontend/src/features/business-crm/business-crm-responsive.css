@@ -490,3 +490,21 @@
   .bcrm-pager { flex-direction: column; align-items: stretch; }
   .bcrm-pager-controls { justify-content: space-between; }
 }
+
+/* Selected-client summary. Read-only; scoped to .bcrm-clientsum*. Stacks on narrow phones. */
+.bcrm-clientsum { margin-top: 8px; padding: 10px 12px; background: #F8FAFC;
+  border: 1px solid #E2E8F0; border-radius: 10px; }
+.bcrm-clientsum-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+.bcrm-clientsum-head strong { font-size: 14px; color: #0F172A; }
+.bcrm-clientsum-link { font-size: 12px; font-weight: 600; color: #2563EB; text-decoration: none; white-space: nowrap; }
+.bcrm-clientsum-link:hover { text-decoration: underline; }
+.bcrm-clientsum-facts { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 13px; }
+.bcrm-clientsum-facts dt { color: #64748B; }
+.bcrm-clientsum-facts dd { margin: 0; color: #0F172A; overflow-wrap: anywhere; }
+.bcrm-clientsum-muted { color: #94A3B8; }
+.bcrm-clientsum-warn { color: #B45309; font-weight: 600; }
+@media (max-width: 640px) {
+  .bcrm-clientsum-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .bcrm-clientsum-facts { grid-template-columns: 1fr; gap: 0 0; }
+  .bcrm-clientsum-facts dt { margin-top: 6px; font-size: 12px; }
+}

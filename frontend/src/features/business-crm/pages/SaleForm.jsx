@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Plus, Save, Trash2, UserPlus } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
 import { crmApi, messageFromError } from '../api';
@@ -47,6 +47,37 @@ export default function SaleForm() {
   // payload spreads `form` wholesale, and the sale schema would reject unknown keys.
   const [clientLabel, setClientLabel] = useState('');
   const [vendorLabel, setVendorLabel] = useState('');
+  // SELECTED-CLIENT SUMMARY. Read-only. Name, phone, email and company come from the suggestion
+  // that was already fetched, so selecting costs no extra request for them. Only the outstanding
+  // balance needs the authorised detail call, and because that endpoint returns totals GROUPED BY
+  // currency_code, switching currency re-reads the same response instead of fetching again.
+  //
+  // `state` keeps four outcomes apart that would otherwise all look like "0": not asked yet,
+  // loading, the lookup FAILED (balance unknown), and a confirmed zero.
+  const [clientSummary, setClientSummary] = useState(null);
+  const summaryTicket = useRef(0);
+  const accountId = String(crm.bootstrap?.user?.id || '');
+
+  const loadClientSummary = useCallback((id, contact) => {
+    const mine = summaryTicket.current + 1; summaryTicket.current = mine;
+    setClientSummary({ id, account: accountId, contact: contact || null, state: 'loading', totals: null });
+    crmApi.get(`/contacts/clients/${id}`)
+      .then((response) => {
+        // Guarded by ticket AND by id/account, so a late answer for client A cannot land on B.
+        if (mine !== summaryTicket.current) return;
+        const totals = Array.isArray(response?.data?.totals) ? response.data.totals : [];
+        setClientSummary((current) => (current && current.id === id && current.account === accountId
+          ? { ...current, state: 'ready', totals, contact: current.contact || response?.data?.contact || null } : current));
+      })
+      .catch(() => {
+        if (mine !== summaryTicket.current) return;
+        setClientSummary((current) => (current && current.id === id ? { ...current, state: 'failed' } : current));
+      });
+  }, [accountId]);
+
+  const clearClientSummary = useCallback(() => { summaryTicket.current += 1; setClientSummary(null); }, []);
+  useEffect(() => { clearClientSummary(); }, [accountId, clearClientSummary]);
+
   const [quickClient, setQuickClient] = useState(null);
   const [quickSaving, setQuickSaving] = useState(false);
   const [quickError, setQuickError] = useState('');
@@ -115,11 +146,30 @@ export default function SaleForm() {
         await offlineDb.putCache(key, rows);
       } catch { /* Cache warming is best effort: a failure here must not surface as a form error. */ }
     };
+    // MEASURED, in the rendered form: this effect used to depend on the currency as well, so
+    // switching PKR -> INR re-issued THREE pageSize=500 requests - clients and vendors included -
+    // although neither list is currency-scoped. Only the product catalogue is. Splitting the
+    // dependency is the minimal separation; nothing else about the warm-up changes, and it is
+    // still real background work (see the measurement test).
     warm('clients', '/contacts/clients?pageSize=500', setClients);
     if (vendorVisible) warm('vendors', '/contacts/vendors?pageSize=500', setVendors);
-    warm(`products:${warmCurrency}`, `/products?pageSize=500&currency=${warmCurrency}`, setProducts);
     return () => { active = false; };
-  }, [warmCurrency, vendorVisible]);
+  }, [vendorVisible]);
+
+  useEffect(() => {
+    if (!navigator.onLine) return undefined;
+    let active = true;
+    (async () => {
+      try {
+        const response = await crmApi.get(`/products?pageSize=500&currency=${warmCurrency}`);
+        if (!active) return;
+        const rows = response.data.rows || [];
+        setProducts(rows);
+        await offlineDb.putCache(`products:${warmCurrency}`, rows);
+      } catch { /* best effort, as above */ }
+    })();
+    return () => { active = false; };
+  }, [warmCurrency]);
 
   // Suggestion sources. Online they hit the module's own list endpoints with the same `q` filter the
   // list pages use; offline they fall back to the warmed cache so an offline sale is still possible.
@@ -313,10 +363,30 @@ export default function SaleForm() {
           <Combobox
             name="clientId" required value={form.clientId} valueLabel={clientLabel} search={searchClients}
             placeholder="Search clients…" emptyHint="No client matches that search"
-            onSelect={(option) => { update('clientId', option.id); setClientLabel(option.label); }}
-            onClear={() => { update('clientId', ''); setClientLabel(''); }}
+            onSelect={(option) => { update('clientId', option.id); setClientLabel(option.label); loadClientSummary(option.id, option.raw || { name: option.label }); }}
+            onClear={() => { update('clientId', ''); setClientLabel(''); clearClientSummary(); }}
             footer={crm.has('clients.create') && <Button type="button" variant="ghost" icon={UserPlus} onClick={() => { setQuickError(''); setQuickClient(blankQuickClient()); }}>Create new client</Button>}
           />
+          {clientSummary && clientSummary.id === form.clientId && <div className="bcrm-clientsum" aria-live="polite">
+            <div className="bcrm-clientsum-head">
+              <strong>{clientSummary.contact?.name || clientLabel}</strong>
+              <Link className="bcrm-clientsum-link" to={crmPath(`clients/${clientSummary.id}`)}>Open profile</Link>
+            </div>
+            <dl className="bcrm-clientsum-facts">
+              {clientSummary.contact?.whatsapp && <><dt>Phone</dt><dd>{clientSummary.contact.whatsapp}</dd></>}
+              {clientSummary.contact?.email && <><dt>Email</dt><dd>{clientSummary.contact.email}</dd></>}
+              {clientSummary.contact?.company && <><dt>Company</dt><dd>{clientSummary.contact.company}</dd></>}
+              <dt>Outstanding ({form.currencyCode})</dt>
+              <dd>{(() => {
+                // Four distinct outcomes - a failure must never read as a zero balance.
+                if (clientSummary.state === 'loading') return <span className="bcrm-clientsum-muted">Checking…</span>;
+                if (clientSummary.state === 'failed') return <span className="bcrm-clientsum-warn">Could not load — balance unknown</span>;
+                const row = (clientSummary.totals || []).find((total) => total.currency_code === form.currencyCode);
+                if (!row) return <span className="bcrm-clientsum-muted">None in {form.currencyCode}</span>;
+                return <strong>{formatMoney(row.pending_amount, form.currencyCode)}</strong>;
+              })()}</dd>
+            </dl>
+          </div>}
         </Field>
         {vendorVisible && <Field label="Vendor" hint="Optional">
           <Combobox
