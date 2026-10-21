@@ -193,3 +193,35 @@ export function Combobox({
   </div>;
 }
 export function Modal({ open, title, children, onClose, footer }) { if (!open) return null; return <div className="bcrm-modal-backdrop" role="presentation" onMouseDown={(e) => e.target === e.currentTarget && onClose()}><section className="bcrm-modal" role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label="Close"><X size={19}/></button></header><div className="bcrm-modal-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>; }
+
+/**
+ * Pager — server-side paging for the CRM lists.
+ *
+ * The lists requested `pageSize=100` (audit: 200) and never sent `page`, so past the first page the
+ * remaining records were simply unreachable even though every route already returns
+ * `{ rows, page, pageSize, total }`. This renders the controls for that existing contract; it does
+ * not fetch anything itself and never raises pageSize to swallow the whole table.
+ *
+ * `total` is the count for the CURRENT filter, which is deliberately distinct from the number of
+ * rows on screen — both are shown so a filtered view is never read as the whole ledger.
+ */
+export function Pager({ page, pageSize, total, shown, onPage, busy = false, noun = 'records' }) {
+  const count = Number(total || 0);
+  const size = Math.max(1, Number(pageSize || 1));
+  const pages = Math.max(1, Math.ceil(count / size));
+  const current = Math.min(Math.max(1, Number(page || 1)), pages);
+  if (count === 0) return null;
+  const from = (current - 1) * size + 1;
+  const to = Math.min(current * size, count);
+  return <nav className="bcrm-pager" aria-label={`${noun} pagination`}>
+    <p className="bcrm-pager-count">
+      Showing <strong>{from}</strong>–<strong>{to}</strong> of <strong>{count}</strong> {noun}
+      {Number(shown) > 0 && Number(shown) !== count ? <span className="bcrm-pager-note"> (this page: {shown})</span> : null}
+    </p>
+    <div className="bcrm-pager-controls">
+      <Button variant="secondary" onClick={() => onPage(current - 1)} disabled={busy || current <= 1} aria-label="Previous page">Previous</Button>
+      <span className="bcrm-pager-pos" aria-live="polite">Page {current} of {pages}</span>
+      <Button variant="secondary" onClick={() => onPage(current + 1)} disabled={busy || current >= pages} aria-label="Next page">Next</Button>
+    </div>
+  </nav>;
+}

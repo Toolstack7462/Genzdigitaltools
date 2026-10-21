@@ -471,3 +471,22 @@
   /* Below this width the right-aligned meta block would squash the store name, so it stacks. */
   .bcrm-invoice-preview-meta { margin-left: 0; text-align: left; width: 100%; }
 }
+
+/* Payment context block. Scoped to .bcrm-paycontext; no global rules, no new assets. */
+.bcrm-paycontext { display: grid; gap: 6px; padding: 10px 12px; margin-bottom: 12px;
+  background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 10px; }
+.bcrm-paycontext p { display: flex; justify-content: space-between; gap: 12px; margin: 0; font-size: 13px; }
+.bcrm-paycontext span { color: #64748B; }
+.bcrm-paycontext strong { color: #0F172A; font-variant-numeric: tabular-nums; }
+
+/* Pager. Scoped to .bcrm-pager; stacks on narrow phones so controls stay reachable. */
+.bcrm-pager { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-top: 1px solid #E2E8F0; }
+.bcrm-pager-count { margin: 0; font-size: 13px; color: #475569; }
+.bcrm-pager-note { color: #94A3B8; }
+.bcrm-pager-controls { display: flex; gap: 10px; align-items: center; }
+.bcrm-pager-pos { font-size: 13px; color: #475569; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) {
+  .bcrm-pager { flex-direction: column; align-items: stretch; }
+  .bcrm-pager-controls { justify-content: space-between; }
+}

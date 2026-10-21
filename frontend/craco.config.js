@@ -103,4 +103,32 @@ webpackConfig.devServer = (devServerConfig) => {
   return devServerConfig;
 };
 
+// ── jest: make the INSTALLED router resolvable in tests ────────────────────────────────────────
+// react-router-dom 7.16's package.json has "main": "./dist/main.js", which does not exist - only
+// dist/index.js (CJS) and dist/index.mjs ship. Jest's resolver reads "main" and ignores the
+// "exports" map, so `require('react-router-dom')` throws "Cannot find module" in tests while
+// webpack, which does read "exports", resolves it correctly. That is why the CRM and assistant
+// tests had to stub the router instead of exercising it.
+//
+// Mapping it to the real CJS build lets tests use the actual router. This affects jest only; the
+// production webpack build resolves through "exports" exactly as before.
+// react-router ships the same way, and react-router-dom's CJS build re-exports `react-router/dom`.
+const routerDomDir = path.dirname(require.resolve('react-router-dom/package.json'));
+const routerCoreDir = path.dirname(require.resolve('react-router/package.json'));
+const routerCjsEntry = path.join(routerDomDir, 'dist', 'index.js');
+const routerCoreEntry = path.join(routerCoreDir, 'dist', 'development', 'index.js');
+const routerCoreDomEntry = path.join(routerCoreDir, 'dist', 'development', 'dom-export.js');
+
+webpackConfig.jest = {
+  configure: (jestConfig) => {
+    jestConfig.moduleNameMapper = {
+      ...(jestConfig.moduleNameMapper || {}),
+      '^react-router-dom$': routerCjsEntry,
+      '^react-router/dom$': routerCoreDomEntry,
+      '^react-router$': routerCoreEntry,
+    };
+    return jestConfig;
+  },
+};
+
 module.exports = webpackConfig;

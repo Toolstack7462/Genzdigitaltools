@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Plus, Save, Trash2, UserPlus } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
@@ -195,8 +195,31 @@ export default function SaleForm() {
     }));
   };
 
+  // Sale creation already had a `saving` flag and a disabled button. Two protections were still
+  // missing, and both are reachable: `validation.js` permits `idempotencyKey` on `saleCreate`, and
+  // `salesService` checks it (SELECT ... WHERE idempotency_key). Its replay rule is LOOSER than the
+  // payment one - it compares only the creator and returns the existing sale, ignoring the new
+  // payload entirely - so a key reused after editing the items would silently return the old sale.
+  // The key is therefore bound to the exact payload: identical payload (a retry) reuses it, any
+  // edit mints a new one. `editing` is excluded; PUT is version-checked, not idempotency-keyed.
+  const attempt = useRef({ key: null, payload: null });
+  const keyForPayload = (serialised) => {
+    if (attempt.current.payload !== serialised) {
+      let key;
+      try { key = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : null; } catch (_) { key = null; }
+      attempt.current = { key: key || `sale-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`, payload: serialised };
+    }
+    return attempt.current.key;
+  };
+  // Synchronous: `setSaving(true)` only disables the button on the next paint, which leaves a
+  // window a fast double-submit can pass through.
+  const inFlight = useRef(false);
+
   const submit = async (event) => {
-    event.preventDefault(); setSaving(true); setError('');
+    event.preventDefault();
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setSaving(true); setError('');
     try {
       const items = form.items.map((item) => {
         const output = {
@@ -224,10 +247,11 @@ export default function SaleForm() {
         const clean = { ...payload, items: payload.items.map(({ credentialEmail, credentialPassword, keepCredentialEmail, keepCredentialPassword, ...rest }) => rest) };
         await queueOperation('sale.create', clean, crm.bootstrap?.user?.id); crm.setQueued(crm.queued + 1); navigate(crmPath('sales')); return;
       }
-      const response = editing ? await crmApi.put(`/sales/${id}`, payload) : await crmApi.post('/sales', payload);
+      const body = editing ? payload : { ...payload, idempotencyKey: keyForPayload(JSON.stringify(payload)) };
+      const response = editing ? await crmApi.put(`/sales/${id}`, body) : await crmApi.post('/sales', body);
       navigate(crmPath(`sales/${response.data.id}`));
     } catch (requestError) { setError(messageFromError(requestError)); }
-    finally { setSaving(false); }
+    finally { inFlight.current = false; setSaving(false); }
   };
 
   if (loading) return <Loading />;
