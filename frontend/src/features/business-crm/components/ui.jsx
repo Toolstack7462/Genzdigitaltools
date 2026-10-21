@@ -100,6 +100,12 @@ export function Combobox({
   const [open, setOpen] = useState(false);
   const [term, setTerm] = useState('');
   const [options, setOptions] = useState([]);
+  // WHICH QUERY the displayed options belong to. Rejecting obsolete RESPONSES was not enough: the
+  // options already on screen stayed clickable while a different, valid query was still loading,
+  // so an operator could pick a client that matched the previous text (or the previous currency's
+  // product source). Options are tied to the exact text AND the search function that produced
+  // them, and are refused until they match what is being searched for now.
+  const [optionsFor, setOptionsFor] = useState({ text: null, source: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(-1);
   const [failed, setFailed] = useState('');
@@ -127,10 +133,11 @@ export function Combobox({
       try {
         const found = await search(text);
         if (mine !== ticket.current) return;
-        setOptions(found || []); setActive((found || []).length ? 0 : -1); setFailed('');
+        setOptions(found || []); setOptionsFor({ text, source: search });
+        setActive((found || []).length ? 0 : -1); setFailed('');
       } catch (error) {
         if (mine !== ticket.current) return;
-        setOptions([]); setActive(-1); setFailed('Could not search right now');
+        setOptions([]); setOptionsFor({ text, source: search }); setActive(-1); setFailed('Could not search right now');
       } finally { if (mine === ticket.current) setBusy(false); }
     }, debounceMs);
     return () => { clearTimeout(timer); ticket.current += 1; };
@@ -145,7 +152,14 @@ export function Combobox({
   }, [open]);
 
   const invalidate = () => { ticket.current += 1; };
-  const choose = (option) => { invalidate(); onSelect(option); setOpen(false); setTerm(''); setOptions([]); setActive(-1); setBusy(false); };
+  // True while the visible options describe a query other than the one in the box, or were
+  // produced by a different source (a currency switch swaps `search`).
+  const optionsStale = optionsFor.text !== term.trim() || optionsFor.source !== search;
+  const choose = (option) => {
+    if (optionsStale) return;          // never commit a match that belongs to an earlier query
+    invalidate(); onSelect(option); setOpen(false); setTerm(''); setOptions([]);
+    setOptionsFor({ text: null, source: null }); setActive(-1); setBusy(false);
+  };
   const onKeyDown = (event) => {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
@@ -173,7 +187,7 @@ export function Combobox({
         <button type="button" className="bcrm-combo-value" disabled={disabled} onClick={() => { if (!disabled) { setOpen(true); setTerm(''); } }} aria-label={`${valueLabel} — change selection`}>
           <span>{valueLabel}</span><ChevronDown size={15} aria-hidden="true"/>
         </button>
-        {onClear && !disabled && <button type="button" className="bcrm-combo-clear" onClick={() => { invalidate(); onClear(); setTerm(''); setOptions([]); setActive(-1); setBusy(false); setOpen(false); }} aria-label="Clear selection"><X size={14}/></button>}
+        {onClear && !disabled && <button type="button" className="bcrm-combo-clear" onClick={() => { invalidate(); onClear(); setTerm(''); setOptions([]); setOptionsFor({ text: null, source: null }); setActive(-1); setBusy(false); setOpen(false); }} aria-label="Clear selection"><X size={14}/></button>}
       </div>
       : <div className="bcrm-combo-input">
         <Search size={15} aria-hidden="true"/>
@@ -191,12 +205,13 @@ export function Combobox({
     {required && <input type="text" name={name} value={value || ''} required tabIndex={-1} aria-hidden="true" className="bcrm-combo-mirror" onChange={() => {}}/>}
     {open && <div className="bcrm-combo-pop">
       <ul className="bcrm-combo-list" role="listbox" id={listId}>
-        {options.map((option, index) => <li key={option.id} id={`${listId}-${index}`} role="option" aria-selected={index === active}>
-          <button type="button" className={index === active ? 'is-active' : undefined} onMouseEnter={() => setActive(index)} onClick={() => choose(option)}>
+        {options.map((option, index) => <li key={option.id} id={`${listId}-${index}`} role="option" aria-selected={index === active} aria-disabled={optionsStale || undefined}>
+          <button type="button" disabled={optionsStale} className={index === active ? 'is-active' : undefined} onMouseEnter={() => setActive(index)} onClick={() => choose(option)}>
             <strong>{option.label}</strong>{option.hint && <small>{option.hint}</small>}
           </button>
         </li>)}
       </ul>
+      {optionsStale && options.length > 0 && <p className="bcrm-combo-note">Searching for “{term.trim()}”… earlier matches cannot be selected.</p>}
       {!busy && term.trim().length >= minChars && !options.length && <p className="bcrm-combo-note">{failed || emptyHint}</p>}
       {term.trim().length < minChars && <p className="bcrm-combo-note">Type at least {minChars} characters</p>}
       {footer && <div className="bcrm-combo-foot">{footer}</div>}

@@ -217,3 +217,92 @@ test('a failed search is reported as a failure, never as "no such client"', asyn
   expect(container.textContent).toMatch(/could not search/i);
   expect(container.textContent).not.toMatch(/no matches/i);
 });
+
+// ── BOUNDARY A: options already on screen belong to the PREVIOUS query ─────────────────────────
+// Rejecting obsolete responses was not enough. While a different, valid query was still loading,
+// the options from the earlier one stayed clickable, so an operator could commit a client that
+// matched text no longer in the box.
+test('an option from query A cannot be clicked while query B is still loading', async () => {
+  const slowB = deferred();
+  const search = jest.fn()
+    .mockImplementationOnce(() => Promise.resolve([{ id: 'cA', label: 'Ali Raza', hint: 'synthetic' }]))
+    .mockImplementationOnce(() => slowB.promise);
+  const chosen = [];
+  await render(React.createElement(Host, { search, onSelect: (o) => chosen.push(o.id) }));
+  await act(async () => { input().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+
+  await type('ali');
+  await advance(300);
+  await flush();
+  expect(optionText().join(' ')).toContain('Ali Raza');      // positive control: A is displayed
+
+  await type('bil');                                          // B typed; A's option still rendered
+  await advance(300);                                         // B dispatched, still pending
+  await flush();
+
+  const node = optionNodes()[0];
+  if (node) {
+    const button = node.querySelector('button') || node;
+    await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  }
+  expect(chosen).toEqual([]);                                 // nothing from A may be committed
+  expect(container.textContent).toMatch(/earlier matches cannot be selected/i);
+});
+
+test('Enter cannot commit an option from the previous query either', async () => {
+  const slowB = deferred();
+  const search = jest.fn()
+    .mockImplementationOnce(() => Promise.resolve([{ id: 'cA', label: 'Ali Raza', hint: 'synthetic' }]))
+    .mockImplementationOnce(() => slowB.promise);
+  const chosen = [];
+  await render(React.createElement(Host, { search, onSelect: (o) => chosen.push(o.id) }));
+  await act(async () => { input().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await type('ali');
+  await advance(300);
+  await flush();
+
+  await type('bil');
+  await advance(300);
+  await flush();
+  await act(async () => { input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+  expect(chosen).toEqual([]);
+});
+
+test('after a currency/source switch the previous source’s options are not selectable', async () => {
+  const pkrSearch = jest.fn(() => Promise.resolve([{ id: 'pPKR', label: 'PKR Product', hint: 'synthetic' }]));
+  const slowInr = deferred();
+  const inrSearch = jest.fn(() => slowInr.promise);
+  const chosen = [];
+
+  await render(React.createElement(Host, { search: pkrSearch, onSelect: (o) => chosen.push(o.id) }));
+  await act(async () => { input().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await type('pro');
+  await advance(300);
+  await flush();
+  expect(optionText().join(' ')).toContain('PKR Product');    // positive control
+
+  // the currency changes: same text, different product source
+  await render(React.createElement(Host, { search: inrSearch, onSelect: (o) => chosen.push(o.id) }));
+  await flush();
+  const node = optionNodes()[0];
+  if (node) {
+    const button = node.querySelector('button') || node;
+    await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  }
+  expect(chosen).toEqual([]);
+});
+
+test('a freshly completed query IS selectable - the guard does not block valid matches', async () => {
+  const search = jest.fn(() => Promise.resolve([{ id: 'cOK', label: 'Valid Match', hint: 'synthetic' }]));
+  const chosen = [];
+  await render(React.createElement(Host, { search, onSelect: (o) => chosen.push(o.id) }));
+  await act(async () => { input().dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await type('val');
+  await advance(300);
+  await flush();
+
+  const button = optionNodes()[0].querySelector('button') || optionNodes()[0];
+  expect(button.disabled).toBe(false);
+  await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  expect(chosen).toEqual(['cOK']);
+});

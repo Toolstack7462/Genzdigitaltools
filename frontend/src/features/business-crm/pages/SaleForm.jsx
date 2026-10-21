@@ -260,6 +260,15 @@ export default function SaleForm() {
       };
       if (!navigator.onLine) {
         if (editing) throw new Error('Existing financial records can only be edited online.');
+        // AN UNRESOLVED ONLINE CREATE MUST NOT BECOME A NEW OFFLINE SALE. The offline branch runs
+        // before reconciliation, and queueOperation() mints its own `crypto.randomUUID()` - a
+        // fresh identity. Queuing here would turn one possibly-committed sale into a second one
+        // with its own invoice number on sync. Reconciliation needs the server, so the honest
+        // answer is to wait for the connection; the frozen key and payload are kept meanwhile.
+        // Legitimate NEW offline sales are unaffected: this only triggers while unresolved.
+        if (unresolvedRef.current) {
+          throw new Error('The earlier attempt for this sale has not been confirmed yet, so it cannot be queued offline - that would create a second sale. Reconnect and press Save sale again to check the original with the same operation key.');
+        }
         if (!crm.has('offline.sync')) throw new Error('Your role cannot queue offline financial entries.');
         if (payload.items.some((item) => item.credentialEmail || item.credentialPassword)) throw new Error('Credentials cannot be stored in the offline queue. Remove them or reconnect.');
         const clean = { ...payload, items: payload.items.map(({ credentialEmail, credentialPassword, keepCredentialEmail, keepCredentialPassword, ...rest }) => rest) };
