@@ -27,7 +27,7 @@ router.get('/:kind', (req, res, next) => requirePermission(req.contactConfig.vie
   if (req.query.status) { where.push('status=:status'); params.status = req.query.status; }
   if (req.query.q) { where.push('(name LIKE :q OR whatsapp LIKE :q OR email LIKE :q OR company LIKE :q)'); params.q = safeLike(req.query.q); }
   const [rows, counts] = await Promise.all([
-    db.query(`SELECT * FROM ${c.table} WHERE ${where.join(' AND ')} ORDER BY name LIMIT :limit OFFSET :offset`, params),
+    db.query(`SELECT * FROM ${c.table} WHERE ${where.join(' AND ')} ORDER BY name, id LIMIT :limit OFFSET :offset`, params),
     db.query(`SELECT COUNT(*) total FROM ${c.table} WHERE ${where.join(' AND ')}`, params),
   ]);
   res.json({ rows: rows.map(contactService.forResponse), page, pageSize, total: Number(counts[0]?.total || 0) });

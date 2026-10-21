@@ -100,7 +100,7 @@ async function listOutstanding(partyType, filters = {}) {
     db.query(
       `SELECT s.id,s.invoice_number,s.sale_date,s.currency_code,s.${totalColumn} total_amount,s.${paidColumn} paid_amount,
               (s.${totalColumn}-s.${paidColumn}) pending_amount,p.id party_id,p.name party_name,p.whatsapp,p.email
-         FROM biz_crm_sales s ${contactJoin} WHERE ${clause} ORDER BY s.sale_date ASC,s.created_at ASC
+         FROM biz_crm_sales s ${contactJoin} WHERE ${clause} ORDER BY s.sale_date ASC,s.created_at ASC,s.id ASC
          LIMIT :limit OFFSET :offset`, { ...params, limit: pageSize, offset },
     ),
     db.query(
