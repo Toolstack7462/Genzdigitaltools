@@ -51,8 +51,14 @@ function check(name, condition, extra) {
   else { failed += 1; console.error('  ✗', name, extra != null ? JSON.stringify(extra) : ''); }
 }
 
-// A request object shaped like the one the routes build, with no HTTP involved.
-const makeReq = (userId) => ({ userId, user: { _id: userId }, headers: {}, get: () => 'crm-selftest', ip: '127.0.0.1', businessAccess: { role: 'OWNER', permissions: [] } });
+// A request object shaped like the one the routes build, with no HTTP involved. The actor carries
+// the module's full permission set: route-level authorisation is covered by the mocked route tests
+// and by businessCrmAuditResponse.test.js, whereas THIS script is about engine behaviour -
+// locking, replay and balance arithmetic. An under-permissioned actor here only hides those.
+// (First CI run failed exactly this way: createSale refused the opening payment with "Client
+// receipt permission is required" - a harness defect, not a product one.)
+const { PERMISSIONS } = require(path.join(MODULE_DIR, 'permissions'));
+const makeReq = (userId) => ({ userId, user: { _id: userId }, headers: {}, get: () => 'crm-selftest', ip: '127.0.0.1', businessAccess: { role: 'OWNER', permissions: PERMISSIONS.slice() } });
 
 const ACTOR = 'selftest-actor-1';
 const OTHER_ACTOR = 'selftest-actor-2';
