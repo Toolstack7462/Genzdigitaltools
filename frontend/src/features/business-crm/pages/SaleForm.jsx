@@ -13,6 +13,43 @@ import { Button, Card, Combobox, ErrorState, Field, Input, Loading, Modal, PageH
 const SUGGEST_PAGE = 25;
 const blankQuickClient = () => ({ name: '', whatsapp: '', email: '' });
 
+const MONEY = /^-?\d+(?:\.\d{1,2})?$/;
+const CURRENCY = /^[A-Z]{3}$/;
+
+/**
+ * Reads the balance rows out of the authorised contact-detail response.
+ *
+ * The endpoint answers `{ ...contact, sales, tasks, activities, totals }` - contact fields at the
+ * TOP LEVEL - and each total is `{ currency_code, total_amount, paid_amount, pending_amount,
+ * sale_count }` with money.normalize already applied.
+ *
+ * Returns an ARRAY when the response is usable (possibly empty, which legitimately means this
+ * contact has no sales at all), or NULL when it is missing or malformed. Null must be shown as a
+ * failure: a confident "no outstanding" is a statement about money and may only be made from data
+ * we actually understood.
+ */
+function readTotals(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  if (!Array.isArray(body.totals)) return null;                 // absent or wrong type - unusable
+  const rows = [];
+  for (const row of body.totals) {
+    if (!row || typeof row !== 'object') return null;
+    const code = String(row.currency_code || '');
+    if (!CURRENCY.test(code)) return null;
+    const pending = String(row.pending_amount);
+    if (!MONEY.test(pending)) return null;                      // e.g. null, "", "abc", 1.2345
+    rows.push({ currency_code: code, pending_amount: pending });
+  }
+  return rows;
+}
+
+/** Only the fields the read-only summary displays; history and tasks are deliberately dropped. */
+function contactFields(body) {
+  if (!body || typeof body !== 'object') return null;
+  const { name, whatsapp, email, company } = body;
+  return (name || whatsapp || email || company) ? { name, whatsapp, email, company } : null;
+}
+
 const blankItem = () => ({
   id: '', productId: '', name: '', accountType: 'private', durationLabel: '1 Month',
   purchaseDate: today(), expiryDate: '', credentialEmail: '', credentialPassword: '',
@@ -59,15 +96,23 @@ export default function SaleForm() {
   const accountId = String(crm.bootstrap?.user?.id || '');
 
   const loadClientSummary = useCallback((id, contact) => {
+    if (!id) return;
     const mine = summaryTicket.current + 1; summaryTicket.current = mine;
     setClientSummary({ id, account: accountId, contact: contact || null, state: 'loading', totals: null });
     crmApi.get(`/contacts/clients/${id}`)
       .then((response) => {
         // Guarded by ticket AND by id/account, so a late answer for client A cannot land on B.
         if (mine !== summaryTicket.current) return;
-        const totals = Array.isArray(response?.data?.totals) ? response.data.totals : [];
-        setClientSummary((current) => (current && current.id === id && current.account === accountId
-          ? { ...current, state: 'ready', totals, contact: current.contact || response?.data?.contact || null } : current));
+        const body = response && response.data;
+        const totals = readTotals(body);
+        setClientSummary((current) => {
+          if (!(current && current.id === id && current.account === accountId)) return current;
+          // An unusable response is a FAILURE, not an empty balance. Converting a missing or
+          // malformed `totals` into [] would have the panel state "None in PKR" - a confident
+          // claim about someone's money derived from a response we could not read.
+          if (totals === null) return { ...current, state: 'failed', totals: null };
+          return { ...current, state: 'ready', totals, contact: current.contact || contactFields(body) };
+        });
       })
       .catch(() => {
         if (mine !== summaryTicket.current) return;
@@ -77,6 +122,8 @@ export default function SaleForm() {
 
   const clearClientSummary = useCallback(() => { summaryTicket.current += 1; setClientSummary(null); }, []);
   useEffect(() => { clearClientSummary(); }, [accountId, clearClientSummary]);
+  // Unmount invalidates any outstanding detail request. No interval or polling is introduced.
+  useEffect(() => () => { summaryTicket.current += 1; }, []);
 
   const [quickClient, setQuickClient] = useState(null);
   const [quickSaving, setQuickSaving] = useState(false);
@@ -93,6 +140,9 @@ export default function SaleForm() {
           const sale = saleResponse.data;
           setCurrencyLocked(Number(sale.client_paid || 0) > 0 || Number(sale.vendor_paid || 0) > 0);
           setClientLabel(sale.client_name || '');
+          // Read-only: shows the saved client's CURRENT balance. It reprices nothing, resets no
+          // item and writes no contact data.
+          if (sale.client_id) loadClientSummary(sale.client_id, { name: sale.client_name });
           setVendorLabel(sale.vendor_name || '');
           setForm({
             clientId: sale.client_id, vendorId: sale.vendor_id || '', saleDate: sale.sale_date,
@@ -199,21 +249,37 @@ export default function SaleForm() {
     (row) => ({ id: row.id, label: row.name, hint: [row.category, row.duration_label, formatMoney(row.default_sale_price, row.currency_code)].filter(Boolean).join(' • '), raw: row }),
   ), [suggest, products, form.currencyCode]);
 
+  // Synchronous, like the sale guard: `quickSaving` only disables the button on the next paint,
+  // and two clicks inside that frame created TWO contacts (observed in test).
+  const quickInFlight = useRef(false);
+  // Cancelling the modal, or any later deliberate selection, supersedes an in-flight create so its
+  // late answer cannot select a client the operator has already moved away from (also observed).
+  const quickGeneration = useRef(0);
+
   const createQuickClient = async () => {
+    if (quickInFlight.current) return;
+    quickInFlight.current = true;
+    const mine = quickGeneration.current + 1; quickGeneration.current = mine;
     setQuickSaving(true); setQuickError('');
     try {
       const payload = { name: quickClient.name.trim(), whatsapp: quickClient.whatsapp.trim() || '', email: quickClient.email.trim() || '', company: '', address: '', taxId: '', notes: '', status: 'active' };
       if (!payload.name) throw new Error('Client name is required.');
       const response = await crmApi.post('/contacts/clients', payload);
+      if (mine !== quickGeneration.current) return;   // superseded: do not select, do not reopen
       const created = response.data?.id ? response.data : response.data?.client;
       // Selecting the new client only touches these two pieces of state, so everything already typed
       // into the sale — items, prices, credentials, notes — is still there when the modal closes.
       update('clientId', created.id);
       setClientLabel(created.name);
+      // Same single mechanism as the dropdown, so a client created here shows the same authorised
+      // summary. The CONFIRMED server record is passed in, never the typed form values.
+      loadClientSummary(created.id, contactFields(created));
       setClients((current) => [created, ...current]);
       setQuickClient(null);
-    } catch (requestError) { setQuickError(messageFromError(requestError)); }
-    finally { setQuickSaving(false); }
+    } catch (requestError) {
+      if (mine === quickGeneration.current) setQuickError(messageFromError(requestError));
+    }
+    finally { quickInFlight.current = false; setQuickSaving(false); }
   };
 
   const totals = useMemo(() => form.items.reduce((sum, item) => ({ sale: sum.sale + Number(item.salePrice || 0), cost: sum.cost + Number(item.purchaseCost || 0) }), { sale: 0, cost: 0 }), [form.items]);
@@ -363,7 +429,7 @@ export default function SaleForm() {
           <Combobox
             name="clientId" required value={form.clientId} valueLabel={clientLabel} search={searchClients}
             placeholder="Search clients…" emptyHint="No client matches that search"
-            onSelect={(option) => { update('clientId', option.id); setClientLabel(option.label); loadClientSummary(option.id, option.raw || { name: option.label }); }}
+            onSelect={(option) => { quickGeneration.current += 1; update('clientId', option.id); setClientLabel(option.label); loadClientSummary(option.id, option.raw || { name: option.label }); }}
             onClear={() => { update('clientId', ''); setClientLabel(''); clearClientSummary(); }}
             footer={crm.has('clients.create') && <Button type="button" variant="ghost" icon={UserPlus} onClick={() => { setQuickError(''); setQuickClient(blankQuickClient()); }}>Create new client</Button>}
           />
@@ -380,7 +446,9 @@ export default function SaleForm() {
               <dd>{(() => {
                 // Four distinct outcomes - a failure must never read as a zero balance.
                 if (clientSummary.state === 'loading') return <span className="bcrm-clientsum-muted">Checking…</span>;
-                if (clientSummary.state === 'failed') return <span className="bcrm-clientsum-warn">Could not load — balance unknown</span>;
+                if (clientSummary.state === 'failed') return <span className="bcrm-clientsum-warn">Could not load — balance unknown{' '}
+                  <button type="button" className="bcrm-clientsum-retry" onClick={() => loadClientSummary(clientSummary.id, clientSummary.contact)}>Retry</button>
+                </span>;
                 const row = (clientSummary.totals || []).find((total) => total.currency_code === form.currencyCode);
                 if (!row) return <span className="bcrm-clientsum-muted">None in {form.currencyCode}</span>;
                 return <strong>{formatMoney(row.pending_amount, form.currencyCode)}</strong>;
@@ -442,8 +510,8 @@ export default function SaleForm() {
       access and no portal login, which the existing website access flows continue to own.
     */}
     <Modal
-      open={Boolean(quickClient)} title="Create new client" onClose={() => setQuickClient(null)}
-      footer={<><Button type="button" variant="secondary" onClick={() => setQuickClient(null)}>Cancel</Button><Button type="button" icon={Save} onClick={createQuickClient} disabled={quickSaving || !quickClient?.name?.trim()}>{quickSaving ? 'Saving…' : 'Save and select'}</Button></>}
+      open={Boolean(quickClient)} title="Create new client" onClose={() => { quickGeneration.current += 1; setQuickClient(null); }}
+      footer={<><Button type="button" variant="secondary" onClick={() => { quickGeneration.current += 1; setQuickClient(null); }}>Cancel</Button><Button type="button" icon={Save} onClick={createQuickClient} disabled={quickSaving || !quickClient?.name?.trim()}>{quickSaving ? 'Saving…' : 'Save and select'}</Button></>}
     >
       {quickClient && <>
         {quickError && <div className="bcrm-banner warning">{quickError}</div>}

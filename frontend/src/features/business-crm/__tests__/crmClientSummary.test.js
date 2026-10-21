@@ -317,3 +317,96 @@ test('MEASURE: request load for open, search, selection and currency switch', as
   expect(switchCost.filter((u) => u.startsWith('/contacts/clients?'))).toHaveLength(0);
   expect(switchCost.filter((u) => u.startsWith('/contacts/vendors'))).toHaveLength(0);
 });
+
+// ── HONEST VALIDATION OF THE SUMMARY RESPONSE ─────────────────────────────────────────────────
+// Five outcomes must stay apart. The earlier version coerced a missing/non-array `totals` to []
+// and reported "ready", so an unreadable answer became a confident "None in PKR" - a statement
+// about someone's money made from data we never understood.
+//
+// The real endpoint answers { ...contact, sales, tasks, activities, totals } with contact fields
+// at the TOP LEVEL, and each total is { currency_code, total_amount, paid_amount, pending_amount,
+// sale_count } with money.normalize applied. These fixtures follow that shape.
+
+test('a REAL ZERO row shows the zero, not "none"', async () => {
+  mockDetail.cA = { name: 'Ali Raza', totals: [{ currency_code: 'PKR', total_amount: '500.00', paid_amount: '500.00', pending_amount: '0.00', sale_count: 2 }] };
+  await mount();
+  await pickClient('Ali Raza');
+  const text = summary().textContent;
+  expect(text).toContain('0.00');                       // a settled client, stated as settled
+  expect(text).not.toMatch(/None in PKR/i);
+  expect(text).not.toMatch(/balance unknown/i);
+});
+
+test('valid totals with NO row for this currency reads as none, distinctly from a real zero', async () => {
+  mockDetail.cA = { name: 'Ali Raza', totals: [{ currency_code: 'INR', total_amount: '10.00', paid_amount: '0.00', pending_amount: '10.00', sale_count: 1 }] };
+  await mount();
+  await pickClient('Ali Raza');
+  expect(summary().textContent).toMatch(/None in PKR/i);
+  expect(summary().textContent).not.toContain('0.00');
+});
+
+test('a MISSING totals field is a failure, never "no outstanding"', async () => {
+  mockDetail.cA = { name: 'Ali Raza', sales: [], tasks: [], activities: [] };   // no `totals` at all
+  await mount();
+  await pickClient('Ali Raza');
+  expect(summary().textContent).toMatch(/balance unknown/i);
+  expect(summary().textContent).not.toMatch(/None in PKR/i);
+});
+
+test('a non-array totals field is a failure', async () => {
+  mockDetail.cA = { name: 'Ali Raza', totals: { PKR: '100.00' } };
+  await mount();
+  await pickClient('Ali Raza');
+  expect(summary().textContent).toMatch(/balance unknown/i);
+});
+
+test('a malformed row or invalid amount is a failure, not a zero', async () => {
+  for (const bad of [
+    [{ currency_code: 'PKR', pending_amount: null }],
+    [{ currency_code: 'PKR', pending_amount: 'abc' }],
+    [{ currency_code: 'PKR', pending_amount: '1.23456' }],
+    [{ currency_code: 'pkr', pending_amount: '1.00' }],
+    [null],
+  ]) {
+    mockDetail.cA = { name: 'Ali Raza', totals: bad };
+    await mount();
+    await pickClient('Ali Raza');
+    expect(summary().textContent).toMatch(/balance unknown/i);
+    expect(summary().textContent).not.toMatch(/None in PKR/i);
+    await act(async () => { root.unmount(); }); root = null;
+  }
+});
+
+test('an empty totals array is valid - a contact with no sales at all', async () => {
+  mockDetail.cA = { name: 'Ali Raza', totals: [] };
+  await mount();
+  await pickClient('Ali Raza');
+  expect(summary().textContent).toMatch(/None in PKR/i);
+  expect(summary().textContent).not.toMatch(/balance unknown/i);
+});
+
+test('a failed lookup offers a bounded manual retry that succeeds without reselecting', async () => {
+  const d = deferred();
+  mockDetail.cA = { promise: d.promise };
+  await mount();
+  await pickClient('Ali Raza');
+  await act(async () => { d.reject(new Error('down')); });
+  await flush();
+  expect(summary().textContent).toMatch(/balance unknown/i);
+
+  mockDetail.cA = { name: 'Ali Raza', totals: [{ currency_code: 'PKR', pending_amount: '42.00' }] };
+  const retry = [...summary().querySelectorAll('button')].find((b) => /retry/i.test(b.textContent || ''));
+  expect(retry).toBeTruthy();
+  await act(async () => { retry.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+  await flush();
+  expect(summary().textContent).toContain('42.00');
+});
+
+test('contact fields are read from the TOP LEVEL of the response, not data.contact', async () => {
+  // The suggestion has no company for this fixture, so the displayed company can only come from
+  // the detail response - which proves the shape being read.
+  mockDetail.cB = { name: 'Bilal Khan', whatsapp: '03217654321', email: 'bilal@example.test', company: 'Khan Co', totals: [] };
+  await mount();
+  await pickClient('Bilal Khan');
+  expect(summary().textContent).toContain('Khan Co');
+});

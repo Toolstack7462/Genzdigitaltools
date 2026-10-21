@@ -508,3 +508,5 @@
   .bcrm-clientsum-facts { grid-template-columns: 1fr; gap: 0 0; }
   .bcrm-clientsum-facts dt { margin-top: 6px; font-size: 12px; }
 }
+.bcrm-clientsum-retry { background: none; border: 0; padding: 0 0 0 4px; color: #2563EB;
+  font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
