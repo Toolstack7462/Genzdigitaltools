@@ -136,27 +136,101 @@ test('a definite 4xx refusal keeps the entered values and offers no replay', asy
   expect(container.querySelector('.bcrm-paycontext')).toBeTruthy();   // the form is still open
 });
 
-test('editing the amount mints a NEW key, because the server compares amount for replay', async () => {
+const setValue = async (selector, value) => {
+  const field = container.querySelector(selector);
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(field, value);
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+};
+
+// The previous version of this test completed a SUCCESSFUL payment, let the dialog close, then
+// reopened a new one and observed a different key. That only proved that two separate operations
+// get separate identities - it never exercised the edit-then-retry boundary it claimed to cover.
+// This one keeps ONE dialog open across a definite refusal and inspects the keys actually sent.
+test('after a definite refusal, EDITING the amount sends a different key', async () => {
   await mount();
   await openDialog();
-  const amount = container.querySelector('input[inputmode="decimal"]');
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(amount, '250.00');
-    amount.dispatchEvent(new Event('input', { bubbles: true }));
-  });
+  mockPostImpl = async () => { const error = new Error('x'); error.response = { status: 409, data: { error: 'Payment exceeds remaining balance' } }; throw error; };
   await click(dialogSubmit());
+  expect(mockPosts).toHaveLength(1);
   const firstKey = mockPosts[0][1].idempotencyKey;
+  const firstAmount = mockPosts[0][1].amount;
 
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    const field = container.querySelector('input[inputmode="decimal"]');
-    if (field) { setter.call(field, '300.00'); field.dispatchEvent(new Event('input', { bubbles: true })); }
-  });
-  // a successful post closed the dialog, so re-open and confirm a fresh operation gets a fresh key
-  await openDialog();
+  // same dialog, edited amount - the server's replay check compares amount, so reusing the key
+  // here would be rejected as PAYMENT_IDEMPOTENCY_CONFLICT instead of posting the corrected figure
+  await setValue('input[inputmode="decimal"]', '250.00');
   await click(dialogSubmit());
+
+  expect(mockPosts).toHaveLength(2);
+  expect(mockPosts[1][1].amount).toBe('250.00');
+  expect(mockPosts[1][1].amount).not.toBe(firstAmount);
   expect(mockPosts[1][1].idempotencyKey).not.toBe(firstKey);
+});
+
+test('after a definite refusal, retrying UNCHANGED keeps the same key', async () => {
+  await mount();
+  await openDialog();
+  mockPostImpl = async () => { const error = new Error('x'); error.response = { status: 400, data: { error: 'Payment must be greater than zero' } }; throw error; };
+  await click(dialogSubmit());
+  await click(dialogSubmit());
+  expect(mockPosts).toHaveLength(2);
+  // the key tracks the PAYLOAD, not the number of clicks
+  expect(mockPosts[1][1].idempotencyKey).toBe(mockPosts[0][1].idempotencyKey);
+  expect(mockPosts[1][1].amount).toBe(mockPosts[0][1].amount);
+});
+
+// ── the server COMMITTED and the answer was lost ───────────────────────────────────────────────
+test('a committed-but-unanswered payment is reconciled, never replaced under a new identity', async () => {
+  await mount();
+  await openDialog();
+  // the write lands; the response never arrives
+  mockPostImpl = async () => { throw new Error('Network Error'); };
+  await click(dialogSubmit());
+  const originalKey = mockPosts[0][1].idempotencyKey;
+  const originalAmount = mockPosts[0][1].amount;
+
+  // the operator reaches for the escape hatch. It must NOT mint a fresh identity for money that
+  // may already be recorded.
+  const check = byText('Check this payment first');
+  expect(check).toBeTruthy();
+  expect(byText('Start a new payment')).toBeFalsy();
+
+  mockPostImpl = async () => ({ data: { replayed: true } });
+  await click(check);
+
+  expect(mockPosts).toHaveLength(2);
+  expect(mockPosts[1][1].idempotencyKey).toBe(originalKey);
+  expect(mockPosts[1][1].amount).toBe(originalAmount);
+  expect(container.textContent).toMatch(/reconciled to the original payment/i);
+  // and only after the answer is known is a further payment offered - deliberately, from the row
+  expect(container.textContent).toMatch(/use Post payment on the refreshed row/i);
+});
+
+test('closing the dialog while unresolved is refused, not silently accepted', async () => {
+  await mount();
+  await openDialog();
+  mockPostImpl = async () => { throw new Error('Network Error'); };
+  await click(dialogSubmit());
+
+  const cancel = byText('Cancel');
+  if (cancel) await click(cancel);
+  // the dialog is still open and says plainly that the outcome is unestablished
+  expect(container.querySelector('.bcrm-paycontext')).toBeTruthy();
+  expect(container.textContent).toMatch(/still unreconciled|outcome unknown/i);
+});
+
+test('a failed reconcile leaves the operation unresolved rather than pretending it settled', async () => {
+  await mount();
+  await openDialog();
+  mockPostImpl = async () => { throw new Error('Network Error'); };
+  await click(dialogSubmit());
+  await click(byText('Check this payment first'));          // still no answer
+  expect(mockPosts).toHaveLength(2);
+  expect(mockPosts[1][1].idempotencyKey).toBe(mockPosts[0][1].idempotencyKey);
+  expect(byText('Retry same payment')).toBeTruthy();        // still in the unresolved state
+  expect(container.querySelector('input[inputmode="decimal"]').disabled).toBe(true);
 });
 
 test('while the outcome is unknown the fields are locked, so no replacement payment can be typed', async () => {

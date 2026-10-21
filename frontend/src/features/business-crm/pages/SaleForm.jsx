@@ -203,7 +203,18 @@ export default function SaleForm() {
   // The key is therefore bound to the exact payload: identical payload (a retry) reuses it, any
   // edit mints a new one. `editing` is excluded; PUT is version-checked, not idempotency-keyed.
   const attempt = useRef({ key: null, payload: null });
+  // An attempt whose outcome is unknown (no response / 5xx). The sale may already be committed with
+  // its invoice number and opening payments, so the next submit must NOT become a second sale under
+  // a fresh identity. Both the key AND the exact payload sent are held, and the retry re-sends
+  // those, not whatever the form now contains.
+  const [unresolvedSale, setUnresolvedSale] = useState(null);
+  const unresolvedRef = useRef(null);
+  const pendingPayload = useRef(null);
+
   const keyForPayload = (serialised) => {
+    // While unresolved, the key is frozen: minting a new one after a possibly-committed create is
+    // exactly how a duplicate invoice is produced.
+    if (unresolvedRef.current) return unresolvedRef.current.key;
     if (attempt.current.payload !== serialised) {
       let key;
       try { key = window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : null; } catch (_) { key = null; }
@@ -247,10 +258,26 @@ export default function SaleForm() {
         const clean = { ...payload, items: payload.items.map(({ credentialEmail, credentialPassword, keepCredentialEmail, keepCredentialPassword, ...rest }) => rest) };
         await queueOperation('sale.create', clean, crm.bootstrap?.user?.id); crm.setQueued(crm.queued + 1); navigate(crmPath('sales')); return;
       }
-      const body = editing ? payload : { ...payload, idempotencyKey: keyForPayload(JSON.stringify(payload)) };
+      // A retry of an unresolved create re-sends the ORIGINAL payload under the ORIGINAL key, so
+      // the server can recognise it as the same operation and replay rather than create again.
+      pendingPayload.current = payload;
+      const resend = !editing && unresolvedRef.current;
+      const sent = resend ? unresolvedRef.current.payload : payload;
+      const body = editing ? sent : { ...sent, idempotencyKey: keyForPayload(JSON.stringify(sent)) };
       const response = editing ? await crmApi.put(`/sales/${id}`, body) : await crmApi.post('/sales', body);
+      unresolvedRef.current = null; setUnresolvedSale(null);
       navigate(crmPath(`sales/${response.data.id}`));
-    } catch (requestError) { setError(messageFromError(requestError)); }
+    } catch (requestError) {
+      const status = requestError?.response?.status;
+      if (!editing && (status === undefined || status >= 500)) {
+        // No usable answer. The sale may exist. Freeze this operation's identity and payload.
+        const frozen = unresolvedRef.current || { key: attempt.current.key, payload: pendingPayload.current };
+        unresolvedRef.current = frozen; setUnresolvedSale(frozen);
+        setError('The result of this sale is unknown - it may already have been created with its invoice number. Press Save sale again to check with the same operation key. Do not change the form: an edit would create a second sale.');
+      } else {
+        setError(messageFromError(requestError));
+      }
+    }
     finally { inFlight.current = false; setSaving(false); }
   };
 

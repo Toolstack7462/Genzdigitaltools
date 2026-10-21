@@ -89,6 +89,7 @@ export default function Payments({ type }) {
         : 'Payment recorded.');
       setEntry(null);          // cleared only after a confirmed outcome
       resource.reload();
+      return true;
     } catch (requestError) {
       const status = requestError?.response?.status;
       if (status === undefined || status >= 500) {
@@ -98,12 +99,26 @@ export default function Payments({ type }) {
       } else {
         setError(messageFromError(requestError));   // a definite refusal; entered values are kept
       }
+      return false;
     } finally { inFlight.current = false; setPosting(false); }
   };
 
   const submit = () => post();
   const retrySameOperation = () => post(unresolved && unresolved.key);
-  const startReplacement = () => { setUnresolved(null); setError(''); setEntry((current) => (current ? { ...current, idempotencyKey: newKey() } : current)); };
+  // RECONCILE, never discard. The first version of this cleared `unresolved` and minted a fresh
+  // key, which is precisely how one intended payment becomes two: the server may already have
+  // committed the original, and a new key gives the same money a second identity. Clicking a
+  // button is not evidence that the first attempt did not commit.
+  //
+  // So this re-sends the SAME key first. The server either replays the committed row or creates it
+  // - either way the outcome becomes known. Only then does the dialog close, and a genuinely
+  // separate payment is started deliberately from the refreshed row, against its real outstanding
+  // balance rather than a stale one.
+  const reconcileUnresolved = async () => {
+    if (!unresolved) return;
+    const settled = await post(unresolved.key);
+    if (settled) setNotice((current) => `${current} If you still need to record another payment, use Post payment on the refreshed row.`);
+  };
   // Preview first, then open WhatsApp from the dialog button so the popup is tied to a user gesture.
   const remind = async (row) => {
     if (Number(row.pending_amount ?? 0) <= 0) { setError('That invoice has no outstanding balance, so no payment reminder was prepared.'); return; }
@@ -143,9 +158,13 @@ export default function Payments({ type }) {
     <Modal
       open={Boolean(entry)}
       title={client ? 'Record client receipt' : 'Record vendor payment'}
-      onClose={() => { if (!posting && !unresolved) { setEntry(null); setError(''); } }}
+      onClose={() => {
+        if (posting) return;
+        if (unresolved) { setError('That payment is still unreconciled. Use Retry so the result is established - closing now leaves it unknown and the list must be refreshed to see the truth.'); return; }
+        setEntry(null); setError('');
+      }}
       footer={unresolved
-        ? <><Button variant="secondary" onClick={startReplacement} disabled={posting}>Start a new payment</Button><Button icon={Save} onClick={retrySameOperation} disabled={posting}>{posting ? 'Checking…' : 'Retry same payment'}</Button></>
+        ? <><Button variant="secondary" onClick={reconcileUnresolved} disabled={posting}>Check this payment first</Button><Button icon={Save} onClick={retrySameOperation} disabled={posting}>{posting ? 'Checking…' : 'Retry same payment'}</Button></>
         : <><Button variant="secondary" onClick={() => setEntry(null)} disabled={posting}>Cancel</Button><Button icon={Save} onClick={submit} disabled={posting}>{posting ? 'Posting…' : 'Post payment'}</Button></>}
     >
       {entry && <div className="bcrm-form">
@@ -158,7 +177,7 @@ export default function Payments({ type }) {
           <p><span>Outstanding now</span><strong>{formatMoney(entry.context.pending, entry.context.currency)}</strong></p>
           <p><span>After this payment</span><strong>{formatMoney(proposedBalance(entry), entry.context.currency)}</strong></p>
         </div>
-        {unresolved && <div className="bcrm-banner warning" role="status">Outcome unknown. Retry re-sends the same operation key, so an already-recorded payment is reconciled instead of duplicated. The fields are locked until this is resolved.</div>}
+        {unresolved && <div className="bcrm-banner warning" role="status">Outcome unknown - this payment may already be recorded. Retry re-sends the same operation key, so a committed payment is reconciled instead of duplicated. The fields are locked, and a new payment cannot be started until this one has an answer.</div>}
         <Field label="Amount"><Input inputMode="decimal" value={entry.amount} disabled={Boolean(unresolved) || posting} onChange={(event) => editEntry({ amount: event.target.value })} /></Field>
         <Field label="Date"><Input type="date" value={entry.paymentDate} disabled={Boolean(unresolved) || posting} onChange={(event) => editEntry({ paymentDate: event.target.value })} /></Field>
         <Field label="Method"><Select value={entry.method} disabled={Boolean(unresolved) || posting} onChange={(event) => editEntry({ method: event.target.value })}><option>Cash</option><option>Bank</option><option>JazzCash</option><option>Easypaisa</option><option>UPI</option><option>Other</option></Select></Field>
