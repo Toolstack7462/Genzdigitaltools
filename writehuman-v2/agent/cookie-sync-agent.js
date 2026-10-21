@@ -73,8 +73,14 @@ const { spawn } = require('child_process');
 //        distinguish individual session Sign out buttons from signed-in account proof.
 // 3.5.8: stable login SPA wait; passive CAPTCHA markup not mistaken for human challenge;
 //        authoritative active-source directives preserved on sparse acknowledgements.
-const AGENT_VERSION = '3.5.15'; // Source release candidate; Windows/live acceptance still required.
-const AGENT_BUILD_ID = '3.5.15-retry-rc1';
+// 3.5.16: a 'submission_outcome_unknown' halt is RESOLVED by the backend's verified PROMOTED
+//         verdict on this approved active source - the one fact that halt records as unknown.
+//         Before this, a single unobservable password submission blocked auto re-login for the
+//         life of the install (incident 03cbb77d, 20 Oct 2026): confirmation kept haltedReason,
+//         was itself reachable only through an in-memory flag the terminal halt had cleared, and
+//         no operator command covered it. Every other halt still requires the existing review.
+const AGENT_VERSION = '3.5.16'; // Source release candidate; Windows/live acceptance still required.
+const AGENT_BUILD_ID = '3.5.16-halt-resolution-rc1';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -2278,6 +2284,18 @@ function noteReloginVerdict(verdict) {
     const cur = readReloginState();
     const terminal = RELOGIN_TERMINAL.includes(verdict);
     const now=new Date().toISOString();
+    // 'confirmed' is the backend's PROMOTED verdict on a provider-verified candidate from this
+    // approved ACTIVE source: the account is signed in AND it is the right account. That is exactly
+    // the fact a 'submission_outcome_unknown' halt records as unknown, so once it arrives the
+    // uncertainty that halt describes is resolved and recovery may become eligible again.
+    //
+    // It resolves nothing else. Wrong credentials, a wrong account, a CAPTCHA/MFA challenge, rate
+    // limiting, an account restriction and every session-limit halt describe conditions a healthy
+    // session does not answer, so each keeps its existing operator review. The attempt budget, the
+    // incident id, incidentHistory and credentialSubmitted are untouched either way, and an
+    // unreadable state file stays a sentinel rather than something a verdict repairs.
+    const resolvesUnknownSubmission = verdict === 'confirmed' && cur.haltedReason === 'submission_outcome_unknown'
+      && cur.lastOutcome !== 'state_unreadable';
     // Confirmation and final incident closure are one durable state update.
     // A crash or write failure cannot leave a cleared pending flag with an open
     // password-submitted incident between multiple transition writes.
@@ -2287,8 +2305,9 @@ function noteReloginVerdict(verdict) {
       pendingVerification: !terminal && verdict.startsWith('unconfirmed_') && verdict !== 'unconfirmed_verification_timeout' && verdict !== 'unconfirmed_visible_logout',
       verificationStartedAt: (!terminal && verdict.startsWith('unconfirmed_') && verdict !== 'unconfirmed_verification_timeout' && verdict !== 'unconfirmed_visible_logout')
         ? (cur.verificationStartedAt || cur.lastAttemptAt || null) : null,
-      haltedReason: terminal ? verdict : cur.haltedReason,
-      haltedAt: terminal ? new Date().toISOString() : cur.haltedAt,
+      haltedReason: terminal ? verdict : resolvesUnknownSubmission ? null : cur.haltedReason,
+      haltedAt: terminal ? new Date().toISOString() : resolvesUnknownSubmission ? null : cur.haltedAt,
+      ...(resolvesUnknownSubmission ? { lastBlock: null, lastSubmissionResolvedAt: now } : {}),
     });
     const stage=verdict==='confirmed'?'SYNC_RESUMED':terminal?'MANUAL_ACTION':cur.pendingVerification?'BACKEND_VERIFICATION_REJECTED':null;
     if(cur.incident&&stage)next.incident={...cur.incident,stage,stageAt:now,...(verdict==='confirmed'?{closed:true}:{})};
@@ -2607,6 +2626,19 @@ async function pushIfChangedInner(state) {
     }
   }
   const verified=r.code==='PROMOTED'&&r.promoted===true&&r.isActiveSource===true&&!r.standDown;
+  // The confirmation above is gated on state.reloginPending, which lives only in memory and which
+  // the TERMINAL finish('submission_outcome_unknown') has already cleared - so the process that
+  // saved that halt can never be the one to resolve it, and a restart begins with the flag false
+  // while the halt persists in agent-relogin.json. Incident 03cbb77d ended exactly there: the
+  // browser was signed in and its candidate PROMOTED, yet every later recovery logged
+  // RECOVERY_BLOCKED / halted_submission_outcome_unknown and no supported operator command could
+  // clear it (--acknowledge-resolved-challenge covers CAPTCHA/MFA only). The verdict is the same
+  // one either way; applying it here is what makes the resolution reachable at all.
+  if(verified&&!state.reloginPending){
+    const held=readReloginState();
+    if(held.haltedReason==='submission_outcome_unknown')
+      persistRecoveryVerdict(state,'confirmed',held.incident?.id||null);
+  }
   if(verified){state.browserLogoutObserved=false;delete state.loggedOutCookieHash;}
   log(verified?'cookie_synchronized':'candidate_acknowledged', {
     hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result,
