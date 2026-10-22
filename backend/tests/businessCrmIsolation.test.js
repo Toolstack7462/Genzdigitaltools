@@ -17,6 +17,9 @@ const BACKEND = path.join(__dirname, '..');
 const REPO = path.join(BACKEND, '..');
 const MODULE_DIR = path.join(BACKEND, 'modules', 'business-crm');
 const BRIDGE = path.join(MODULE_DIR, 'services', 'websiteAccessService.js');
+const CATALOGUE_BRIDGE = path.join(MODULE_DIR, 'services', 'productCatalogueService.js');
+// Every file allowed to touch a website model at all. Anything else importing one is a regression.
+const AUDITED_BRIDGES = [BRIDGE, CATALOGUE_BRIDGE].map((p) => path.resolve(p));
 
 function walk(dir, filter = () => true) {
   const out = [];
@@ -28,7 +31,10 @@ function walk(dir, filter = () => true) {
   return out;
 }
 
-const WEBSITE_MODELS = ['ToolAssignment', 'ProxyClient', 'StealthClient', 'ProxyLease', 'StealthLease'];
+// `Tool` is here because the catalogue feature reads Tool DEFINITIONS. It is the record that
+// carries credentials and session bundles, so an accidental write to it is the worst thing this
+// module could do - worse than a bad catalogue row, because it would touch live access.
+const WEBSITE_MODELS = ['ToolAssignment', 'ProxyClient', 'StealthClient', 'ProxyLease', 'StealthLease', 'Tool'];
 
 /**
  * Tables a source file writes to. `ON DUPLICATE KEY UPDATE <column>` is stripped first — otherwise
@@ -42,7 +48,7 @@ function writtenTables(source) {
 test('only the bridge service may reach the website access models', () => {
   const offenders = [];
   for (const file of walk(MODULE_DIR, (f) => f.endsWith('.js'))) {
-    if (path.resolve(file) === path.resolve(BRIDGE)) continue;
+    if (AUDITED_BRIDGES.includes(path.resolve(file))) continue;
     const source = fs.readFileSync(file, 'utf8');
     for (const model of WEBSITE_MODELS) {
       if (new RegExp(`require\\([^)]*models/${model}['"]`).test(source)) {
@@ -74,6 +80,39 @@ test('the bridge only ever writes namespaced biz_crm_ tables', () => {
   assert.deepEqual(foreign, [], `Business CRM must only write biz_crm_* tables, found: ${foreign.join(', ')}`);
 });
 
+test('the catalogue bridge never writes a website record', () => {
+  const source = fs.readFileSync(CATALOGUE_BRIDGE, 'utf8');
+  const writeCalls = [
+    /Tool\s*\.\s*(create|insertMany|updateOne|updateMany|deleteOne|deleteMany|findOneAndUpdate|findByIdAndUpdate|bulkWrite)\s*\(/,
+    /ToolAssignment\s*\.\s*(create|insertMany|updateOne|updateMany|deleteOne|deleteMany|findOneAndUpdate|findByIdAndUpdate)\s*\(/,
+    // `.save()` on a hydrated website document is the other way a write could sneak in.
+    /\.save\s*\(\s*\)/,
+  ];
+  for (const pattern of writeCalls) {
+    assert.equal(pattern.test(source), false, `productCatalogueService.js must stay read-only against website data (matched ${pattern})`);
+  }
+});
+
+test('the catalogue bridge only ever writes namespaced biz_crm_ tables', () => {
+  const source = fs.readFileSync(CATALOGUE_BRIDGE, 'utf8');
+  const targets = writtenTables(source);
+  assert.ok(targets.length > 0, 'expected the catalogue bridge to contain SQL writes');
+  const foreign = targets.filter((table) => !table.startsWith('biz_crm_'));
+  assert.deepEqual(foreign, [], `the catalogue bridge must only write biz_crm_* tables, found: ${foreign.join(', ')}`);
+});
+
+test('the catalogue bridge never projects a secret Tool field', () => {
+  // The import is an explicit allow-list (projectTool). This fails the build if a credential or
+  // session field is ever named in it, which is how a secret would start flowing into the CRM.
+  const source = fs.readFileSync(CATALOGUE_BRIDGE, 'utf8');
+  const secrets = [
+    'cookiesEncrypted', 'tokenEncrypted', 'localStorageEncrypted', 'sessionStorageEncrypted',
+    'sessionBundle', 'payloadEncrypted', 'credentialVersion', 'credentials',
+  ];
+  const leaked = secrets.filter((field) => new RegExp(`\\b${field}\\b`).test(source));
+  assert.deepEqual(leaked, [], `the catalogue bridge must never name a secret Tool field: ${leaked.join(', ')}`);
+});
+
 test('the CRM schema is additive and namespaced', () => {
   const sql = fs.readFileSync(path.join(MODULE_DIR, 'schema.sql'), 'utf8');
   assert.equal(/\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i.test(sql), false, 'schema.sql must never DROP');
@@ -82,6 +121,7 @@ test('the CRM schema is additive and namespaced', () => {
 
   const created = [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([A-Za-z_][A-Za-z0-9_]*)/gi)].map((m) => m[1]);
   assert.ok(created.includes('biz_crm_access_links'), 'the access-link table must exist');
+  assert.ok(created.includes('biz_crm_product_sources'), 'the product-source mapping table must exist');
   const foreign = created.filter((table) => !table.startsWith('biz_crm_'));
   assert.deepEqual(foreign, [], `every CRM table must be biz_crm_* namespaced, found: ${foreign.join(', ')}`);
 
