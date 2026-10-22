@@ -48,6 +48,7 @@ const verifyMod = require('../utils/proxy/verify');
 let verifyImpl = async () => ({ result: 'working', httpStatus: 200, finalPath: '/auth/v1/user', maskedId: 'op***@example.com', canary: 'passed', accountKey: 'acct-key-1' });
 verifyMod.verifyAccountCookies = async (...a) => verifyImpl(...a);
 
+const adapter = require('../db/mysqlAdapter');
 const ProxyAccount = require('../models/proxy/ProxyAccount');
 const vaultCrypto = require('../utils/proxy/vaultCrypto');
 const { verifyAndApply } = require('../utils/proxy/verifyAndApply');
@@ -111,6 +112,10 @@ const newId = (n) => { const id = 'selftest-vg-' + Date.now() + '-' + n; IDS.pus
     const over = grants.find((l) => /\bON\s+\*\.\*/i.test(l) && !/\bGRANT\s+USAGE\s+ON\s+\*\.\*/i.test(l));
     if (over) { console.error(`REFUSING TO RUN: the scratch account has a global privilege beyond USAGE:\n    ${over}`); process.exit(2); }
   }
+
+  // The adapter opens its pool explicitly at startup; nothing here can read or write until it
+  // has. Done AFTER the isolation proof above, so a refusal never opens a pool at all.
+  await adapter.connect();
 
   // ── (2) NEGATIVE CONTROL: the race is real, and an unguarded whole-doc save loses data ─────
   // This is the behaviour the first guard could not prevent. It is reproduced deliberately, with

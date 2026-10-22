@@ -487,6 +487,7 @@ const CANARY_OK = {
   maskedId: 'op***@example.com', canary: 'passed', accountKey: 'acct-key-1',
 };
 /** A state object whose device identity is the one the server actually recorded. */
+const PATH_ = '/api/crm/proxy/agent/writehuman/cookies';
 const asSource = (acct) => ({
   isActiveSource: true, reloginPending: false,
   deviceId: (acct.activeSource && acct.activeSource.deviceId) || null,
@@ -789,4 +790,58 @@ test('D5 the EXACT saved 3.5.15 state shape resolves, and zero attempts never by
   assert.equal(rep.maxAttempts, 3);
   assert.equal(rep.windowMs, 3600000);
   assert.equal(rep.cooldownMs, 1200000);
+});
+
+test('D6 NO PROOF AVAILABLE: the halt holds, nothing is resubmitted, and the approved next action works', async () => {
+  // Section A of this is D3. This is B and C: what happens when proof CANNOT be obtained, and what
+  // the supported next action actually is - because "a test with valid proof passes" says nothing
+  // about a machine whose page is still unknown.
+  const acct = makeAccount();
+  halted();
+  const { server, post } = await serve();
+  try {
+    // (B) The browser is in an unknown state, so the provider cannot confirm anything. The server
+    // reports that honestly and the agent refuses to conclude from it - repeatedly, with no drift.
+    await post(PATH_, { cookies: cookies(9000) });
+    verifyImpl = async () => ({ result: 'working', httpStatus: 200, finalPath: '/auth (jwt)', maskedId: 'op***@example.com', canary: 'inconclusive' });
+    await scheduler.verifyOne('writehuman');
+    for (let i = 0; i < 3; i++) {
+      const hb = await post(PATH_, { heartbeat: true });
+      assert.equal(hb.body.sessionProof.canary, 'inconclusive');
+      assert.equal(agent.resolveHaltOnStatedProof(asSource(acct), hb.body, INCIDENT, HALTED_AT), false);
+    }
+    assertStillHalted('no proof is obtainable');
+    const held = agent.readReloginState();
+    assert.equal(held.attempts.length, ATTEMPTS.length, 'no attempt was consumed waiting');
+    assert.equal(held.incident.credentialSubmitted, true, 'and nothing was resubmitted');
+    assert.equal(held.pendingVerification, false);
+
+    // (C) The state says plainly that a human is needed, and says it WITHOUT scheduling a retry
+    // that will never help. That is the whole operator signal - there is no reset command, and
+    // none is invented.
+    const rep = agent.reloginReport();
+    assert.equal(rep.manualRequired, true);
+    assert.equal(rep.activeBlock, 'submission_outcome_unknown');
+    assert.equal(rep.nextRetryAt, null, 'a permanent halt must not advertise a retry time');
+
+    // THE APPROVED NEXT ACTION, which needs no new command and no reset: the operator signs in to
+    // WriteHuman in the approved source browser. The agent then pushes that bundle like any other,
+    // the EXISTING scheduler proves it, the EXISTING heartbeat carries the proof, and the halt
+    // resolves - with the incident history, the attempt budget and credentialSubmitted all intact.
+    verifyImpl = DEFAULT_VERIFY;
+    await post(PATH_, { cookies: cookies(12345) });        // the operator's fresh session
+    await scheduler.verifyOne('writehuman');               // proof, out of the request path
+    const hb = await post(PATH_, { heartbeat: true });
+    assert.equal(hb.body.sessionProof.canary, 'passed');
+    assert.equal(hb.body.sessionProof.stale, false);
+    assert.equal(agent.resolveHaltOnStatedProof(asSource(acct), hb.body, INCIDENT, HALTED_AT), true);
+
+    const s = agent.readReloginState();
+    assert.equal(s.haltedReason, null);
+    assert.equal(s.incident.resolvedBy, 'current_auth_proof');
+    assert.equal(s.incident.submissionOutcome, 'unknown', 'an operator sign-in does not prove the old submission');
+    assert.equal(s.incident.credentialSubmitted, true);
+    assert.equal(s.attempts.length, ATTEMPTS.length, 'the budget was never reset');
+    assert.equal(agent.reloginReport().manualRequired, false);
+  } finally { verifyImpl = DEFAULT_VERIFY; server.close(); }
 });
