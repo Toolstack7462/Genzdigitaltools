@@ -674,6 +674,107 @@ const putBody = (row, changes) => ({
     check('a products.view-only actor cannot manage products', !has(staff, 'products.manage'));
   }
 
+  /* -- 11. THE RECOVERY PATH, tested rather than described ----------------------------------- */
+  {
+    // Rollback planning for this release, verified in the disposable schema instead of asserted in
+    // prose. An earlier draft of the release notes said a backend rollback should "roll the mapping
+    // rows back with it". That is WRONG, and (b) below is the proof: removing a mapping does not
+    // remove its product, so the imported placeholder stops being recognisable as imported and
+    // every readiness safeguard stops applying to it.
+    TOOL_ROWS = [tool('tool-recovery', 'Recovery Probe', 'Writing', 'rec.example')];
+    await catalogue.reconcile(OWNER, { force: true });
+    const mapRec = await mappingFor('tool-recovery');
+    check('arrangement: a freshly imported product exists and is NEEDS_SETUP',
+      !!mapRec && mapRec.readiness === 'NEEDS_SETUP', mapRec && mapRec.readiness);
+    const salesAtStart = Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n);
+    const paymentsAtStart = Number((await q('SELECT COUNT(*) n FROM biz_crm_payments'))[0].n);
+    const historyBefore = (await q('SELECT * FROM biz_crm_product_sources WHERE id=:id', { id: mapRec.id }))[0];
+
+    /* (a) THE SUPPORTED FORWARD CORRECTION: ignore, then deactivate. Nothing is deleted. */
+    await catalogue.setIgnored(OWNER, mapRec.product_id, true);
+    const recRow = await productById(mapRec.product_id);
+    const deactivate = await api('PUT', `/products/${mapRec.product_id}`, putBody(recRow, { active: false }));
+    check('the forward correction is an ordinary operator edit', deactivate.status === 200, deactivate.body);
+    let refusedAfterCorrection = null;
+    try { await sales.createSale(OWNER, salePayload(mapRec.product_id)); } catch (e) { refusedAfterCorrection = e.code; }
+    check('after the correction the product cannot be sold', refusedAfterCorrection === 'PRODUCT_SOURCE_IGNORED', refusedAfterCorrection);
+    const afterCorrection = (await q('SELECT * FROM biz_crm_product_sources WHERE id=:id', { id: mapRec.id }))[0];
+    check('the mapping row is still there - no history was destroyed', !!afterCorrection);
+    check('its import identity and readiness are preserved',
+      afterCorrection.source_id === historyBefore.source_id
+      && afterCorrection.source_name === historyBefore.source_name
+      && afterCorrection.readiness === historyBefore.readiness
+      && String(afterCorrection.created_at) === String(historyBefore.created_at),
+      { readiness: afterCorrection.readiness, sourceName: afterCorrection.source_name });
+    check('the product row is kept, not deleted', !!(await productById(mapRec.product_id))
+      && (await productById(mapRec.product_id)).deleted_at === null);
+    const activeList = await api('GET', '/products?active=true&pageSize=500');
+    check('a deactivated product is no longer offered in the catalogue list',
+      !((activeList.body.rows || []).some((r) => r.id === mapRec.product_id)));
+    check('the correction wrote NO financial rows',
+      Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n) === salesAtStart
+      && Number((await q('SELECT COUNT(*) n FROM biz_crm_payments'))[0].n) === paymentsAtStart);
+
+    // ...and it is fully reversible, with the safeguard chain intact rather than reset.
+    await catalogue.setIgnored(OWNER, mapRec.product_id, false);
+    const reRow = await productById(mapRec.product_id);
+    await api('PUT', `/products/${mapRec.product_id}`, putBody(reRow, { active: true }));
+    let refusedAfterReverse = null;
+    try { await sales.createSale(OWNER, salePayload(mapRec.product_id)); } catch (e) { refusedAfterReverse = e.code; }
+    check('reversing the correction restores the ORIGINAL refusal, not sellability',
+      refusedAfterReverse === 'PRODUCT_NOT_READY', refusedAfterReverse);
+
+    /* (b) THE HAZARD, demonstrated: deleting the mapping row instead. */
+    const productsBeforeDelete = await countProducts();
+    await q('DELETE FROM biz_crm_product_sources WHERE id=:id', { id: mapRec.id });
+    check('deleting a mapping does NOT delete its product', (await countProducts()) === productsBeforeDelete
+      && !!(await productById(mapRec.product_id)));
+    const orphan = await api('GET', '/products?q=Recovery%20Probe&pageSize=50');
+    const orphanRow = (orphan.body.rows || []).find((r) => r.id === mapRec.product_id);
+    check('the orphaned placeholder now reads as a MANUAL product', !!orphanRow && !('source' in orphanRow),
+      orphanRow && Object.keys(orphanRow).filter((k) => k === 'source'));
+    check('...and its stored placeholder price is served as a confirmed value',
+      !!orphanRow && String(orphanRow.default_sale_price) === '0.00', orphanRow && orphanRow.default_sale_price);
+    const soldOrphan = await sales.createSale(OWNER, salePayload(mapRec.product_id));
+    check('...so the readiness gate no longer applies and the placeholder IS SELLABLE', !!soldOrphan && !!soldOrphan.id,
+      soldOrphan && soldOrphan.id);
+    check('that hazard added exactly the one sale this case created',
+      Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n) === salesAtStart + 1);
+
+    /* (c) and the deleted link is not quietly restored by a later reconcile. */
+    TOOL_ROWS = [tool('tool-recovery', 'Recovery Probe', 'Writing', 'rec.example')];
+    const reimport = await catalogue.reconcile(OWNER, { force: true });
+    check('a reconcile after a deleted mapping does NOT re-link the orphan silently',
+      !(await mappingFor('tool-recovery')) && reimport.heldForReview >= 1, reimport);
+
+    /* (d) a FRONTEND-ONLY rollback stays safe, because the refusal is server-side. */
+    TOOL_ROWS = [tool('tool-recovery-2', 'Recovery Probe Two', 'Writing', 'rec2.example')];
+    await catalogue.reconcile(OWNER, { force: true });
+    const mapRec2 = await mappingFor('tool-recovery-2');
+    let clientCannotOverride = null;
+    try {
+      await sales.createSale(OWNER, {
+        ...salePayload(mapRec2.product_id),
+        // Whatever an older client believes about this product, it does not get a say.
+        items: [{ ...saleItem(mapRec2.product_id), salePrice: '0.00', accountType: 'private' }],
+      });
+    } catch (e) { clientCannotOverride = e.code; }
+    check('an older frontend cannot re-enable an imported placeholder - the refusal is server-side',
+      clientCannotOverride === 'PRODUCT_NOT_READY', clientCannotOverride);
+
+    /* (e) the FK protects history in the other direction too. */
+    let fkRefusal = null;
+    try { await q('DELETE FROM biz_crm_products WHERE id=:id', { id: mapRec2.product_id }); }
+    catch (e) { fkRefusal = e.code || e.message; }
+    check('a product referenced by a mapping cannot be hard-deleted out from under it',
+      fkRefusal !== null, fkRefusal);
+    check('...and it is still there', !!(await productById(mapRec2.product_id)));
+  }
+
+  /* -- 12. still zero website writes, after everything above --------------------------------- */
+  check('the website Tool model received ZERO writes across the WHOLE run', TOOL_WRITES.length === 0,
+    TOOL_WRITES.map((w) => w[0]));
+
   try { apiServer.close(); } catch (_) {}
 
   console.log(`\n[catalogue-selftest] ${passed} passed, ${failed} failed`);
