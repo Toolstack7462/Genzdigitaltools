@@ -90,8 +90,17 @@ async function seed(id, over) {
 const raw = async (id) => (await ProxyAccount._findRaw({ _id: id }))[0] || null;
 const load = async (id) => { const r = await raw(id); return r ? ProxyAccount._hydrate(r) : null; };
 
+// `id` is VARCHAR(32), so no timestamp: 'selftest-vg-' + a tag stays inside it, and the scratch
+// schema is created fresh for every run and these rows are deleted at the end, so uniqueness
+// across runs buys nothing. The `selftest-` prefix is still not a valid ProxyAccount id, so one of
+// these can never collide with a real account.
 const IDS = [];
-const newId = (n) => { const id = 'selftest-vg-' + Date.now() + '-' + n; IDS.push(id); return id; };
+const newId = (n) => {
+  const id = 'selftest-vg-' + n;
+  if (id.length > 32) throw new Error('selftest id exceeds the id column (VARCHAR(32)): ' + id);
+  IDS.push(id);
+  return id;
+};
 
 (async () => {
   // ── (1) ISOLATION PROOF, before anything is written ────────────────────────────────────────
