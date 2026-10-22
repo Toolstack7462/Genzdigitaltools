@@ -1,0 +1,218 @@
+# REAL-ENGINE self-test for the verification-subject guard in utils/proxy/verifyAndApply.js.
+#
+# WHY A REAL ENGINE. The defect this guards against is an independent-snapshot race: two workers
+# each hold their own copy of the account row, so the verifier's object never learns that another
+# writer committed a newer bundle, and a plain save() replaces the whole row with the stale
+# snapshot. A mocked model cannot show that — a fixture whose find() returns the same object and
+# whose save() is `Promise.resolve(this)` has no independent snapshots and no storage, so it cannot
+# tell a guarded write from an unguarded one. The guard is a conditional UPDATE, so only the engine
+# can confirm it.
+#
+# The script provides its own isolation proof: it re-reads DATABASE()/CURRENT_USER()/VERSION() and
+# SHOW GRANTS from the LIVE adapter connection and refuses unless it is on the named scratch schema
+# with no global privilege beyond the baseline USAGE. It touches only rows whose id begins
+# `selftest-` and deletes them. It makes no network request — the provider call is stubbed, because
+# that is the one thing a test must never send to WriteHuman.
+name: verify-guard real-DB self-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine_image:
+        description: 'Override the DB service image, e.g. mariadb:11.8 - use the version production actually runs'
+        required: false
+        default: ''
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/utils/proxy/verifyAndApply.js'
+      - 'backend/db/mysqlAdapter.js'
+      - 'backend/models/proxy/ProxyAccount.js'
+      - 'backend/scripts/verifyguard-db-selftest.js'
+      - '.github/workflows/verifyguard-db-selftest.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verifyguard-selftest-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Production (Hostinger) runs MariaDB 11.8.9 — measured over SSH on 2026-10-20. Keep this
+          # first: a pass on 10.11 or MySQL 8.0 alone is not evidence about production.
+          - image: mariadb:11.8
+          - image: mariadb:10.11
+          - image: mysql:8.0
+    services:
+      db:
+        image: ${{ github.event.inputs.engine_image || matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-not-a-secret
+          MARIADB_ROOT_PASSWORD: ci-root-not-a-secret
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret || mysqladmin ping -h 127.0.0.1 -uroot -pci-root-not-a-secret"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+
+    env:
+      # Throwaway, in-runner only. Not a secret and not usable anywhere else.
+      ROOT_PW: ci-root-not-a-secret
+      SCRATCH_DB: verifyguard_scratch
+      SCRATCH_USER: verifyguard_tester
+      SCRATCH_PW: ci-scratch-not-a-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the mysql2 driver only
+        run: npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund mysql2@3.15.3
+        working-directory: backend
+
+      - name: Wait for the database service
+        run: |
+          for i in $(seq 1 60); do
+            if mysqladmin ping -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" --silent 2>/dev/null; then
+              echo "engine reachable"; mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e 'SELECT VERSION();'
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "database service never became reachable"; exit 1
+
+      - name: Provision the scratch schema and a restricted user
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" <<SQL
+          DROP DATABASE IF EXISTS \`${SCRATCH_DB}\`;
+          CREATE DATABASE \`${SCRATCH_DB}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          DROP USER IF EXISTS '${SCRATCH_USER}'@'%';
+          CREATE USER '${SCRATCH_USER}'@'%' IDENTIFIED BY '${SCRATCH_PW}';
+          GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, REFERENCES ON \`${SCRATCH_DB}\`.* TO '${SCRATCH_USER}'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+          echo "--- grants the test account will present ---"
+          mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" -e "SHOW GRANTS FOR CURRENT_USER();"
+
+      - name: Prove the test account cannot reach any other schema
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" "$SCRATCH_DB" -e "SELECT 1;" >/dev/null
+          if mysql -h 127.0.0.1 -P 3306 -u"$SCRATCH_USER" -p"$SCRATCH_PW" -e "SELECT COUNT(*) FROM mysql.user;" >/dev/null 2>&1; then
+            echo "ISOLATION FAILURE: the scratch account can read mysql.user"; exit 1
+          fi
+          echo "isolation confirmed: scratch schema only"
+
+      - name: Run the real-engine self-test (captured)
+        id: selftest
+        continue-on-error: true
+        working-directory: backend
+        env:
+          VERIFYGUARD_SELFTEST_DB: '1'
+          VERIFYGUARD_EXPECTED_DB: verifyguard_scratch
+          DATABASE_URL: mysql://verifyguard_tester:ci-scratch-not-a-secret@127.0.0.1:3306/verifyguard_scratch
+          PROXY_VAULT_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          COOKIES_ENCRYPTION_KEY: '0000000000000000000000000000000000000000000000000000000000000000'
+          JWT_SECRET: 'ci-only-not-a-secret-ci-only-not-a-secret'
+          JWT_REFRESH_SECRET: 'ci-only-not-a-secret-ci-only-not-a-secret-2'
+        run: |
+          set +e
+          node scripts/verifyguard-db-selftest.js 2>&1 | tee "$RUNNER_TEMP/vg.log"
+          echo "${PIPESTATUS[0]}" > "$RUNNER_TEMP/vg.code"
+          set -e
+          echo "exit code: $(cat "$RUNNER_TEMP/vg.code")"
+
+      - name: Echo the captured self-test output
+        if: always()
+        run: cat "$RUNNER_TEMP/vg.log" || true
+
+      # Job logs need admin rights on the repository; ANNOTATIONS do not. Re-emitting the output is
+      # what makes a red run diagnosable from outside.
+      - name: Surface the output as annotations
+        if: always()
+        run: |
+          sed -n '1,80p' "$RUNNER_TEMP/vg.log" | sed 's/%/%25/g' | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error title=verifyguard-selftest::$line"
+          done
+          true
+
+      - name: 'DIAG A: refused to run (environment/isolation guard)'
+        if: always()
+        run: 'grep -q "REFUSING TO RUN" "$RUNNER_TEMP/vg.log" && { echo "the script refused the environment"; exit 1; } || echo ok'
+
+      - name: 'DIAG B: crashed before finishing'
+        if: always()
+        run: 'grep -q "\[selftest\] crashed" "$RUNNER_TEMP/vg.log" && { echo "threw during the checks"; exit 1; } || echo ok'
+
+      # The negative control must FAIL to be meaningful: it reproduces the unguarded whole-document
+      # save and asserts the newer bundle really is lost. If it passes "cleanly" the harness is not
+      # reproducing independent snapshots and every positive result below is worthless.
+      - name: 'DIAG C: the negative control actually reproduced the race'
+        if: always()
+        run: 'grep "NEGATIVE CONTROL" "$RUNNER_TEMP/vg.log" | grep -q "✗" && { echo "the race was NOT reproduced - the harness is not modelling independent snapshots"; exit 1; } || echo ok'
+
+      - name: 'DIAG D: a late POSITIVE verdict cannot land on the new bundle'
+        if: always()
+        run: 'grep -E "late POSITIVE|B (bundle|hash|version|source|newer|status)" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG E: a late NEGATIVE verdict cannot expire or roll back the new bundle'
+        if: always()
+        run: 'grep -E "late NEGATIVE|newer session is NOT expired|newer bundle is NOT rolled back|needs_login was invented" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG F: a SOURCE handover with identical bytes still refuses'
+        if: always()
+        run: 'grep -E "SOURCE change|new source is preserved|old source is NOT restored|attributed to the new source" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG G: the uncontended path still lands, writing only its own fields'
+        if: always()
+        run: 'grep -E "uncontended verdict|canary and its subject|proof clock|status recovered|bundle was NOT rewritten|hash/version/source untouched|label and unrelated" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG H: a refused verdict leaves nothing behind in memory'
+        if: always()
+        run: 'grep -E "in-memory doc shows no rejected|caller-owned save cannot persist" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG I: throwaway rows cleaned up'
+        if: always()
+        run: 'grep -E "throwaway row was removed" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'RESULT: the real-engine self-test passed'
+        if: always()
+        run: |
+          code=$(cat "$RUNNER_TEMP/vg.code" 2>/dev/null || echo 99)
+          echo "self-test exit code: $code"
+          [ "$code" = "0" ] || exit 1
+
+      - name: Record the engine actually tested
+        if: always()
+        # REQUESTED_IMAGE arrives through env and is never interpolated into the shell. A
+        # workflow_dispatch input is attacker-controlled text, and `${{ }}` inside a run block
+        # splices it into the script before bash ever sees it - that is script injection.
+        # backend/tests/deployWorkflowSecurity.test.js fails the build for exactly this.
+        env:
+          REQUESTED_IMAGE: ${{ github.event.inputs.engine_image || matrix.image }}
+        run: |
+          v=$(mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -N -B -e 'SELECT VERSION();' 2>/dev/null || echo unknown)
+          {
+            echo "### verify-guard real-DB self-test"
+            echo ""
+            echo "- requested image: \`$REQUESTED_IMAGE\`"
+            echo "- engine reported: \`$v\`"
+            echo "- scratch schema: \`verifyguard_scratch\` (restricted user, dropped with the runner)"
+            echo ""
+            echo "A pass is evidence about THIS engine version. Production runs MariaDB 11.8.9."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tear down the scratch schema
+        if: always()
+        run: |
+          mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -e "DROP DATABASE IF EXISTS \`${SCRATCH_DB}\`; DROP USER IF EXISTS '${SCRATCH_USER}'@'%';" || true

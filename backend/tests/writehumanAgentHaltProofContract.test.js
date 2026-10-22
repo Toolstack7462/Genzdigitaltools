@@ -46,11 +46,18 @@ process.env.PROXY_VAULT_KEY = process.env.PROXY_VAULT_KEY || crypto.randomBytes(
 process.env.PROXY_AGENT_SYNC_KEY = LEGACY_KEY;
 delete process.env.PROXY_AGENT_SYNC_ALLOW_IPS;
 
+// STORAGE IS MOCKED, and that is stated rather than glossed. tests/helpers/fakeProxyAccountStore
+// models rows, an INDEPENDENT SNAPSHOT per read, whole-document save() and patchGuarded's guard
+// semantics. The fixture it replaces was `{ find: async () => ACCOUNTS }` with
+// `save() { return Promise.resolve(this); }` - no storage and no independent snapshots, so it could
+// not tell a guarded write from an unguarded one. It is still not SQL: the engine's own behaviour
+// is scripts/verifyguard-db-selftest.js (workflow verifyguard-db-selftest.yml).
+const { createStore } = require('./helpers/fakeProxyAccountStore');
+const store = createStore();
+const ACCT_ID = 'acct1';
 const modelPath = require.resolve('../models/proxy/ProxyAccount');
-let ACCOUNTS = [];
 require.cache[modelPath] = {
-  id: modelPath, filename: modelPath, loaded: true,
-  exports: { find: async () => ACCOUNTS },
+  id: modelPath, filename: modelPath, loaded: true, exports: store.asModelExports(),
 };
 require('../utils/proxy/healthAlerts').onVerifyApplied = async () => {};
 
@@ -88,16 +95,33 @@ function cookies(iat) {
   const payload = JSON.stringify({ access_token: jwt(iat), refresh_token: 'rt', user: { email: 'operator@example.com' } });
   return [{ name: 'sb-' + REF + '-auth-token', value: 'base64-' + Buffer.from(payload).toString('base64'), domain: '.writehuman.ai', path: '/' }];
 }
-function makeAccount() {
-  const a = {
-    _id: 'acct1', tool: 'writehuman', isPrimary: true, label: 'WriteHuman',
+/**
+ * Seed the store and hand back a READ-THROUGH handle on the STORED row.
+ *
+ * Reads go to whatever is actually persisted, so an assertion like `acct.verification.canary`
+ * observes what landed rather than what some snapshot happens to remember - while the router and
+ * the scheduler each get their OWN snapshot from find(), which is what makes the race reproducible.
+ */
+function makeAccount(over) {
+  store.clear();
+  store.seed(Object.assign({
+    _id: ACCT_ID, tool: 'writehuman', isPrimary: true, label: 'WriteHuman',
     status: 'active', session_status: 'working',
+    sessionEncrypted: vaultCrypto.encrypt(JSON.stringify({ cookies: cookies(1000) })),
     verification: { result: 'working', maskedId: 'op***@example.com', httpStatus: 200 },
-    save() { return Promise.resolve(this); },
-  };
-  a.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify({ cookies: cookies(1000) }));
-  return a;
+  }, over || {}));
+  const row = () => store.stored(ACCT_ID);
+  return new Proxy({}, {
+    get: (_t, p) => row()[p],
+    set: (_t, p, v) => { row()[p] = v; return true; },
+    has: (_t, p) => p in row(),
+    deleteProperty: (_t, p) => { delete row()[p]; return true; },
+    ownKeys: () => Reflect.ownKeys(row()),
+    getOwnPropertyDescriptor: (_t, p) => ({ enumerable: true, configurable: true, value: row()[p] }),
+  });
 }
+/** An INDEPENDENT snapshot, as a separate worker would hold. */
+const snapshot = () => store.load(ACCT_ID);
 function serve() {
   const app = express();
   app.use('/api/crm/proxy/agent', router);
@@ -124,7 +148,7 @@ function serve() {
 // ──────────────────────────────── Part C - the real contract ────────────────────────────────
 
 test('C1 a ROUTINE promotion is produced from a DECODE: the server states no canary proof', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   VERIFY_CALLS.length = 0;
   const { server, post } = await serve();
   try {
@@ -146,10 +170,10 @@ test('C1 a ROUTINE promotion is produced from a DECODE: the server states no can
 });
 
 test('C2 the AUTHORITATIVE canary path records real proof, and the reply forwards it', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   // The existing out-of-request-path verifier - the same call cron/proxyVerifyScheduler.js makes
   // every ~7 min. No second verifier, and nothing new on the push path.
-  const applied = await verifyAndApply(acct, 'writehuman', { readOnly: true, canary: true });
+  const applied = await verifyAndApply(snapshot(), 'writehuman', { readOnly: true, canary: true });
   assert.equal(applied.result, 'working');
   assert.equal(acct.verification.canary, 'passed', 'the proof METHOD is now recorded, not just the verdict');
 
@@ -163,8 +187,8 @@ test('C2 the AUTHORITATIVE canary path records real proof, and the reply forward
 });
 
 test('C3 a promotion REPLACES the bundle, so it honestly reports the new bundle as unproven', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
-  await verifyAndApply(acct, 'writehuman', { readOnly: true, canary: true });
+  const acct = makeAccount();
+  await verifyAndApply(snapshot(), 'writehuman', { readOnly: true, canary: true });
   assert.equal(acct.verification.canary, 'passed');
 
   const { server, post } = await serve();
@@ -469,18 +493,28 @@ const asSource = (acct) => ({
 });
 
 test('D1 a verification of bundle A landing LATE cannot authenticate bundle B', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
-  await verifyAndApply(acct, 'writehuman', { readOnly: true, canary: true });
+  // Seeded with a concrete bundle identity so A -> B is a real transition rather than
+  // absent -> present. The subject records values VERBATIM (an absent bundleVersion stays null,
+  // because an absent JSON key guards as IS NULL), so there is nothing to normalise here either.
+  // The shared-key device IS the active source, so its push below genuinely promotes (otherwise
+  // the server correctly answers STANDBY_ROUTINE_REFRESH and there is no bundle B at all).
+  const acct = makeAccount({
+    cookieHash: 'hashA', bundleVersion: 7,
+    activeSource: { deviceId: 'agent_legacy_shared', name: 'RDP-A', bundleVersion: 7 },
+  });
+  await verifyAndApply(snapshot(), 'writehuman', { readOnly: true, canary: true });
   assert.equal(acct.verification.canary, 'passed');
-  const bundleA = acct.bundleVersion || 0;
-  const hashA = acct.cookieHash || null;
-  assert.equal(acct.verification.subject.bundleVersion, bundleA);
+  const bundleA = acct.bundleVersion;
+  const hashA = acct.cookieHash;
+  assert.equal(acct.verification.subject.bundleVersion, 7);
+  assert.equal(acct.verification.subject.cookieHash, 'hashA');
+  assert.equal(acct.verification.subject.sourceDeviceId, 'agent_legacy_shared');
 
   // Start a verification that will not return until we let it.
   let release;
   const gate = new Promise((r) => { release = r; });
   verifyImpl = async () => { await gate; return CANARY_OK; };
-  const late = verifyAndApply(acct, 'writehuman', { readOnly: true, canary: true });
+  const late = verifyAndApply(snapshot(), 'writehuman', { readOnly: true, canary: true });
   verifyImpl = DEFAULT_VERIFY;                   // only affects calls made from here on
 
   const { server, post } = await serve();
@@ -512,7 +546,7 @@ test('D1 a verification of bundle A landing LATE cannot authenticate bundle B', 
 });
 
 test('D1b a late verdict cannot DOWNGRADE the bundle that replaced its subject', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   let release;
   const gate = new Promise((r) => { release = r; });
   // The late answer is a hard negative about the OLD bundle.
@@ -520,7 +554,7 @@ test('D1b a late verdict cannot DOWNGRADE the bundle that replaced its subject',
     await gate;
     return { result: 'session_expired', httpStatus: 200, finalPath: '/auth/v1/user', loggedOut: true, maskedId: null, canary: 'failed' };
   };
-  const late = verifyAndApply(acct, 'writehuman', { readOnly: true, canary: true });
+  const late = verifyAndApply(snapshot(), 'writehuman', { readOnly: true, canary: true });
   verifyImpl = DEFAULT_VERIFY;
 
   const { server, post } = await serve();
@@ -537,7 +571,7 @@ test('D1b a late verdict cannot DOWNGRADE the bundle that replaced its subject',
 });
 
 test('D2 repeated routine promotions cannot starve the authoritative check', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   await scheduler.verifyOne('writehuman');
   assert.equal(acct.verification.canary, 'passed', 'the scheduler produces real proof');
   const proofClock = acct.lastCanaryAt;
@@ -593,7 +627,7 @@ test('D2 repeated routine promotions cannot starve the authoritative check', asy
 });
 
 test('D2b an inconclusive canary neither proves, expires, nor fakes freshness', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   const { server, post } = await serve();
   try {
     // Establish this device as the approved active source first, so the heartbeat below is
@@ -621,7 +655,7 @@ test('D2b an inconclusive canary neither proves, expires, nor fakes freshness', 
 });
 
 test('D3 THE ORDINARY SEQUENCE: push without proof -> scheduler proves -> heartbeat delivers -> resolved', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   halted();                                    // the real 3.5.15 dead end
   const { server, post } = await serve();
   try {
@@ -661,7 +695,7 @@ test('D3 THE ORDINARY SEQUENCE: push without proof -> scheduler proves -> heartb
 });
 
 test('D4 MIXED VERSIONS: old agent + new backend, new agent + old backend', async () => {
-  const acct = makeAccount(); ACCOUNTS = [acct];
+  const acct = makeAccount();
   const { server, post } = await serve();
   try {
     // (a) OLD AGENT + NEW BACKEND. The reply must remain a strict SUPERSET: every field an older
