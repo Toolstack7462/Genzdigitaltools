@@ -151,23 +151,38 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     'SELECT COUNT(*) n FROM biz_crm_product_sources WHERE source_id=:s', { s: 'tool-a' },
   ))[0].n === 1, concurrent.map((r) => r.created));
 
-  /* ── 2. no orphan when the mapping insert fails ────────────────────────────────────────────── */
+  /* ── 2. no orphan: a lost race rolls the product back with the mapping ──────────────────── */
   {
-    // Force the SECOND insert of the pair to fail by pre-claiming the source key with a mapping
-    // that points at a product which is then removed... simpler and closer to the real failure:
-    // insert a conflicting mapping first, so createLinkedProduct's second statement violates the
-    // UNIQUE key and the whole transaction must roll back - taking its product with it.
-    TOOL_ROWS = [tool('tool-orphan', 'Orphan Probe', 'Writing', 'orphan.example')];
-    const placeholderProduct = newId();
-    await q(`INSERT INTO biz_crm_products (id,name,category,created_by) VALUES (:id,'placeholder','Software','selftest')`, { id: placeholderProduct });
-    await q(`INSERT INTO biz_crm_product_sources (id,product_id,source_namespace,source_id,readiness,source_availability,created_by)
-             VALUES (:id,:p,:ns,'tool-orphan','NEEDS_SETUP','AVAILABLE','selftest')`,
-      { id: newId(), p: placeholderProduct, ns: catalogue.NAMESPACE_WEBSITE_TOOL });
+    // My first version of this case pre-inserted a mapping for the source, so reconcile found it
+    // ALREADY LINKED and took the refresh path - no insert was attempted and no conflict occurred,
+    // which made the "creates NO product" assertion pass for the wrong reason. The real-engine run
+    // reported refreshed:1 and skippedDuplicate:0, which is what exposed it.
+    //
+    // Two concurrent approveCreate calls for the SAME source genuinely race: both see a complete
+    // scan, both call createLinkedProduct, and the loser hits the UNIQUE key on the mapping INSERT
+    // - the second statement of the pair. Its transaction must roll back and take its already
+    // inserted product with it, leaving no orphan.
+    TOOL_ROWS = [tool('tool-race', 'Race Probe', 'Writing', 'race.example')];
+    // Hold it back so it is created only through approveCreate, under our control.
+    const decoy = newId();
+    await q(`INSERT INTO biz_crm_products (id,name,category,created_by) VALUES (:id,'Race Probe','Software','selftest')`, { id: decoy });
     const n0 = await countProducts();
-    const r = await catalogue.reconcile(OWNER, { force: true });
+    const settled = await Promise.allSettled([
+      catalogue.approveCreate(makeReq('race-1'), { sourceId: 'tool-race' }),
+      catalogue.approveCreate(makeReq('race-2'), { sourceId: 'tool-race' }),
+    ]);
     const n1 = await countProducts();
-    check('a uniqueness conflict creates NO product (no orphan)', n1 === n0, { before: n0, after: n1, result: r });
-    check('the conflict is reported, not silently swallowed', (r.skippedDuplicate + r.unchanged) >= 1, r);
+    const winners = settled.filter((r) => r.status === 'fulfilled');
+    const losers = settled.filter((r) => r.status === 'rejected');
+    check('a concurrent race produces exactly ONE winner', winners.length === 1,
+      settled.map((r) => (r.status === 'fulfilled' ? 'ok' : (r.reason && r.reason.code) || 'err')));
+    check('the loser is refused with ALREADY_LINKED, not silently swallowed',
+      losers.length === 1 && losers[0].reason && losers[0].reason.code === 'ALREADY_LINKED',
+      losers.map((r) => r.reason && r.reason.code));
+    check('exactly ONE product was created - the loser left no orphan', n1 === n0 + 1, { before: n0, after: n1 });
+    check('exactly one mapping exists for that source', Number((await q(
+      'SELECT COUNT(*) n FROM biz_crm_product_sources WHERE source_id=:s', { s: 'tool-race' },
+    ))[0].n) === 1);
   }
 
   /* ── 3. same domain, different source -> two distinct products, no merge, no exclusion ─────── */
@@ -314,16 +329,20 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     await q(`UPDATE biz_crm_product_sources SET source_availability='UNAVAILABLE' WHERE id=:id`, { id: readyMap.id });
     let editError = null;
     try {
-      const full = await sales.getSale(sale.id, false);
+      // Read the items and version straight from the tables. Depending on getSale's DTO shape made
+      // this case fail for a reason that had nothing to do with the behaviour under test.
+      const rows = await q('SELECT * FROM biz_crm_sale_items WHERE sale_id=:id ORDER BY sort_order', { id: sale.id });
+      const ver = (await q('SELECT version FROM biz_crm_sales WHERE id=:id', { id: sale.id }))[0].version;
+      check('the saved sale has items to edit', rows.length > 0, rows.length);
       await sales.updateSale(OWNER, sale.id, {
         clientId, vendorId: null, saleDate: '2026-10-01', orderType: 'new', currencyCode: 'PKR',
         notes: 'edited after source went away', invoiceInstructions: null,
-        items: (full.items || []).map((it) => ({
+        items: rows.map((it) => ({
           id: it.id, productId: it.product_id, name: it.name, accountType: it.account_type,
           durationLabel: it.duration_label, purchaseDate: '2026-10-01', expiryDate: '2026-11-01',
-          salePrice: it.sale_price, purchaseCost: it.purchase_cost,
+          salePrice: String(it.sale_price), purchaseCost: String(it.purchase_cost),
         })),
-        version: full.version,
+        version: ver,
       });
     } catch (e) { editError = e.code || e.message; }
     check('an existing sale can still be edited after its source became unavailable', editError === null, editError);
