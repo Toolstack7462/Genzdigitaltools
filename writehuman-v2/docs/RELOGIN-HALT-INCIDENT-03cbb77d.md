@@ -124,3 +124,70 @@ Consequences the owner needs to decide on, in order:
 The machine inspected during this investigation (`NOUMAN-ALI6`) is NOT the agent that produced the
 diagnostics: it has 3.5.0 installed (2026-08-29), no running process, and a stale `agent.lock`
 (2026-09-02). The 3.5.15 install lives elsewhere, so no live state was altered.
+
+---
+
+## 9. CORRECTION (22 Oct 2026): "PROMOTED" was never proof of authentication
+
+Section 5 above describes the resolution rule as acting on *"the backend's PROMOTED verdict on a
+provider-verified candidate from this approved active source, i.e. proof the submission DID succeed
+for the right account"*. **That premise is false**, and the rule as first written could clear a
+security halt on evidence fully consistent with the password submission having failed. Traced
+against the running backend (`main` ac29e45, which the release reconciliation establishes as the
+live tree):
+
+| Link | File | What it actually does |
+|---|---|---|
+| producer | `backend/utils/proxy/candidateSync.js:344` | `verifyAccountCookies(..., act ? {readOnly:true, canary:true} : {readOnly:true})` — the canary is requested on the **activation path only**; a routine push asks for none. |
+| verifier | `backend/utils/proxy/verify.js:401` | with no canary it returns `{result:'working', httpStatus:200, finalPath:'/auth (jwt)'}` — a **local JWT decode**, with no `canary` field. A Supabase access token stays `exp`-valid for ~1 h *after* its session is gone. |
+| producer | `backend/utils/proxy/candidateSync.js:387,521` | WriteHuman is `verifyMode 'supabase_refresh'`, so `canaryExpected` is true and a routine push records `canaryProven:false` / `canaryState:'absent'`. The producer **knows** the proof is absent. |
+| route | `backend/routes/proxy/agentSync.js` | the reply forwarded `code/changed/promoted/standby/bundleVersion/activeSource` + directives — and **not** `canaryProven`/`canaryState`. |
+
+So `verified = PROMOTED && promoted && isActiveSource && !standDown` is satisfiable with zero fresh
+provider proof — and a signed-out source browser is exactly the state a `submission_outcome_unknown`
+halt exists to protect against. The comment in `pushIfChangedInner` claiming acceptance "means
+candidateSync completed its provider-authenticated verify AND its expectedAccountId match" was
+likewise wrong for routine pushes, and has been corrected in place.
+
+### What changed
+
+- **The halt is cleared only on server-stated, fresh, correlated proof** (`evaluateAuthProof`):
+  `canary === 'passed'`, dated, newer than `haltedAt`, same source device, same candidate revision,
+  within two scheduler cadences. The gate lives in `noteReloginVerdict` — the *single writer* of
+  `haltedReason` — so no caller can bypass it.
+- **Routine cookie-sync acceptance is unchanged.** No provider round-trip was added to the push
+  path; that was the 2026-10-19 regression and it is not reintroduced. The proof reused is the one
+  `cron/proxyVerifyScheduler.js` already produces out of the request path every ~7 min.
+- **Smallest compatible contract correction** (additive, optional, older agents ignore it):
+  `verifyAndApply` and `candidateSync` now record *how* a session was proven (`verification.canary`),
+  and `agentSync` forwards it as `sessionProof`. No second verifier, no new polling, and the client
+  never asserts its own verification.
+- **Honesty.** Proven *current* authentication resolves the *uncertainty*; it does not retroactively
+  show the original submission succeeded. The record keeps `credentialSubmitted`, the attempt
+  budget and the incident history, and adds `resolvedBy:'current_auth_proof'`,
+  `submissionOutcome:'unknown'`, `lastSubmissionOutcome:'unknown_resolved_by_current_auth_proof'`.
+- **`EXPECTED_AGENT_VERSION` reverted to `3.5.15`.** Bumping it to 3.5.16 made the dashboard
+  advertise "update available → 3.5.16" for every live agent, pointing at a download that does not
+  exist. The compatibility floors (`MIN_AGENT_VERSION` 3.4.0, `MIN_ACTIVATION_AGENT_VERSION` 3.5.0)
+  were never touched.
+
+### Known limitation — needs a decision
+
+A routine promotion installs **new** cookies, so it correctly records the new bundle as unproven
+(`canary: null`); the scheduler proves it within ~7 min, but that proof then arrives *between*
+pushes. Because `sessionProof` is only carried on the candidate-push reply, and because a HEARTBEAT
+must never be treated as authentication proof, **auto-resolution in practice requires a
+canary-proven promotion (the activation path)**. A routine promotion will not clear the halt.
+Carrying `sessionProof` on the heartbeat reply as well would close that gap — the proof would still
+be the server's canary, correlated to a bundle revision, never the heartbeat itself — but that is a
+contract decision, not a defect fix, and is **not** done here. Until it is decided, the sanctioned
+route for the affected installation is the operator path, which is proposed for approval and
+deliberately not implemented in this branch.
+
+### Tests
+
+`backend/tests/writehumanAgentHaltProofContract.test.js` — 12 tests. Part C drives the **real**
+Express router and the **real** `candidateSync`, stubbing only the provider boundary, so the
+PROMOTED reply under test is produced by the server rather than hand-built. Part B drives the real
+`resolveHaltOnVerifiedPromotion` against a real state file. The old `B5` source-pattern test, which
+asserted the literal text of the unsound `verified` expression, is replaced by behaviour.

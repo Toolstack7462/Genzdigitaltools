@@ -1062,6 +1062,16 @@ const SYNC_STALE_MIN = Number(process.env.PROXY_SYNC_STALE_MIN || 90);
 const VERIFY_DUE_MIN = Number(process.env.PROXY_VERIFY_DUE_MIN || 20);
 // Update management: the version the RDP Cookie Sync Agent SHOULD be running. The dashboard flags
 // when the reporting agent is behind so an operator knows to update it.
+//
+// This MUST equal the agent source's AGENT_VERSION (writehumanAgentVersionDrift pins it), because
+// a mismatch makes the admin page advertise an update pointing at a version that does not exist.
+// It is NOT a compatibility floor and forces nothing: the floors are agentCommands.MIN_AGENT_VERSION
+// (3.4.0) and MIN_ACTIVATION_AGENT_VERSION (3.5.0), both untouched by the 3.5.16 candidate.
+//
+// ORDERING, while 3.5.16 is an UNPUBLISHED candidate: the published download is still 3.5.15, so
+// deploying this file before 3.5.16 is published WOULD advertise an unavailable download. The
+// separate gate "the PUBLISHED installer is built from the current agent source" is what catches
+// that, and it is expected to stay red until dist/ is rebuilt and published.
 const EXPECTED_AGENT_VERSION = process.env.PROXY_EXPECTED_AGENT_VERSION || '3.5.16';
 function primaryAccount(accounts) {
   return accounts.find(a => a.isPrimary) || selectAccount(accounts, SELECTION_MODE) || accounts[0] || null;

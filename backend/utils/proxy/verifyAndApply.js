@@ -60,7 +60,13 @@ async function verifyAndApply(account, tool, opts = {}) {
 
   // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
   const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
-  account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: now };
+  // RECORD HOW IT WAS PROVEN, not just the verdict. `result:'working'` is written both by a real
+  // non-rotating /auth/v1/user canary and by a bare local JWT decode, and those are not the same
+  // evidence: a Supabase access token stays exp-valid for about an hour after its session is
+  // gone. Without this field nothing downstream can tell the two apart, so a decode could be
+  // presented as authentication proof. 'passed' | 'failed' | 'inconclusive' | null (= no canary
+  // was run on this check).
+  account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: now, canary: v.canary || null };
   account.lastVerifiedAt = now;
   if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
   else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }

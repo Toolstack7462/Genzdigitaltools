@@ -360,7 +360,11 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     }
     account.lastSyncSuccessAt = now;
     account.lastVerifiedAt = now;
-    account.verification = { result: 'working', maskedId, httpStatus: v.httpStatus || 200, checkedAt: now };
+    // A ROUTINE push reaches here with NO canary (one is requested on the activation path only,
+    // a few lines above), so `canary` is null and this record states plainly that the promotion
+    // rests on a decode. An activation records 'passed'. Keeping the field honest is what stops
+    // a routine promotion being read back as proof that the account is authenticated now.
+    account.verification = { result: 'working', maskedId, httpStatus: v.httpStatus || 200, checkedAt: now, canary: v.canary || null };
     account.session_status = 'working';
     if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
     if (act) activation.advance(account, { activationId: act.activationId, stage: 'PROMOTING', now });

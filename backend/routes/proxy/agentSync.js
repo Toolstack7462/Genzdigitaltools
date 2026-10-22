@@ -116,6 +116,37 @@ function withIssuedKey(req, body) {
   return body;
 }
 
+// WHAT THE SERVER KNOWS ABOUT THE CURRENT SESSION'S PROOF, stated for the agent.
+//
+// The push reply already carries code/promoted/bundleVersion/activeSource, and an agent could
+// read `PROMOTED` as "the provider confirmed this account". It is not: on a routine push
+// candidateSync asks verify for {readOnly:true} with no canary, and verify answers 'working'
+// from a LOCAL JWT DECODE. The proof that does exist is produced out of the request path by
+// cron/proxyVerifyScheduler.js, which runs the real /auth/v1/user canary every ~7 min and
+// stores it on account.verification.
+//
+// This forwards that existing record. It adds no verification, no provider call and no polling:
+// it is the same fact the dashboard already reads, exposed to the one other party that has to
+// make a security decision with it (an agent holding a submission_outcome_unknown halt, which
+// may only be cleared by proof the account is authenticated NOW).
+//
+// `canary`: 'passed' = a real provider call confirmed this session; 'failed'/'inconclusive' =
+// proven dead / our own request did not complete; null = none was run, i.e. a decode. Only
+// 'passed' is proof. Additive and optional - an older agent simply ignores it.
+function sessionProofView(account) {
+  const v = account.verification || null;
+  if (!v) return null;
+  const a = account.activeSource || null;
+  return {
+    canary: v.canary || null,
+    result: v.result || null,
+    checkedAt: v.checkedAt || null,
+    maskedId: v.maskedId || null,
+    bundleVersion: account.bundleVersion || 0,
+    sourceDeviceId: (a && a.deviceId) || null,
+  };
+}
+
 function activeSourceView(account) {
   const a = account.activeSource;
   if (!a) return null;
@@ -520,6 +551,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       sourceSwitched: !!r.sourceSwitched,
       bundleVersion: r.bundleVersion,
       activeSource: activeSourceView(account),
+      sessionProof: sessionProofView(account),
       activation: act ? activation.publicView(account) : undefined,
       ...d,
     }));

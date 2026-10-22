@@ -69,6 +69,18 @@ function haltedAfterUnknownSubmission(extra = {}) {
 /** A live source that is authorised to recover: every pre-halt gate passes. */
 const authorisedSource = () => ({ isActiveSource: true });
 
+/**
+ * The proof the SERVER states, as noteReloginVerdict now requires.
+ *
+ * A bare 'confirmed' is deliberately NOT enough any more. It is derived from a PROMOTED reply, and
+ * on a routine push that reply rests on a local JWT decode of a token that stays exp-valid for
+ * about an hour after its session is gone - evidence fully consistent with the password submission
+ * having FAILED. What the proof record adds is a real provider call (`canary:'passed'`), correlated
+ * and dated. The contract itself is driven end-to-end, through the real router and producer, in
+ * writehumanAgentHaltProofContract.test.js.
+ */
+const statedProof = (over = {}) => Object.assign({ ok: true, at: new Date().toISOString() }, over);
+
 // ─────────────────────────────── Group A — the reproducer ────────────────────────────────
 
 test('A1 the halt is reproduced exactly as logged', async () => {
@@ -80,9 +92,9 @@ test('A1 the halt is reproduced exactly as logged', async () => {
 test('A2 a server-CONFIRMED recovery resolves the halt it is the answer to', async () => {
   haltedAfterUnknownSubmission();
 
-  // the same evidence class the push handler calls 'confirmed': the backend PROMOTED a verified
-  // candidate from this approved active source, i.e. the submission's outcome is no longer unknown
-  assert.equal(agent.noteReloginVerdict('confirmed'), true);
+  // 'confirmed' PLUS the server's stated proof that this account authenticates right now. Without
+  // the proof the halt stands (see B6 below); with it, the uncertainty the halt records is answered.
+  assert.equal(agent.noteReloginVerdict('confirmed', statedProof()), true);
 
   const after = agent.readReloginState();
   assert.equal(after.lastOutcome, 'confirmed');
@@ -170,29 +182,33 @@ test('A4 the dead end was durable: no saved field could re-arm confirmation afte
   assert.equal(report.activeBlock, 'submission_outcome_unknown');
   assert.equal(report.nextRetryAt, null, 'no retry is ever scheduled - this is permanent, not a cooldown');
 
-  // after the fix a verified promotion makes the install eligible again
-  agent.noteReloginVerdict('confirmed');
+  // after the fix a PROVEN promotion makes the install eligible again
+  agent.noteReloginVerdict('confirmed', statedProof());
   assert.equal(agent.reloginReport().retryEligible, true);
   assert.equal(agent.reloginReport().manualRequired, false);
 });
 
-test('B5 the resolution is applied to the VERIFIED promotion, outside the in-memory pending branch', () => {
-  // Fix 1 alone is unreachable: the handler's confirmation branch is gated on state.reloginPending,
-  // which the terminal halt already cleared. This pins the reachability contract itself, because
-  // the live path needs real Chrome + a real backend promotion and cannot run in a unit test.
-  const src = fs.readFileSync(AGENT_SRC, 'utf8');
+test('B5 the resolution path is a real exported function, not a source pattern', () => {
+  // This test used to assert the literal text of
+  //   const verified=r.code==='PROMOTED'&&r.promoted===true&&r.isActiveSource===true&&!r.standDown;
+  // and that a resolver sat after it. Pinning that string pinned the UNSOUND premise: those four
+  // conditions are satisfied by a decode-backed promotion. The branch is now a named, exported
+  // function, so the behaviour is driven directly instead of pattern-matched.
+  assert.equal(typeof agent.resolveHaltOnVerifiedPromotion, 'function');
+  assert.equal(typeof agent.evaluateAuthProof, 'function');
+});
 
-  const marker = "const verified=r.code==='PROMOTED'&&r.promoted===true&&r.isActiveSource===true&&!r.standDown;";
-  assert.ok(src.includes(marker), 'the verified-promotion test must keep all four conditions');
-
-  const pendingBranch = src.search(/if \(state\.reloginPending\) \{\s*state\.reloginPending = true;/);
-  const resolver = src.indexOf("if(held.haltedReason==='submission_outcome_unknown')");
-  assert.ok(pendingBranch > 0 && resolver > 0);
-  assert.ok(resolver > src.indexOf(marker),
-    'the resolver must sit on the verified-promotion path, not inside the reloginPending branch');
-
-  const block = src.slice(src.indexOf(marker), resolver + 400);
-  assert.match(block, /verified&&!state\.reloginPending/, 'it must apply exactly when the branch above did not');
-  assert.match(block, /persistRecoveryVerdict\(state,'confirmed'/, 'it must reuse the existing durable verdict writer');
-  assert.ok(!/haltedReason\s*[:=]\s*null/.test(block), 'it must not clear the halt itself - that is noteReloginVerdict’s single writer');
+test('B6 a confirmed verdict WITHOUT stated proof leaves the halt exactly where it was', () => {
+  haltedAfterUnknownSubmission();
+  // The regression this guards: `confirmed` alone used to clear the halt.
+  assert.equal(agent.noteReloginVerdict('confirmed'), true, 'the verdict is still recorded');
+  const after = agent.readReloginState();
+  assert.equal(after.haltedReason, 'submission_outcome_unknown', 'but the halt is NOT cleared');
+  assert.ok(after.haltedAt, 'and keeps its timestamp');
+  assert.ok(!after.lastSubmissionResolvedAt, 'nothing is recorded as resolved');
+  assert.ok(!after.incident.resolvedBy);
+  const report = agent.reloginReport();
+  assert.equal(report.activeBlock, 'submission_outcome_unknown');
+  assert.equal(report.manualRequired, true);
+  assert.equal(report.nextRetryAt, null);
 });
