@@ -49,6 +49,25 @@ test.after(() => fs.rmSync(BOX, { recursive: true, force: true }));
 
 const INCIDENT = '03cbb77d-2105-49a2-bb09-6366f1141495';
 
+/**
+ * WIN32-ONLY TESTS.
+ *
+ * The recovery surface these drive is gated on the real platform: attemptSourceRelogin returns
+ * 'unsupported_platform' before any other gate when process.platform !== 'win32', and the operator
+ * challenge/recheck commands are part of the same Windows-only path. On ubuntu CI they therefore
+ * assert against a refusal that has nothing to do with the halt.
+ *
+ * This was measured, not assumed: run 39719840880 on this branch's previous head (ab2c4f2) reported
+ * 895 tests / 887 pass / 6 fail, the six being exactly A1, A2, A3, B1, B2 and B4 - failures this
+ * file INTRODUCED in CI, while the Windows run showed only the 4 pre-existing ones. Skipping with a
+ * stated reason keeps that honest; the platform-independent properties (A4, B3, B5, B6) still run
+ * everywhere, and the proof contract itself is covered cross-platform in
+ * writehumanAgentHaltProofContract.test.js, which needs no win32 surface.
+ */
+const WIN32_ONLY = process.platform === 'win32'
+  ? false
+  : 'the agent recovery surface is win32-only (attemptSourceRelogin -> unsupported_platform)';
+
 /** The exact durable shape left behind by finish('submission_outcome_unknown'). */
 function haltedAfterUnknownSubmission(extra = {}) {
   fs.writeFileSync(STATE, JSON.stringify({
@@ -83,13 +102,13 @@ const statedProof = (over = {}) => Object.assign({ ok: true, at: new Date().toIS
 
 // ─────────────────────────────── Group A — the reproducer ────────────────────────────────
 
-test('A1 the halt is reproduced exactly as logged', async () => {
+test('A1 the halt is reproduced exactly as logged', { skip: WIN32_ONLY }, async () => {
   haltedAfterUnknownSubmission();
   const outcome = await agent.attemptSourceRelogin(authorisedSource(), 'cookies_missing');
   assert.equal(outcome, 'halted_submission_outcome_unknown');
 });
 
-test('A2 a server-CONFIRMED recovery resolves the halt it is the answer to', async () => {
+test('A2 a server-CONFIRMED recovery resolves the halt it is the answer to', { skip: WIN32_ONLY }, async () => {
   haltedAfterUnknownSubmission();
 
   // 'confirmed' PLUS the server's stated proof that this account authenticates right now. Without
@@ -112,7 +131,7 @@ test('A2 a server-CONFIRMED recovery resolves the halt it is the answer to', asy
   assert.ok(agent.reloginReport().nextRetryAt, 'a recoverable block must publish a retry time');
 });
 
-test('A3 no supported operator command can clear this halt', async () => {
+test('A3 no supported operator command can clear this halt', { skip: WIN32_ONLY }, async () => {
   haltedAfterUnknownSubmission();
 
   // the challenge acknowledgement is the only halt-clearing operator command in this build
@@ -129,13 +148,13 @@ test('A3 no supported operator command can clear this halt', async () => {
 
 // ───────────────────────── Group B — controls that must not regress ──────────────────────
 
-test('B1 an UNRESOLVED submission still blocks - no confirmation recorded', async () => {
+test('B1 an UNRESOLVED submission still blocks - no confirmation recorded', { skip: WIN32_ONLY }, async () => {
   haltedAfterUnknownSubmission();
   const outcome = await agent.attemptSourceRelogin(authorisedSource(), 'cookies_missing');
   assert.match(outcome, /^halted_submission_outcome_unknown$|^submission_outcome_unknown$/);
 });
 
-test('B2 confirmation must NOT erase a halt it does not answer', async () => {
+test('B2 confirmation must NOT erase a halt it does not answer', { skip: WIN32_ONLY }, async () => {
   for (const reason of ['wrong_credentials', 'wrong_account', 'captcha_required', 'mfa_required',
     'rate_limited', 'account_restricted', 'session_limit_requires_manual_reset',
     'session_limit_reset_budget_exhausted', 'session_limit_live_authorization_required',
@@ -157,7 +176,7 @@ test('B3 the attempt budget, incident identity and submission record are preserv
   assert.equal(after.incident.credentialSubmitted, true, 'the submission record must never be falsified');
 });
 
-test('B4 an unreadable state file is still a sentinel, not something confirmation repairs', async () => {
+test('B4 an unreadable state file is still a sentinel, not something confirmation repairs', { skip: WIN32_ONLY }, async () => {
   fs.writeFileSync(STATE, '{ not json');
   assert.equal(agent.readReloginState().lastOutcome, 'state_unreadable');
   agent.noteReloginVerdict('confirmed');
