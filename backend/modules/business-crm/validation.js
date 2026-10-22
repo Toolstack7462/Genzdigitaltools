@@ -41,7 +41,10 @@ const schemas = {
   productCreate: Joi.object(productShape), productUpdate: Joi.object({ ...productShape, version: version.required() }),
   // Explicit commercial confirmation for an IMPORTED product. `confirmFree` has no default: the
   // operator must say so, which is what keeps "price unknown" distinct from "this product is free".
-  catalogueConfirmReady: Joi.object({ confirmFree: Joi.boolean().default(false) }),
+  // version is required: the confirmation is checked against the product row it was made
+  // against, exactly as productUpdate is, so a stale confirmation cannot approve newer
+  // commercial values.
+  catalogueConfirmReady: Joi.object({ confirmFree: Joi.boolean().default(false), version: version.required() }),
   catalogueIgnore: Joi.object({ ignored: Joi.boolean().default(true) }),
   catalogueLink: Joi.object({ namespace: Joi.string().max(32).default('WEBSITE_TOOL'), sourceId: Joi.string().max(190).required() }),
   saleCreate: Joi.object({

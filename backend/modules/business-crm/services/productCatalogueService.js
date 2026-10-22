@@ -527,50 +527,73 @@ const REQUIRED_FOR_READY = Object.freeze(['currency_code', 'account_type', 'defa
  */
 async function confirmReady(req, productId, payload) {
   const actor = String((req && req.userId) || 'system');
-  const rows = await db.query(
-    `SELECT ps.*, p.currency_code, p.account_type, p.default_sale_price, p.version, p.deleted_at
-       FROM biz_crm_product_sources ps
-       JOIN biz_crm_products p ON p.id = ps.product_id
-      WHERE ps.product_id = :id`,
-    { id: productId },
-  );
-  const row = rows && rows[0];
-  if (!row) { const e = new Error('This product is not linked to a website source'); e.status = 404; e.code = 'NOT_IMPORTED'; throw e; }
-  if (row.deleted_at) { const e = new Error('Product is deleted'); e.status = 409; e.code = 'PRODUCT_DELETED'; throw e; }
+  const expected = payload && payload.version;
 
-  const price = money.normalize(row.default_sale_price);
-  const zero = Number(price) === 0;
-  if (zero && payload.confirmFree !== true) {
-    const e = new Error('Set a sale price, or confirm explicitly that this product is free');
-    e.status = 422; e.code = 'PRICE_NOT_CONFIRMED';
-    throw e;
-  }
-  for (const field of REQUIRED_FOR_READY) {
-    if (row[field] == null || row[field] === '') {
-      const e = new Error(`Complete ${field} before marking this product ready`);
-      e.status = 422; e.code = 'COMMERCIAL_DETAILS_INCOMPLETE';
-      throw e;
+  // ONE TRANSACTION: lock the product, validate the LOCKED values, write readiness, write the
+  // audit entry. The previous version read the commercial fields, validated them, then updated
+  // guarded only on readiness still being NEEDS_SETUP - so between the read and the write an
+  // operator could change the price and a confirmation that never saw the new value would approve
+  // it. In particular a confirmation taken while the price was 5000 could mark a product READY
+  // after it had been edited to 0.00, with no confirmFree anywhere in sight.
+  //
+  // The guard is the product's own `version`, which is the mechanism the product editor already
+  // uses (routes/products.js PUT raises VERSION_CONFLICT the same way), so a stale confirmation is
+  // rejected rather than applied. The audit entry moves inside the transaction too: a successful
+  // state transition and its audit row now commit together or not at all.
+  return db.withTransaction(async (connection) => {
+    const [rows] = await connection.execute(
+      `SELECT ps.id AS mapping_id, ps.readiness,
+              p.currency_code, p.account_type, p.default_sale_price, p.version, p.deleted_at
+         FROM biz_crm_product_sources ps
+         JOIN biz_crm_products p ON p.id = ps.product_id
+        WHERE ps.product_id = :id
+        FOR UPDATE`,
+      { id: productId },
+    );
+    const row = rows[0];
+    if (!row) { const e = new Error('This product is not linked to a website source'); e.status = 404; e.code = 'NOT_IMPORTED'; throw e; }
+    if (row.deleted_at) { const e = new Error('Product is deleted'); e.status = 409; e.code = 'PRODUCT_DELETED'; throw e; }
+
+    // A confirmation must name the product version it was made against.
+    if (expected == null) {
+      const e = new Error('A product version is required to confirm commercial details');
+      e.status = 400; e.code = 'VERSION_REQUIRED'; throw e;
     }
-  }
+    if (Number(row.version) !== Number(expected)) {
+      const e = new Error('This product changed while you were confirming it; review the current values and try again');
+      e.status = 409; e.code = 'VERSION_CONFLICT'; throw e;
+    }
 
-  // Optimistic concurrency against the operator's own view of the product, reusing the existing
-  // `version` column, so a late sync or a second manager cannot silently overwrite the decision.
-  const result = await db.query(
-    `UPDATE biz_crm_product_sources
-        SET readiness = 'READY', ready_at = CURRENT_TIMESTAMP, ready_by = :actor
-      WHERE id = :id AND readiness = 'NEEDS_SETUP'`,
-    { id: row.id, actor },
-  );
-  const changed = result && (result.affectedRows || result.changedRows || 0);
-  if (!changed) return { readiness: 'READY', alreadyReady: true };
-  try {
-    await db.withTransaction(async (connection) => {
-      await audit.write(connection, req, 'catalogue-product.ready', 'product', productId,
-        { readiness: 'NEEDS_SETUP' },
-        { readiness: 'READY', confirmedFree: zero === true });
-    });
-  } catch (_) {}
-  return { readiness: 'READY', alreadyReady: false };
+    if (row.readiness === 'READY') return { readiness: 'READY', alreadyReady: true };
+
+    // Validated against the LOCKED row, never against what the caller believed.
+    const price = money.normalize(row.default_sale_price);
+    const zero = Number(price) === 0;
+    if (zero && payload.confirmFree !== true) {
+      const e = new Error('Set a sale price, or confirm explicitly that this product is free');
+      e.status = 422; e.code = 'PRICE_NOT_CONFIRMED'; throw e;
+    }
+    for (const field of REQUIRED_FOR_READY) {
+      if (row[field] == null || row[field] === '') {
+        const e = new Error(`Complete ${field} before marking this product ready`);
+        e.status = 422; e.code = 'COMMERCIAL_DETAILS_INCOMPLETE'; throw e;
+      }
+    }
+
+    const [res] = await connection.execute(
+      `UPDATE biz_crm_product_sources
+          SET readiness = 'READY', ready_at = CURRENT_TIMESTAMP, ready_by = :actor
+        WHERE id = :id AND readiness = 'NEEDS_SETUP'`,
+      { id: row.mapping_id, actor },
+    );
+    if (!res || !res.affectedRows) {
+      const e = new Error('This product was confirmed by someone else'); e.status = 409; e.code = 'ALREADY_READY'; throw e;
+    }
+    await audit.write(connection, req, 'catalogue-product.ready', 'product', productId,
+      { readiness: 'NEEDS_SETUP' },
+      { readiness: 'READY', confirmedFree: zero === true, productVersion: Number(row.version) });
+    return { readiness: 'READY', alreadyReady: false, confirmedFree: zero === true };
+  });
 }
 
 /**

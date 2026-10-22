@@ -60,6 +60,25 @@ function forRequest(req, row) {
   delete product.ignored_at; delete product.name_overridden; delete product.last_seen_at;
   return product;
 }
+/**
+ * Read one product the same way the list does — joined to its source mapping.
+ *
+ * Every response that returns a single product must go through this. `forRequest` decides what to
+ * expose from the source columns, and if they are absent it cannot tell "manual product" from
+ * "nobody joined the table", so it defaults to Manual and hands back the storage placeholders as
+ * though they were confirmed values.
+ */
+const SOURCE_COLS = 'ps.source_namespace, ps.readiness, ps.source_availability, ps.ignored_at, ps.name_overridden, ps.last_seen_at';
+async function readProductWithSource(id) {
+  const rows = await db.query(
+    `SELECT p.*, ${SOURCE_COLS} FROM biz_crm_products p
+       LEFT JOIN biz_crm_product_sources ps ON ps.product_id = p.id
+      WHERE p.id=:id`,
+    { id },
+  );
+  return rows[0] || null;
+}
+
 function values(p) { return { name: p.name, category: p.category, accountType: p.accountType, durationLabel: p.durationLabel || null,
   sale: money.normalize(p.defaultSalePrice), cost: money.normalize(p.defaultPurchaseCost), currency: money.assertCurrency(p.currencyCode), active: p.active ? 1 : 0, notes: p.notes || null }; }
 router.get('/', requirePermission('products.view'), asyncHandler(async (req, res) => {
@@ -80,7 +99,7 @@ router.get('/', requirePermission('products.view'), asyncHandler(async (req, res
   if (req.query.linked === 'false') where.push('ps.id IS NULL');
   // LEFT JOIN: a manual product has no mapping row and must come back exactly as before.
   const FROM = `FROM biz_crm_products p LEFT JOIN biz_crm_product_sources ps ON ps.product_id = p.id WHERE ${where.join(' AND ')}`;
-  const sourceCols = 'ps.source_namespace, ps.readiness, ps.source_availability, ps.ignored_at, ps.name_overridden, ps.last_seen_at';
+  const sourceCols = SOURCE_COLS;
   const [rows, counts] = await Promise.all([
     db.query(`SELECT p.*, ${sourceCols} ${FROM} ORDER BY p.name LIMIT :limit OFFSET :offset`, params),
     db.query(`SELECT COUNT(*) total ${FROM}`, params),
@@ -133,18 +152,37 @@ router.post('/', requirePermission('products.manage'), validate('productCreate')
     VALUES (:id,:name,:category,:accountType,:durationLabel,:sale,:cost,:currency,:active,:notes,:actor)`, { id, ...p, actor: actor(req) });
     await audit.write(connection, req, 'product.create', 'product', id, null, p); await connection.commit();
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  const rows = await db.query('SELECT * FROM biz_crm_products WHERE id=:id', { id }); res.status(201).json(forRequest(req, rows[0]));
+  res.status(201).json(forRequest(req, await readProductWithSource(id)));
 }));
 router.put('/:id', requirePermission('products.manage'), validate('productUpdate'), asyncHandler(async (req, res) => {
   const p = values(req.validated); const connection = await db.getPool().getConnection();
-  try { await connection.beginTransaction(); const [beforeRows] = await connection.execute('SELECT * FROM biz_crm_products WHERE id=:id AND deleted_at IS NULL FOR UPDATE', { id: req.params.id });
+  try { await connection.beginTransaction();
+    // The source mapping is locked FIRST, before the product row, because confirmReady locks the
+    // pair in that order too (its JOIN is driven by the unique product_id index on the mapping).
+    // Two paths that lock the same two rows in opposite orders deadlock under concurrency.
+    // Absent for a manual product, in which case nothing extra is locked and nothing changes.
+    const [mapRows] = await connection.execute('SELECT id, source_name, name_overridden FROM biz_crm_product_sources WHERE product_id=:id FOR UPDATE', { id: req.params.id });
+    const [beforeRows] = await connection.execute('SELECT * FROM biz_crm_products WHERE id=:id AND deleted_at IS NULL FOR UPDATE', { id: req.params.id });
     if (!beforeRows.length) throw httpError('Product not found', 404); if (Number(beforeRows[0].version) !== Number(req.validated.version)) throw httpError('Version conflict', 409, 'VERSION_CONFLICT');
     await connection.execute(`UPDATE biz_crm_products SET name=:name,category=:category,account_type=:accountType,duration_label=:durationLabel,
       default_sale_price=:sale,default_purchase_cost=:cost,currency_code=:currency,active=:active,notes=:notes,updated_by=:actor,version=version+1
       WHERE id=:id AND version=:version`, { ...p, actor: actor(req), id: req.params.id, version: req.validated.version });
+    // An intentional rename records itself. `name_overridden` is the flag that stops the next
+    // catalogue refresh from writing the website's name back over the operator's - it was only ever
+    // READ, never written by any production path, so a rename survived exactly until the next
+    // reconcile. It is written inside the SAME transaction as the name itself: a committed rename
+    // always carries its flag, a rolled-back one carries none, and there is no second request that
+    // could be lost. Restoring the source's own name clears the flag again, which is the honest
+    // inverse - nothing is being overridden any more.
+    if (mapRows.length) {
+      const overridden = String(p.name || '').trim() !== String(mapRows[0].source_name || '').trim() ? 1 : 0;
+      if (Number(mapRows[0].name_overridden || 0) !== overridden) {
+        await connection.execute('UPDATE biz_crm_product_sources SET name_overridden=:overridden WHERE id=:mappingId', { overridden, mappingId: mapRows[0].id });
+      }
+    }
     await audit.write(connection, req, 'product.update', 'product', req.params.id, beforeRows[0], p); await connection.commit();
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
-  const rows = await db.query('SELECT * FROM biz_crm_products WHERE id=:id', { id: req.params.id }); res.json(forRequest(req, rows[0]));
+  res.json(forRequest(req, await readProductWithSource(req.params.id)));
 }));
 router.delete('/:id', requirePermission('products.manage'), asyncHandler(async (req, res) => {
   await db.query('UPDATE biz_crm_products SET deleted_at=NOW(),active=0,updated_by=:actor,version=version+1 WHERE id=:id', { actor: actor(req), id: req.params.id }); res.json({ id: req.params.id, deleted: true });

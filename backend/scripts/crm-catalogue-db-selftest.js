@@ -87,6 +87,7 @@ const db = require(path.join(MODULE_DIR, 'db'));
 const { PERMISSIONS } = require(path.join(MODULE_DIR, 'permissions'));
 const catalogue = require(path.join(MODULE_DIR, 'services', 'productCatalogueService'));
 const sales = require(path.join(MODULE_DIR, 'services', 'salesService'));
+const productsRouter = require(path.join(MODULE_DIR, 'routes', 'products'));
 
 const makeReq = (userId, perms) => ({
   userId, user: { _id: userId }, headers: {}, get: () => 'crm-catalogue-selftest', ip: '127.0.0.1',
@@ -96,6 +97,52 @@ const OWNER = makeReq('selftest-owner');
 const newId = () => crypto.randomUUID();
 const tool = (id, name, category, domain) => ({ _id: id, name, category, domain, status: 'active' });
 
+/* -- REAL ROUTE HARNESS -----------------------------------------------------------------------
+ * The product routes are mounted in a real express app and driven over real HTTP, so validate(),
+ * requirePermission(), the handler's own transaction and the serializer all run exactly as they do
+ * in production. Several of the cases below are specifically about ROUTE WIRING - a flag that only
+ * a test ever wrote, or a response built from a different read than the one the list uses - and
+ * those cannot be observed by calling a service function directly.
+ *
+ * Only the authentication/CSRF layer from modules/business-crm/index.js is replaced: it requires a
+ * signed admin JWT and is not what these cases are about. The error-status mapping is copied from
+ * that file verbatim, and a change made THERE would not be caught here.
+ */
+let API_ACTOR = null;
+let BASE = '';
+async function startApi() {
+  const express = require('express');
+  const app = express();
+  app.use(express.json());
+  app.use((req, res, next) => {
+    req.userId = API_ACTOR.userId; req.user = API_ACTOR.user; req.businessAccess = API_ACTOR.businessAccess;
+    next();
+  });
+  app.use('/products', productsRouter);
+  app.use((error, req, res, next) => { // eslint-disable-line no-unused-vars
+    const status = Number(error.status || (error.code === 'ER_DUP_ENTRY' ? 409 : 500));
+    const safeStatus = status >= 400 && status < 600 ? status : 500;
+    if (safeStatus >= 500) console.error('[catalogue-selftest route]', (error && error.stack) || error);
+    res.status(safeStatus).json({ error: error.message, code: error.code || null });
+  });
+  const server = await new Promise((resolve) => {
+    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+  });
+  BASE = 'http://127.0.0.1:' + server.address().port;
+  return server;
+}
+async function api(method, pathname, body) {
+  const response = await fetch(BASE + pathname, {
+    method,
+    headers: { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await response.text();
+  let parsed = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch (_) { parsed = { raw: text }; }
+  return { status: response.status, body: parsed };
+}
+
 const q = (sql, params) => db.query(sql, params || {});
 const mappingFor = async (sourceId) => (await q(
   'SELECT * FROM biz_crm_product_sources WHERE source_namespace=:ns AND source_id=:sid',
@@ -103,6 +150,16 @@ const mappingFor = async (sourceId) => (await q(
 ))[0] || null;
 const productById = async (id) => (await q('SELECT * FROM biz_crm_products WHERE id=:id', { id }))[0] || null;
 const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_crm_products WHERE deleted_at IS NULL'))[0].n);
+const auditCount = async (action, entityId) => Number((await q(
+  'SELECT COUNT(*) n FROM biz_crm_audit_logs WHERE action_key=:a AND entity_id=:e', { a: action, e: String(entityId) },
+))[0].n);
+/** The full productUpdate body, so a case can change exactly ONE field and keep the rest honest. */
+const putBody = (row, changes) => ({
+  name: row.name, category: row.category, accountType: row.account_type,
+  durationLabel: row.duration_label || null, defaultSalePrice: String(row.default_sale_price),
+  defaultPurchaseCost: String(row.default_purchase_cost), currencyCode: row.currency_code,
+  active: !!row.active, notes: row.notes || null, version: row.version, ...(changes || {}),
+});
 
 (async () => {
   // ── isolation proof ──────────────────────────────────────────────────────────────────────────
@@ -124,6 +181,8 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
   }
 
   await db.ensureSchema();
+  const apiServer = await startApi();
+  API_ACTOR = OWNER;
 
   /* ── 1. one Tool -> one product + one mapping; repeat and concurrent are idempotent ────────── */
   TOOL_ROWS = [tool('tool-a', 'Alpha Writer', 'Writing', 'alpha.example')];
@@ -207,10 +266,21 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
   await q(`INSERT INTO biz_crm_products (id,name,category,default_sale_price,currency_code,created_by,notes)
            VALUES (:id,'Manual Only','Software','1234.00','PKR','selftest','operator note')`, { id: manualId });
   {
-    // An operator-owned override on an IMPORTED product.
-    await q(`UPDATE biz_crm_products SET default_sale_price='999.00', notes='operator priced', name='Operator Renamed'
-              WHERE id=:id`, { id: mapA.product_id });
-    await q(`UPDATE biz_crm_product_sources SET name_overridden=1 WHERE id=:id`, { id: mapA.id });
+    // An operator-owned override on an IMPORTED product, made THROUGH THE REAL PUT ROUTE.
+    //
+    // This case used to set name_overridden with raw SQL. That made it pass while NO production
+    // code path wrote the flag at all: the rename survived a refresh in the test and would have
+    // been silently overwritten by the website's name on the next reconcile in production. The
+    // edit now goes through PUT /products/:id, so the route wiring is part of what is asserted.
+    const pBeforeEdit = await productById(mapA.product_id);
+    check('arrangement: the imported product has not been renamed yet',
+      Number((await mappingFor('tool-a')).name_overridden) === 0, (await mappingFor('tool-a')).name_overridden);
+    const renamePut = await api('PUT', `/products/${mapA.product_id}`, putBody(pBeforeEdit, {
+      name: 'Operator Renamed', defaultSalePrice: '999.00', notes: 'operator priced',
+    }));
+    check('the real PUT route accepts an operator rename', renamePut.status === 200, renamePut.body);
+    check('THE PUT ROUTE ITSELF persisted name_overridden',
+      Number((await mappingFor('tool-a')).name_overridden) === 1, (await mappingFor('tool-a')).name_overridden);
     TOOL_ROWS = [tool('tool-a', 'Alpha Writer RENAMED UPSTREAM', 'Writing', 'alpha.example')];
     await catalogue.reconcile(OWNER, { force: true });
     const p = await productById(mapA.product_id);
@@ -220,6 +290,19 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     const m = await mappingFor('tool-a');
     check('the source rename is still recorded for visibility', m.source_name === 'Alpha Writer RENAMED UPSTREAM', m.source_name);
     check('a rename keeps the SAME product id (no new product)', m.product_id === mapA.product_id);
+
+    // The inverse, also through the route: putting the SOURCE's own name back means nothing is
+    // being overridden any more, so the flag must clear - otherwise the product would be frozen
+    // out of every future upstream rename by an override the operator had abandoned.
+    const pNow = await productById(mapA.product_id);
+    const restore = await api('PUT', `/products/${mapA.product_id}`, putBody(pNow, { name: m.source_name }));
+    check('restoring the source name is accepted', restore.status === 200, restore.body);
+    check('restoring the source name clears name_overridden',
+      Number((await mappingFor('tool-a')).name_overridden) === 0, (await mappingFor('tool-a')).name_overridden);
+    // Re-assert the override for the rest of the file: a later upstream rename must not win.
+    const pRestored = await productById(mapA.product_id);
+    await api('PUT', `/products/${mapA.product_id}`, putBody(pRestored, { name: 'Operator Renamed' }));
+    check('the override can be re-applied', Number((await mappingFor('tool-a')).name_overridden) === 1);
   }
   {
     const manual = await productById(manualId);
@@ -289,11 +372,127 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     check('a name-only save does NOT mark it READY', after.readiness === 'NEEDS_SETUP', after.readiness);
     // Confirming with a zero price requires an explicit free confirmation.
     let refused = null;
-    try { await catalogue.confirmReady(OWNER, m.product_id, { confirmFree: false }); }
+    const vNow = (await productById(m.product_id)).version;
+    try { await catalogue.confirmReady(OWNER, m.product_id, { confirmFree: false, version: vNow }); }
     catch (e) { refused = e.code; }
     check('a zero price cannot be confirmed without saying it is free', refused === 'PRICE_NOT_CONFIRMED', refused);
-    const okFree = await catalogue.confirmReady(OWNER, m.product_id, { confirmFree: true });
+    const okFree = await catalogue.confirmReady(OWNER, m.product_id, { confirmFree: true, version: vNow });
     check('an explicitly confirmed FREE product can become READY', okFree.readiness === 'READY', okFree);
+  }
+
+  /* -- 5b. B: a single-product response is built from the SAME read as the list ---------------- */
+  {
+    // The POST/PUT handlers used to answer with `SELECT * FROM biz_crm_products WHERE id=:id` - no
+    // join - so the serializer saw no source columns and could not distinguish "manual product"
+    // from "nobody joined the table". After saving an imported product the API therefore reported
+    // it as Manual, with the NOT NULL storage placeholders (0.00 / PKR / private) presented as
+    // confirmed commercial values, until the page was reloaded from the list endpoint.
+    TOOL_ROWS = [tool('tool-serial', 'Serializer Probe', 'Writing', 'serial.example')];
+    await catalogue.reconcile(OWNER, { force: true });
+    const mapS = await mappingFor('tool-serial');
+    check('arrangement: the probe is imported and NEEDS_SETUP', !!mapS && mapS.readiness === 'NEEDS_SETUP', mapS && mapS.readiness);
+
+    const listed = await api('GET', '/products?q=Serializer%20Probe');
+    const fromList = (listed.body.rows || []).find((r) => r.id === mapS.product_id);
+    check('the LIST endpoint reports it as website-linked and unconfirmed',
+      !!fromList && !!fromList.source && fromList.source.readiness === 'NEEDS_SETUP'
+      && fromList.commercialDetailsConfirmed === false, fromList && fromList.source);
+
+    const pS = await productById(mapS.product_id);
+    const saved = await api('PUT', `/products/${mapS.product_id}`, putBody(pS, { name: 'Serializer Probe (typo fixed)' }));
+    check('the PUT route accepts the edit', saved.status === 200, saved.body);
+    const after = saved.body;
+    check('the PUT RESPONSE still reports the product as website-linked, not Manual',
+      !!after.source && after.source.namespace === catalogue.NAMESPACE_WEBSITE_TOOL, after.source || null);
+    check('the PUT response keeps readiness and availability',
+      !!after.source && after.source.readiness === 'NEEDS_SETUP' && after.source.availability === 'AVAILABLE', after.source);
+    check('the PUT response says the commercial details are NOT confirmed',
+      after.commercialDetailsConfirmed === false, after.commercialDetailsConfirmed);
+    check('the PUT response does NOT return the placeholder price as a value',
+      after.default_sale_price === null && after.currency_code === null && after.account_type === null,
+      { price: after.default_sale_price, currency: after.currency_code, accountType: after.account_type });
+    check('the PUT response is not sellable', !!after.source && after.source.sellable === false, after.source && after.source.sellable);
+    check('the PUT response carries no raw source_* columns',
+      !('source_namespace' in after) && !('readiness' in after) && !('ignored_at' in after) && !('name_overridden' in after),
+      Object.keys(after).filter((k) => /^source_|^readiness$|^ignored_at$|^name_overridden$|^last_seen_at$/.test(k)));
+    const relisted = ((await api('GET', '/products?q=Serializer%20Probe')).body.rows || []).find((r) => r.id === mapS.product_id);
+    check('the PUT response and the LIST row agree on the source shape',
+      JSON.stringify(after.source) === JSON.stringify(relisted && relisted.source),
+      { put: after.source, list: relisted && relisted.source });
+
+    // A manual product must still come back exactly as before - no empty `source` key invented.
+    const manualRow = await productById(manualId);
+    const manualSaved = await api('PUT', `/products/${manualId}`, putBody(manualRow, { notes: 'operator note' }));
+    check('a manual product still has NO source key after a save',
+      manualSaved.status === 200 && !('source' in (manualSaved.body || {})),
+      { status: manualSaved.status, hasSource: 'source' in (manualSaved.body || {}) });
+    check('a manual product keeps its real price in the response',
+      String(manualSaved.body.default_sale_price) === '1234.00', manualSaved.body.default_sale_price);
+  }
+
+  /* -- 5c. C: the readiness confirmation is concurrency-safe ----------------------------------- */
+  {
+    // confirmReady used to read the commercial fields, validate them, and then update guarded only
+    // on readiness still being NEEDS_SETUP. Nothing tied the values it validated to the values that
+    // were in the row when it wrote - so a confirmation taken while the price was 5000 could mark a
+    // product READY after the price had been edited to 0.00, with no confirmFree anywhere, and the
+    // audit entry was written in a SEPARATE transaction that could commit without it or vice versa.
+    TOOL_ROWS = [tool('tool-race-ready', 'Readiness Race', 'Writing', 'rr.example')];
+    await catalogue.reconcile(OWNER, { force: true });
+    const mapR = await mappingFor('tool-race-ready');
+    const priced = await productById(mapR.product_id);
+    const put1 = await api('PUT', `/products/${mapR.product_id}`, putBody(priced, {
+      defaultSalePrice: '5000.00', currencyCode: 'PKR', accountType: 'private',
+    }));
+    check('arrangement: a real price was saved through the route', put1.status === 200, put1.body);
+    const staleVersion = put1.body.version;
+
+    // (i) a confirmation with no version at all is refused by validation, at the route.
+    const noVersion = await api('POST', `/products/${mapR.product_id}/catalogue/confirm-ready`, { confirmFree: false });
+    check('a confirmation without a product version is refused at the route',
+      noVersion.status === 400 && noVersion.body.code === 'VALIDATION_ERROR', noVersion);
+    check('...and the product is still NEEDS_SETUP', (await mappingFor('tool-race-ready')).readiness === 'NEEDS_SETUP');
+
+    // (ii) THE RACE: the operator read 5000, someone edits the price to 0.00, the stale
+    // confirmation arrives. It must be refused rather than approve a value it never saw.
+    const edited = await productById(mapR.product_id);
+    const put2 = await api('PUT', `/products/${mapR.product_id}`, putBody(edited, { defaultSalePrice: '0.00' }));
+    check('arrangement: the price was edited to 0.00 by a second actor',
+      put2.status === 200 && put2.body.version !== staleVersion,
+      { before: staleVersion, after: put2.body && put2.body.version });
+    const stale = await api('POST', `/products/${mapR.product_id}/catalogue/confirm-ready`, { confirmFree: false, version: staleVersion });
+    check('A STALE CONFIRMATION IS REFUSED', stale.status === 409 && stale.body.code === 'VERSION_CONFLICT', stale);
+    check('...and did NOT mark the product READY', (await mappingFor('tool-race-ready')).readiness === 'NEEDS_SETUP');
+    check('a refused confirmation writes NO readiness audit entry',
+      (await auditCount('catalogue-product.ready', mapR.product_id)) === 0);
+
+    // (iii) the current version, but the price is now zero: still refused without confirmFree.
+    const fresh = await productById(mapR.product_id);
+    const zeroNoFree = await api('POST', `/products/${mapR.product_id}/catalogue/confirm-ready`, { confirmFree: false, version: fresh.version });
+    check('a zero price at the CURRENT version still needs an explicit free confirmation',
+      zeroNoFree.status === 422 && zeroNoFree.body.code === 'PRICE_NOT_CONFIRMED', zeroNoFree);
+    check('...still NEEDS_SETUP', (await mappingFor('tool-race-ready')).readiness === 'NEEDS_SETUP');
+
+    // (iv) two confirmations at the same version, at the same time: one transition, one audit row.
+    const putBack = await api('PUT', `/products/${mapR.product_id}`, putBody(await productById(mapR.product_id), { defaultSalePrice: '5000.00' }));
+    const liveVersion = putBack.body.version;
+    const both = await Promise.all([
+      api('POST', `/products/${mapR.product_id}/catalogue/confirm-ready`, { confirmFree: false, version: liveVersion }),
+      api('POST', `/products/${mapR.product_id}/catalogue/confirm-ready`, { confirmFree: false, version: liveVersion }),
+    ]);
+    const transitions = both.filter((r) => r.status === 200 && r.body.alreadyReady === false);
+    check('two simultaneous confirmations produce exactly ONE state transition', transitions.length === 1,
+      both.map((r) => ({ status: r.status, code: r.body && r.body.code, alreadyReady: r.body && r.body.alreadyReady })));
+    check('neither confirmation fails with a server error', both.every((r) => r.status < 500), both.map((r) => r.status));
+    check('the product is READY exactly once', (await mappingFor('tool-race-ready')).readiness === 'READY');
+    check('exactly ONE readiness audit entry exists, written with the transition',
+      (await auditCount('catalogue-product.ready', mapR.product_id)) === 1,
+      await auditCount('catalogue-product.ready', mapR.product_id));
+    check('the confirmation recorded that the price was NOT confirmed free',
+      JSON.parse((await q(
+        'SELECT after_json FROM biz_crm_audit_logs WHERE action_key=:a AND entity_id=:e',
+        { a: 'catalogue-product.ready', e: mapR.product_id },
+      ))[0].after_json).confirmedFree === false);
   }
 
   /* ── 6. the sale path cannot be bypassed ───────────────────────────────────────────────────── */
@@ -365,6 +564,76 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
       (await mappingFor('tool-same-1')).readiness === 'READY');
   }
 
+  /* -- 6b. A: an IGNORED source is refused server-side, and a retry is still idempotent ------- */
+  {
+    // `ignored_at` is an explicit operator decision to keep a source out of the catalogue. The
+    // readiness gate read only `readiness` and `source_availability`, so a product that had been
+    // ignored while already READY and AVAILABLE stayed sellable through the API - the one place
+    // where it actually matters. The catalogue list hid it; the sale path did not.
+    const mapIgnored = await mappingFor('tool-same-1');
+    await q("UPDATE biz_crm_product_sources SET source_availability='AVAILABLE', source_missing_at=NULL WHERE id=:id", { id: mapIgnored.id });
+    await catalogue.setIgnored(OWNER, mapIgnored.product_id, true);
+    const nowIgnored = await mappingFor('tool-same-1');
+    check('arrangement: the product is READY, AVAILABLE and IGNORED',
+      nowIgnored.readiness === 'READY' && nowIgnored.source_availability === 'AVAILABLE' && !!nowIgnored.ignored_at,
+      { readiness: nowIgnored.readiness, availability: nowIgnored.source_availability, ignored: !!nowIgnored.ignored_at });
+
+    const salesBefore = Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n);
+    let code = null;
+    try { await sales.createSale(OWNER, salePayload(mapIgnored.product_id)); } catch (e) { code = e.code; }
+    check('AN IGNORED SOURCE CANNOT BE SOLD through the real sale service', code === 'PRODUCT_SOURCE_IGNORED', code);
+    check('the refused sale wrote no financial rows', Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n) === salesBefore);
+
+    // The same refusal must hold on the OFFLINE REPLAY path, which reaches createSale through
+    // routes/sync. The service is the convergence point, so this asserts the same call shape the
+    // replay uses - an idempotency key, and no sale yet committed under it.
+    let replayCode = null;
+    try { await sales.createSale(OWNER, { ...salePayload(mapIgnored.product_id), idempotencyKey: `selftest-ignored-${Date.now()}` }); }
+    catch (e) { replayCode = e.code; }
+    check('an offline-replay shaped create is refused the same way', replayCode === 'PRODUCT_SOURCE_IGNORED', replayCode);
+    check('still no financial rows', Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n) === salesBefore);
+
+    // Un-ignoring restores it without touching the completed setup.
+    await catalogue.setIgnored(OWNER, mapIgnored.product_id, false);
+    check('un-ignoring keeps the product READY', (await mappingFor('tool-same-1')).readiness === 'READY');
+    const okSale = await sales.createSale(OWNER, salePayload(mapIgnored.product_id));
+    check('an un-ignored READY product sells again', !!okSale && !!okSale.id);
+  }
+  {
+    // A COMMITTED SALE IS A FACT. A retry with the same idempotency key happens precisely when the
+    // first response was lost, which can be long after the website source was ignored or withdrawn.
+    // The readiness gate reads CURRENT source state, and it used to run BEFORE the idempotency
+    // replay lookup - so such a retry was answered with PRODUCT_SOURCE_UNAVAILABLE instead of the
+    // sale it had already created, leaving the caller to retry forever or create a second sale.
+    const readyMap = await mappingFor('tool-same-1');
+    await q("UPDATE biz_crm_product_sources SET source_availability='AVAILABLE', source_missing_at=NULL, ignored_at=NULL WHERE id=:id", { id: readyMap.id });
+    const key = `selftest-retry-${Date.now()}`;
+    const payload = { ...salePayload(readyMap.product_id), idempotencyKey: key, openingClientPayment: '40.00' };
+    const first = await sales.createSale(OWNER, payload);
+    check('arrangement: the first attempt committed a sale', !!first && !!first.id, first && first.id);
+    const salesAfterFirst = Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n);
+    const paymentsAfterFirst = Number((await q('SELECT COUNT(*) n FROM biz_crm_payments WHERE sale_id=:s', { s: first.id }))[0].n);
+    check('arrangement: the opening receipt was recorded', paymentsAfterFirst >= 1, paymentsAfterFirst);
+
+    // Now the source changes under it, in both of the ways the gate cares about.
+    await q("UPDATE biz_crm_product_sources SET source_availability='UNAVAILABLE' WHERE id=:id", { id: readyMap.id });
+    await catalogue.setIgnored(OWNER, readyMap.product_id, true);
+    let retryError = null; let retried = null;
+    try { retried = await sales.createSale(OWNER, payload); } catch (e) { retryError = e.code || e.message; }
+    check('A RETRY OF A COMMITTED SALE STILL RECONCILES, after the source changed', retryError === null, retryError);
+    check('the retry returns the SAME sale', !!retried && retried.id === first.id, { first: first.id, retried: retried && retried.id });
+    check('the retry created NO second sale', Number((await q('SELECT COUNT(*) n FROM biz_crm_sales'))[0].n) === salesAfterFirst);
+    check('the retry created NO second payment',
+      Number((await q('SELECT COUNT(*) n FROM biz_crm_payments WHERE sale_id=:s', { s: first.id }))[0].n) === paymentsAfterFirst);
+    check('the invoice number was not consumed twice',
+      Number((await q('SELECT COUNT(*) n FROM biz_crm_sales WHERE invoice_number=:i', { i: first.invoice_number }))[0].n) === 1);
+    // ...while a NEW sale of the same product is still refused.
+    let freshCode = null;
+    try { await sales.createSale(OWNER, salePayload(readyMap.product_id)); } catch (e) { freshCode = e.code; }
+    check('a brand-new sale of the changed source is still refused', freshCode === 'PRODUCT_SOURCE_IGNORED', freshCode);
+    await catalogue.setIgnored(OWNER, readyMap.product_id, false);
+  }
+
   /* ── 7. a failed or partial source read must never look like deletion ─────────────────────── */
   {
     const mapsBefore = Number((await q('SELECT COUNT(*) n FROM biz_crm_product_sources WHERE source_availability=:a', { a: 'UNAVAILABLE' }))[0].n);
@@ -404,6 +673,8 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     check('a products.view-only actor has no profit.view', !has(staff, 'profit.view'));
     check('a products.view-only actor cannot manage products', !has(staff, 'products.manage'));
   }
+
+  try { apiServer.close(); } catch (_) {}
 
   console.log(`\n[catalogue-selftest] ${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;

@@ -45,12 +45,14 @@ on:
       - 'backend/scripts/crm-catalogue-db-selftest.js'
       - 'backend/modules/business-crm/services/productCatalogueService.js'
       - 'backend/modules/business-crm/routes/products.js'
+      - 'backend/modules/business-crm/validation.js'
       - '.github/workflows/crm-db-selftest.yml'
   push:
     # So the Release 1 candidate verifies ITSELF without anyone dispatching a run.
     branches:
       - fix/crm-audit-response
       - feat/crm-release1-backend
+      - feat/crm-catalogue-sources
     paths: *crm_paths
 
 # Read-only. No deploy permissions, no id-token, no package write.
@@ -96,10 +98,14 @@ jobs:
         with:
           node-version: '22'
 
-      # Only the driver the script needs. `npm ci` on the whole backend would pull the entire
-      # production tree into a test job.
-      - name: Install the mysql2 driver only
-        run: npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund mysql2@3.15.3
+      # Only what the two scripts need. `npm ci` on the whole backend would pull the entire
+      # production tree into a test job. express/joi/express-rate-limit are here because the
+      # catalogue script mounts the REAL product routes in a real express app and drives them over
+      # HTTP - several of its cases are about route wiring (a flag only a test ever wrote, a
+      # response built from a different read than the list uses) and cannot be observed by calling
+      # the service functions directly. Versions are pinned to backend/package.json.
+      - name: Install only the modules the self-tests need
+        run: npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund mysql2@3.15.3 express@5.2.1 joi@17.13.8 express-rate-limit@7.1.5
         working-directory: backend
 
       - name: Wait for the database service

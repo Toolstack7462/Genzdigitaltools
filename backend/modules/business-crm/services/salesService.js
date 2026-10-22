@@ -56,11 +56,18 @@ async function assertCatalogueReady(connection, items, oldById) {
     const old = item.id && oldById ? oldById.get(item.id) : null;
     if (old && String(old.product_id || '') === String(item.productId)) continue; // unchanged line
     const [rows] = await connection.execute(
-      `SELECT readiness, source_availability FROM biz_crm_product_sources WHERE product_id = :id LIMIT 1`,
+      `SELECT readiness, source_availability, ignored_at FROM biz_crm_product_sources WHERE product_id = :id LIMIT 1`,
       { id: item.productId },
     );
     if (!rows.length) continue;                               // manual product
     const row = rows[0];
+    // IGNORED is an explicit operator decision to keep this source out of the catalogue. It was
+    // being read as a catalogue-listing concern only, so an ignored product that happened to be
+    // READY and AVAILABLE was still sellable through the API - the one place it matters. Checked
+    // first, because "you chose to exclude this" is a better answer than "it needs setup".
+    if (row.ignored_at) {
+      throw httpError('This product has been excluded from the catalogue', 409, 'PRODUCT_SOURCE_IGNORED');
+    }
     if (row.readiness !== 'READY') {
       throw httpError('This imported product still needs its commercial details confirmed before it can be sold', 409, 'PRODUCT_NOT_READY');
     }
@@ -156,6 +163,21 @@ async function insertPayment(connection, req, sale, partyType, amount, paymentDa
 }
 async function createSale(req, payload) {
   return db.withTransaction(async (connection) => {
+    // REPLAY FIRST. This lookup used to sit after the items had been validated, which was harmless
+    // while validation only looked at the payload - but the catalogue readiness gate below reads
+    // CURRENT source state, and a retry of an ALREADY COMMITTED sale happens precisely when the
+    // first response was lost, possibly long after the website source was ignored or withdrawn.
+    // Validating first would have answered such a retry with PRODUCT_SOURCE_UNAVAILABLE instead of
+    // the sale it already created, leaving the caller to retry again or create a second sale.
+    // A committed sale is a fact; re-deciding whether it should have been allowed is not this
+    // request's job.
+    if (payload.idempotencyKey) {
+      const [existing] = await connection.execute('SELECT id,created_by FROM biz_crm_sales WHERE idempotency_key=:key LIMIT 1', { key: payload.idempotencyKey });
+      if (existing.length) {
+        if (String(existing[0].created_by) !== userId(req)) throw httpError('Idempotency key belongs to another user', 409, 'SALE_IDEMPOTENCY_CONFLICT');
+        return getSaleById(connection, existing[0].id, false);
+      }
+    }
     await assertContact(connection, 'biz_crm_clients', payload.clientId, 'client');
     const vendorId = can(req, 'vendors.view') ? (payload.vendorId || null) : null;
     if (vendorId) await assertContact(connection, 'biz_crm_vendors', vendorId, 'vendor');
@@ -167,13 +189,6 @@ async function createSale(req, payload) {
     const calculated = totals(effectiveItems);
     if (money.compare(payload.openingClientPayment, calculated.sale) > 0 || money.compare(payload.openingVendorPayment, calculated.cost) > 0) {
       throw httpError('Opening payment cannot exceed invoice total', 409, 'PAYMENT_EXCEEDS_BALANCE');
-    }
-    if (payload.idempotencyKey) {
-      const [existing] = await connection.execute('SELECT id,created_by FROM biz_crm_sales WHERE idempotency_key=:key LIMIT 1', { key: payload.idempotencyKey });
-      if (existing.length) {
-        if (String(existing[0].created_by) !== userId(req)) throw httpError('Idempotency key belongs to another user', 409, 'SALE_IDEMPOTENCY_CONFLICT');
-        return getSaleById(connection, existing[0].id, false);
-      }
     }
     const sale = {
       id: uuid(), invoice_number: await nextInvoiceNumber(connection, payload.saleDate), client_id: payload.clientId,
