@@ -94,6 +94,39 @@ const load = async (id) => { const r = await raw(id); return r ? ProxyAccount._h
 // schema is created fresh for every run and these rows are deleted at the end, so uniqueness
 // across runs buys nothing. The `selftest-` prefix is still not a valid ProxyAccount id, so one of
 // these can never collide with a real account.
+// ── the REAL admin router, for case (8) ───────────────────────────────────────
+//
+// Only AUTH is stubbed, and it is stubbed in require.cache BEFORE the router loads because the
+// router destructures { requireAuth, requireAdmin, getClientIp } at module load. Everything else -
+// the route body, the model, verifyAndApply, the response shape - is the real thing, so this
+// exercises the production-reachable sequence rather than a ported copy of the handler.
+const authPath = require.resolve('../middleware/authEnhanced');
+const realAuth = require(authPath);
+require.cache[authPath].exports = Object.assign({}, realAuth, {
+  requireAuth: (req, _res, next) => { req.userId = 'selftest-admin'; next(); },
+  requireAdmin: (_req, _res, next) => next(),
+  getClientIp: () => '127.0.0.1',
+});
+const express = require('express');
+const adminProxyTools = require('../routes/admin/proxyTools');
+let ADMIN_PORT = 0, adminServer = null;
+async function startAdmin() {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/crm/admin/proxy', adminProxyTools);
+  await new Promise((resolve) => {
+    adminServer = require('http').createServer(app);
+    adminServer.listen(0, '127.0.0.1', () => { ADMIN_PORT = adminServer.address().port; resolve(); });
+  });
+}
+async function adminPost(p, body) {
+  const res = await fetch(`http://127.0.0.1:${ADMIN_PORT}${p}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}),
+  });
+  let json = null; try { json = await res.json(); } catch (_) {}
+  return { status: res.status, body: json };
+}
+
 const IDS = [];
 const newId = (n) => {
   const id = 'selftest-vg-' + n;
@@ -125,6 +158,7 @@ const newId = (n) => {
   // The adapter opens its pool explicitly at startup; nothing here can read or write until it
   // has. Done AFTER the isolation proof above, so a refusal never opens a pool at all.
   await adapter.connect();
+  await startAdmin();
 
   // ── (2) NEGATIVE CONTROL: the race is real, and an unguarded whole-doc save loses data ─────
   // This is the behaviour the first guard could not prevent. It is reproduced deliberately, with
@@ -255,10 +289,18 @@ const newId = (n) => {
     check('  the label and unrelated fields are untouched', row.label === 'selftest' && row.isPrimary === true);
   }
 
-  // ── (7) A REJECTED VERDICT LEAVES NO TRACE IN MEMORY EITHER ────────────────────────────────
-  // One caller (proxyTools' Claude planDetected path) calls account.save() AFTER verifyAndApply.
-  // If the rejected verdict were still sitting on the in-memory document, that unguarded whole-doc
-  // save would persist exactly what the database refused.
+  // ── (7) A REJECTED VERDICT LEAVES NO TRACE, AND CANNOT COST THE NEWER BUNDLE ─────────
+  //
+  // CORRECTION TO AN EARLIER CLAIM. This case used to be described as covering "proxyTools' Claude
+  // planDetected path, which calls account.save() after verifyAndApply". That was wrong about
+  // reachability: on a REJECTED verdict verifyAndApply returns `v: null`, and that caller's branch
+  // is guarded on `r.v && r.v.plan`, so it never runs in the rejected case. The save below is a
+  // HYPOTHETICAL worst case - any caller that saved its own snapshot anyway - not the production
+  // sequence. The production-reachable sequence is the SUCCESS path, in (8).
+  //
+  // It also used to assert only that needs_login / canary:'failed' were not persisted. That does
+  // not prove the thing that actually matters: that B's bundle survived. It now checks the whole
+  // record after every subsequent write.
   {
     const id = newId('mem');
     await seed(id);
@@ -269,19 +311,137 @@ const newId = (n) => {
     const inflight = verifyAndApply(verifier, 'writehuman', { readOnly: true, canary: true });
     const other = await load(id);
     other.cookieHash = 'hashB'; other.bundleVersion = 8;
+    other.sessionEncrypted = vaultCrypto.encrypt(JSON.stringify(cookieBundle(9000)));
     other.activeSource = { deviceId: 'dev-B', name: 'RDP-B', promotedAt: new Date(), bundleVersion: 8 };
     await other.save();
+    const b = await raw(id);
+
     release();
-    await inflight;
-    check('the in-memory doc shows no rejected verdict', verifier.session_status === 'working'
+    const res = await inflight;
+    check('rejected: verifyAndApply returns v:null, so the Claude plan branch is UNREACHABLE here',
+      res.result === 'stale_subject' && res.v === null, { result: res.result, v: res.v });
+    check('rejected: the in-memory doc carries no verdict', verifier.session_status === 'working'
       && (!verifier.verification || verifier.verification.canary !== 'failed'),
       { ss: verifier.session_status, v: verifier.verification });
-    // ...and even a later unguarded save by that caller cannot resurrect it.
+
+    // The hypothetical: some caller saves its own snapshot anyway.
     await verifier.save();
-    const row = await raw(id);
-    check('a later caller-owned save cannot persist the refused verdict', row.session_status !== 'needs_login'
-      && !(row.verification && row.verification.canary === 'failed'),
+    let row = await raw(id);
+    check('hypothetical save: the refused verdict is still not persisted',
+      row.session_status !== 'needs_login' && !(row.verification && row.verification.canary === 'failed'),
       { ss: row.session_status, v: row.verification });
+    check('hypothetical save: B bundle bytes survive', row.sessionEncrypted === b.sessionEncrypted);
+    check('hypothetical save: B hash survives', row.cookieHash === 'hashB', row.cookieHash);
+    check('hypothetical save: B version survives', Number(row.bundleVersion) === 8, row.bundleVersion);
+    check('hypothetical save: B source survives', row.activeSource && row.activeSource.deviceId === 'dev-B', row.activeSource);
+    check('hypothetical save: unrelated fields survive', row.label === 'selftest' && row.isPrimary === true,
+      { label: row.label, isPrimary: row.isPrimary });
+
+    // And a second one, to be sure nothing drifts on repetition.
+    await verifier.save();
+    row = await raw(id);
+    check('a SECOND hypothetical save still changes nothing',
+      row.cookieHash === 'hashB' && Number(row.bundleVersion) === 8
+      && row.activeSource.deviceId === 'dev-B' && row.sessionEncrypted === b.sessionEncrypted
+      && row.session_status !== 'needs_login',
+      { hash: row.cookieHash, v: row.bundleVersion, src: row.activeSource && row.activeSource.deviceId });
+  }
+
+  // ── (8) THE PRODUCTION-REACHABLE CALLER SAVE: admin Verify on CLAUDE, on SUCCESS ───────
+  //
+  // This is the sequence that really exists. POST /:tool/accounts/:id/verify succeeds, and for
+  // claude the route then records the detected plan. That write runs AFTER an external provider
+  // round-trip on a document loaded BEFORE it, so an operator who changed the plan or any other
+  // field meanwhile would be overwritten by a whole-document save.
+  //
+  // Driven through the REAL router (real model, real verifyAndApply, real route body) with only
+  // auth and the provider stubbed - not a ported copy of the handler.
+  {
+    const id = newId('claude');
+    await ProxyAccount.create({
+      _id: id, tool: 'claude', isPrimary: true, label: 'selftest-claude',
+      status: 'active', session_status: 'working', plan: 'unknown', notes: 'original note',
+      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(cookieBundle(1000))),
+    });
+    IDS.push(id);
+
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    verifyImpl = async () => { await gate; return { result: 'working', httpStatus: 200, maskedId: 'op***@example.com', plan: 'pro' }; };
+
+    const inflight = adminPost(`/api/crm/admin/proxy/claude/accounts/${id}/verify`);
+
+    // While the provider is answering, the operator picks a plan AND edits a note.
+    await new Promise((r) => setTimeout(r, 50));
+    const operator = await load(id);
+    operator.plan = 'max20';
+    operator.notes = 'operator edit during verification';
+    await operator.save();
+
+    release();
+    const resp = await inflight;
+    const row = await raw(id);
+    check('claude verify succeeded through the real route', resp.status === 200, resp.status);
+    check('the operator PLAN selection survives the verification write', row.plan === 'max20', row.plan);
+    check('the operator NOTE survives too', row.notes === 'operator edit during verification', row.notes);
+    check('the verification verdict still landed', row.verification && row.verification.result === 'working',
+      row.verification);
+    check('no stale planDetected overwrote a manual choice',
+      !(row.planDetected && row.plan !== 'max20'), { plan: row.plan, detected: row.planDetected });
+
+    // UNCONTENDED: with no operator edit the detection is recorded and adopted as before, so the
+    // guard has not simply disabled the feature.
+    const id2 = newId('claude2');
+    await ProxyAccount.create({
+      _id: id2, tool: 'claude', isPrimary: false, label: 'selftest-claude2',
+      status: 'active', session_status: 'working', plan: 'unknown',
+      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(cookieBundle(1000))),
+    });
+    IDS.push(id2);
+    verifyImpl = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com', plan: 'max5' });
+    const r2 = await adminPost(`/api/crm/admin/proxy/claude/accounts/${id2}/verify`);
+    const row2 = await raw(id2);
+    check('uncontended: the detected plan is still recorded', r2.status === 200
+      && row2.planDetected && row2.planDetected.plan === 'max5', { s: r2.status, d: row2.planDetected });
+    check('uncontended: it is adopted while the operator plan was unknown', row2.plan === 'max5', row2.plan);
+    verifyImpl = DEFAULT_VERIFY;
+  }
+
+  // ── (9) THE PROOF INVARIANT, SWEPT OVER EVERY ROW THIS RUN TOUCHED ─────────────────
+  //
+  // candidateSync has the same await-then-save shape as the verifier did: it verifies a candidate
+  // (external call) and then saves the whole document. That is PRE-EXISTING and unchanged by this
+  // release - the save is the same statement it always was; this release only added `canary` and
+  // `subject` to the verification object written inside it. It is NOT silently called safe: a lost
+  // concurrent promotion is a real sync/availability concern, separately tracked, with
+  // trusted-ordering, hash comparison, STALE_BUNDLE refusals, device authority and rollbackBundles
+  // already in that path.
+  //
+  // What matters for THIS release is narrower: can any writer leave a row whose recorded proof
+  // describes a bundle that is not the stored one? That is the single guarantee the agent's halt
+  // resolution rests on. It cannot, and structurally rather than luckily: every writer puts the
+  // bundle and its own verification+subject in the SAME document write, so whoever lands last
+  // leaves an internally consistent row. A lost promotion costs a bundle, never a false proof.
+  //
+  // This sweeps that invariant across every row the run touched - after all the interleavings
+  // above, including the late-positive, late-negative, source-only and double-save cases.
+  {
+    let swept = 0, bad = [];
+    for (const id of IDS) {
+      const row = await raw(id);
+      if (!row) continue;
+      swept++;
+      const v = row.verification || null;
+      const subj = (v && v.subject) || null;
+      if (!subj) continue;                       // no claim recorded -> nothing to contradict
+      const hashOk = String(subj.cookieHash == null ? '' : subj.cookieHash) === String(row.cookieHash == null ? '' : row.cookieHash);
+      const verOk = Number(subj.bundleVersion || 0) === Number(row.bundleVersion || 0);
+      if (!hashOk || !verOk) {
+        bad.push({ id, subject: subj, storedHash: row.cookieHash, storedVersion: row.bundleVersion });
+      }
+    }
+    check(`proof invariant holds on every stored row (${swept} swept)`, bad.length === 0, bad);
+    check('the sweep actually inspected rows', swept > 0, swept);
   }
 
   // ── cleanup ───────────────────────────────────────────────────────────────────────────────
@@ -305,4 +465,7 @@ const newId = (n) => {
   // Deliberately NOT process.exit(): that is exactly what produced the Windows 0xC0000409
   // abort in verify-agent-distribution.cjs by tearing down mid-close. Draining the pool and
   // letting node exit on its own keeps the exit code readable.
-  .finally(async () => { try { await adapter.close(); } catch (_) {} });
+  .finally(async () => {
+    try { if (adminServer) adminServer.close(); } catch (_) {}
+    try { await adapter.close(); } catch (_) {}
+  });
