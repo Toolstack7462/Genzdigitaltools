@@ -321,7 +321,17 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     // The guard runs for an OWNER (who holds profit.view and therefore skips the old product
     // lookup entirely) - which is why it sits above that early return.
     const readyMap = await mappingFor('tool-same-1');
+    // ARRANGEMENT, not a workaround. The earlier cases above ran reconciles with a NARROWED
+    // TOOL_ROWS, and each of those was a COMPLETE scan, so the feature correctly marked the
+    // then-absent sources UNAVAILABLE. That is the behaviour section 7 asserts. This case is about
+    // selling a READY + AVAILABLE product, so the availability is restored explicitly here rather
+    // than relying on the order of earlier steps. The first run of this file crashed exactly
+    // because that was left implicit.
+    await q(`UPDATE biz_crm_product_sources SET source_availability='AVAILABLE', source_missing_at=NULL WHERE id=:id`, { id: readyMap.id });
     await q(`UPDATE biz_crm_products SET currency_code='PKR', account_type='private' WHERE id=:id`, { id: readyMap.product_id });
+    check('arrangement: the product under test is READY and AVAILABLE',
+      (await mappingFor('tool-same-1')).readiness === 'READY'
+      && (await mappingFor('tool-same-1')).source_availability === 'AVAILABLE');
     const sale = await sales.createSale(OWNER, salePayload(readyMap.product_id));
     check('a READY product sells normally', !!sale && !!sale.id, sale && sale.id);
 
