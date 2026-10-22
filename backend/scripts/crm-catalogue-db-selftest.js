@@ -221,6 +221,47 @@ const countProducts = async () => Number((await q('SELECT COUNT(*) n FROM biz_cr
     check('ignoring does not delete the product or its mapping', !!(await productById(d1.product_id)));
   }
 
+  /* ── 4b. an ambiguous source is HELD BACK, and both resolutions work ─────────────────────── */
+  {
+    // A manual product that shares a name with a discovered source must not quietly gain a
+    // second, unexplained catalogue row.
+    const ambiguousManual = newId();
+    await q(`INSERT INTO biz_crm_products (id,name,category,default_sale_price,currency_code,account_type,created_by)
+             VALUES (:id,'Shared Name Product','Software','500.00','PKR','private','selftest')`, { id: ambiguousManual });
+    TOOL_ROWS = [tool('tool-ambig', 'Shared Name Product', 'Software', 'ambig.example')];
+    const r = await catalogue.reconcile(OWNER, { force: true });
+    check('an ambiguous source is held for review, not created', r.heldForReview >= 1 && r.created === 0, r);
+    check('no mapping was created for the held source', !(await mappingFor('tool-ambig')));
+
+    const dry = await catalogue.dryRun();
+    const held = dry.possibleManualMatches.find((m) => m.sourceId === 'tool-ambig');
+    check('the dry-run reports it as needing an operator decision', !!held && held.heldFromImport === true, held);
+    check('the dry-run does NOT propose it for creation', !dry.proposedNew.some((p) => p.sourceId === 'tool-ambig'));
+
+    // Resolution A: the operator says they are the same thing.
+    const linked = await catalogue.linkExisting(OWNER, ambiguousManual, { sourceId: 'tool-ambig' });
+    const m = await mappingFor('tool-ambig');
+    check('linking an existing product reuses its product id', linked.productId === ambiguousManual && m.product_id === ambiguousManual);
+    check('linking does NOT change the operator price', String((await productById(ambiguousManual)).default_sale_price) === '500.00');
+    check('a linked manual product is READY, not suddenly unsellable', m.readiness === 'READY', m.readiness);
+    let dupCode = null;
+    try { await catalogue.linkExisting(OWNER, ambiguousManual, { sourceId: 'tool-ambig' }); } catch (e) { dupCode = e.code; }
+    check('linking twice is refused by the database, not duplicated', dupCode === 'ALREADY_LINKED', dupCode);
+
+    // Resolution B: coincidence - create a separate product.
+    const otherManual = newId();
+    await q(`INSERT INTO biz_crm_products (id,name,category,default_sale_price,currency_code,created_by)
+             VALUES (:id,'Coincidence','Software','77.00','PKR','selftest')`, { id: otherManual });
+    TOOL_ROWS = [tool('tool-coin', 'Coincidence', 'Software', 'coin.example')];
+    await catalogue.reconcile(OWNER, { force: true });
+    check('the coincidental source is also held', !(await mappingFor('tool-coin')));
+    const approved = await catalogue.approveCreate(OWNER, { sourceId: 'tool-coin' });
+    const m2 = await mappingFor('tool-coin');
+    check('approve-create makes a SEPARATE product', approved.created === true && m2.product_id !== otherManual);
+    check('an approved creation still starts NEEDS_SETUP', m2.readiness === 'NEEDS_SETUP', m2.readiness);
+    check('the original manual product is untouched', String((await productById(otherManual)).default_sale_price) === '77.00');
+  }
+
   /* ── 5. readiness: unknown stays unknown; a name save cannot promote it ────────────────────── */
   {
     const m = await mappingFor('tool-same-1');

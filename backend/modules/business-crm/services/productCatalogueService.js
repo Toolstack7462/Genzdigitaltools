@@ -234,10 +234,15 @@ async function dryRun() {
       });
       continue;
     }
-    // A name similarity is a SUGGESTION for the operator. It never links or suppresses anything.
+    // A name similarity is a SUGGESTION, never a link. But it also HOLDS the source back from
+    // automatic creation: creating a second catalogue row that looks like an existing manual
+    // product, with no explanation, is exactly the confusion this is meant to avoid. The operator
+    // resolves it either by linking the existing product to this source or by approving a separate
+    // product - both explicit actions.
     const candidates = manualByName.get(normaliseName(source.name)) || [];
     if (candidates.length) {
-      possibleManualMatches.push({ ...source, candidates, resolution: 'operator_decision_required' });
+      possibleManualMatches.push({ ...source, candidates, resolution: 'operator_decision_required', heldFromImport: true });
+      continue;
     }
     proposedNew.push({ ...source, readinessOnImport: 'NEEDS_SETUP' });
   }
@@ -394,7 +399,7 @@ async function reconcile(req, options = {}) {
   const discovered = await discoverWebsiteTools();
   const summary = {
     created: 0, refreshed: 0, unchanged: 0, skippedDuplicate: 0,
-    markedUnavailable: 0, ignoredSkipped: 0, errors: [],
+    markedUnavailable: 0, ignoredSkipped: 0, heldForReview: 0, errors: [],
     scanComplete: discovered.complete,
   };
   if (discovered.error) summary.errors.push({ scope: 'source_scan', message: discovered.error });
@@ -419,6 +424,17 @@ async function reconcile(req, options = {}) {
     const byKey = new Map();
     for (const row of mappingRows) byKey.set(`${row.source_namespace}:${row.source_id}`, row);
 
+    // Manual products, by normalised name, so an ambiguous source can be held back here too. The
+    // dry-run and the unattended sweep must agree: otherwise the preview would show a source as
+    // held and the next reconciliation would create it anyway.
+    const [manualRows] = await connection.execute(
+      `SELECT p.id, p.name FROM biz_crm_products p
+         LEFT JOIN biz_crm_product_sources ps ON ps.product_id = p.id
+        WHERE p.deleted_at IS NULL AND ps.id IS NULL`,
+      {},
+    );
+    const manualNames = new Set(manualRows.map((r) => normaliseName(r.name)).filter(Boolean));
+
     for (const source of discovered.sources) {
       const mapping = byKey.get(`${source.namespace}:${source.sourceId}`);
       try {
@@ -426,6 +442,11 @@ async function reconcile(req, options = {}) {
         if (mapping) {
           const r = await refreshLinked(mapping, source, actor);
           if (r.status === 'refreshed') summary.refreshed += 1; else summary.unchanged += 1;
+          continue;
+        }
+        if (manualNames.has(normaliseName(source.name))) {
+          // Needs an explicit operator decision; see linkExisting / approveCreate.
+          summary.heldForReview += 1;
           continue;
         }
         const r = await createLinkedProduct(source, actor);
@@ -552,6 +573,68 @@ async function confirmReady(req, productId, payload) {
   return { readiness: 'READY', alreadyReady: false };
 }
 
+/**
+ * Link an EXISTING product to a discovered source — the operator saying "these are the same thing".
+ *
+ * Deliberately changes no commercial field. A manual product's price, cost, currency, type and
+ * duration were entered by the operator, so they are already confirmed: that is why the mapping
+ * starts READY rather than NEEDS_SETUP. Starting it at NEEDS_SETUP would make an already-sellable
+ * product suddenly unsellable, which would be a regression caused by linking.
+ *
+ * The UNIQUE keys do the real work: a product already linked, or a source already taken, fails at
+ * the database rather than producing a second mapping.
+ */
+async function linkExisting(req, productId, source) {
+  const actor = String((req && req.userId) || 'system');
+  const namespace = String(source && source.namespace || NAMESPACE_WEBSITE_TOOL);
+  const sourceId = String(source && source.sourceId || '');
+  if (!sourceId) { const e = new Error('sourceId is required'); e.status = 400; e.code = 'SOURCE_ID_REQUIRED'; throw e; }
+  const product = (await db.query('SELECT id, name, category FROM biz_crm_products WHERE id=:id AND deleted_at IS NULL', { id: productId }))[0];
+  if (!product) { const e = new Error('Product not found'); e.status = 404; e.code = 'PRODUCT_NOT_FOUND'; throw e; }
+  try {
+    await db.withTransaction(async (connection) => {
+      await connection.execute(
+        `INSERT INTO biz_crm_product_sources
+           (id, product_id, source_namespace, source_id, source_name, source_category,
+            readiness, ready_at, ready_by, source_availability, last_seen_at, created_by)
+         VALUES (:id, :productId, :namespace, :sourceId, :name, :category,
+                 'READY', CURRENT_TIMESTAMP, :actor, 'AVAILABLE', CURRENT_TIMESTAMP, :actor)`,
+        { id: newId(), productId, namespace, sourceId, name: product.name, category: product.category, actor },
+      );
+      await audit.write(connection, req, 'catalogue-source.linked', 'product_source', productId, null, { namespace, sourceId });
+    });
+  } catch (e) {
+    if (e && (e.code === 'ER_DUP_ENTRY' || e.errno === 1062)) {
+      const err = new Error('That product or that source is already linked');
+      err.status = 409; err.code = 'ALREADY_LINKED'; throw err;
+    }
+    throw e;
+  }
+  return { linked: true, productId, namespace, sourceId, readiness: 'READY' };
+}
+
+/**
+ * Approve creating a SEPARATE product for a source that was held back for resembling a manual one.
+ *
+ * The operator is stating that the similarity is coincidental. The new product still starts
+ * NEEDS_SETUP, so approving the creation is not the same as approving it for sale.
+ */
+async function approveCreate(req, source) {
+  const actor = String((req && req.userId) || 'system');
+  const namespace = String(source && source.namespace || NAMESPACE_WEBSITE_TOOL);
+  const sourceId = String(source && source.sourceId || '');
+  if (!sourceId) { const e = new Error('sourceId is required'); e.status = 400; e.code = 'SOURCE_ID_REQUIRED'; throw e; }
+  const discovered = await discoverWebsiteTools();
+  if (!discovered.complete) {
+    const e = new Error('The source scan did not complete; try again'); e.status = 503; e.code = 'SCAN_INCOMPLETE'; throw e;
+  }
+  const match = discovered.sources.find((s) => s.namespace === namespace && s.sourceId === sourceId);
+  if (!match) { const e = new Error('That source is not in the current inventory'); e.status = 404; e.code = 'SOURCE_NOT_FOUND'; throw e; }
+  const r = await createLinkedProduct(match, actor);
+  if (r.status !== 'created') { const e = new Error('That source is already linked'); e.status = 409; e.code = 'ALREADY_LINKED'; throw e; }
+  return { created: true, productId: r.productId, readiness: 'NEEDS_SETUP' };
+}
+
 /** Explicit operator decision to keep a discovered source out of the catalogue. Survives every run. */
 async function setIgnored(req, productId, ignored) {
   const actor = String((req && req.userId) || 'system');
@@ -597,6 +680,8 @@ module.exports = {
   dryRun,
   reconcile,
   confirmReady,
+  linkExisting,
+  approveCreate,
   setIgnored,
   status,
   isFresh,

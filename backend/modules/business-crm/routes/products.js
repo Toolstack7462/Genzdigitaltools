@@ -110,6 +110,16 @@ router.post('/:id/catalogue/confirm-ready', requirePermission('products.manage')
   res.json(await catalogue.confirmReady(req, req.params.id, req.validated || req.body || {}));
 }));
 
+// Resolve a held-back ambiguous source: "this existing product IS that source".
+router.post('/:id/catalogue/link', requirePermission('products.manage'), validate('catalogueLink'), asyncHandler(async (req, res) => {
+  res.json(await catalogue.linkExisting(req, req.params.id, req.validated || req.body || {}));
+}));
+
+// Resolve it the other way: the resemblance is coincidental, create a separate product.
+router.post('/catalogue/approve-create', requirePermission('products.manage'), validate('catalogueLink'), asyncHandler(async (req, res) => {
+  res.json(await catalogue.approveCreate(req, req.validated || req.body || {}));
+}));
+
 // Keep a discovered source out of the catalogue. The decision survives every later sweep.
 router.post('/:id/catalogue/ignore', requirePermission('products.manage'), validate('catalogueIgnore'), asyncHandler(async (req, res) => {
   const body = req.validated || req.body || {};

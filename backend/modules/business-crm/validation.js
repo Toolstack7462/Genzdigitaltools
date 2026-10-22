@@ -43,6 +43,7 @@ const schemas = {
   // operator must say so, which is what keeps "price unknown" distinct from "this product is free".
   catalogueConfirmReady: Joi.object({ confirmFree: Joi.boolean().default(false) }),
   catalogueIgnore: Joi.object({ ignored: Joi.boolean().default(true) }),
+  catalogueLink: Joi.object({ namespace: Joi.string().max(32).default('WEBSITE_TOOL'), sourceId: Joi.string().max(190).required() }),
   saleCreate: Joi.object({
     clientId: id.required(), vendorId: nullableId, saleDate: date.required(), orderType: Joi.string().valid('new', 'renewal').default('new'),
     currencyCode: currency.required(), notes: Joi.string().max(10000).allow('', null), invoiceInstructions: Joi.string().max(10000).allow('', null),
