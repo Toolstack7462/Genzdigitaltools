@@ -394,10 +394,76 @@ CREATE TABLE IF NOT EXISTS biz_crm_access_links (
   INDEX idx_biz_access_links_source (source_type, access_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ─────────────────────────────────────────────────────────────────────────────────────────────
+-- WEBSITE TOOL -> CRM CATALOGUE MAPPING (CRM-owned, additive, one row per imported product)
+--
+-- The catalogue keeps its own identity: biz_crm_products is untouched by this migration, so every
+-- existing product, price, note, invoice snapshot and permission behaves exactly as before. This
+-- table only records WHERE an imported product came from and HOW FAR its commercial setup has got.
+--
+-- WHY A SEPARATE TABLE RATHER THAN COLUMNS ON biz_crm_products:
+--   * a manual product has no source and must stay indistinguishable from one at the product level;
+--   * `deleted_at` on a product must not take its source history with it;
+--   * the mapping carries CRM workflow state (readiness, ignored) that is not product data.
+--
+-- IDENTITY. (source_namespace, source_id) is the stable key: an immutable source identifier inside
+-- a namespace. Never a name and never a domain - two products may legitimately share a brand or a
+-- host and must stay distinct, and a source rename must not look like a new product.
+--
+-- UNIQUENESS IS THE DUPLICATE DEFENCE. Both UNIQUE keys are enforced by the database, so a retried
+-- reconciliation, two Products pages opening at once, or two Passenger workers racing cannot
+-- produce a second product for one source. A SELECT-then-INSERT would not be sufficient.
+--   uq_..._source   one product per source
+--   uq_..._product  one source per product (a product can never be double-linked)
+--
+-- THREE INDEPENDENT STATES, deliberately not collapsed into one column:
+--   readiness           CRM commercial setup:  NEEDS_SETUP -> READY (operator confirmation only)
+--   source_availability what the last COMPLETE scan saw: AVAILABLE | UNAVAILABLE
+--   ignored_at          an explicit operator decision to keep this source out of the catalogue
+-- A source going temporarily unavailable must not erase completed setup, and an ignored source
+-- must not be recreated by ordinary reconciliation. Keeping them separate is what makes that true.
+CREATE TABLE IF NOT EXISTS biz_crm_product_sources (
+  id CHAR(36) PRIMARY KEY,
+  product_id CHAR(36) NOT NULL,
+  source_namespace VARCHAR(32) NOT NULL,
+  source_id VARCHAR(190) NOT NULL,
+  -- Last values seen from the source, kept so a rename is visible as a change rather than inferred.
+  source_name VARCHAR(190) NULL,
+  source_category VARCHAR(100) NULL,
+  -- CRM commercial readiness. NEEDS_SETUP products are never sellable; see salesService.
+  readiness VARCHAR(16) NOT NULL DEFAULT 'NEEDS_SETUP',
+  ready_at TIMESTAMP NULL,
+  ready_by VARCHAR(64) NULL,
+  -- What the last COMPLETE authoritative scan observed. A timeout or partial page never writes this.
+  source_availability VARCHAR(24) NOT NULL DEFAULT 'AVAILABLE',
+  source_missing_at TIMESTAMP NULL,
+  -- Set once the operator renames the product: the source stops owning the name from then on.
+  name_overridden TINYINT(1) NOT NULL DEFAULT 0,
+  -- An explicit "keep this out of the catalogue" decision. Survives every later reconciliation.
+  ignored_at TIMESTAMP NULL,
+  ignored_by VARCHAR(64) NULL,
+  last_seen_at TIMESTAMP NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_biz_product_sources_source (source_namespace, source_id),
+  UNIQUE KEY uq_biz_product_sources_product (product_id),
+  CONSTRAINT fk_biz_product_sources_product FOREIGN KEY (product_id) REFERENCES biz_crm_products(id),
+  INDEX idx_biz_product_sources_readiness (readiness),
+  INDEX idx_biz_product_sources_availability (source_availability),
+  INDEX idx_biz_product_sources_ignored (ignored_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 INSERT INTO biz_crm_settings (id, store_name, invoice_prefix, default_currency, whatsapp_country_code)
 VALUES (1, 'Gen Z Digital Store', 'GDS', 'PKR', '92')
 ON DUPLICATE KEY UPDATE id = id;
 
 INSERT INTO biz_crm_schema_migrations (version)
 VALUES ('2.0.0')
+ON DUPLICATE KEY UPDATE version = version;
+
+-- 2.1.0 adds biz_crm_product_sources only. No existing table, column, row, price or constraint is
+-- altered, so applying it to a populated database changes no existing behaviour.
+INSERT INTO biz_crm_schema_migrations (version)
+VALUES ('2.1.0')
 ON DUPLICATE KEY UPDATE version = version;

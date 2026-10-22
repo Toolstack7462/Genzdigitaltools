@@ -39,6 +39,10 @@ const schemas = {
   vendorCreate: Joi.object({ ...contact, idempotencyKey: Joi.string().max(128).allow('', null) }),
   vendorUpdate: Joi.object({ ...contact, version: version.required() }),
   productCreate: Joi.object(productShape), productUpdate: Joi.object({ ...productShape, version: version.required() }),
+  // Explicit commercial confirmation for an IMPORTED product. `confirmFree` has no default: the
+  // operator must say so, which is what keeps "price unknown" distinct from "this product is free".
+  catalogueConfirmReady: Joi.object({ confirmFree: Joi.boolean().default(false) }),
+  catalogueIgnore: Joi.object({ ignored: Joi.boolean().default(true) }),
   saleCreate: Joi.object({
     clientId: id.required(), vendorId: nullableId, saleDate: date.required(), orderType: Joi.string().valid('new', 'renewal').default('new'),
     currencyCode: currency.required(), notes: Joi.string().max(10000).allow('', null), invoiceInstructions: Joi.string().max(10000).allow('', null),

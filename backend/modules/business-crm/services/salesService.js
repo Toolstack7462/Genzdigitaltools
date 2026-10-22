@@ -28,7 +28,50 @@ function credentialSafeItems(req, items, oldById = new Map()) {
     };
   });
 }
+/**
+ * An IMPORTED catalogue product may only be sold once its commercial details are confirmed.
+ *
+ * WHY HERE. This is the one place every sale write converges: createSale and updateSale both call
+ * protectedItems inside their transaction, and the offline replay path (routes/sync.js
+ * 'sale.create') goes through createSale as well. Hiding NEEDS_SETUP rows in the frontend picker
+ * is a convenience, not a safeguard - a direct API call, a stale cached offline draft or an older
+ * frontend would all bypass it. Checking before any INSERT also means a rejected sale leaves no
+ * partial financial write: the throw happens inside the transaction, before the sale, items and
+ * payments are written.
+ *
+ * It sits ABOVE the profit.view early return on purpose. That return skips the product lookup
+ * entirely for a Manager, so a readiness check placed below it would never run for the role most
+ * likely to be creating sales.
+ *
+ * SCOPE: only NEWLY selected products. An item that is already on this sale with the same product
+ * is skipped, so a source that later became unavailable can never retro-block an edit to an
+ * existing sale, its notes or its payments, and nothing is repriced.
+ *
+ * Products with NO source mapping are manual catalogue entries and are always allowed - this
+ * feature must not change how the existing catalogue behaves.
+ */
+async function assertCatalogueReady(connection, items, oldById) {
+  for (const item of items) {
+    if (!item || !item.productId) continue;
+    const old = item.id && oldById ? oldById.get(item.id) : null;
+    if (old && String(old.product_id || '') === String(item.productId)) continue; // unchanged line
+    const [rows] = await connection.execute(
+      `SELECT readiness, source_availability FROM biz_crm_product_sources WHERE product_id = :id LIMIT 1`,
+      { id: item.productId },
+    );
+    if (!rows.length) continue;                               // manual product
+    const row = rows[0];
+    if (row.readiness !== 'READY') {
+      throw httpError('This imported product still needs its commercial details confirmed before it can be sold', 409, 'PRODUCT_NOT_READY');
+    }
+    if (row.source_availability !== 'AVAILABLE') {
+      throw httpError('This product is no longer available from the website source', 409, 'PRODUCT_SOURCE_UNAVAILABLE');
+    }
+  }
+}
+
 async function protectedItems(connection, req, currency, items, oldById = new Map()) {
+  await assertCatalogueReady(connection, items, oldById);
   if (can(req, 'profit.view')) return items.map((item) => ({ ...item, purchaseCost: decimal(item.purchaseCost) }));
   const output = [];
   for (const item of items) {
@@ -316,4 +359,5 @@ async function softDeleteSale(req, id) {
   });
 }
 
-module.exports = { createSale, getSale, getSaleById, listSales, updateSale, setSaleStatus, softDeleteSale, mapSale, httpError, insertPayment, forRequest, protectedItems, credentialSafeItems };
+module.exports = {
+  assertCatalogueReady, createSale, getSale, getSaleById, listSales, updateSale, setSaleStatus, softDeleteSale, mapSale, httpError, insertPayment, forRequest, protectedItems, credentialSafeItems };

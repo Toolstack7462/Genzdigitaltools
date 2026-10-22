@@ -42,6 +42,9 @@ on:
       - 'backend/modules/business-crm/db.js'
       - 'backend/modules/business-crm/money.js'
       - 'backend/scripts/crm-db-selftest.js'
+      - 'backend/scripts/crm-catalogue-db-selftest.js'
+      - 'backend/modules/business-crm/services/productCatalogueService.js'
+      - 'backend/modules/business-crm/routes/products.js'
       - '.github/workflows/crm-db-selftest.yml'
   push:
     # So the Release 1 candidate verifies ITSELF without anyone dispatching a run.
@@ -135,3 +138,13 @@ jobs:
           CRM_SELFTEST_DB: '1'
           CRM_SELFTEST_EXPECTED_DB: crm_scratch
         run: node scripts/crm-db-selftest.js
+
+      # Same scratch schema, same safety contract. Separate step so a catalogue failure is
+      # distinguishable from a financial-safety failure in the job summary.
+      - name: Run the catalogue-source self-test
+        working-directory: backend
+        env:
+          DATABASE_URL: mysql://crm_tester:ci-scratch-not-a-secret@127.0.0.1:3306/crm_scratch
+          CRM_SELFTEST_DB: '1'
+          CRM_SELFTEST_EXPECTED_DB: crm_scratch
+        run: node scripts/crm-catalogue-db-selftest.js
