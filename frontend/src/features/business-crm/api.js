@@ -16,6 +16,9 @@ export const crmApi = {
   delete: (path, options) => api.delete(`/admin/business${path}`, config(options)),
   rawUrl: (path) => `${api.defaults.baseURL || '/api/crm'}/admin/business${path}`,
 };
+// The machine-readable code beside the message. Used where the UI has to react to a specific
+// refusal rather than only display it.
+export function codeFromError(error) { return error?.response?.data?.code || ''; }
 export function messageFromError(error) {
   const data = error?.response?.data;
   if (Array.isArray(data?.details)) return data.details.map((x) => x.message).join(' • ');

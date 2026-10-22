@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckCircle2, Edit3, Plus, RefreshCw, Save } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
-import { crmApi, messageFromError } from '../api';
+import { codeFromError, crmApi, messageFromError } from '../api';
 import { useDebouncedValue, useResource } from '../hooks';
 import { formatMoney } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Status, Table, Textarea } from '../components/ui';
@@ -92,10 +92,25 @@ export default function Products() {
    * with it. A zero price is only accepted when the operator states that it is intentional.
    */
   const confirmReady = async (row) => {
-    const free = Number(row.default_sale_price || 0) === 0;
-    if (free && !window.confirm(`"${row.name}" has no sale price. Confirm it is intentionally FREE?`)) return;
+    // `version` is sent so the server can refuse a confirmation made against values that have since
+    // been edited: this screen shows one row while someone else may be saving another price into it.
+    const post = (confirmFree) => crmApi.post(
+      `/products/${row.id}/catalogue/confirm-ready`, { confirmFree, version: row.version },
+    );
     try {
-      await crmApi.post(`/products/${row.id}/catalogue/confirm-ready`, { confirmFree: free });
+      try {
+        await post(false);
+      } catch (firstAttempt) {
+        // THE SERVER DECIDES whether the price is zero, not this component. While a product is
+        // NEEDS_SETUP the API returns its price as null on purpose, so the UI genuinely cannot tell
+        // "free" from "not priced yet" - the earlier version read that null as 0 and therefore sent
+        // confirmFree on EVERY confirmation, which silently removed the explicit-free check it was
+        // supposed to enforce. Now a zero price comes back as PRICE_NOT_CONFIRMED and only then is
+        // the operator asked.
+        if (codeFromError(firstAttempt) !== 'PRICE_NOT_CONFIRMED') throw firstAttempt;
+        if (!window.confirm(`"${row.name}" has no sale price. Confirm it is intentionally FREE?`)) return;
+        await post(true);
+      }
       setError(''); await refreshStatus(); resource.reload();
     } catch (requestError) { setError(messageFromError(requestError)); }
   };
@@ -137,6 +152,11 @@ export default function Products() {
         : 'Website tools have not been checked yet.'}
       {' '}{catalogue.discoveryNote}
     </div>}
+    {/* The only error banner used to live inside the edit modal, so a refusal from a catalogue
+        action - a stale confirmation, a rate-limited sweep - set the message and the operator never
+        saw it. Shown here whenever the modal is closed; the modal keeps its own copy because its
+        overlay covers the page. */}
+    {error && !form && <div className="bcrm-banner warning">{error}</div>}
     <div className="bcrm-filterbar"><SearchBox value={query} onChange={setQuery} busy={resource.loading} placeholder="Product, category or duration…" /></div>
     <Card className="flush"><Table rows={resource.data?.rows || []} columns={columns} /></Card>
     <Modal open={Boolean(form)} title={form?.id ? 'Edit product' : 'New product'} onClose={() => setForm(null)} footer={<><Button variant="secondary" onClick={() => setForm(null)}>Cancel</Button><Button icon={Save} onClick={save}>Save</Button></>}>
