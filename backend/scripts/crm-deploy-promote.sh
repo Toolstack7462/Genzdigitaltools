@@ -2,12 +2,34 @@
 # Validate-then-promote for a hand-deployed backend patch set.  EMERGENCY USE ONLY.
 #
 # PREFER THE ESTABLISHED RELEASE PATH. Pushing to `main` makes Hostinger clone the repo, run
-# `npm install`, copy the tree into a NEW version directory and switch the `current` symlink to
-# it. That swap is a single rename: either the whole release is live or none of it is, and the
-# previous version directory stays on disk. Proven on 2026-10-21 (build 01a16024 from main
-# ac29e45: "Mode: publish ... Switching current to the new version", 8.9s, no mixed state).
-# This script replaces files IN PLACE inside the live version directory and cannot offer that.
-# Use it only when the git path is unavailable, and prefer a single file when you do.
+# `npm install`, copy the tree into a NEW version directory and switch the `current` symlink to it.
+#
+# OBSERVED PUBLICATION MECHANISM - 2026-10-21, from the platform's own deploy log:
+#   build 01a16024 from main ac29e455, "Mode: publish ... Switching current to the new version",
+#   the publish step self-reported 8.9s. One reference change swaps the whole directory, so a
+#   half-written tree is never published, and the files under the new reference were byte-verified
+#   afterwards (4/4 reviewed files; 286/286 tree-wide against main).
+#   Also observed: the publish PRUNED the previous version directory - only 01a16024 remained. A
+#   backup stored INSIDE the old version directory was destroyed with it. Keep recovery material
+#   outside the version directories.
+#
+# RUNTIME VERIFICATION IS A SEPARATE QUESTION, and the reference switch does not answer it:
+#   * It is NOT proof that all serving workers changed together. Each hostname has its own
+#     LiteSpeed external-application instance, and each keeps serving the tree it resolved when it
+#     started. On 2026-10-21 FOUR hostnames were bound to this one app, and one of them was still
+#     serving the previous build ~24h after that build had been superseded. The check actually
+#     used, per hostname: match the worker's socket (/proc/<pid>/fd -> socket:[inode] -> the
+#     extapp-sock/<hostname> entry in /proc/net/unix), read /proc/<pid>/cwd for the version
+#     directory it resolved, `ps -o lstart` for its start time, then one read-only request to that
+#     hostname. A worker adopts a new build only on its own next start.
+#   * It is NOT a zero-downtime claim. 8.9s is the platform timing its own publish step; it is not
+#     a measured request-loss figure, and no downtime measurement was taken.
+#   * It says NOTHING about the database. Schema and data migrations are not part of that rename
+#     and are not atomic with it: during a changeover, old and new code can both be live against
+#     the one database.
+#
+# This script replaces files IN PLACE inside the live version directory and guarantees strictly
+# less than the publish path. Use it only when the git path is unavailable.
 #
 # WHY IT EXISTS. The 2026-10-21 CRM backend deploy ran, per uploaded file:
 #
@@ -28,15 +50,22 @@
 #      set - and the script merely exited non-zero. Nothing undid the first promotion.
 #
 # So: resolve a usable node from the APPLICATION'S configuration; syntax-check every staged file;
-# only then back up and promote; and if any promotion fails, put the already-promoted files back
-# from their backups and re-stage them, leaving the tree as it was found.
+# verify a restorable backup exists BEFORE promoting anything; and if a promotion fails, put the
+# already-promoted files back and re-stage them, or say explicitly that it could not.
 #
-# WHAT THIS DOES NOT GUARANTEE. It is NOT crash-atomic. A SIGKILL, a host reboot or a dropped
-# connection between two renames leaves a mixed set that no code here can undo, because the
-# process that would roll it back is gone. The leftover lock directory is the detection signal:
-# if `<app-root>/.crm-promote.lock` exists and holds a `promoted` journal, a run died mid-flight
-# and that journal lists exactly which files were already replaced. Restore those by hand from
-# the backup directory, and activate nothing until the tree is consistent again.
+# MULTIPLE FILES ARE REFUSED BY DEFAULT. A set of two or more files has a window between renames
+# that this script cannot close (see below), so the safe default is one file per run. If a
+# multi-file emergency patch is genuinely unavoidable, re-run with CRM_DEPLOY_ALLOW_MULTI=1 to
+# acknowledge that window: the recovery below is tested, the window is not removable.
+#
+# WHAT THIS DOES NOT GUARANTEE. It is NOT crash-atomic, and no shell trap can make it so - a
+# SIGKILL, a host reboot or a lost power rail runs no handler at all, and the process that would
+# roll the set back is simply gone. The detection signal is the lock directory: when a run cannot
+# leave the tree consistent it RETAINS <app-root>/.crm-promote.lock, whose `promoted` journal
+# lists exactly which files were already replaced and whose `UNRESOLVED` file states what is
+# wrong. The retained lock also makes the next run refuse (exit 5) rather than promote over a
+# mixed tree. Restore the journalled files from the backup directory by hand, remove the lock, and
+# activate nothing until the tree is consistent again.
 #
 # Node is resolved from PassengerNodejs in the serving .htaccess - the interpreter the app
 # actually runs - never a guessed path. Override with CRM_DEPLOY_NODE when testing.
@@ -46,7 +75,9 @@
 #
 # Exit: 0 all promoted - 2 no usable node - 3 a staged file is missing - 4 a syntax check failed
 #       5 another promotion holds the lock - 6 promotion failed, fully rolled back
-#       7 promotion failed AND rollback was incomplete: MIXED STATE, manual recovery required.
+#       7 promotion failed or was interrupted AND the tree is UNRESOLVED: manual recovery required
+#       8 a restorable backup could not be made - nothing was replaced
+#       9 several files without CRM_DEPLOY_ALLOW_MULTI=1 - nothing was replaced
 
 set -eu
 
@@ -62,6 +93,16 @@ HTACCESS="${CRM_DEPLOY_HTACCESS:-/home/u171982351/domains/api.genzdigitalstore.c
 MV="${CRM_DEPLOY_MV:-mv}"
 CP="${CRM_DEPLOY_CP:-cp}"
 ROLLBACK_CP="${CRM_DEPLOY_ROLLBACK_CP:-$CP}"
+
+# ---- 0. a multi-file set is opt-in, because its window cannot be closed ----------------------
+if [ "$#" -gt 1 ] && [ "${CRM_DEPLOY_ALLOW_MULTI:-0}" != "1" ]; then
+  echo "REFUSING TO PROMOTE: $# files in one run." >&2
+  echo "      Between two renames there is a window this script cannot make atomic." >&2
+  echo "      Use the established release path instead: push to main, let the platform publish a" >&2
+  echo "      new version directory, and switch the reference." >&2
+  echo "      If that is genuinely unavailable, acknowledge the window: CRM_DEPLOY_ALLOW_MULTI=1" >&2
+  exit 9
+fi
 
 resolve_node() {
   # 1. whatever the caller pinned (tests)
@@ -90,14 +131,15 @@ BACKUP_DIR=$(cd "$BACKUP_DIR" && pwd)
 cd "$APP_ROOT" || { echo "app root not readable: $APP_ROOT" >&2; exit 3; }
 APP_ROOT=$(pwd)
 
-# ---- 0. one promotion at a time ------------------------------------------------------------
+# ---- 1. one promotion at a time --------------------------------------------------------------
 # `mkdir` is the atomic test-and-set: two releases cannot both believe they hold it, so a second
 # run cannot interleave its renames with this one's on the same files. A leftover lock is NOT
-# cleared automatically - it is the evidence that a previous run died mid-flight.
+# cleared automatically - it is the evidence that a previous run left the tree unresolved.
 LOCK="$APP_ROOT/.crm-promote.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   echo "REFUSING TO PROMOTE: another promotion holds $LOCK" >&2
   [ -f "$LOCK/owner" ] && sed 's/^/      held by: /' "$LOCK/owner" >&2
+  [ -f "$LOCK/UNRESOLVED" ] && sed 's/^/      /' "$LOCK/UNRESOLVED" >&2
   if [ -s "$LOCK/promoted" ]; then
     echo "      that run left a promotion journal - the tree may be MIXED. Already replaced:" >&2
     sed 's/^/        /' "$LOCK/promoted" >&2
@@ -105,18 +147,38 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   fi
   exit 5
 fi
-trap 'rm -rf "$LOCK"' EXIT
-trap 'rm -rf "$LOCK"; exit 1' INT TERM HUP
-printf 'pid %s at %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK/owner"
+
+# The lock is released on a clean outcome and DELIBERATELY RETAINED on an unresolved one. That is
+# bookkeeping, not atomicity: a killed process runs neither branch, which is exactly why a
+# surviving lock must be read as "a run died mid-flight", not as "a run is in progress".
+KEEP_LOCK=0
 JOURNAL="$LOCK/promoted"
+release_lock() { [ "$KEEP_LOCK" -eq 1 ] || rm -rf "$LOCK"; }
+on_signal() {
+  if [ -s "$JOURNAL" ]; then
+    KEEP_LOCK=1
+    { echo "INTERRUPTED by a signal after files were already replaced."
+      echo "already replaced (restore from $BACKUP_DIR):"
+      sed 's/^/  /' "$JOURNAL"; } > "$LOCK/UNRESOLVED"
+    echo "INTERRUPTED: a signal arrived after files were already replaced - the set is UNRESOLVED." >&2
+    sed 's/^/      /' "$LOCK/UNRESOLVED" >&2
+    echo "      This is not a completed deployment. Lock RETAINED at $LOCK so the next run refuses." >&2
+    echo "      DO NOT touch tmp/restart.txt until the tree is consistent again." >&2
+    exit 7
+  fi
+  exit 1
+}
+trap release_lock EXIT
+trap on_signal INT TERM HUP
+printf 'pid %s at %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK/owner"
 : > "$JOURNAL"
 
-# ---- 1. every staged file must exist -------------------------------------------------------
+# ---- 2. every staged file must exist ---------------------------------------------------------
 for rel in "$@"; do
   [ -f "$rel.new" ] || { echo "REFUSING TO PROMOTE: staged file missing: $rel.new" >&2; exit 3; }
 done
 
-# ---- 2. syntax-check them all BEFORE anything is replaced ----------------------------------
+# ---- 3. syntax-check them all BEFORE anything is replaced ------------------------------------
 failed=0
 for rel in "$@"; do
   # `node --check` refuses an unknown extension outright (ERR_UNKNOWN_FILE_EXTENSION), so a
@@ -139,15 +201,24 @@ if [ "$failed" -ne 0 ]; then
   exit 4
 fi
 
-# ---- 3. back up, preserving the originals' mode and timestamps ------------------------------
+# ---- 4. back up, preserving mode and timestamps, and VERIFY the backup is restorable ---------
+# An unverified backup is not a recovery plan. If recovery would be impossible, refuse before the
+# first rename instead of discovering it during a rollback.
 for rel in "$@"; do
   if [ -f "$rel" ]; then
     mkdir -p "$BACKUP_DIR/$(dirname "$rel")"
-    cp -p "$rel" "$BACKUP_DIR/$rel"
+    if ! $CP -p "$rel" "$BACKUP_DIR/$rel" 2>/dev/null; then
+      echo "REFUSING TO PROMOTE: could not back up $rel - nothing was replaced." >&2
+      exit 8
+    fi
+    if ! cmp -s "$rel" "$BACKUP_DIR/$rel"; then
+      echo "REFUSING TO PROMOTE: the backup of $rel does not match the live file - nothing was replaced." >&2
+      exit 8
+    fi
   fi
 done
 
-# ---- 4. promote; on any failure, undo what was already promoted ----------------------------
+# ---- 5. promote; on any failure, undo what was already promoted ------------------------------
 rollback() {
   mixed=''
   while IFS= read -r done_rel; do
@@ -181,18 +252,26 @@ for rel in "$@"; do
     echo "PROMOTION FAILED on $rel - undoing the files already replaced." >&2
     mixed=$(rollback)
     if [ -n "$mixed" ]; then
+      KEEP_LOCK=1
+      { echo "MIXED STATE: a promotion failed and the rollback did not complete."
+        echo "not the originals (restore from $BACKUP_DIR):"
+        for m in $mixed; do echo "  $m"; done; } > "$LOCK/UNRESOLVED"
       echo "MIXED STATE: rollback did not complete. These files are NOT the originals:" >&2
       for m in $mixed; do echo "      $m" >&2; done
-      echo "      Restore them from $BACKUP_DIR by hand. DO NOT touch tmp/restart.txt:" >&2
+      echo "      Restore them from $BACKUP_DIR by hand. Lock RETAINED at $LOCK, so the next run" >&2
+      echo "      refuses instead of promoting over a mixed tree." >&2
+      echo "      DO NOT touch tmp/restart.txt:" >&2
       echo "      an un-activated mixed set is still recoverable; an activated one is an outage." >&2
       exit 7
     fi
-    echo "Rolled back: every file is the original again, and the new content is staged as <file>.new." >&2
-    echo "Nothing was activated - DO NOT touch tmp/restart.txt. Fix the cause and re-run." >&2
+    echo "RECOVERED, NOT DEPLOYED: promotion failed on $rel and was undone. Every file is the" >&2
+    echo "      original again, the new content is staged as <file>.new, and the backups are kept." >&2
+    echo "      Nothing was activated - DO NOT touch tmp/restart.txt. Fix the cause and re-run." >&2
     exit 6
   fi
 done
 
 echo "backup: $BACKUP_DIR"
 echo "NOTE: activation is separate - touch <app-root>/tmp/restart.txt and confirm new worker start"
-echo "      times with ps. A health 200 does not prove the new code is loaded."
+echo "      times with ps. A health 200 does not prove the new code is loaded, and one worker"
+echo "      restarting does not mean every hostname's worker did."

@@ -24,6 +24,16 @@ called out, because a release record that quietly rewrites itself is not evidenc
 | Published | 2026-10-21 20:26 UTC, "Switching current to the new version", 8.9 s |
 | Interpreter | `PassengerNodejs /opt/alt/alt-nodejs22/root/bin/node` (worker `exe` resolves to `…/root/usr/bin/node`) |
 
+**What that publish line is, and is not.** It is the platform's record of its own mechanism: one
+reference change swaps the whole directory, so a half-written tree is never published, and the
+files under the new reference were then byte-verified (next table). The 8.9 s is the platform
+timing its own publish step — it is **not** a measured downtime or request-loss figure, and none
+was taken. The reference switch is also **not** evidence that every serving worker changed
+together (§4 is a separate, per-hostname runtime check — one worker was still on the previous
+build ~24 h later), and it says **nothing** about the database: migrations are not part of that
+rename and are not atomic with it, so old and new code can both be live against the one database
+during a changeover.
+
 The four reviewed files, hashed **in the published version directory**:
 
 | SHA-256 | File |

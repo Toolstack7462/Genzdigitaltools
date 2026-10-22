@@ -57,7 +57,15 @@ function stage(app, rel, liveSource, stagedSource) {
 function run(box, files, env = {}) {
   return spawnSync('sh', [SCRIPT, box.app, box.backup, ...files], {
     encoding: 'utf8',
-    env: { ...process.env, CRM_DEPLOY_NODE: process.execPath, CRM_DEPLOY_HTACCESS: '/nonexistent', ...env },
+    env: {
+      ...process.env,
+      CRM_DEPLOY_NODE: process.execPath,
+      CRM_DEPLOY_HTACCESS: '/nonexistent',
+      // multi-file is refused unless the caller acknowledges the un-closable window;
+      // the refusal itself is asserted in its own test below.
+      CRM_DEPLOY_ALLOW_MULTI: '1',
+      ...env,
+    },
   });
 }
 
@@ -176,7 +184,7 @@ test('PARTIAL FAILURE: the first file promotes, the second cannot - the set must
 
   assert.equal(result.status, 6, result.stderr);
   assert.match(result.stderr, /PROMOTION FAILED on modules\/b\.js/);
-  assert.match(result.stderr, /Rolled back/);
+  assert.match(result.stderr, /RECOVERED, NOT DEPLOYED/);
 
   // THE POINT: a.js was already replaced, and must have been put back
   assert.equal(read(path.join(box.app, 'modules/a.js')), LIVE_OK,
@@ -262,10 +270,34 @@ test('a lock left by a killed run reports WHICH files were already replaced', ()
 test('the script does not claim crash-atomicity it cannot provide', () => {
   const source = fs.readFileSync(SCRIPT, 'utf8');
   assert.match(source, /NOT crash-atomic/, 'the limit must be stated where a deployer will read it');
+  assert.match(source, /no shell trap can make it so/,
+    'a trap is bookkeeping - a SIGKILL runs no handler, and the header must say so');
   assert.match(source, /\.crm-promote\.lock/, 'and the detection signal must be named');
   // the safer path has to be recommended ahead of this helper
   assert.match(source, /PREFER THE ESTABLISHED RELEASE PATH/);
   assert.match(source, /Switching current to the new version|switch the `current` symlink/);
+});
+
+test('the header separates what the publish MECHANISM showed from what RUNTIME checks showed', () => {
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+
+  // a reference switch publishes a file set; it is not evidence about workers, downtime or the DB
+  assert.doesNotMatch(source, /either the whole release is live or none of it is/,
+    'that phrasing reads as a guarantee about the running system, which the rename does not give');
+  assert.match(source, /OBSERVED PUBLICATION MECHANISM/);
+  assert.match(source, /RUNTIME VERIFICATION IS A SEPARATE QUESTION/);
+  assert.match(source, /NOT proof that all serving workers changed together/);
+  assert.match(source, /NOT a zero-downtime claim/);
+  assert.match(source, /measured request-loss figure/, 'the 8.9s must not read as a downtime figure');
+  assert.match(source, /NOTHING about the database/);
+  assert.match(source, /not atomic with it/, 'DB effects are not atomic with the reference switch');
+
+  // the runtime check that WAS used has to be named, or the next deployer repeats the CPU-tick guess
+  assert.match(source, /proc\/net\/unix/);
+  assert.match(source, /ps -o lstart|lstart/);
+
+  // and the pruning that destroyed a backup must stay recorded
+  assert.match(source, /PRUNED the previous version directory/);
 });
 
 test('the fault-injection hooks are inert unless a test sets them', () => {
@@ -292,4 +324,176 @@ test('the live file keeps its own mode - a release does not silently change perm
     'the promoted file must carry the mode the live file had, not the upload mode');
   assert.equal(fs.statSync(path.join(box.backup, 'modules/a.js')).mode & 0o777, 0o640,
     'and the backup must preserve the original mode too');
+});
+
+// ── the capability that is REFUSED rather than half-supported ─────────────────────────────────
+
+test('MULTI-FILE: refused by default, naming the established release path instead', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+  stage(box.app, 'modules/b.js', LIVE_OK, STAGED_OK);
+
+  const result = run(box, ['modules/a.js', 'modules/b.js'], { CRM_DEPLOY_ALLOW_MULTI: '0' });
+
+  assert.equal(result.status, 9, result.stderr);
+  assert.match(result.stderr, /REFUSING TO PROMOTE: 2 files/);
+  assert.match(result.stderr, /push to main/, 'a refusal must point at the mechanism that is safe');
+  assert.match(result.stderr, /CRM_DEPLOY_ALLOW_MULTI=1/, 'and say how the window is acknowledged');
+  assert.equal(read(path.join(box.app, 'modules/a.js')), LIVE_OK, 'nothing may be replaced');
+  assert.equal(read(path.join(box.app, 'modules/b.js')), LIVE_OK);
+  assert.ok(!fs.existsSync(path.join(box.app, '.crm-promote.lock')),
+    'it refuses before it even takes the lock');
+  assert.ok(!fs.existsSync(box.backup), 'and before it creates a backup directory');
+});
+
+test('ONE file - the supported mode - needs no acknowledgement', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+
+  const result = run(box, ['modules/a.js'], { CRM_DEPLOY_ALLOW_MULTI: '0' });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(read(path.join(box.app, 'modules/a.js')), STAGED_OK);
+  assert.equal(read(path.join(box.backup, 'modules/a.js')), LIVE_OK);
+});
+
+// ── recovery has to be possible BEFORE the first rename ───────────────────────────────────────
+
+test('a backup that cannot be written stops the release before anything is replaced', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+
+  const result = run(box, ['modules/a.js'], { CRM_DEPLOY_CP: flakyCommand(box, 'cp', 0, 'cp') });
+
+  assert.equal(result.status, 8, result.stderr);
+  assert.match(result.stderr, /could not back up modules\/a\.js/);
+  assert.match(result.stderr, /nothing was replaced/);
+  assert.equal(read(path.join(box.app, 'modules/a.js')), LIVE_OK);
+  assert.equal(read(path.join(box.app, 'modules/a.js.new')), STAGED_OK, 'the staged file is still there');
+});
+
+test('a backup that does not match the live file stops the release too', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+
+  // a copy that "succeeds" but writes the wrong bytes - a silently useless recovery plan
+  const liar = path.join(box.root, 'liar-cp.sh');
+  fs.writeFileSync(liar, ['#!/bin/sh', 'for a in "$@"; do dest="$a"; done', 'printf truncated > "$dest"'].join('\n'));
+  fs.chmodSync(liar, 0o755);
+
+  const result = run(box, ['modules/a.js'], { CRM_DEPLOY_CP: `sh ${liar}` });
+
+  assert.equal(result.status, 8, result.stderr);
+  assert.match(result.stderr, /does not match the live file/);
+  assert.match(result.stderr, /nothing was replaced/);
+  assert.equal(read(path.join(box.app, 'modules/a.js')), LIVE_OK,
+    'promoting with an unverified backup is how a rollback discovers it has nothing to restore');
+});
+
+// ── a failed release must never read as a successful one ──────────────────────────────────────
+
+const FALSE_SUCCESS = /deployment successful|successfully deployed|deploy(ed|ment) complete|nothing changed|no changes were made/i;
+
+test('RECOVERED run (exit 6) reports recovery, never success and never "nothing changed"', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+  stage(box.app, 'modules/b.js', LIVE_OK, STAGED_OK);
+
+  const result = run(box, ['modules/a.js', 'modules/b.js'],
+    { CRM_DEPLOY_MV: flakyCommand(box, 'mv', 1, 'mv') });
+
+  assert.equal(result.status, 6, result.stderr);
+  assert.match(result.stderr, /RECOVERED, NOT DEPLOYED/);
+  assert.doesNotMatch(result.stdout + result.stderr, FALSE_SUCCESS,
+    'the operator decides what to do next from this text - it must not read as a finished deploy');
+  assert.match(result.stderr, /backups are kept/);
+  assert.equal(read(path.join(box.backup, 'modules/a.js')), LIVE_OK, 'and they really are');
+});
+
+test('UNRESOLVED run (exit 7) says so explicitly, keeps the evidence, and blocks the next run', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+  stage(box.app, 'modules/b.js', LIVE_OK, STAGED_OK);
+
+  const result = run(box, ['modules/a.js', 'modules/b.js'], {
+    CRM_DEPLOY_MV: flakyCommand(box, 'mv', 1, 'mv'),
+    CRM_DEPLOY_ROLLBACK_CP: flakyCommand(box, 'rbcp', 0, 'cp'),
+  });
+
+  assert.equal(result.status, 7, result.stderr);
+  assert.doesNotMatch(result.stdout + result.stderr, FALSE_SUCCESS);
+  assert.match(result.stderr, /MIXED STATE/);
+
+  // the evidence has to OUTLIVE the process: an EXIT trap that tidied up would erase the only
+  // record of which files are not the originals
+  const lock = path.join(box.app, '.crm-promote.lock');
+  assert.ok(fs.existsSync(lock), 'the lock is retained deliberately on an unresolved outcome');
+  const unresolved = read(path.join(lock, 'UNRESOLVED'));
+  assert.match(unresolved, /MIXED STATE/);
+  assert.match(unresolved, /modules\/a\.js/, 'it must name the file that is not the original');
+  assert.match(read(path.join(lock, 'promoted')), /modules\/a\.js/);
+
+  // and a later run must refuse rather than promote over the mixed tree
+  const second = run(box, ['modules/a.js', 'modules/b.js']);
+  assert.equal(second.status, 5, second.stderr);
+  assert.match(second.stderr, /may be MIXED/);
+  assert.match(second.stderr, /modules\/a\.js/);
+});
+
+test('a signal arriving AFTER a file was replaced exits 7 and keeps the journal', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+  stage(box.app, 'modules/b.js', LIVE_OK, STAGED_OK);
+
+  // the second rename signals the script instead of failing quietly - the closest a test can get
+  // to "the run was killed mid-set" while still being able to assert what it left behind
+  const killer = path.join(box.root, 'killer-mv.sh');
+  const counter = path.join(box.root, 'killer.count');
+  fs.writeFileSync(killer, [
+    '#!/bin/sh',
+    `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n+1)); printf %s "$n" > "${counter}"`,
+    'if [ "$n" -le 1 ]; then exec mv "$@"; fi',
+    'kill -TERM $PPID 2>/dev/null',
+    'exit 1',
+  ].join('\n'));
+  fs.chmodSync(killer, 0o755);
+
+  const result = run(box, ['modules/a.js', 'modules/b.js'], { CRM_DEPLOY_MV: `sh ${killer}` });
+
+  assert.equal(result.status, 7, `expected the interrupted path\n${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /INTERRUPTED/);
+  assert.match(result.stderr, /UNRESOLVED/);
+  assert.doesNotMatch(result.stdout + result.stderr, FALSE_SUCCESS);
+
+  const lock = path.join(box.app, '.crm-promote.lock');
+  assert.ok(fs.existsSync(lock), 'the lock must survive an interruption, or the next run promotes blind');
+  assert.match(read(path.join(lock, 'promoted')), /modules\/a\.js/,
+    'the journal is the hand-recovery list - it must name what was already replaced');
+  assert.match(read(path.join(lock, 'UNRESOLVED')), /INTERRUPTED/);
+  assert.equal(read(path.join(box.backup, 'modules/a.js')), LIVE_OK, 'with its backup still available');
+});
+
+// ── metadata ──────────────────────────────────────────────────────────────────────────────────
+
+test('the backup keeps the original modification time, not the copy time', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+  const live = path.join(box.app, 'modules/a.js');
+  const when = new Date('2026-09-01T12:34:56Z');
+  fs.utimesSync(live, when, when);
+  const before = fs.statSync(live).mtimeMs;
+
+  assert.equal(run(box, ['modules/a.js']).status, 0);
+
+  assert.equal(fs.statSync(path.join(box.backup, 'modules/a.js')).mtimeMs, before,
+    'cp -p is what makes the backup a faithful original; without it a restore rewrites history');
+});
+
+test('a successful run leaves no unresolved marker behind', () => {
+  const box = sandbox();
+  stage(box.app, 'modules/a.js', LIVE_OK, STAGED_OK);
+
+  assert.equal(run(box, ['modules/a.js']).status, 0);
+
+  assert.ok(!fs.existsSync(path.join(box.app, '.crm-promote.lock')));
 });
