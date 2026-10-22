@@ -194,12 +194,18 @@ jobs:
 
       - name: Record the engine actually tested
         if: always()
+        # REQUESTED_IMAGE arrives through env and is never interpolated into the shell. A
+        # workflow_dispatch input is attacker-controlled text, and `${{ }}` inside a run block
+        # splices it into the script before bash ever sees it - that is script injection.
+        # backend/tests/deployWorkflowSecurity.test.js fails the build for exactly this.
+        env:
+          REQUESTED_IMAGE: ${{ github.event.inputs.engine_image || matrix.image }}
         run: |
           v=$(mysql -h 127.0.0.1 -P 3306 -uroot -p"$ROOT_PW" -N -B -e 'SELECT VERSION();' 2>/dev/null || echo unknown)
           {
             echo "### verify-guard real-DB self-test"
             echo ""
-            echo "- requested image: \`${{ github.event.inputs.engine_image || matrix.image }}\`"
+            echo "- requested image: \`$REQUESTED_IMAGE\`"
             echo "- engine reported: \`$v\`"
             echo "- scratch schema: \`verifyguard_scratch\` (restricted user, dropped with the runner)"
             echo ""
