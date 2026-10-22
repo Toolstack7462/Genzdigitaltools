@@ -72,7 +72,7 @@ const cookieBundle = (iat) => ({
 
 /** Write the starting row straight through the real model. */
 async function seed(id, over) {
-  const doc = new ProxyAccount(Object.assign({
+  await ProxyAccount.create(Object.assign({
     _id: id, tool: 'writehuman', isPrimary: true, label: 'selftest',
     status: 'active', session_status: 'working',
     sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(cookieBundle(1000))),
@@ -80,12 +80,14 @@ async function seed(id, over) {
     activeSource: { deviceId: 'dev-A', name: 'RDP-A', promotedAt: new Date(), bundleVersion: 7 },
     verification: { result: 'working', maskedId: 'op***@example.com', httpStatus: 200, canary: null },
   }, over || {}));
-  await doc.save();
-  return doc;
+  return load(id);
 }
 /** An INDEPENDENT read — a different worker's snapshot of the same row. */
-const load = async (id) => (await ProxyAccount.findOne({ _id: id }));
+// Deliberately _findRaw + _hydrate rather than findOne(): it is then unambiguous that every call
+// goes back to the database and builds a NEW document with its own __originalData, which is the
+// whole point of this file. A query object with its own caching would undermine the test silently.
 const raw = async (id) => (await ProxyAccount._findRaw({ _id: id }))[0] || null;
+const load = async (id) => { const r = await raw(id); return r ? ProxyAccount._hydrate(r) : null; };
 
 const IDS = [];
 const newId = (n) => { const id = 'selftest-vg-' + Date.now() + '-' + n; IDS.push(id); return id; };
