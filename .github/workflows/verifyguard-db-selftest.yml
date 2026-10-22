@@ -181,6 +181,18 @@ jobs:
         if: always()
         run: 'grep -E "in-memory doc shows no rejected|caller-owned save cannot persist" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
 
+      - name: 'DIAG H2: a rejected verdict cannot cost the newer bundle (incl. repeat saves)'
+        if: always()
+        run: 'grep -E "rejected:|hypothetical save:|SECOND hypothetical save" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG H3: the production caller save (claude admin Verify) preserves operator edits'
+        if: always()
+        run: 'grep -E "claude verify succeeded|operator PLAN|operator NOTE|verification verdict still landed|stale planDetected|uncontended:" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
+      - name: 'DIAG H4: the proof invariant holds on every stored row'
+        if: always()
+        run: 'grep -E "proof invariant holds|sweep actually inspected" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+
       - name: 'DIAG I: throwaway rows cleaned up'
         if: always()
         run: 'grep -E "throwaway row was removed" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'

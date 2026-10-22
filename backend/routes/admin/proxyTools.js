@@ -885,10 +885,32 @@ router.post('/:tool/accounts/:id/verify', async (req, res) => {
     // Claude only: record the best-effort DETECTED plan (advisory) and auto-adopt it as the
     // active plan when the operator hasn't manually chosen one yet ('unknown'). A manual plan
     // selection always wins — this only fills the gap when automatic detection is available.
+    //
+    // NARROW, CONDITIONAL WRITE — not account.save().
+    //
+    // This runs AFTER an external provider round-trip, on a document loaded BEFORE it. A
+    // whole-document save here writes back every other field from that stale snapshot - the
+    // operator's plan, notes, limits, label - so an admin who changed any of them while the
+    // provider was answering would silently lose the change. verifyAndApply already stopped
+    // writing whole documents for exactly this reason; this was the last whole-document save left
+    // on the path, and it is the one that could undo a human's newer choice.
+    //
+    // So: only the two fields this detection owns, guarded on `plan` still being what we read.
+    // If the operator picked a plan mid-flight the guard fails, the detection is dropped, and
+    // their selection stands - which is what "a manual plan selection always wins" has to mean
+    // when the two can race. Best-effort either way, exactly as before.
     if (req.proxyTool === 'claude' && r.v && r.v.plan && claudeQuota.isValidPlan(r.v.plan)) {
-      account.planDetected = { plan: r.v.plan, source: 'claude_api', at: new Date() };
-      if (claudeQuota.normalizePlan(account.plan) === 'unknown') account.plan = r.v.plan;
-      try { await account.save(); } catch (_) {}
+      const detected = { plan: r.v.plan, source: 'claude_api', at: new Date() };
+      const loadedPlan = (account.__originalData || {}).plan;
+      const setMap = { planDetected: detected };
+      if (claudeQuota.normalizePlan(loadedPlan) === 'unknown') setMap.plan = r.v.plan;
+      try {
+        const rows = await ProxyAccount.patchGuarded(String(account._id), setMap, { plan: loadedPlan });
+        if (rows) {
+          account.planDetected = detected;
+          if (setMap.plan) account.plan = setMap.plan;
+        }
+      } catch (_) {}
     }
     console.log('[proxy] ' + JSON.stringify({ evt: 'verify', tool: req.proxyTool, account_id: account._id, cookie_count: r.cookieCount, upstream_status: r.v ? r.v.httpStatus : 0, result: r.result, mode: opts.readOnly ? 'readonly' : 'forcelive' }));
     await ActivityLog.log('ADMIN', req.userId, 'PROXY_ACCOUNT_VERIFIED', { tool: req.proxyTool, accountId: account._id, label: account.label, result: r.result, ip: getClientIp(req) });
