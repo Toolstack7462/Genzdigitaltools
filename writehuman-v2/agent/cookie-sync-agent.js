@@ -81,7 +81,7 @@ const { spawn } = require('child_process');
 //         was itself reachable only through an in-memory flag the terminal halt had cleared, and
 //         no operator command covered it. Every other halt still requires the existing review.
 const AGENT_VERSION = '3.5.16'; // Source release candidate; Windows/live acceptance still required.
-const AGENT_BUILD_ID = '3.5.16-halt-resolution-rc2';
+const AGENT_BUILD_ID = '3.5.16-halt-resolution-rc3';
 
 // Single-source config: an optional config.json (non-secret settings, shared with the watchdog) is
 // read as a fallback; ENV always takes precedence, so a service manager / run-agent.cmd can override.
@@ -1280,12 +1280,33 @@ const RELOGIN = {
 const AUTH_PROOF_MAX_AGE_MS = Math.max(60_000, Number(process.env.WHV2_AUTH_PROOF_MAX_AGE_MS || 15 * 60_000));
 
 function evaluateAuthProof(r, state, held) {
-  if (!r || r.code !== 'PROMOTED' || r.promoted !== true || r.isActiveSource !== true || r.standDown) {
-    return { ok: false, why: 'not_verified_promotion' };
-  }
+  // THE CARRIER IS NOT THE PROOF.
+  //
+  // This deliberately does NOT require code==='PROMOTED'. A promotion is the one reply that cannot
+  // carry proof: it installs new cookies, so the server correctly records the new bundle as
+  // unproven and the canary for it only exists ~7 min later, out of the request path. Requiring a
+  // promotion therefore meant real proof could never be delivered without manufacturing an
+  // activation, a cookie mutation or another password login - none of which this halt may demand.
+  //
+  // What is required instead is the PROOF ITSELF: a conclusive provider canary, bound by the
+  // server to the subject it ran against, still describing the session being served, correlated to
+  // this device, and newer than the moment the outcome became unknown. A bare HEARTBEAT, an
+  // UNCHANGED reply, a standby refusal, a transport failure and an unproven PROMOTED all fail the
+  // very first checks, so none of them can become authentication proof by being a carrier.
+  if (!r || typeof r !== 'object') return { ok: false, why: 'no_reply' };
+  if (r._err) return { ok: false, why: 'transport_failed' };
+  if (r._status) return { ok: false, why: 'reply_rejected' };
+  // A device told to stand down, or that is not the approved active source, may not conclude
+  // anything about the account's session regardless of what proof is attached.
+  if (r.standDown === true) return { ok: false, why: 'stood_down' };
+  if (r.isActiveSource === false) return { ok: false, why: 'not_active_source' };
   const p = r.sessionProof;
   if (!p || typeof p !== 'object') return { ok: false, why: 'proof_not_exposed' };
-  // 'passed' is the only state that means a real provider call confirmed this session. 'absent'
+  // The server marks a verdict stale when the bundle/source it actually ran against is no longer
+  // what is served - including a record with no subject at all (pre-correction data). This is what
+  // stops a verification of bundle 7 being presented as proof of bundle 8.
+  if (p.stale === true) return { ok: false, why: 'proof_stale_subject' };
+  // 'passed' is the only state meaning a real provider call confirmed this session. 'absent'
   // (routine decode), 'inconclusive' (our own network/429/5xx) and 'failed' are not proof.
   if (p.canary !== 'passed') return { ok: false, why: 'proof_' + String(p.canary || 'absent') };
   const at = Date.parse(p.checkedAt || '');
@@ -1295,16 +1316,27 @@ function evaluateAuthProof(r, state, held) {
   // from BEFORE the submission and says nothing about it.
   const haltedAt = Date.parse((held && held.haltedAt) || '');
   if (Number.isFinite(haltedAt) && at < haltedAt) return { ok: false, why: 'proof_predates_halt' };
-  // Correlate to THIS machine's session, not some other device's.
+  // Correlate to THIS machine's session, not some other device's - on the subject the verdict was
+  // bound to, and on whoever holds the session now.
   const mine = (state && state.deviceId) || null;
-  const src = (r.activeSource && r.activeSource.deviceId) || null;
-  if (mine && src && src !== mine) return { ok: false, why: 'proof_other_source' };
-  if (mine && p.sourceDeviceId && p.sourceDeviceId !== mine) return { ok: false, why: 'proof_other_source' };
-  // Correlate to the candidate revision this reply is about.
+  const curSrc = (p.sourceDeviceId || (r.activeSource && r.activeSource.deviceId)) || null;
+  if (mine && curSrc && curSrc !== mine) return { ok: false, why: 'proof_other_source' };
+  if (mine && p.subjectSourceDeviceId && p.subjectSourceDeviceId !== mine) {
+    return { ok: false, why: 'proof_other_source' };
+  }
+  // Correlate to the exact revision. The server states both the subject's revision and the one it
+  // is serving; they must agree with each other and with anything this reply claims.
+  if (p.subjectBundleVersion != null && p.bundleVersion != null
+      && p.subjectBundleVersion !== p.bundleVersion) {
+    return { ok: false, why: 'proof_other_revision' };
+  }
   if (p.bundleVersion != null && r.bundleVersion != null && p.bundleVersion !== r.bundleVersion) {
     return { ok: false, why: 'proof_other_revision' };
   }
-  return { ok: true, at: new Date(at).toISOString(), maskedId: p.maskedId || null };
+  return {
+    ok: true, at: new Date(at).toISOString(), maskedId: p.maskedId || null,
+    bundleVersion: p.subjectBundleVersion != null ? p.subjectBundleVersion : (p.bundleVersion != null ? p.bundleVersion : null),
+  };
 }
 
 const RELOGIN_TERMINAL = ['wrong_credentials', 'mfa_required', 'captcha_required', 'rate_limited', 'account_restricted', 'wrong_account',
@@ -2409,6 +2441,11 @@ function noteReloginVerdict(verdict, proof) {
 
 // THE REACHABLE RESOLUTION PATH for a 'submission_outcome_unknown' halt.
 //
+// Called from every authorised reply that could be carrying proof - the candidate push AND the
+// heartbeat - because the scheduler's canary becomes available between pushes. The carrier is
+// irrelevant; evaluateAuthProof decides, and refuses everything that is not a bound, fresh,
+// correlated provider canary.
+//
 // The confirmation inside pushIfChangedInner's `if (state.reloginPending)` branch cannot resolve
 // this halt: reloginPending lives only in memory and the TERMINAL finish('submission_outcome_unknown')
 // has already cleared it, so the process that wrote the halt can never be the one to clear it, and a
@@ -2423,7 +2460,7 @@ function noteReloginVerdict(verdict, proof) {
 // `recoveryId` / `haltedAtBefore` are the snapshots taken BEFORE the request went out. A reply that
 // was in flight while the incident moved on must not close the newer one, and a halt written after
 // this request left must not be cleared by it.
-function resolveHaltOnVerifiedPromotion(state,r,recoveryId,haltedAtBefore){
+function resolveHaltOnStatedProof(state,r,recoveryId,haltedAtBefore){
   const held=readReloginState();
   if(held.haltedReason!=='submission_outcome_unknown')return false;
   const sameIncident=(held.incident?.id||null)===recoveryId;
@@ -2666,10 +2703,17 @@ async function pushIfChangedInner(state) {
     const due = heartbeatDue(state);
     if (!due) return;
     state.lastHeartbeatAt = monoNow();
+    const hbRecoveryId=readReloginState().incident?.id||null;
+    const hbHaltedAt=readReloginState().haltedAt||null;
     const r = await postToServer(state, { heartbeat: true, hash: hash.slice(0, 8) });
     if (r && r._err) log('heartbeat_failed', { error: r._err });
     else if (r && r._status) log('heartbeat_rejected', { status: r._status });
     else log('heartbeat', { hash: hash.slice(0, 8) });
+    // The heartbeat is not proof, but it may CARRY the canary the scheduler produced since the last
+    // push - which is the only moment that proof can reach this machine without a new activation or
+    // another password login. resolveHaltOnStatedProof refuses the heartbeat itself; it acts only
+    // on a bound, fresh, correlated provider canary.
+    if(!state.reloginPending)resolveHaltOnStatedProof(state,r,hbRecoveryId,hbHaltedAt);
     return;
   }
   if(state.candidateRetry?.hash!==hash)delete state.candidateRetry;
@@ -2762,8 +2806,8 @@ async function pushIfChangedInner(state) {
   // check - see evaluateAuthProof. It gates the sync bookkeeping below, never a security halt.
   const verified=r.code==='PROMOTED'&&r.promoted===true&&r.isActiveSource===true&&!r.standDown;
   // Reached only when THIS process holds no pending recovery, which is the case the halt left
-  // behind; resolveHaltOnVerifiedPromotion explains why and does the correlation and proof checks.
-  if(verified&&!state.reloginPending)resolveHaltOnVerifiedPromotion(state,r,recoveryId,haltedAtBefore);
+  // behind; resolveHaltOnStatedProof explains why, and does the correlation and proof checks.
+  if(!state.reloginPending)resolveHaltOnStatedProof(state,r,recoveryId,haltedAtBefore);
   if(verified){state.browserLogoutObserved=false;delete state.loggedOutCookieHash;}
   log(verified?'cookie_synchronized':'candidate_acknowledged', {
     hash: hash.slice(0, 8), changed: r.changed, result: r.code || r.result,
@@ -3021,7 +3065,7 @@ module.exports = { isAuthName, domainMatches, filterAuthCookies, hashAuthCookies
   attemptSourceRelogin, noteReloginVerdict, readReloginState, writeReloginState, readSourceCredential, reloginReport, maskAccount, reloginStatePath, RELOGIN, RELOGIN_TERMINAL,
   // Exported so the halt-resolution path is driven by tests as the push path runs it, rather
   // than re-implemented in a fixture or asserted as a source pattern.
-  evaluateAuthProof, resolveHaltOnVerifiedPromotion,
+  evaluateAuthProof, resolveHaltOnStatedProof,
   isApprovedWriteHumanUrl, findApprovedWriteHumanTab, isApprovedCdpPageSocket, cdpNewTabUrl, pushIfChanged,
   resetSessionLimitOnce, RELOGIN_PROBE, SIGNOUT_ALL_CONFIRMED_EXPRESSION, connectionStatus, recoveryDiagnostics,
   cdpSession, probePage, inspectSourceLoginPage, recheckUnknownSourcePage, heartbeatIfDue, recoveryBlock, submitLoginForm, typeInto, acknowledgeResolvedChallenge, recheckStaleCaptchaHalt, authorizeSessionLimitRecovery };

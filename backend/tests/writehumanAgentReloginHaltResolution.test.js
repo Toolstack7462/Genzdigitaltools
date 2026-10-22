@@ -213,7 +213,7 @@ test('B5 the resolution path is a real exported function, not a source pattern',
   // and that a resolver sat after it. Pinning that string pinned the UNSOUND premise: those four
   // conditions are satisfied by a decode-backed promotion. The branch is now a named, exported
   // function, so the behaviour is driven directly instead of pattern-matched.
-  assert.equal(typeof agent.resolveHaltOnVerifiedPromotion, 'function');
+  assert.equal(typeof agent.resolveHaltOnStatedProof, 'function');
   assert.equal(typeof agent.evaluateAuthProof, 'function');
 });
 
