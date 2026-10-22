@@ -44,6 +44,32 @@ console.log('[build] injecting blob…');
 execFileSync('npx', ['--yes', 'postject', OUT_EXE, 'NODE_SEA_BLOB', cfg.output, '--sentinel-fuse', FUSE],
   { stdio: 'inherit', shell: process.platform === 'win32' });
 
+// REPAIR THE PE HEADER CHECKSUM, BEFORE ANYTHING IS HASHED.
+//
+// postject appends the SEA blob as a PE resource and leaves the OptionalHeader CheckSum field
+// holding node.exe's original value - which is why it prints "warning: The signature seems
+// corrupted!". The binary runs, but its own header disagrees with its bytes, and
+// writehumanInstallerEmbeddedSource's PE-checksum assertion reads that as "altered after it was
+// built". That is the correct reading, so the build is fixed rather than the gate relaxed.
+//
+// Order matters: the checksum is written INTO the file, so it must be repaired before the sha256
+// and size that go into latest.json are computed, or the published metadata would describe bytes
+// that no longer exist.
+console.log('[build] repairing PE header checksum…');
+{
+  const { inspect } = await import('./tools/pe-checksum.cjs');
+  const raw = fs.readFileSync(OUT_EXE);
+  const before = inspect(raw);
+  if (!before.matches) {
+    raw.writeUInt32LE(before.computed, before.offset);
+    fs.writeFileSync(OUT_EXE, raw);
+  }
+  const after = inspect(fs.readFileSync(OUT_EXE));
+  if (!after.matches) throw new Error('PE checksum still does not match after repair');
+  console.log('[build]   checksum ' + (before.matches ? 'already correct' : 'repaired')
+    + ' -> 0x' + after.computed.toString(16));
+}
+
 const bytes = fs.readFileSync(OUT_EXE);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 const meta = { product: 'WriteHuman Universal Agent', file: 'WriteHuman-Agent-Setup-x64.exe',
