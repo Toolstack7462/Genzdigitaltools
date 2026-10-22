@@ -292,4 +292,17 @@ const newId = (n) => {
 
   console.log(`\n[selftest] ${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;
-})().catch((e) => { console.error('[selftest] crashed:', e && e.stack || e); process.exitCode = 1; });
+})()
+  .catch((e) => { console.error('[selftest] crashed:', e && e.stack || e); process.exitCode = 1; })
+  // CLOSE THE POOL, ALWAYS.
+  //
+  // The first complete run printed `26 passed, 0 failed` on all three engines and was then
+  // CANCELLED at the job's 12-minute timeout: adapter.connect() opens a mysql2 pool, an open
+  // pool keeps the event loop alive, and setting process.exitCode does not exit - it only
+  // decides the code for when the loop drains. So every check was green and the job still went
+  // red, which is the worst possible failure shape for a gate.
+  //
+  // Deliberately NOT process.exit(): that is exactly what produced the Windows 0xC0000409
+  // abort in verify-agent-distribution.cjs by tearing down mid-close. Draining the pool and
+  // letting node exit on its own keeps the exit code readable.
+  .finally(async () => { try { await adapter.close(); } catch (_) {} });
