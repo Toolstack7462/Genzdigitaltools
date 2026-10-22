@@ -1,12 +1,34 @@
-import { useState } from 'react';
-import { Edit3, Plus, Save } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CheckCircle2, Edit3, Plus, RefreshCw, Save } from 'lucide-react';
 import { useBusinessCrm } from '../BusinessCrmContext';
-import { crmApi, messageFromError } from '../api';
+import { codeFromError, crmApi, messageFromError } from '../api';
 import { useDebouncedValue, useResource } from '../hooks';
 import { formatMoney } from '../constants';
 import { Button, Card, ErrorState, Field, Input, Loading, Modal, PageHeader, SearchBox, Select, Status, Table, Textarea } from '../components/ui';
 
 const empty = (currency) => ({ name: '', category: 'Software', accountType: 'private', durationLabel: '1 Month', defaultSalePrice: '0.00', defaultPurchaseCost: '0.00', currencyCode: currency, active: true, notes: '', version: 1 });
+
+/**
+ * One label per product, from the source status the API returns.
+ *
+ * `row.source` is absent for a manual product, which is how the two are told apart - never by
+ * guessing from the name. The order matters: an ignored or unavailable source is reported as such
+ * even while its commercial setup is still incomplete, because those are independent facts.
+ */
+function sourceLabel(row) {
+  if (!row.source) return { text: 'Manual', tone: 'neutral' };
+  if (row.source.ignored) return { text: 'Ignored', tone: 'neutral' };
+  if (row.source.availability !== 'AVAILABLE') return { text: 'Source unavailable', tone: 'warning' };
+  if (row.source.readiness !== 'READY') return { text: 'Needs setup', tone: 'warning' };
+  return { text: 'Website-linked', tone: 'success' };
+}
+
+/**
+ * A NEEDS_SETUP product has no confirmed commercial data. The API already nulls those fields so
+ * nothing can read the stored placeholders as real, and this renders the absence as an em dash
+ * rather than a misleading 0.00.
+ */
+const confirmed = (row) => !row.source || row.commercialDetailsConfirmed !== false;
 
 export default function Products() {
   const crm = useBusinessCrm();
@@ -17,6 +39,46 @@ export default function Products() {
   const canSeeCost = crm.has('profit.view') || canManage;
   const debounced = useDebouncedValue(query);
   const resource = useResource(() => `/products?pageSize=100&currency=${crm.currency}&q=${encodeURIComponent(debounced)}`, [crm.currency, debounced]);
+  const [catalogue, setCatalogue] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const autoTried = useRef(false);
+
+  /**
+   * BOUNDED automatic discovery, and only for a manager.
+   *
+   * A products.view-only viewer never triggers a write - the status read below is a GET and the
+   * reconcile is skipped entirely for them. `autoTried` makes this at most once per mount, and the
+   * server refuses anyway unless its own cross-worker freshness window has elapsed, so repeated
+   * page opens and several managers at once cannot turn into repeated full imports.
+   *
+   * DISCOVERY IS NOT CONTINUOUS: a new website Tool appears here at the next eligible
+   * reconciliation. Nothing runs while the CRM is closed.
+   */
+  const refreshStatus = useCallback(async () => {
+    try { setCatalogue((await crmApi.get('/products/catalogue/status')).data); } catch (_) { /* status is informational */ }
+  }, []);
+
+  // `resource` is a fresh object each render, so depending on it here would give runSync a new
+  // identity every render and re-fire the effect below. The reload is reached through a ref so the
+  // callback stays stable and the auto-sync genuinely runs at most once per mount.
+  const reloadRef = useRef(resource.reload);
+  reloadRef.current = resource.reload;
+  const runSync = useCallback(async (force) => {
+    setSyncing(true);
+    try {
+      await crmApi.post('/products/catalogue/reconcile', force ? { force: true } : {});
+      await refreshStatus();
+      reloadRef.current();
+    } catch (requestError) { setError(messageFromError(requestError)); }
+    finally { setSyncing(false); }
+  }, [refreshStatus]);
+
+  useEffect(() => { refreshStatus(); }, [refreshStatus]);
+  useEffect(() => {
+    if (!canManage || autoTried.current || !catalogue) return;
+    autoTried.current = true;
+    if (!catalogue.fresh) runSync(false);
+  }, [canManage, catalogue, runSync]);
 
   const edit = (product) => setForm({
     id: product.id, name: product.name, category: product.category, accountType: product.account_type,
@@ -24,6 +86,35 @@ export default function Products() {
     defaultPurchaseCost: product.default_purchase_cost ?? '0.00', currencyCode: product.currency_code,
     active: Boolean(product.active), notes: product.notes || '', version: product.version,
   });
+  /**
+   * Explicit commercial confirmation. Deliberately separate from Save: correcting a name must never
+   * make an imported product sellable, because the placeholder price and account type would come
+   * with it. A zero price is only accepted when the operator states that it is intentional.
+   */
+  const confirmReady = async (row) => {
+    // `version` is sent so the server can refuse a confirmation made against values that have since
+    // been edited: this screen shows one row while someone else may be saving another price into it.
+    const post = (confirmFree) => crmApi.post(
+      `/products/${row.id}/catalogue/confirm-ready`, { confirmFree, version: row.version },
+    );
+    try {
+      try {
+        await post(false);
+      } catch (firstAttempt) {
+        // THE SERVER DECIDES whether the price is zero, not this component. While a product is
+        // NEEDS_SETUP the API returns its price as null on purpose, so the UI genuinely cannot tell
+        // "free" from "not priced yet" - the earlier version read that null as 0 and therefore sent
+        // confirmFree on EVERY confirmation, which silently removed the explicit-free check it was
+        // supposed to enforce. Now a zero price comes back as PRICE_NOT_CONFIRMED and only then is
+        // the operator asked.
+        if (codeFromError(firstAttempt) !== 'PRICE_NOT_CONFIRMED') throw firstAttempt;
+        if (!window.confirm(`"${row.name}" has no sale price. Confirm it is intentionally FREE?`)) return;
+        await post(true);
+      }
+      setError(''); await refreshStatus(); resource.reload();
+    } catch (requestError) { setError(messageFromError(requestError)); }
+  };
+
   const save = async () => {
     try {
       if (form.id) await crmApi.put(`/products/${form.id}`, form);
@@ -38,14 +129,34 @@ export default function Products() {
   const columns = [
     { key: 'name', label: 'Product' }, { key: 'category', label: 'Category' },
     { key: 'account_type', label: 'Type' }, { key: 'duration_label', label: 'Duration' },
-    { key: 'default_sale_price', label: 'Sale', render: (row) => formatMoney(row.default_sale_price, row.currency_code) },
-    ...(canSeeCost ? [{ key: 'default_purchase_cost', label: 'Cost', render: (row) => formatMoney(row.default_purchase_cost, row.currency_code) }] : []),
+    { key: 'default_sale_price', label: 'Sale', render: (row) => (confirmed(row) ? formatMoney(row.default_sale_price, row.currency_code) : <span className="bcrm-muted">—</span>) },
+    ...(canSeeCost ? [{ key: 'default_purchase_cost', label: 'Cost', render: (row) => (confirmed(row) ? formatMoney(row.default_purchase_cost, row.currency_code) : <span className="bcrm-muted">—</span>) }] : []),
+    { key: 'source', label: 'Source', render: (row) => { const label = sourceLabel(row); return <Status tone={label.tone}>{label.text}</Status>; } },
     { key: 'active', label: 'Status', render: (row) => <Status tone={row.active ? 'success' : 'neutral'}>{row.active ? 'active' : 'inactive'}</Status> },
-    { key: 'actions', label: '', render: (row) => canManage ? <button className="bcrm-btn bcrm-btn-secondary" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button> : null },
+    { key: 'actions', label: '', render: (row) => canManage ? <div className="bcrm-row-actions">
+      <button className="bcrm-btn bcrm-btn-secondary" onClick={() => edit(row)}><Edit3 size={14} /> Edit</button>
+      {row.source && row.commercialDetailsConfirmed === false
+        ? <button className="bcrm-btn bcrm-btn-secondary" onClick={() => confirmReady(row)}><CheckCircle2 size={14} /> Confirm details</button>
+        : null}
+    </div> : null },
   ];
 
   return <>
-    <PageHeader title="Product catalogue" description="Reusable pricing, account type and duration presets for faster invoice entry." actions={canManage && <Button icon={Plus} onClick={() => setForm(empty(crm.currency))}>New product</Button>} />
+    <PageHeader title="Product catalogue" description="Reusable pricing, account type and duration presets for faster invoice entry." actions={canManage && <>
+      <Button variant="secondary" icon={RefreshCw} disabled={syncing} onClick={() => runSync(true)}>{syncing ? 'Checking…' : 'Check website tools'}</Button>
+      <Button icon={Plus} onClick={() => setForm(empty(crm.currency))}>New product</Button>
+    </>} />
+    {catalogue && <div className="bcrm-banner info">
+      {catalogue.lastRunAt
+        ? `Website tools last checked ${new Date(catalogue.lastRunAt).toLocaleString()}.`
+        : 'Website tools have not been checked yet.'}
+      {' '}{catalogue.discoveryNote}
+    </div>}
+    {/* The only error banner used to live inside the edit modal, so a refusal from a catalogue
+        action - a stale confirmation, a rate-limited sweep - set the message and the operator never
+        saw it. Shown here whenever the modal is closed; the modal keeps its own copy because its
+        overlay covers the page. */}
+    {error && !form && <div className="bcrm-banner warning">{error}</div>}
     <div className="bcrm-filterbar"><SearchBox value={query} onChange={setQuery} busy={resource.loading} placeholder="Product, category or duration…" /></div>
     <Card className="flush"><Table rows={resource.data?.rows || []} columns={columns} /></Card>
     <Modal open={Boolean(form)} title={form?.id ? 'Edit product' : 'New product'} onClose={() => setForm(null)} footer={<><Button variant="secondary" onClick={() => setForm(null)}>Cancel</Button><Button icon={Save} onClick={save}>Save</Button></>}>

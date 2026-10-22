@@ -228,12 +228,18 @@ export default function SaleForm() {
 
   // Suggestion sources. Online they hit the module's own list endpoints with the same `q` filter the
   // list pages use; offline they fall back to the warmed cache so an offline sale is still possible.
-  const suggest = useCallback(async (url, rows, matches, toOption) => {
+  /**
+   * `eligible` is applied to BOTH branches on purpose. `matches` is only the offline text filter,
+   * so a predicate passed there would silently not apply to the online path - which is exactly the
+   * path that matters for a live sale. Clients and vendors pass nothing and behave as before.
+   */
+  const suggest = useCallback(async (url, rows, matches, toOption, eligible) => {
+    const allow = eligible || (() => true);
     if (navigator.onLine) {
       const response = await crmApi.get(url);
-      return (response.data.rows || []).map(toOption);
+      return (response.data.rows || []).filter(allow).map(toOption);
     }
-    return rows.filter(matches).slice(0, SUGGEST_PAGE).map(toOption);
+    return rows.filter(matches).filter(allow).slice(0, SUGGEST_PAGE).map(toOption);
   }, []);
   const searchClients = useCallback(async (text) => suggest(
     `/contacts/clients?pageSize=${SUGGEST_PAGE}&q=${encodeURIComponent(text)}`,
@@ -247,12 +253,24 @@ export default function SaleForm() {
     (row) => [row.name, row.whatsapp, row.email, row.company].some((field) => String(field || '').toLowerCase().includes(text.toLowerCase())),
     (row) => ({ id: row.id, label: row.name, hint: [row.company, row.whatsapp].filter(Boolean).join(' • ') || undefined, raw: row }),
   ), [suggest, vendors]);
+  /**
+   * An imported product whose commercial details are not confirmed yet is not offered here.
+   *
+   * This is a CONVENIENCE, not the safeguard: salesService refuses it server-side, inside the sale
+   * transaction, for the direct route and the offline replay alike. Filtering here only avoids
+   * showing the operator something that would be rejected - and, importantly, avoids offering a
+   * row whose price the API has deliberately blanked, which would otherwise auto-fill as empty.
+   *
+   * `row.source` is absent for a manual product, so manual products are never filtered.
+   */
+  const sellable = useCallback((row) => !row.source || row.source.sellable === true, []);
   const searchProducts = useCallback(async (text) => suggest(
     `/products?pageSize=${SUGGEST_PAGE}&currency=${form.currencyCode}&q=${encodeURIComponent(text)}`,
     products,
     (row) => [row.name, row.category].some((field) => String(field || '').toLowerCase().includes(text.toLowerCase())),
     (row) => ({ id: row.id, label: row.name, hint: [row.category, row.duration_label, formatMoney(row.default_sale_price, row.currency_code)].filter(Boolean).join(' • '), raw: row }),
-  ), [suggest, products, form.currencyCode]);
+    sellable,
+  ), [suggest, products, form.currencyCode, sellable]);
 
   // Synchronous, like the sale guard: `quickSaving` only disables the button on the next paint,
   // and two clicks inside that frame created TWO contacts (observed in test).
