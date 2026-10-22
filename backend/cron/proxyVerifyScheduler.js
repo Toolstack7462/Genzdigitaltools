@@ -61,8 +61,23 @@ async function verifyOne(tool) {
   if (!account.sessionEncrypted) return;                             // nothing to verify
   if (account.session_status === 'needs_login') return;              // PAUSE when logged out
   if (!['active', 'standby'].includes(account.status)) return;       // only live-ish accounts
-  const last = account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : 0;
-  if (Date.now() - last < STALE_MS) return;                          // not stale yet -> skip
+  // The gate asks one question: DO WE ALREADY HOLD FRESH PROOF OF THE SESSION BEING SERVED? Only
+  // then is there nothing to do. For a canary tool that means a conclusive `passed`, bound to the
+  // current bundle and source, inside the stale window. Anything else - no canary, an inconclusive
+  // one, a verdict about a bundle that has since been replaced, or one that has simply aged out -
+  // leaves this tick with work, so a new bundle can never inherit the previous one's proof and
+  // ordinary sync can never pass itself off as verification.
+  const canaryTool = typeof tools.verifyMode === 'function' && tools.verifyMode(tool) === 'supabase_refresh';
+  const v = account.verification || null;
+  const subject = (v && v.subject) || null;
+  const subjectIsCurrent = !!subject
+    && (subject.bundleVersion || 0) === (account.bundleVersion || 0)
+    && (subject.cookieHash || null) === (account.cookieHash || null);
+  const proofAge = account.lastCanaryAt ? Date.now() - new Date(account.lastCanaryAt).getTime() : Infinity;
+  const holdFreshProof = canaryTool
+    ? (!!v && v.canary === 'passed' && subjectIsCurrent && proofAge < STALE_MS)
+    : (Date.now() - (account.lastVerifiedAt ? new Date(account.lastVerifiedAt).getTime() : 0) < STALE_MS);
+  if (holdFreshProof) return;                                        // genuinely proven -> skip
 
   // Can the SOURCE still rotate the token itself? If a paired device is online and its Chrome is
   // reachable, the browser is the rotator and the server must stay out of it. Only when nothing
@@ -129,4 +144,7 @@ function start() {
 function stop() { running = false; if (timer) { clearTimeout(timer); timer = null; } }
 function status() { return { running, intervalMin: Math.round(INTERVAL_MS / 60_000), enabled: ENABLED }; }
 
-module.exports = { start, stop, status };
+// `verifyOne` is exported as a TEST SEAM so the stale gate can be driven deterministically -
+// one call, no timers, no sleeping - rather than asserted as a source pattern. Production
+// still reaches it only through tick().
+module.exports = { start, stop, status, verifyOne };

@@ -56,11 +56,61 @@ async function verifyAndApply(account, tool, opts = {}) {
   const vopts = opts.forceLive ? { forceLive: true } : (opts.readOnly ? { readOnly: true } : {});
   if (opts.canary) vopts.canary = true;
   if (opts.allowServerRefresh) vopts.allowServerRefresh = true;
+
+  // ── CAPTURE THE SUBJECT BEFORE THE PROVIDER CALL ──────────────────────────────────────
+  //
+  // verifyAccountCookies is an EXTERNAL round-trip and can take seconds. What it answers about
+  // is the bundle decrypted above, from the source that held it THEN. If a candidate push
+  // promotes a new bundle while we are awaiting, writing the result without saying what it
+  // describes leaves a record that reads as proof of whatever is current when it is next
+  // serialized - i.e. a passed canary for bundle 7 presented as proof of bundle 8.
+  //
+  // So the subject is pinned here, travels with the verdict, and is what any consumer must
+  // correlate against. `cookieHash` is the bundle's own identity, which survives even if the
+  // version counter is rewritten.
+  const subject = {
+    bundleVersion: account.bundleVersion || 0,
+    sourceDeviceId: (account.activeSource && account.activeSource.deviceId) || null,
+    cookieHash: account.cookieHash || null,
+  };
   const v = await verifyAccountCookies(tool, cookieHeader, account.expectedIdentifier, vopts);
+
+  // ── GUARDED APPLY ────────────────────────────────────────────────────────────────────
+  //
+  // The subject moved on while we were awaiting: another worker's promotion is now the served
+  // session. This verdict is about the PREVIOUS one, so it may neither authenticate the new
+  // bundle nor overwrite the newer record. It is recorded as a stale observation and dropped.
+  //
+  // Deliberately NOT a downgrade: a late 'session_expired' about a bundle that is no longer
+  // served must not expire the bundle that replaced it.
+  const movedOn = (account.bundleVersion || 0) !== subject.bundleVersion
+    || (account.cookieHash || null) !== subject.cookieHash;
+  if (movedOn) {
+    return {
+      result: 'stale_subject', effResult: 'stale_subject', v: null, stale: true,
+      subject, cookieNames: names, cookieCount,
+    };
+  }
 
   // session_expired splits into needs_login (a logged-out shell loaded) vs plain expiry.
   const effResult = (v.result === 'session_expired' && v.loggedOut) ? 'needs_login' : v.result;
-  account.verification = { result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: now };
+  // RECORD HOW IT WAS PROVEN, not just the verdict. `result:'working'` is written both by a real
+  // non-rotating /auth/v1/user canary and by a bare local JWT decode, and those are not the same
+  // evidence: a Supabase access token stays exp-valid for about an hour after its session is
+  // gone. Without this field nothing downstream can tell the two apart, so a decode could be
+  // presented as authentication proof. 'passed' | 'failed' | 'inconclusive' | null (= no canary
+  // was run on this check).
+  // `subject` is what this verdict is ABOUT (pinned before the call). `accountKey` is the
+  // provider's own account identity from a passed canary - authoritative, unlike a masked
+  // email, and kept server-side only. Consumers correlate on `subject`, never on "current".
+  account.verification = {
+    result: effResult, maskedId: v.maskedId || null, httpStatus: v.httpStatus, checkedAt: now,
+    canary: v.canary || null, accountKey: v.accountKey || null, subject,
+  };
+  // The authoritative-proof clock, separate from lastVerifiedAt. Only a CONCLUSIVE canary sets
+  // it, so a routine decode-backed promotion cannot make real proof look fresh (and cannot
+  // starve the scheduler that produces it).
+  if (v.canary === 'passed' || v.canary === 'failed') account.lastCanaryAt = now;
   account.lastVerifiedAt = now;
   if (v.result === 'session_expired') { account.status = 'session_expired'; account.session_status = v.loggedOut ? 'needs_login' : 'session_expired'; }
   else if (v.result === 'wrong_account') { account.status = 'standby'; account.session_status = 'working'; }
