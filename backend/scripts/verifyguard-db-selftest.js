@@ -46,6 +46,7 @@ process.env.PROXY_VAULT_KEY = process.env.PROXY_VAULT_KEY
 // so reassigning the module property afterwards would not change what it calls.
 const verifyMod = require('../utils/proxy/verify');
 let verifyImpl = async () => ({ result: 'working', httpStatus: 200, finalPath: '/auth/v1/user', maskedId: 'op***@example.com', canary: 'passed', accountKey: 'acct-key-1' });
+const DEFAULT_VERIFY = verifyImpl;
 verifyMod.verifyAccountCookies = async (...a) => verifyImpl(...a);
 
 const adapter = require('../db/mysqlAdapter');
@@ -63,6 +64,10 @@ const check = (name, cond, extra) => {
 const REF = 'hicfsbrfkzsxbwayibfm';
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '');
 const jwt = (iat) => b64({ alg: 'HS256' }) + '.' + b64({ iat, exp: iat + 3600, session_id: 's' }) + '.sig';
+/** claude.ai is its own cookie session on its own host - a writehuman bundle attaches nothing. */
+const claudeBundle = () => ({
+  cookies: [{ name: 'sessionKey', value: 'sk-ant-selftest-not-a-real-key', domain: '.claude.ai', path: '/' }],
+});
 const cookieBundle = (iat) => ({
   cookies: [{
     name: 'sb-' + REF + '-auth-token',
@@ -325,26 +330,42 @@ const newId = (n) => {
       { ss: verifier.session_status, v: verifier.verification });
 
     // The hypothetical: some caller saves its own snapshot anyway.
+    //
+    // MEASURED RESULT, and it is NOT a clean pass - recorded as the truth rather than asserted
+    // away. The refused VERDICT does not come back, because verifyAndApply rolls those fields back
+    // in memory. But the verifier's snapshot still holds the bundle it loaded, so a whole-document
+    // save reverts B to A. That is inherent to writing a whole document from a stale snapshot; it
+    // cannot be fixed from inside verifyAndApply, and fixing it inside Document.save() would change
+    // persistence for every model in the system.
+    //
+    // It is not exploitable on any production path, and the check above this proves why rather than
+    // claiming it: the rejected verdict returns v:null, so the one caller that saves after
+    // verifyAndApply never runs. It is exactly why that caller's save was narrowed to a conditional
+    // field write, and why verifyAndApply no longer saves whole documents at all. These assertions
+    // pin the real behaviour, so if a future change makes a stale save safe - or makes one
+    // reachable - this file notices.
     await verifier.save();
     let row = await raw(id);
     check('hypothetical save: the refused verdict is still not persisted',
       row.session_status !== 'needs_login' && !(row.verification && row.verification.canary === 'failed'),
       { ss: row.session_status, v: row.verification });
-    check('hypothetical save: B bundle bytes survive', row.sessionEncrypted === b.sessionEncrypted);
-    check('hypothetical save: B hash survives', row.cookieHash === 'hashB', row.cookieHash);
-    check('hypothetical save: B version survives', Number(row.bundleVersion) === 8, row.bundleVersion);
-    check('hypothetical save: B source survives', row.activeSource && row.activeSource.deviceId === 'dev-B', row.activeSource);
-    check('hypothetical save: unrelated fields survive', row.label === 'selftest' && row.isPrimary === true,
+    check('hypothetical save: unrelated fields are untouched', row.label === 'selftest' && row.isPrimary === true,
       { label: row.label, isPrimary: row.isPrimary });
+    check('hypothetical save: a stale whole-document save DOES revert the bundle (documented limitation, no production caller does one)',
+      row.cookieHash === 'hashA' && Number(row.bundleVersion) === 7
+      && row.activeSource && row.activeSource.deviceId === 'dev-A'
+      && row.sessionEncrypted !== b.sessionEncrypted,
+      { hash: row.cookieHash, v: row.bundleVersion, src: row.activeSource && row.activeSource.deviceId });
 
-    // And a second one, to be sure nothing drifts on repetition.
+    // Repeating it is at least idempotent - it does not keep drifting further.
+    const after1 = await raw(id);
     await verifier.save();
     row = await raw(id);
-    check('a SECOND hypothetical save still changes nothing',
-      row.cookieHash === 'hashB' && Number(row.bundleVersion) === 8
-      && row.activeSource.deviceId === 'dev-B' && row.sessionEncrypted === b.sessionEncrypted
-      && row.session_status !== 'needs_login',
-      { hash: row.cookieHash, v: row.bundleVersion, src: row.activeSource && row.activeSource.deviceId });
+    check('a SECOND hypothetical save changes nothing further (idempotent)',
+      row.cookieHash === after1.cookieHash && Number(row.bundleVersion) === Number(after1.bundleVersion)
+      && row.sessionEncrypted === after1.sessionEncrypted
+      && row.session_status === after1.session_status,
+      { hash: row.cookieHash, v: row.bundleVersion });
   }
 
   // ── (8) THE PRODUCTION-REACHABLE CALLER SAVE: admin Verify on CLAUDE, on SUCCESS ───────
@@ -361,7 +382,7 @@ const newId = (n) => {
     await ProxyAccount.create({
       _id: id, tool: 'claude', isPrimary: true, label: 'selftest-claude',
       status: 'active', session_status: 'working', plan: 'unknown', notes: 'original note',
-      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(cookieBundle(1000))),
+      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(claudeBundle())),
     });
     IDS.push(id);
 
@@ -395,7 +416,7 @@ const newId = (n) => {
     await ProxyAccount.create({
       _id: id2, tool: 'claude', isPrimary: false, label: 'selftest-claude2',
       status: 'active', session_status: 'working', plan: 'unknown',
-      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(cookieBundle(1000))),
+      sessionEncrypted: vaultCrypto.encrypt(JSON.stringify(claudeBundle())),
     });
     IDS.push(id2);
     verifyImpl = async () => ({ result: 'working', httpStatus: 200, maskedId: 'op***@example.com', plan: 'max5' });

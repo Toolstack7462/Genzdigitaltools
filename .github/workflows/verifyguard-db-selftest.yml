@@ -183,7 +183,7 @@ jobs:
 
       - name: 'DIAG H2: a rejected verdict cannot cost the newer bundle (incl. repeat saves)'
         if: always()
-        run: 'grep -E "rejected:|hypothetical save:|SECOND hypothetical save" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
+        run: 'grep -E "rejected:|hypothetical save:|SECOND hypothetical save changes nothing further" "$RUNNER_TEMP/vg.log" | grep -q "✗" && exit 1 || echo ok'
 
       - name: 'DIAG H3: the production caller save (claude admin Verify) preserves operator edits'
         if: always()
