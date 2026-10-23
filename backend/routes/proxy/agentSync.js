@@ -116,6 +116,67 @@ function withIssuedKey(req, body) {
   return body;
 }
 
+// WHAT THE SERVER KNOWS ABOUT THE CURRENT SESSION'S PROOF, stated for the agent.
+//
+// The push reply already carries code/promoted/bundleVersion/activeSource, and an agent could
+// read `PROMOTED` as "the provider confirmed this account". It is not: on a routine push
+// candidateSync asks verify for {readOnly:true} with no canary, and verify answers 'working'
+// from a LOCAL JWT DECODE. The proof that does exist is produced out of the request path by
+// cron/proxyVerifyScheduler.js, which runs the real /auth/v1/user canary every ~7 min and
+// stores it on account.verification.
+//
+// This forwards that existing record. It adds no verification, no provider call and no polling:
+// it is the same fact the dashboard already reads, exposed to the one other party that has to
+// make a security decision with it (an agent holding a submission_outcome_unknown halt, which
+// may only be cleared by proof the account is authenticated NOW).
+//
+// `canary`: 'passed' = a real provider call confirmed this session; 'failed'/'inconclusive' =
+// proven dead / our own request did not complete; null = none was run, i.e. a decode. Only
+// 'passed' is proof. Additive and optional - an older agent simply ignores it.
+function sessionProofView(account) {
+  const v = account.verification || null;
+  if (!v) return null;
+  const a = account.activeSource || null;
+  const curBundle = account.bundleVersion || 0;
+  const curSource = (a && a.deviceId) || null;
+  const curHash = account.cookieHash || null;
+  // THE SUBJECT IS WHAT MAKES THIS A PROOF RATHER THAN A LABEL.
+  //
+  // The first version of this view read `canary`/`checkedAt` from account.verification but paired
+  // them with bundleVersion/sourceDeviceId read HERE, at serialization time. Those are different
+  // moments, and the gap is a real relabelling: verification starts against bundle 7, a push
+  // promotes bundle 8, the verdict lands, and the view then reports
+  // {canary:'passed', bundleVersion:8} - a passed canary for a session that was never checked.
+  //
+  // verifyAndApply/candidateSync now pin `verification.subject` BEFORE the provider call, so the
+  // record says which bundle, source and cookie hash it is about. This reports that subject, and
+  // marks the proof `stale` whenever the served session has moved on. A consumer must require
+  // stale !== true; it never has to guess whether "current" meant current when the check ran.
+  //
+  // A record with no `subject` at all is pre-correction data: treated as stale, never as proof.
+  const s = v.subject || null;
+  const stale = !s
+    || (s.bundleVersion || 0) !== curBundle
+    || (s.sourceDeviceId || null) !== curSource
+    || (s.cookieHash || null) !== curHash;
+  return {
+    canary: v.canary || null,
+    result: v.result || null,
+    checkedAt: v.checkedAt || null,
+    // Display only. The authoritative identity (verification.accountKey, from a passed canary) is
+    // deliberately NOT exposed: the agent correlates on device and bundle revision and has no need
+    // of it, so it stays server-side.
+    maskedId: v.maskedId || null,
+    // What the verdict is about...
+    subjectBundleVersion: s ? (s.bundleVersion || 0) : null,
+    subjectSourceDeviceId: s ? (s.sourceDeviceId || null) : null,
+    // ...and what is served now, so the agent can see for itself that they agree.
+    bundleVersion: curBundle,
+    sourceDeviceId: curSource,
+    stale,
+  };
+}
+
 function activeSourceView(account) {
   const a = account.activeSource;
   if (!a) return null;
@@ -461,7 +522,18 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       recordAttempt(account, device, 'HEARTBEAT', meta);
       const d = agentDirectives(account, tool, device);
       await account.save();
-      return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, ...d, activeSource: activeSourceView(account) }));
+      // A HEARTBEAT IS NOT PROOF - but it may CARRY proof that already exists.
+      //
+      // The authoritative canary runs in cron/proxyVerifyScheduler.js, out of the request path.
+      // Its result therefore becomes available BETWEEN candidate pushes, and a promotion is the one
+      // moment it is guaranteed absent (a new bundle starts unproven). Carrying it on the heartbeat
+      // is what lets a scheduler-produced proof reach the agent without demanding a new activation,
+      // a cookie mutation or another password login to manufacture a delivery vehicle.
+      //
+      // Nothing here verifies anything: no provider request is made on this path. The proof is the
+      // canary, bound to its subject, and `code:'HEARTBEAT'` can never satisfy the agent's own
+      // verified-promotion test on its own.
+      return res.json(withIssuedKey(req, { ok: true, code: 'HEARTBEAT', heartbeat: true, changed: false, ...d, activeSource: activeSourceView(account), sessionProof: sessionProofView(account), bundleVersion: account.bundleVersion || 0 }));
     }
 
     // -- explicit logout signal from this device ----------------------------
@@ -520,6 +592,7 @@ router.post('/:tool/cookies', express.json({ limit: '256kb' }), async (req, res)
       sourceSwitched: !!r.sourceSwitched,
       bundleVersion: r.bundleVersion,
       activeSource: activeSourceView(account),
+      sessionProof: sessionProofView(account),
       activation: act ? activation.publicView(account) : undefined,
       ...d,
     }));

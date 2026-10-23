@@ -88,12 +88,38 @@ function describe(v) {
   return `a JSON ${typeof v} (${JSON.stringify(v)})`;
 }
 
+// WHY THIS HELPER EXISTS - the Windows exit-code crash.
+//
+// Measured on Windows (Node 24.14.1): every observed-failure run of this script exited
+// 3221226505 (0xC0000409) instead of 1, after printing the correct verdict. The child died in
+// libuv during teardown:
+//
+//     Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76
+//
+// `AbortSignal.timeout(ms)` arms a timer that stays live until it fires, and fetch leaves a
+// keep-alive socket behind. Calling process.exit() while those handles are mid-close trips that
+// assertion, and Node aborts via __fastfail - so the gate reported a crash code rather than a
+// refusal. Anything reading the exit status (CI, a deploy script, the release gate) could not tell
+// "the download is wrong" from "the checker broke".
+//
+// So: an AbortController whose timer is always cleared, `connection: close` so no socket lingers,
+// and process.exitCode + a natural return instead of process.exit() mid-teardown.
+async function fetchBounded(url) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
+  try {
+    return await fetch(url, { signal: ac.signal, headers: { connection: 'close' } });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function main() {
   // 1. Published metadata
   let body;
   let fetched = false;
   try {
-    const r = await fetch(`${ROOT}/latest.json`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const r = await fetchBounded(`${ROOT}/latest.json`);
     if (!r.ok) problem('HTTP', `latest.json returned HTTP ${r.status} — nothing is published at ${ROOT}`);
     else {
       try { body = await r.json(); fetched = true; }
@@ -152,7 +178,7 @@ async function main() {
   //    failure mode that looks healthiest from the outside.
   if (descriptorUsable && !skipBody) {
     try {
-      const r = await fetch(`${ROOT}/latest`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+      const r = await fetchBounded(`${ROOT}/latest`);
       if (!r.ok) {
         problem('HTTP', `the installer download returned HTTP ${r.status} — latest.json advertises a `
           + 'release whose bytes are not served');
@@ -191,7 +217,8 @@ async function main() {
       console.error('it serves the right one — distribution readiness is UNKNOWN.');
       console.error('Check DNS, TLS, timeouts and any egress proxy or network policy for this host,');
       console.error('then re-run. Do not publish anything to make this check pass.');
-      process.exit(3);   // still non-zero: a deploy must refuse to proceed
+      process.exitCode = 3;   // still non-zero: a deploy must refuse to proceed
+      return;
     }
 
     console.error('\nThis deploy would advertise a version the download does not serve:');
@@ -201,7 +228,8 @@ async function main() {
     if (k.has('METADATA'))  console.error('  METADATA invalid — the descriptor cannot be trusted.');
     if (k.has('TRANSPORT')) console.error('  (a request also failed in transport; see [TRANSPORT] above)');
     console.error('Publish the installer and its metadata, then re-run this check.');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   // METADATA-ONLY is a diagnostic, never a readiness verdict. Said in both the wording and the
@@ -215,4 +243,4 @@ async function main() {
   console.log(`[agent-distribution] ${expectedVersion} is published and the served bytes match`);
 }
 
-main().catch((e) => { console.error('[agent-distribution] check crashed:', e.message); process.exit(1); });
+main().catch((e) => { console.error('[agent-distribution] check crashed:', e.message); process.exitCode = 1; });

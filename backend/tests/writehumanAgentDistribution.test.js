@@ -344,11 +344,38 @@ describe('the checker keeps its streaming hash and its timeout', () => {
     assert.match(src, /createHash\('sha256'\)/);
   });
 
-  test('both requests carry the configured timeout', () => {
-    const signals = src.match(/AbortSignal\.timeout\(TIMEOUT_MS\)/g) || [];
-    assert.ok(signals.length >= 2,
-      'latest.json AND the installer download must both time out rather than hang a deploy');
+  test('both requests carry the configured timeout, and clean it up', () => {
+    // This used to count occurrences of `AbortSignal.timeout(TIMEOUT_MS)`. That literal was the
+    // cause of the Windows crash, not a property worth pinning: the timer it arms stays live until
+    // it fires, so process.exit() during teardown tripped a libuv assertion
+    // (!(handle->flags & UV_HANDLE_CLOSING), src\winsync.c:76) and the gate exited 0xC0000409
+    // instead of 1. Counting the literal made the broken form the "correct" one.
+    //
+    // The real properties: every request goes through the one bounded helper, the helper aborts on
+    // the configured timeout, it ALWAYS clears its timer, and the timeout stays configurable.
+    const calls = src.match(/await fetchBounded\(/g) || [];
+    assert.ok(calls.length >= 2,
+      'latest.json AND the installer download must both go through the bounded fetch');
+    // exactly one raw fetch: the one inside fetchBounded itself.
+    assert.equal((src.match(/await fetch\(/g) || []).length, 1,
+      'no request may bypass the bounded helper');
+    assert.match(src, /new AbortController\(\)/);
+    assert.match(src, /setTimeout\(\(\) => ac\.abort\(\), TIMEOUT_MS\)/, 'it aborts on the configured timeout');
+    assert.match(src, /finally \{\s*clearTimeout\(t\);/, 'and the timer is always cleared');
     assert.match(src, /WH_DIST_TIMEOUT_MS/, 'the timeout must stay configurable');
+  });
+
+  test('the verdict is delivered as an EXIT CODE, not a crash', () => {
+    // The gate is only a gate if its exit status is readable. Measured on Windows, process.exit()
+    // during fetch/timer teardown aborted the process (0xC0000409) AFTER printing the right
+    // verdict, so a deploy script could not distinguish "the download is wrong" from "the checker
+    // broke". The verdict paths therefore set process.exitCode and return.
+    // process.exit(2) for a usage error is fine - it runs before any request or timer. What
+    // must never come back is an immediate exit on a VERDICT path, after fetch and its timer.
+    assert.ok(!/process\.exit\(1\)|process\.exit\(3\)/.test(src),
+      'process.exit() mid-teardown is what produced the Windows abort; set process.exitCode');
+    assert.match(src, /process\.exitCode = 1/);
+    assert.match(src, /process\.exitCode = 3/);
   });
 
   test('production deployment does not rely on --skip-body', () => {

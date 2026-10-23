@@ -360,7 +360,24 @@ async function ingestCandidate(account, tool, device, rawCookies, opts) {
     }
     account.lastSyncSuccessAt = now;
     account.lastVerifiedAt = now;
-    account.verification = { result: 'working', maskedId, httpStatus: v.httpStatus || 200, checkedAt: now };
+    // A ROUTINE push reaches here with NO canary (one is requested on the activation path only,
+    // a few lines above), so `canary` is null and this record states plainly that the promotion
+    // rests on a decode. An activation records 'passed'. Keeping the field honest is what stops
+    // a routine promotion being read back as proof that the account is authenticated now.
+    // Bound to the bundle just promoted (bundleVersion/cookieHash are already updated above),
+    // so this record can never be read as proof of a LATER bundle. A routine push reaches here
+    // with no canary, so `canary` is null and the record states plainly that the promotion
+    // rests on a decode - a new bundle never inherits the previous one's proof.
+    account.verification = {
+      result: 'working', maskedId, httpStatus: v.httpStatus || 200, checkedAt: now,
+      canary: v.canary || null, accountKey: v.accountKey || null,
+      subject: {
+        bundleVersion: account.bundleVersion || 0,
+        sourceDeviceId: (switchSource ? device.deviceId : ((account.activeSource && account.activeSource.deviceId) || device.deviceId)) || null,
+        cookieHash: account.cookieHash || null,
+      },
+    };
+    if (v.canary === 'passed' || v.canary === 'failed') account.lastCanaryAt = now;
     account.session_status = 'working';
     if (['session_expired', 'limit_reached'].includes(account.status)) account.status = 'active';
     if (act) activation.advance(account, { activationId: act.activationId, stage: 'PROMOTING', now });

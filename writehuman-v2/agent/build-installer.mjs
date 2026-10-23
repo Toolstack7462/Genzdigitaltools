@@ -18,6 +18,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, 'dist');
 const AGENT_VERSION = (fs.readFileSync(path.join(HERE, 'cookie-sync-agent.js'), 'utf8')
   .match(/AGENT_VERSION\s*=\s*'([^']+)'/) || [])[1] || '0.0.0';
+// Read from the same single source of truth as the version, in the same shape. Without this the
+// published metadata carried no buildId at all and it was added to latest.json by hand after the
+// build — which is how metadata drifts away from the binary it is meant to describe.
+//
+// Deliberately NOT hoisted into a shared `AGENT_SOURCE` variable: writehumanAgentVersionDrift
+// asserts the exact expression `AGENT_VERSION = (fs.readFileSync(...cookie-sync-agent.js`, and that
+// guard is correct — the fix is to match it, not to loosen it. The extra read is one file at build
+// time.
+const AGENT_BUILD_ID = (fs.readFileSync(path.join(HERE, 'cookie-sync-agent.js'), 'utf8')
+  .match(/AGENT_BUILD_ID\s*=\s*'([^']+)'/) || [])[1] || null;
 const OUT_EXE = path.join(DIST, 'WriteHuman-Agent-Setup-x64.exe');
 const FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
@@ -44,11 +54,37 @@ console.log('[build] injecting blob…');
 execFileSync('npx', ['--yes', 'postject', OUT_EXE, 'NODE_SEA_BLOB', cfg.output, '--sentinel-fuse', FUSE],
   { stdio: 'inherit', shell: process.platform === 'win32' });
 
+// REPAIR THE PE HEADER CHECKSUM, BEFORE ANYTHING IS HASHED.
+//
+// postject appends the SEA blob as a PE resource and leaves the OptionalHeader CheckSum field
+// holding node.exe's original value - which is why it prints "warning: The signature seems
+// corrupted!". The binary runs, but its own header disagrees with its bytes, and
+// writehumanInstallerEmbeddedSource's PE-checksum assertion reads that as "altered after it was
+// built". That is the correct reading, so the build is fixed rather than the gate relaxed.
+//
+// Order matters: the checksum is written INTO the file, so it must be repaired before the sha256
+// and size that go into latest.json are computed, or the published metadata would describe bytes
+// that no longer exist.
+console.log('[build] repairing PE header checksum…');
+{
+  const { inspect } = await import('./tools/pe-checksum.cjs');
+  const raw = fs.readFileSync(OUT_EXE);
+  const before = inspect(raw);
+  if (!before.matches) {
+    raw.writeUInt32LE(before.computed, before.offset);
+    fs.writeFileSync(OUT_EXE, raw);
+  }
+  const after = inspect(fs.readFileSync(OUT_EXE));
+  if (!after.matches) throw new Error('PE checksum still does not match after repair');
+  console.log('[build]   checksum ' + (before.matches ? 'already correct' : 'repaired')
+    + ' -> 0x' + after.computed.toString(16));
+}
+
 const bytes = fs.readFileSync(OUT_EXE);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 const meta = { product: 'WriteHuman Universal Agent', file: 'WriteHuman-Agent-Setup-x64.exe',
   version: AGENT_VERSION, size: bytes.length, sha256, arch: 'x64', signed: false,
-  builtAt: new Date().toISOString() };
+  builtAt: new Date().toISOString(), buildId: AGENT_BUILD_ID };
 fs.writeFileSync(path.join(DIST, 'latest.json'), JSON.stringify(meta, null, 2));
 
 fs.rmSync(tmp, { recursive: true, force: true });
