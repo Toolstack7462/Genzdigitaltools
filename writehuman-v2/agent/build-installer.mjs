@@ -18,6 +18,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(HERE, 'dist');
 const AGENT_VERSION = (fs.readFileSync(path.join(HERE, 'cookie-sync-agent.js'), 'utf8')
   .match(/AGENT_VERSION\s*=\s*'([^']+)'/) || [])[1] || '0.0.0';
+// Read from the same single source of truth as the version, in the same shape. Without this the
+// published metadata carried no buildId at all and it was added to latest.json by hand after the
+// build — which is how metadata drifts away from the binary it is meant to describe.
+//
+// Deliberately NOT hoisted into a shared `AGENT_SOURCE` variable: writehumanAgentVersionDrift
+// asserts the exact expression `AGENT_VERSION = (fs.readFileSync(...cookie-sync-agent.js`, and that
+// guard is correct — the fix is to match it, not to loosen it. The extra read is one file at build
+// time.
+const AGENT_BUILD_ID = (fs.readFileSync(path.join(HERE, 'cookie-sync-agent.js'), 'utf8')
+  .match(/AGENT_BUILD_ID\s*=\s*'([^']+)'/) || [])[1] || null;
 const OUT_EXE = path.join(DIST, 'WriteHuman-Agent-Setup-x64.exe');
 const FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
@@ -74,7 +84,7 @@ const bytes = fs.readFileSync(OUT_EXE);
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 const meta = { product: 'WriteHuman Universal Agent', file: 'WriteHuman-Agent-Setup-x64.exe',
   version: AGENT_VERSION, size: bytes.length, sha256, arch: 'x64', signed: false,
-  builtAt: new Date().toISOString() };
+  builtAt: new Date().toISOString(), buildId: AGENT_BUILD_ID };
 fs.writeFileSync(path.join(DIST, 'latest.json'), JSON.stringify(meta, null, 2));
 
 fs.rmSync(tmp, { recursive: true, force: true });

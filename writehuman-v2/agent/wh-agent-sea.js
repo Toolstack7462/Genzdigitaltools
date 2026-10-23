@@ -22,7 +22,11 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
-const BUILD_ID = '3.5.15-retry-rc1';
+// NOTE: there is deliberately no BUILD_ID constant here. It used to be hardcoded ('3.5.15-retry-rc1')
+// and went stale the moment the agent asset moved to 3.5.16, which is half of why that installer
+// could not start. The build identity now comes from the embedded asset via selfBuildId(), so there
+// is exactly ONE place a release version is written: cookie-sync-agent.js. It cannot be a const at
+// this point in the file because `sea` is not initialised until further down.
 
 const APP_DIR_NAME = path.join('GenZDigitalTools', 'WriteHumanAgent');
 // Installed modes must survive logon without the installer's shell overrides.
@@ -73,6 +77,16 @@ function selfAgentVersion() {
   try { return (agentSource().match(/AGENT_VERSION\s*=\s*'([^']+)'/) || [])[1] || null; }
   catch (_) { return null; }
 }
+/**
+ * The build identity carried INSIDE this exe, read from the same bundled asset as the version.
+ *
+ * Derived, never hardcoded. The previous hardcoded BUILD_ID described 3.5.15 while the asset said
+ * 3.5.16, so the installer reported a build it was not and `installedSameBuild()` could never match.
+ */
+function selfBuildId() {
+  try { return (agentSource().match(/AGENT_BUILD_ID\s*=\s*'([^']+)'/) || [])[1] || null; }
+  catch (_) { return null; }
+}
 /** The version recorded by whichever installer last wrote INSTALLED_EXE. */
 function installedAgentVersion() {
   try { return JSON.parse(fs.readFileSync(path.join(INSTALL_DIR, 'installed.json'), 'utf8').replace(/^\uFEFF/, '')).agentVersion || null; }
@@ -80,7 +94,7 @@ function installedAgentVersion() {
 }
 /** Stamp what we just installed, so the next run can compare versions instead of guessing. */
 function writeInstalledMarker() {
-  const value = { agentVersion: selfAgentVersion(), buildId: BUILD_ID,
+  const value = { agentVersion: selfAgentVersion(), buildId: selfBuildId(),
     configName:path.basename(CONFIG_FILE),
     ...(path.resolve(path.dirname(CONFIG_FILE)).toLowerCase()!==path.resolve(INSTALL_DIR).toLowerCase()?{configPath:path.resolve(CONFIG_FILE)}:{}),
     sourceSha256: sha256(agentSource()), executableSha256: sha256(fs.readFileSync(INSTALLED_EXE)),
@@ -95,7 +109,22 @@ function psLiteral(value) { return "'" + String(value).replace(/'/g, "''") + "'"
 function readJsonStrict(file) { return JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'')); }
 function validatePackage() {
   const source = agentSource();
-  if (!source || source.length < 500 || selfAgentVersion() !== '3.5.15') throw new Error('Invalid embedded Agent package.');
+  if (!source || source.length < 500) throw new Error('Invalid embedded Agent package.');
+  // WHY THIS IS NOT A LITERAL ANY MORE.
+  //
+  // This read `selfAgentVersion() !== '3.5.15'`. The asset moved to 3.5.16, the literal did not, and
+  // the installer rejected its OWN payload with "Invalid embedded Agent package." before doing
+  // anything — including for `--package-info`. A pinned expected version is a constant that must be
+  // edited in lockstep with every release, which is exactly the class of bug that produced it.
+  //
+  // The replacement is a STRONGER invariant, not a looser one: the package must state a well-formed
+  // semver version AND a build identity that belongs to that version. Arbitrary content still
+  // fails (no AGENT_VERSION -> null -> throw), a malformed version fails, and a version/build-id
+  // pair that disagree with each other fails — which the old single-literal check never detected.
+  const version = selfAgentVersion();
+  const buildId = selfBuildId();
+  if (!version || !/^\d+\.\d+\.\d+$/.test(version)) throw new Error('Invalid embedded Agent package.');
+  if (!buildId || !buildId.startsWith(version + '-')) throw new Error('Invalid embedded Agent package.');
   new (require('vm').Script)(source, {filename:'embedded-cookie-sync-agent.js'});
   let buildMethod=sea?'unknown':'source-only';
   if(sea){
@@ -104,7 +133,7 @@ function validatePackage() {
       if(['cross-platform','windows-native'].includes(method))buildMethod=method;
     }catch(_){}
   }
-  return {product:'WriteHuman Agent',version:selfAgentVersion(),buildId:BUILD_ID,
+  return {product:'WriteHuman Agent',version:selfAgentVersion(),buildId:selfBuildId(),
     sourceSha256:sha256(source),nodeVersion:process.version,platform:process.platform,arch:process.arch,
     packaging:sea?'windows-node-sea':'source-only',buildMethod,recoveryOffByDefault:true};
 }
@@ -736,7 +765,7 @@ function installedSameBuild() {
   try {
     if (!fs.existsSync(INSTALLED_EXE)) return false;
     const marker=readJsonStrict(INSTALLED_MARKER);
-    return marker.agentVersion===selfAgentVersion() && marker.buildId===BUILD_ID &&
+    return marker.agentVersion===selfAgentVersion() && marker.buildId===selfBuildId() &&
       marker.sourceSha256===sha256(agentSource()) &&
       sha256(fs.readFileSync(INSTALLED_EXE))===sha256(fs.readFileSync(selfPath()));
   } catch (_) { return false; }
@@ -837,7 +866,7 @@ async function waitForAgent(timeoutMs) {
 async function runInstaller() {
   validateUpgrade();
   if(process.env.WHV2_SILENT!=='1' && messageBox(
-    'WriteHuman Agent 3.5.15 - RELEASE CANDIDATE\n\n'+
+    'WriteHuman Agent ' + (selfAgentVersion() || '?') + ' - RELEASE CANDIDATE\n\n'+
     'This package contains the runtime and recovery code. No build tools are downloaded.\n\n'+
     'Install only on your authorized Windows source RDP as its existing Agent user. A private backup is made before an upgrade. Settings, enrollment and the source Chrome profile are retained.\n\n'+
     'Existing enabled recovery may run after upgrade. Global session reset requires a separate scoped consent or valid time-limited authorization, and remains limited to once per 24 hours.\n\n'+
@@ -999,7 +1028,7 @@ function workflowStatus() {
   const resetEnabled=/^(1|true|yes)$/i.test(String(process.env.WHV2_SESSION_LIMIT_SIGNOUT_ALL||cfg.sessionLimitSignOutAll||''));
   const consent=process.env.WHV2_SESSION_LIMIT_CONSENT||cfg.sessionLimitConsent;
   const until=Date.parse(process.env.WHV2_SESSION_LIMIT_AUTHORIZED_UNTIL||cfg.sessionLimitLiveAuthorizationUntil||'');
-  return {version:selfAgentVersion(),buildId:BUILD_ID,installedVersion:installedAgentVersion(),
+  return {version:selfAgentVersion(),buildId:selfBuildId(),installedVersion:installedAgentVersion(),
     autoReloginConfigured:enabled,vaultFilePresent:fs.existsSync(vault),
     stage:!enabled?'DISABLED':halted?'MANUAL_ACTION':st.pendingVerification===true?'VERIFY_PENDING':diagnosticCode(st.incident?.stage)||'MONITORING',
     stageScope:'last_recovery_incident',browserLoginVerified:false,
